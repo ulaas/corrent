@@ -81,6 +81,8 @@ settings window (all sections); queue, seeding limits, alt-speed schedule, watch
 run-on-complete; tray, notifications, close/minimize to tray; custom title bar; About/Log/Stats;
 failed-restore recovery; fixes from a Fable code review. Default save folder: `Downloads/Corrent`.
 
+Next steps: see the milestone table in `docs/ROADMAP.md` (M1 = async file dialogs).
+
 Known gaps: engine lacks encryption, per-file priorities, sequential mode and per-torrent speed
 limits; file pickers block the window while open; macOS/Linux builds are type-checked only, never
 run; no CI. See `docs/ROADMAP.md` for what comes next.
