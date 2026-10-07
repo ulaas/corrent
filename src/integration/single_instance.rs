@@ -39,7 +39,10 @@ fn socket_name(paths: &Paths) -> std::io::Result<Name<'static>> {
     } else {
         String::new()
     };
-    if GenericNamespaced::is_supported() {
+    // Windows: a named pipe (default DACL: other users cannot write to it).
+    // Unix: a socket file inside the private (0700) data directory. Linux abstract sockets are
+    // avoided on purpose because any local user could connect to them.
+    if cfg!(windows) && GenericNamespaced::is_supported() {
         format!("corrent-{user}{suffix}.sock").to_ns_name::<GenericNamespaced>()
     } else {
         paths.data_dir.join("corrent.sock").to_fs_name::<GenericFilePath>()
@@ -117,20 +120,21 @@ pub fn serve(
         .spawn(move || {
             for conn in listener.incoming() {
                 let Ok(conn) = conn else { continue };
-                let reader = BufReader::new(conn);
-                // Bound the amount of data a client may send.
-                for line in reader.lines().take(512) {
-                    let Ok(line) = line else { break };
-                    if line.len() > 64 * 1024 {
-                        break;
+                let (tx, ctx) = (tx.clone(), ctx.clone());
+                // One thread per client so a stalled client cannot block later launches.
+                let _ = std::thread::Builder::new().name("corrent-ipc-client".into()).spawn(move || {
+                    // Bound the amount of data a client may send.
+                    let reader = BufReader::new(std::io::Read::take(conn, 256 * 1024));
+                    for line in reader.lines().take(512) {
+                        let Ok(line) = line else { break };
+                        if let Some(msg) = parse_line(&line) {
+                            let _ = tx.send(msg);
+                        }
                     }
-                    if let Some(msg) = parse_line(&line) {
-                        let _ = tx.send(msg);
+                    if let Some(c) = ctx.get() {
+                        c.request_repaint();
                     }
-                }
-                if let Some(c) = ctx.get() {
-                    c.request_repaint();
-                }
+                });
             }
         })
         .expect("spawn ipc thread");

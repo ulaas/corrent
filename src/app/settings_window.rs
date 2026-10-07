@@ -170,6 +170,9 @@ fn minutes_input(ui: &mut Ui, minutes: &mut u16) {
 
 impl CorrentApp {
     pub fn open_settings(&mut self) {
+        if self.settings_draft.is_some() {
+            return;
+        }
         let s = self.settings.clone();
         let trackers_text = s.bittorrent.default_trackers.join("\n");
         self.settings_draft = Some(SettingsDraft { settings: s, page: Page::Behavior, search: String::new(), trackers_text });
@@ -383,7 +386,7 @@ impl CorrentApp {
                             .font(egui::TextStyle::Monospace),
                     );
                     ui.label(
-                        RichText::new("%N name · %F content path · %D save folder · %C category · %T tags · %Z size (bytes) · %I info hash")
+                        RichText::new("Runs the program directly (no shell). %N name · %F content path · %D save folder · %C category · %T tags · %Z size (bytes) · %I info hash")
                             .small()
                             .color(p.text_dim),
                     );

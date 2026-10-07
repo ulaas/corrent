@@ -74,6 +74,8 @@ pub enum EngineCommand {
     Add(Box<AddRequest>),
     Preview { req: u64, source: AddSource },
     CancelPreview(u64),
+    /// Abort an add that is still resolving metadata (identified by its placeholder row hash).
+    CancelAdd(InfoHash),
     Pause(Vec<InfoHash>),
     Resume(Vec<InfoHash>),
     ForceStart(Vec<InfoHash>),

@@ -62,6 +62,24 @@ mod imp {
 
     const DESKTOP: &str = "corrent.desktop";
 
+    /// Quote a path for a Desktop Entry `Exec=` key: wrap in double quotes and escape `"`, `` ` ``,
+    /// `$` and `\` (backslashes are doubled again because the value is also a string).
+    fn desktop_exec_quote(path: &str) -> String {
+        let mut out = String::from("\"");
+        for c in path.chars() {
+            match c {
+                '"' | '`' | '$' => {
+                    out.push_str("\\\\");
+                    out.push(c);
+                }
+                '\\' => out.push_str("\\\\\\\\"),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
     fn sandboxed() -> bool {
         std::env::var_os("FLATPAK_ID").is_some() || std::env::var_os("SNAP").is_some()
     }
@@ -84,7 +102,7 @@ mod imp {
         std::fs::create_dir_all(&icon_dir)?;
         let png = crate::util::encode_png(&crate::app::icon::icon_rgba(256), 256, 256);
         std::fs::write(icon_dir.join("corrent.png"), png)?;
-        let exe = exe_path().replace(' ', "\\s");
+        let exe = desktop_exec_quote(&exe_path());
         let content = format!(
             "[Desktop Entry]\nType=Application\nName=Corrent\nGenericName=BitTorrent Client\n\
              Comment=Download and share files over BitTorrent\nExec={exe} %U\nIcon=corrent\nTerminal=false\n\
@@ -131,7 +149,7 @@ mod imp {
         let ours_exists = desktop_file().exists();
         if current == DESKTOP {
             let exec_ok = std::fs::read_to_string(desktop_file())
-                .map(|c| c.contains(&exe_path().replace(' ', "\\s")))
+                .map(|c| c.contains(&desktop_exec_quote(&exe_path())))
                 .unwrap_or(false);
             if exec_ok { HandlerState::Ours } else { HandlerState::OtherPath }
         } else if current.is_empty() {

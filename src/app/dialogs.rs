@@ -41,6 +41,8 @@ pub struct AddDialog {
     pub filter: String,
     pub started: Instant,
     pub tag_input: String,
+    /// (path, measured at, free bytes) — refreshed at most every two seconds.
+    pub free_cache: Option<(String, Instant, Option<u64>)>,
 }
 
 fn modal_frame(p: &Palette) -> egui::Frame {
@@ -187,6 +189,7 @@ impl CorrentApp {
             filter: String::new(),
             started: Instant::now(),
             tag_input: String::new(),
+            free_cache: None,
         });
     }
 
@@ -512,7 +515,15 @@ impl CorrentApp {
                                 }
                             });
                     }
-                    if let Some(free) = crate::engine::free_space_for(&PathBuf::from(&d.save_path)) {
+                    let stale = d
+                        .free_cache
+                        .as_ref()
+                        .is_none_or(|(p, t, _)| *p != d.save_path || t.elapsed().as_secs() >= 2);
+                    if stale {
+                        let free = crate::engine::free_space_for(&PathBuf::from(&d.save_path));
+                        d.free_cache = Some((d.save_path.clone(), Instant::now(), free));
+                    }
+                    if let Some(free) = d.free_cache.as_ref().and_then(|c| c.2) {
                         let need: u64 = d.preview.as_ref().map(|pv| selected_size(pv, &d.checked)).unwrap_or(0);
                         let color = if need > free { p.error } else { p.text_dim };
                         ui.label(RichText::new(format!("{} free", fmt_bytes(free))).small().color(color));

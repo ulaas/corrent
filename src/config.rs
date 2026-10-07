@@ -332,7 +332,6 @@ impl Default for Seeding {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AfterAdd {
-    Keep,
     Delete,
     Rename,
 }

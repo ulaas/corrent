@@ -143,6 +143,12 @@ impl CorrentApp {
         let sc = |m: Modifiers, k: Key| KeyboardShortcut::new(m, k);
         let consume = |s: KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(&s));
 
+        if consume(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::S)) {
+            self.engine.send(EngineCommand::SetAltSpeed(!self.snap.session.alt_speed));
+        }
+        if self.modal_open() {
+            return;
+        }
         if consume(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::O)) {
             self.open_magnet_dialog();
         }
@@ -151,9 +157,6 @@ impl CorrentApp {
         }
         if consume(sc(Modifiers::COMMAND, Key::Comma)) {
             self.open_settings();
-        }
-        if consume(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::S)) {
-            self.engine.send(EngineCommand::SetAltSpeed(!self.snap.session.alt_speed));
         }
         if consume(sc(Modifiers::COMMAND, Key::F)) {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("search_box")));
@@ -164,7 +167,7 @@ impl CorrentApp {
         if consume(sc(Modifiers::COMMAND, Key::B)) {
             self.prefs.show_sidebar = !self.prefs.show_sidebar;
         }
-        if self.modal_open() || typing {
+        if typing {
             return;
         }
         // Pasting a magnet / URL / hash anywhere adds it.

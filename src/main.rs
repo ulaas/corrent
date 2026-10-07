@@ -18,6 +18,12 @@ fn main() -> eframe::Result {
     let flag = |f: &str| args.iter().any(|a| a == f);
     let paths = Paths::resolve(flag("--portable"));
     let _ = std::fs::create_dir_all(&paths.data_dir);
+    #[cfg(unix)]
+    {
+        // Settings may contain proxy credentials and the IPC socket lives here.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&paths.data_dir, std::fs::Permissions::from_mode(0o700));
+    }
 
     if flag("--help") || flag("-h") {
         #[cfg(windows)]
@@ -51,6 +57,7 @@ fn main() -> eframe::Result {
     };
 
     let _log_guard = init_logging(&paths);
+    std::thread::spawn(util::local_offset_secs);
     let (settings, first_run) = Settings::load(&paths);
     let launch: Vec<AddSource> = items.iter().filter_map(|a| AddSource::parse(a)).collect();
     let start_minimized = flag("--minimized") || settings.behavior.start_minimized;

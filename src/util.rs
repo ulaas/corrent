@@ -159,26 +159,28 @@ fn unix_offset() -> Option<i64> {
 
 #[cfg(windows)]
 fn windows_offset() -> Option<i64> {
-    let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", "[int](Get-Date).ToUniversalTime().Subtract((Get-Date)).TotalSeconds"])
-        .creation_flags_no_window()
-        .output()
-        .ok()?;
-    let s = String::from_utf8(out.stdout).ok()?;
-    Some(-s.trim().parse::<i64>().ok()?)
-}
-
-#[cfg(windows)]
-trait NoWindow {
-    fn creation_flags_no_window(&mut self) -> &mut Self;
-}
-
-#[cfg(windows)]
-impl NoWindow for std::process::Command {
-    fn creation_flags_no_window(&mut self) -> &mut Self {
-        use std::os::windows::process::CommandExt;
-        self.creation_flags(0x0800_0000)
+    #[repr(C)]
+    struct TimeZoneInformation {
+        bias: i32,
+        standard_name: [u16; 32],
+        standard_date: [u16; 8],
+        standard_bias: i32,
+        daylight_name: [u16; 32],
+        daylight_date: [u16; 8],
+        daylight_bias: i32,
     }
+    unsafe extern "system" {
+        fn GetTimeZoneInformation(tzi: *mut TimeZoneInformation) -> u32;
+    }
+    // SAFETY: plain C struct filled by the OS.
+    let mut tzi: TimeZoneInformation = unsafe { std::mem::zeroed() };
+    let r = unsafe { GetTimeZoneInformation(&mut tzi) };
+    if r == u32::MAX {
+        return None;
+    }
+    // TIME_ZONE_ID_DAYLIGHT == 2; bias is minutes *west* of UTC.
+    let bias = tzi.bias + if r == 2 { tzi.daylight_bias } else { tzi.standard_bias };
+    Some(-(bias as i64) * 60)
 }
 
 /// Minutes since local midnight and weekday (0 = Monday).

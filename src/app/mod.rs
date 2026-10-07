@@ -391,6 +391,15 @@ impl CorrentApp {
         if self.rows_key != Some(key) {
             self.rows = table::compute_rows(&self.snap, &self.prefs, &self.search);
             self.rows_key = Some(key);
+            // Never act on torrents the user can't see.
+            let visible: HashSet<InfoHash> = self.rows.iter().map(|&i| self.snap.torrents[i].hash).collect();
+            self.selected.retain(|h| visible.contains(h));
+            if self.anchor.is_some_and(|a| !visible.contains(&a)) {
+                self.anchor = None;
+            }
+            if self.focus.is_some_and(|f| !visible.contains(&f)) {
+                self.focus = None;
+            }
         }
         &self.rows
     }

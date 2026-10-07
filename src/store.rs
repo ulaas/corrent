@@ -36,6 +36,8 @@ pub struct TorrentMeta {
     pub last_activity: i64,
     pub last_upload_at: i64,
     pub seeding_seconds: u64,
+    /// Seconds spent seeding without uploading (reset by any upload).
+    pub inactive_seeding_secs: u64,
     /// User resumed a torrent that hit its seeding limit: don't stop it again.
     pub seed_limit_exempt: bool,
     pub seed_ratio_override: Option<f32>,
@@ -82,12 +84,22 @@ pub struct StoreData {
 pub struct Store {
     pub data: StoreData,
     path: PathBuf,
+    /// Structural change (category, tags, queue, …): saved within a couple of seconds.
     dirty: bool,
+    /// Only transfer counters changed: saved at a relaxed pace (and always on shutdown).
+    soft_dirty: bool,
     last_save: std::time::Instant,
 }
 
 impl Store {
     pub fn load(path: PathBuf) -> Store {
+        // A transient read failure (e.g. a lock) must not be mistaken for "no data".
+        for _ in 0..5 {
+            match std::fs::read(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => std::thread::sleep(std::time::Duration::from_millis(200)),
+                _ => break,
+            }
+        }
         let data = std::fs::read(&path)
             .ok()
             .and_then(|b| match serde_json::from_slice::<StoreData>(&b) {
@@ -102,17 +114,30 @@ impl Store {
                 std::fs::read(bak).ok().and_then(|b| serde_json::from_slice(&b).ok())
             })
             .unwrap_or_default();
-        Store { data, path, dirty: false, last_save: std::time::Instant::now() }
+        Store { data, path, dirty: false, soft_dirty: false, last_save: std::time::Instant::now() }
     }
 
+    /// Mutable access that marks the store for a prompt save.
     pub fn meta_mut(&mut self, hash: InfoHash) -> &mut TorrentMeta {
         self.dirty = true;
+        self.meta_quiet(hash)
+    }
+
+    /// Mutable access without marking anything dirty (the caller marks what changed).
+    pub fn meta_quiet(&mut self, hash: InfoHash) -> &mut TorrentMeta {
         let next_pos = self.data.torrents.len() as u32;
+        if !self.data.torrents.contains_key(&hash) {
+            self.dirty = true;
+        }
         self.data.torrents.entry(hash).or_insert_with(|| TorrentMeta {
             added_at: crate::util::now_unix(),
             queue_pos: next_pos,
             ..Default::default()
         })
+    }
+
+    pub fn mark_soft_dirty(&mut self) {
+        self.soft_dirty = true;
     }
 
     pub fn get(&self, hash: &InfoHash) -> Option<&TorrentMeta> {
@@ -171,16 +196,18 @@ impl Store {
 
     /// Debounced save; `force` writes immediately (shutdown).
     pub fn maybe_save(&mut self, force: bool) {
-        if !self.dirty {
+        if !self.dirty && !self.soft_dirty {
             return;
         }
-        if !force && self.last_save.elapsed() < std::time::Duration::from_secs(2) {
+        let wait = if self.dirty { std::time::Duration::from_secs(2) } else { std::time::Duration::from_secs(30) };
+        if !force && self.last_save.elapsed() < wait {
             return;
         }
         match serde_json::to_vec_pretty(&self.data) {
             Ok(bytes) => match crate::util::write_atomic(&self.path, &bytes) {
                 Ok(()) => {
                     self.dirty = false;
+                    self.soft_dirty = false;
                     self.last_save = std::time::Instant::now();
                 }
                 Err(e) => tracing::error!("failed to save store: {e:#}"),

@@ -56,7 +56,7 @@ impl WatchState {
 fn finish_file(path: &Path, after: AfterAdd) {
     let result = match after {
         AfterAdd::Delete => std::fs::remove_file(path),
-        AfterAdd::Rename | AfterAdd::Keep => {
+        AfterAdd::Rename => {
             let mut target = path.as_os_str().to_owned();
             target.push(".added");
             std::fs::rename(path, PathBuf::from(target))
@@ -96,29 +96,64 @@ pub fn expand_command(template: &str, t: &TorrentView) -> String {
     out
 }
 
-/// Run the completion command detached, logging its outcome.
-pub fn run_on_complete(template: &str, t: &TorrentView) {
-    let cmdline = expand_command(template, t);
-    if cmdline.trim().is_empty() {
-        return;
+/// Split a command line into arguments, honouring "double" and 'single' quotes.
+pub fn split_args(line: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut cur = String::new();
+    let mut in_arg = false;
+    let mut quote: Option<char> = None;
+    for c in line.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => cur.push(c),
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                in_arg = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if in_arg {
+                    args.push(std::mem::take(&mut cur));
+                    in_arg = false;
+                }
+            }
+            (None, c) => {
+                cur.push(c);
+                in_arg = true;
+            }
+        }
     }
+    if in_arg {
+        args.push(cur);
+    }
+    args
+}
+
+/// Run the completion program detached, logging its outcome.
+///
+/// The template is split into arguments *before* placeholders are substituted and the program is
+/// started directly (no shell), so torrent names can never inject commands. Users who need shell
+/// features can call the shell explicitly, e.g. `sh -c '...'` or `cmd /C ...`.
+pub fn run_on_complete(template: &str, t: &TorrentView) {
+    let argv: Vec<String> = split_args(template).iter().map(|a| expand_command(a, t)).collect();
+    let Some((program, args)) = argv.split_first() else { return };
+    let (program, args) = (program.clone(), args.to_vec());
     std::thread::spawn(move || {
+        let mut cmd = std::process::Command::new(&program);
+        cmd.args(&args);
         #[cfg(windows)]
-        let result = {
+        {
             use std::os::windows::process::CommandExt;
-            std::process::Command::new("cmd").arg("/C").raw_arg(&cmdline).creation_flags(0x0800_0000).output()
-        };
-        #[cfg(not(windows))]
-        let result = std::process::Command::new("sh").arg("-c").arg(&cmdline).output();
-        match result {
-            Ok(o) if o.status.success() => tracing::info!("completion command finished: {cmdline}"),
+            cmd.creation_flags(0x0800_0000);
+        }
+        match cmd.output() {
+            Ok(o) if o.status.success() => tracing::info!("completion program finished: {program}"),
             Ok(o) => tracing::warn!(
-                "completion command exited with {}: {} {}",
+                "completion program exited with {}: {} {}",
                 o.status,
                 String::from_utf8_lossy(&o.stdout).trim(),
                 String::from_utf8_lossy(&o.stderr).trim()
             ),
-            Err(e) => tracing::error!("could not run completion command `{cmdline}`: {e}"),
+            Err(e) => tracing::error!("could not run completion program `{program}`: {e}"),
         }
     });
 }
@@ -126,6 +161,15 @@ pub fn run_on_complete(template: &str, t: &TorrentView) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splitting_and_no_injection() {
+        assert_eq!(split_args(r#"notify-send "Done" '%N' x"#), vec!["notify-send", "Done", "%N", "x"]);
+        assert_eq!(split_args(r#"a "" b"#), vec!["a", "", "b"]);
+        // A hostile name stays inside one argument after substitution.
+        let args: Vec<String> = split_args(r#"echo "%N""#).iter().map(|a| a.replace("%N", "x\" & del *")).collect();
+        assert_eq!(args.len(), 2);
+    }
 
     #[test]
     fn watch_requires_stable_size() {

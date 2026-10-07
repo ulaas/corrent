@@ -33,6 +33,7 @@ struct PendingAdd {
     hash: InfoHash,
     started: i64,
     save_path: PathBuf,
+    task: Option<JoinHandle<()>>,
 }
 
 /// Static per-torrent info parsed once from metadata.
@@ -55,6 +56,7 @@ pub struct Actor {
     snapshot: Arc<ArcSwap<Snapshot>>,
     internal_tx: mpsc::UnboundedSender<Internal>,
     internal_rx: Option<mpsc::UnboundedReceiver<Internal>>,
+    self_tx: mpsc::UnboundedSender<EngineCommand>,
 
     session: Option<Arc<Session>>,
     api: Option<Api>,
@@ -84,6 +86,9 @@ pub struct Actor {
     session_down_total: u64,
     session_up_total: u64,
     watch: super::automation::WatchState,
+    slow_since: HashMap<InfoHash, Instant>,
+    resumed_at: HashMap<InfoHash, Instant>,
+    deferred_settings: Option<Box<Settings>>,
 }
 
 impl Actor {
@@ -93,7 +98,7 @@ impl Actor {
         ctx: egui::Context,
         events: std::sync::mpsc::Sender<EngineEvent>,
         snapshot: Arc<ArcSwap<Snapshot>>,
-        _tx: mpsc::UnboundedSender<EngineCommand>,
+        self_tx: mpsc::UnboundedSender<EngineCommand>,
     ) -> Self {
         let (internal_tx, internal_rx) = mpsc::unbounded_channel();
         let store = Store::load(paths.store_file());
@@ -106,6 +111,7 @@ impl Actor {
             snapshot,
             internal_tx,
             internal_rx: Some(internal_rx),
+            self_tx,
             session: None,
             api: None,
             engine_state: EngineState::Starting,
@@ -133,6 +139,9 @@ impl Actor {
             session_down_total: 0,
             session_up_total: 0,
             watch: Default::default(),
+            slow_since: HashMap::new(),
+            resumed_at: HashMap::new(),
+            deferred_settings: None,
         }
     }
 
@@ -245,8 +254,41 @@ impl Actor {
 
     // ---------------------------------------------------------------- commands
 
+    /// Drop hashes that have an operation (move/recheck/delete) in flight.
+    fn not_busy(&self, hashes: Vec<InfoHash>) -> Vec<InfoHash> {
+        let (ok, busy): (Vec<_>, Vec<_>) = hashes.into_iter().partition(|h| !self.busy.contains_key(h));
+        if !busy.is_empty() {
+            self.toast(ToastKind::Info, "Some torrents are busy with another operation; try again in a moment.");
+        }
+        ok
+    }
+
     async fn handle(&mut self, cmd: EngineCommand) {
+        let cmd = match cmd {
+            EngineCommand::Pause(h) => EngineCommand::Pause(self.not_busy(h)),
+            EngineCommand::Resume(h) => EngineCommand::Resume(self.not_busy(h)),
+            EngineCommand::ForceStart(h) => EngineCommand::ForceStart(self.not_busy(h)),
+            EngineCommand::Delete { hashes, with_data } => EngineCommand::Delete { hashes: self.not_busy(hashes), with_data },
+            EngineCommand::MoveStorage { hashes, to } => EngineCommand::MoveStorage { hashes: self.not_busy(hashes), to },
+            EngineCommand::Recheck(h) => EngineCommand::Recheck(self.not_busy(h)),
+            EngineCommand::SetFiles { hash, included } if self.busy.contains_key(&hash) => {
+                let _ = included;
+                self.toast(ToastKind::Info, "This torrent is busy with another operation.");
+                return;
+            }
+            other => other,
+        };
         match cmd {
+            EngineCommand::CancelAdd(hash) => {
+                let ids: Vec<u64> = self.pending.iter().filter(|(_, p)| p.hash == hash).map(|(id, _)| *id).collect();
+                for id in ids {
+                    if let Some(p) = self.pending.remove(&id)
+                        && let Some(t) = p.task
+                    {
+                        t.abort();
+                    }
+                }
+            }
             EngineCommand::Add(req) => self.start_add(req),
             EngineCommand::Preview { req, source } => self.start_preview(req, source),
             EngineCommand::CancelPreview(req) => {
@@ -383,6 +425,25 @@ impl Actor {
             }
             EngineCommand::ApplySettings(new) => {
                 let restart = self.settings.requires_restart(&new);
+                if restart && !self.busy.is_empty() {
+                    // Tasks hold the current session; restarting under them could corrupt its state.
+                    self.toast(ToastKind::Info, "Network settings will apply once running operations finish.");
+                    self.deferred_settings = Some(new);
+                    return;
+                }
+                if self.settings.queue.enabled && !new.queue.enabled {
+                    let queued: Vec<InfoHash> = self
+                        .store
+                        .data
+                        .torrents
+                        .iter()
+                        .filter(|(_, m)| m.pause_reason == Some(PauseReason::Queue))
+                        .map(|(h, _)| *h)
+                        .collect();
+                    for h in queued {
+                        self.resume(h, false).await;
+                    }
+                }
                 self.settings = *new;
                 if restart {
                     tracing::info!("settings changed; restarting session");
@@ -438,6 +499,8 @@ impl Actor {
         }
         m.pause_reason = None;
         m.force_started = force;
+        m.inactive_seeding_secs = 0;
+        self.resumed_at.insert(hash, Instant::now());
         if h.is_paused()
             && let Err(e) = sess.unpause(&h).await
         {
@@ -494,14 +557,17 @@ impl Actor {
         };
         self.pending.insert(
             pending,
-            PendingAdd { name: req.source.describe(), hash, started: now_unix(), save_path: req.save_path.clone() },
+            PendingAdd { name: req.source.describe(), hash, started: now_unix(), save_path: req.save_path.clone(), task: None },
         );
         let tx = self.internal_tx.clone();
         let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let result = add(&sess, &req, peer_limit).await.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Internal::AddFinished { pending, req, result });
         });
+        if let Some(p) = self.pending.get_mut(&pending) {
+            p.task = Some(task);
+        }
     }
 
     fn start_readd(&mut self, hash: InfoHash, move_to: Option<PathBuf>, trackers: Option<Vec<String>>, what: &'static str) {
@@ -516,11 +582,31 @@ impl Actor {
         };
         self.busy.insert(hash, label.into());
         let multi = self.static_info.get(&hash).map(|s| s.multi_file).unwrap_or(false);
+        let backup_dir = self.paths.torrents_dir();
         let tx = self.internal_tx.clone();
         tokio::spawn(async move {
-            let result = readd(&sess, h, multi, move_to, trackers).await.map_err(|e| format!("{e:#}"));
+            let result = readd(&sess, h, multi, move_to, trackers, backup_dir).await.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Internal::OpFinished { hash, what, result });
         });
+    }
+
+    fn forget_hash(&mut self, hash: &InfoHash) {
+        self.store.remove(hash);
+        self.static_info.remove(hash);
+        self.torrent_history.remove(hash);
+        self.seen_unfinished.remove(hash);
+        self.last_down_active.remove(hash);
+        self.seed_carry_ms.remove(hash);
+        self.slow_since.remove(hash);
+        self.resumed_at.remove(hash);
+    }
+
+    fn maybe_apply_deferred(&mut self) {
+        if self.busy.is_empty()
+            && let Some(s) = self.deferred_settings.take()
+        {
+            let _ = self.self_tx.send(EngineCommand::ApplySettings(s));
+        }
     }
 
     fn handle_internal(&mut self, msg: Internal) {
@@ -568,6 +654,7 @@ impl Actor {
             Internal::OpFinished { hash, what, result } => {
                 self.busy.remove(&hash);
                 self.static_info.remove(&hash);
+                self.maybe_apply_deferred();
                 match result {
                     Ok(()) => {
                         let msg = match what {
@@ -582,16 +669,17 @@ impl Actor {
             }
             Internal::Deleted { hash, result } => {
                 self.busy.remove(&hash);
-                match result {
-                    Ok(()) => {
-                        self.store.remove(&hash);
-                        self.static_info.remove(&hash);
-                        self.torrent_history.remove(&hash);
-                        self.store.maybe_save(true);
-                        self.emit(EngineEvent::Removed { hash });
-                    }
-                    Err(e) => self.toast(ToastKind::Error, format!("Delete failed: {e}")),
+                let gone = self.handle_for(&hash).is_none();
+                if let Err(e) = &result {
+                    self.toast(ToastKind::Error, format!("Delete failed: {e}"));
                 }
+                // librqbit forgets the torrent before touching files, so it may be gone despite an error.
+                if result.is_ok() || gone {
+                    self.forget_hash(&hash);
+                    self.store.maybe_save(true);
+                    self.emit(EngineEvent::Removed { hash });
+                }
+                self.maybe_apply_deferred();
             }
         }
     }
@@ -659,6 +747,25 @@ impl Actor {
                 continue;
             }
             views.push(pending_view(p));
+        }
+
+        if self.tick_count % 20 == 10 && self.engine_state == EngineState::Running {
+            let pending: HashSet<InfoHash> = self.pending.values().map(|p| p.hash).collect();
+            let orphans: Vec<InfoHash> = self
+                .store
+                .data
+                .torrents
+                .keys()
+                .filter(|h| !present.contains(h) && !pending.contains(h) && !self.busy.contains_key(h))
+                .copied()
+                .collect();
+            if !orphans.is_empty() {
+                tracing::info!("pruning {} stale store entries", orphans.len());
+                for h in orphans {
+                    self.forget_hash(&h);
+                }
+                self.store.normalize_queue();
+            }
         }
 
         self.store.data.stats.all_time_downloaded += total_dd;
@@ -763,16 +870,20 @@ impl Actor {
             && self.last_down_active.get(&hash).map(|t| t.elapsed() > STALL_AFTER).unwrap_or(false);
 
         let name_engine = h.name();
-        let m = self.store.meta_mut(hash);
+        let m = self.store.meta_quiet(hash);
+        let mut structural = false;
+        let mut counters = false;
         if let Some(f) = fetched {
             let (du, dd) = m.absorb_counters(stats.uploaded_bytes, f);
             *total_du += du;
             *total_dd += dd;
+            counters = du > 0 || dd > 0;
         }
         if let Some(n) = &name_engine
             && m.name != *n
         {
             m.name = n.clone();
+            structural = true;
         }
         if down_bps > 0 || up_bps > 0 {
             m.last_activity = now;
@@ -785,10 +896,12 @@ impl Actor {
             if m.completed_at.is_none() {
                 m.completed_at = Some(now);
                 completed_event = self.seen_unfinished.contains(&hash);
+                structural = true;
             }
         } else if is_live && !stats.finished && m.completed_at.is_some() {
             // More files were selected after completion.
             m.completed_at = None;
+            structural = true;
         }
 
         let state = match &stats.state {
@@ -809,10 +922,20 @@ impl Actor {
             let carry = self.seed_carry_ms.entry(hash).or_insert(0);
             *carry += elapsed.as_millis() as u64;
             if *carry >= 1000 {
-                m.seeding_seconds += *carry / 1000;
+                let secs = *carry / 1000;
+                m.seeding_seconds += secs;
+                // Inactivity only accrues while actually seeding, never while Corrent is closed.
+                m.inactive_seeding_secs = if up_bps > 0 { 0 } else { m.inactive_seeding_secs + secs };
                 *carry %= 1000;
+                counters = true;
             }
         }
+        if structural {
+            self.store.mark_dirty();
+        } else if counters {
+            self.store.mark_soft_dirty();
+        }
+        let m = self.store.meta_quiet(hash);
 
         let size = stats.total_bytes;
         let done = stats.progress_bytes.min(size);
@@ -1060,10 +1183,15 @@ impl Actor {
                 TorrentState::Downloading | TorrentState::Stalled | TorrentState::Seeding | TorrentState::Metadata
             );
             let finished = v.completed_at.is_some() && v.done >= v.size;
-            let slow = q.ignore_slow
-                && running
-                && v.down_bps < q.slow_down_kib as u64 * 1024
-                && v.up_bps < q.slow_up_kib as u64 * 1024;
+            let slow_now = running && v.down_bps < q.slow_down_kib as u64 * 1024 && v.up_bps < q.slow_up_kib as u64 * 1024;
+            let slow_for = if slow_now {
+                self.slow_since.entry(v.hash).or_insert_with(Instant::now).elapsed()
+            } else {
+                self.slow_since.remove(&v.hash);
+                Duration::ZERO
+            };
+            let settled = self.resumed_at.get(&v.hash).is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
+            let slow = q.ignore_slow && slow_now && slow_for >= Duration::from_secs(60) && settled;
             if running && slow {
                 continue; // inactive torrents don't occupy a slot
             }
@@ -1087,6 +1215,7 @@ impl Actor {
         }
         for hash in &to_resume {
             self.store.meta_mut(*hash).pause_reason = None;
+            self.resumed_at.insert(*hash, Instant::now());
         }
         let find = |hash: &InfoHash| handles.iter().find(|(_, h)| h.info_hash().0 == hash.0).map(|(_, h)| h.clone());
         let pause: Vec<_> = to_pause.iter().filter_map(find).collect();
@@ -1103,7 +1232,6 @@ impl Actor {
 
     fn run_seed_limits(&mut self, views: &[TorrentView]) {
         let s = self.settings.seeding.clone();
-        let now = now_unix();
         let mut actions = Vec::new();
         for v in views.iter().filter(|v| v.state == TorrentState::Seeding) {
             let Some(m) = self.store.get(&v.hash) else { continue };
@@ -1125,11 +1253,8 @@ impl Actor {
             {
                 reason = Some(format!("seeded for {}", crate::util::fmt_duration(Duration::from_secs(t as u64 * 60))));
             }
-            if s.inactive_enabled {
-                let last = m.last_upload_at.max(m.completed_at.unwrap_or(0));
-                if last > 0 && now - last >= s.inactive_minutes as i64 * 60 {
-                    reason = Some("was inactive".to_string());
-                }
+            if s.inactive_enabled && s.inactive_minutes > 0 && m.inactive_seeding_secs >= s.inactive_minutes as u64 * 60 {
+                reason = Some("was inactive".to_string());
             }
             if let Some(r) = reason {
                 actions.push((v.hash, v.name.clone(), r));
@@ -1339,8 +1464,10 @@ async fn readd(
     multi: bool,
     move_to: Option<PathBuf>,
     extra_trackers: Option<Vec<String>>,
+    backup_dir: PathBuf,
 ) -> anyhow::Result<()> {
     let id = h.id();
+    let hash = InfoHash(h.info_hash().0);
     let bytes = h.with_metadata(|m| m.torrent_bytes.to_vec())?;
     let only_files = h.only_files();
     let paused = h.is_paused();
@@ -1364,6 +1491,10 @@ async fn readd(
     }
     let file_list: Vec<PathBuf> = h.with_metadata(|m| m.file_infos.iter().map(|f| f.relative_filename.clone()).collect())?;
     drop(h);
+    // Keep a copy of the metainfo until the torrent is safely back in the session.
+    let backup = backup_dir.join(format!("{}.torrent", hash.to_hex()));
+    let _ = std::fs::create_dir_all(&backup_dir);
+    let _ = std::fs::write(&backup, &bytes);
     sess.delete(TorrentIdOrHash::Id(id), false).await?;
 
     let mut move_err = None;
@@ -1374,39 +1505,68 @@ async fn readd(
             move_err = Some(e);
         }
     }
-    let output = if move_err.is_some() { old_output } else { new_output };
-    let opts = AddTorrentOptions {
-        paused,
-        only_files,
-        output_folder: Some(output.to_string_lossy().into_owned()),
-        overwrite: true,
-        preferred_id: Some(id),
-        trackers: Some(trackers),
-        ..Default::default()
+    let target = if move_err.is_some() { old_output.clone() } else { new_output };
+    let add_at = |output: &Path| {
+        let opts = AddTorrentOptions {
+            paused,
+            only_files: only_files.clone(),
+            output_folder: Some(output.to_string_lossy().into_owned()),
+            overwrite: true,
+            preferred_id: Some(id),
+            trackers: Some(trackers.clone()),
+            ..Default::default()
+        };
+        sess.add_torrent(AddTorrent::from_bytes(bytes.clone()), Some(opts))
     };
-    sess.add_torrent(AddTorrent::from_bytes(bytes), Some(opts)).await?;
+    if let Err(e) = add_at(&target).await {
+        // Never lose the torrent: fall back to its previous location.
+        if target != old_output && add_at(&old_output).await.is_ok() {
+            let _ = std::fs::remove_file(&backup);
+            return Err(e.context("could not use the new location; the torrent was kept where it was"));
+        }
+        return Err(e.context(format!("the torrent could not be re-added; its metainfo is saved at {}", backup.display())));
+    }
+    let _ = std::fs::remove_file(&backup);
     if let Some(e) = move_err {
         return Err(e.context("moving files failed; the torrent was kept at its old location"));
     }
     Ok(())
 }
 
+/// Move a torrent's files. On failure, files already moved are moved back so the data is never split.
 fn move_files(from: &Path, to: &Path, files: &[PathBuf]) -> anyhow::Result<()> {
+    fn move_one(src: &Path, dst: &Path) -> anyhow::Result<()> {
+        if let Some(p) = dst.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        if std::fs::rename(src, dst).is_err() {
+            // Different volume: copy then remove.
+            std::fs::copy(src, dst).with_context(|| format!("copying {}", src.display()))?;
+            std::fs::remove_file(src)?;
+        }
+        Ok(())
+    }
     std::fs::create_dir_all(to)?;
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     for rel in files {
         let src = from.join(rel);
         if !src.exists() {
             continue;
         }
         let dst = to.join(rel);
-        if let Some(p) = dst.parent() {
-            std::fs::create_dir_all(p)?;
+        if let Err(e) = move_one(&src, &dst) {
+            // A partial copy is discarded; the original is still in place.
+            if src.exists() {
+                let _ = std::fs::remove_file(&dst);
+            }
+            for (s, d) in moved.iter().rev() {
+                if let Err(e2) = move_one(d, s) {
+                    tracing::error!("could not move {} back: {e2:#}", d.display());
+                }
+            }
+            return Err(e);
         }
-        if std::fs::rename(&src, &dst).is_err() {
-            // Different volume: copy then remove.
-            std::fs::copy(&src, &dst).with_context(|| format!("copying {}", src.display()))?;
-            std::fs::remove_file(&src)?;
-        }
+        moved.push((src, dst));
     }
     // Remove now-empty directories left behind (best effort).
     let mut dirs: Vec<PathBuf> = files.iter().filter_map(|f| f.parent().map(|p| from.join(p))).collect();

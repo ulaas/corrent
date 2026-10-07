@@ -280,7 +280,11 @@ impl CorrentApp {
                         context_target = Some(t.hash);
                     }
                     resp.context_menu(|ui| {
-                        if !t.pending {
+                        if t.pending {
+                            if ui.button(format!("{}  Cancel", icons::X_CIRCLE)).clicked() {
+                                self.engine.send(crate::engine::EngineCommand::CancelAdd(t.hash));
+                            }
+                        } else {
                             self.context_menu(ui, p);
                         }
                     });
