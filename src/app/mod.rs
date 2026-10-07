@@ -13,6 +13,8 @@ mod statusbar;
 mod table;
 mod toasts;
 mod toolbar;
+mod tray;
+mod window;
 
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
@@ -285,6 +287,8 @@ pub struct CorrentApp {
     pub file_filter: String,
     pub show_all_peers: bool,
     pub speed_scope_torrent: bool,
+    tray: Option<tray::Tray>,
+    tray_failed: bool,
     #[cfg(debug_assertions)]
     dev_done: bool,
 }
@@ -342,10 +346,18 @@ impl CorrentApp {
             file_filter: String::new(),
             show_all_peers: false,
             speed_scope_torrent: true,
+            tray: None,
+            tray_failed: false,
             #[cfg(debug_assertions)]
             dev_done: false,
         }
         .init_integration()
+        .with_tray(&cc.egui_ctx)
+    }
+
+    fn with_tray(mut self, ctx: &Context) -> Self {
+        self.init_tray(ctx);
+        self
     }
 
     pub fn palette(&self, ctx: &Context) -> Palette {
@@ -392,9 +404,15 @@ impl CorrentApp {
                 EngineEvent::Toast(kind, text) => self.toasts.push(kind, text),
                 EngineEvent::Added { name, .. } => {
                     self.toasts.push(ToastKind::Success, format!("Added “{name}”"));
+                    if self.settings.behavior.notify_on_add && self.window_hidden {
+                        self.notify("Torrent added", &name);
+                    }
                 }
-                EngineEvent::Completed { name, .. } => {
+                EngineEvent::Completed { name, size, .. } => {
                     self.toasts.push(ToastKind::Success, format!("Download complete: “{name}”"));
+                    if self.settings.behavior.notify_on_complete {
+                        self.notify("Download complete", &format!("{name} ({})", crate::util::fmt_bytes(size)));
+                    }
                 }
                 EngineEvent::Removed { hash } => {
                     self.selected.remove(&hash);
@@ -455,6 +473,7 @@ impl eframe::App for CorrentApp {
         self.dev_hooks(ctx);
         self.drain_ipc(ctx);
         self.drain_events(ctx);
+        self.window_logic(ctx);
         self.process_launch_queue();
     }
 

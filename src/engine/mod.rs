@@ -2,6 +2,7 @@
 //! [`EngineCommand`]s and reads immutable [`Snapshot`]s, so the UI thread never blocks on I/O.
 
 mod actor;
+mod automation;
 mod session;
 pub mod types;
 

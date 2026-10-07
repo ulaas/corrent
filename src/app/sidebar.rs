@@ -70,7 +70,7 @@ impl Counts {
 }
 
 /// One sidebar row: icon, label, count pill; selected rows get an accent bar.
-fn row(ui: &mut Ui, p: &Palette, icon: &str, icon_color: Color32, label: &str, count: usize, selected: bool) -> egui::Response {
+pub(super) fn row(ui: &mut Ui, p: &Palette, icon: &str, icon_color: Color32, label: &str, count: Option<usize>, selected: bool) -> egui::Response {
     let h = 28.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id.with("hov"), resp.hovered() || selected, 0.12);
@@ -94,7 +94,7 @@ fn row(ui: &mut Ui, p: &Palette, icon: &str, icon_color: Color32, label: &str, c
     job.wrap = egui::text::TextWrapping { max_width: max_w.max(10.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
     let galley = ui.painter().layout_job(job);
     ui.painter().galley(rect.left_center() + vec2(36.0, -galley.size().y / 2.0), galley, text_color);
-    if count > 0 || selected {
+    if let Some(count) = count.filter(|c| *c > 0 || selected) {
         let txt = count.to_string();
         let g = ui.painter().layout_no_wrap(txt, egui::FontId::proportional(11.0), if selected { p.accent } else { p.text_dim });
         let pill = egui::Rect::from_center_size(
@@ -146,7 +146,7 @@ impl CorrentApp {
                     StatusFilter::Downloading => p.accent,
                     _ => p.text_dim,
                 };
-                if row(ui, p, f.icon(), color, f.label(), count, self.prefs.status_filter == *f).clicked() {
+                if row(ui, p, f.icon(), color, f.label(), Some(count), self.prefs.status_filter == *f).clicked() {
                     self.prefs.status_filter = *f;
                 }
             }
@@ -156,10 +156,10 @@ impl CorrentApp {
                 self.open_new_category(None);
             }
             let total = self.snap.torrents.len();
-            if row(ui, p, icons::FOLDERS, p.text_dim, "All", total, self.prefs.category_filter == GroupFilter::All).clicked() {
+            if row(ui, p, icons::FOLDERS, p.text_dim, "All", Some(total), self.prefs.category_filter == GroupFilter::All).clicked() {
                 self.prefs.category_filter = GroupFilter::All;
             }
-            if row(ui, p, icons::FOLDER_DASHED, p.text_dim, "Uncategorized", self.counts.uncategorized, self.prefs.category_filter == GroupFilter::None).clicked() {
+            if row(ui, p, icons::FOLDER_DASHED, p.text_dim, "Uncategorized", Some(self.counts.uncategorized), self.prefs.category_filter == GroupFilter::None).clicked() {
                 self.prefs.category_filter = GroupFilter::None;
             }
             let cats: Vec<(String, usize)> = self.counts.categories.iter().map(|(k, v)| (k.clone(), *v)).collect();
@@ -169,7 +169,7 @@ impl CorrentApp {
                 ui.horizontal(|ui| {
                     ui.add_space(depth as f32 * 14.0);
                     let sel = self.prefs.category_filter == GroupFilter::Named(c.clone());
-                    let r = row(ui, p, icons::FOLDER_SIMPLE, p.warn, &label, n, sel);
+                    let r = row(ui, p, icons::FOLDER_SIMPLE, p.warn, &label, Some(n), sel);
                     if r.clicked() {
                         self.prefs.category_filter = GroupFilter::Named(c.clone());
                     }
@@ -199,16 +199,16 @@ impl CorrentApp {
             if section(ui, p, "Tags", Some("New tag…")) {
                 self.open_new_tag(None);
             }
-            if row(ui, p, icons::TAG, p.text_dim, "All", total, self.prefs.tag_filter == GroupFilter::All).clicked() {
+            if row(ui, p, icons::TAG, p.text_dim, "All", Some(total), self.prefs.tag_filter == GroupFilter::All).clicked() {
                 self.prefs.tag_filter = GroupFilter::All;
             }
-            if row(ui, p, icons::TAG_SIMPLE, p.text_dim, "Untagged", self.counts.untagged, self.prefs.tag_filter == GroupFilter::None).clicked() {
+            if row(ui, p, icons::TAG_SIMPLE, p.text_dim, "Untagged", Some(self.counts.untagged), self.prefs.tag_filter == GroupFilter::None).clicked() {
                 self.prefs.tag_filter = GroupFilter::None;
             }
             let tags: Vec<(String, usize)> = self.counts.tags.iter().map(|(k, v)| (k.clone(), *v)).collect();
             for (tag, n) in tags {
                 let sel = self.prefs.tag_filter == GroupFilter::Named(tag.clone());
-                let r = row(ui, p, icons::HASH, p.queued, &tag, n, sel);
+                let r = row(ui, p, icons::HASH, p.queued, &tag, Some(n), sel);
                 if r.clicked() {
                     self.prefs.tag_filter = GroupFilter::Named(tag.clone());
                 }
@@ -226,18 +226,18 @@ impl CorrentApp {
             if !self.counts.trackers.is_empty() {
                 ui.add_space(10.0);
                 section(ui, p, "Trackers", None);
-                if row(ui, p, icons::GLOBE, p.text_dim, "All", total, self.prefs.tracker_filter == GroupFilter::All).clicked() {
+                if row(ui, p, icons::GLOBE, p.text_dim, "All", Some(total), self.prefs.tracker_filter == GroupFilter::All).clicked() {
                     self.prefs.tracker_filter = GroupFilter::All;
                 }
                 if self.counts.trackerless > 0
-                    && row(ui, p, icons::GLOBE_X, p.text_dim, "Trackerless", self.counts.trackerless, self.prefs.tracker_filter == GroupFilter::None).clicked()
+                    && row(ui, p, icons::GLOBE_X, p.text_dim, "Trackerless", Some(self.counts.trackerless), self.prefs.tracker_filter == GroupFilter::None).clicked()
                 {
                     self.prefs.tracker_filter = GroupFilter::None;
                 }
                 let trackers: Vec<(String, usize)> = self.counts.trackers.iter().map(|(k, v)| (k.clone(), *v)).collect();
                 for (host, n) in trackers {
                     let sel = self.prefs.tracker_filter == GroupFilter::Named(host.clone());
-                    if row(ui, p, icons::BROADCAST, p.text_dim, &host, n, sel).clicked() {
+                    if row(ui, p, icons::BROADCAST, p.text_dim, &host, Some(n), sel).clicked() {
                         self.prefs.tracker_filter = GroupFilter::Named(host);
                     }
                 }

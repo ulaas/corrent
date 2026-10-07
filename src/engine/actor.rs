@@ -83,6 +83,7 @@ pub struct Actor {
     free_space: Option<u64>,
     session_down_total: u64,
     session_up_total: u64,
+    watch: super::automation::WatchState,
 }
 
 impl Actor {
@@ -131,6 +132,7 @@ impl Actor {
             free_space: None,
             session_down_total: 0,
             session_up_total: 0,
+            watch: Default::default(),
         }
     }
 
@@ -495,8 +497,9 @@ impl Actor {
             PendingAdd { name: req.source.describe(), hash, started: now_unix(), save_path: req.save_path.clone() },
         );
         let tx = self.internal_tx.clone();
+        let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
         tokio::spawn(async move {
-            let result = add(&sess, &req).await.map_err(|e| format!("{e:#}"));
+            let result = add(&sess, &req, peer_limit).await.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Internal::AddFinished { pending, req, result });
         });
     }
@@ -604,6 +607,29 @@ impl Actor {
 
         if self.tick_count % 20 == 1 {
             self.free_space = free_space(&self.settings.downloads.save_path);
+        }
+        if self.tick_count % 6 == 3 && !self.settings.watch.is_empty() && self.session.is_some() {
+            for hit in self.watch.poll(&self.settings.watch) {
+                let category = hit.folder.category.clone();
+                let save_path = hit
+                    .folder
+                    .save_path
+                    .clone()
+                    .or_else(|| category.as_ref().and_then(|c| self.store.data.categories.get(c)).and_then(|c| c.save_path.clone()))
+                    .unwrap_or_else(|| self.settings.downloads.save_path.clone());
+                tracing::info!("watch folder: adding {}", hit.source.describe());
+                self.start_add(Box::new(AddRequest {
+                    source: hit.source,
+                    torrent_bytes: None,
+                    save_path,
+                    create_subfolder: self.settings.downloads.create_subfolder,
+                    category,
+                    tags: Vec::new(),
+                    paused: hit.folder.start_paused,
+                    only_files: None,
+                    add_to_top: false,
+                }));
+            }
         }
 
         let Some(sess) = self.session.clone() else {
@@ -861,6 +887,10 @@ impl Actor {
         hist.push_back((down_bps, up_bps));
 
         if completed_event {
+            let b = &self.settings.behavior;
+            if b.run_on_complete_enabled && !b.run_on_complete.trim().is_empty() {
+                super::automation::run_on_complete(&b.run_on_complete, &view);
+            }
             let save = view.save_path.clone();
             self.emit(EngineEvent::Completed { hash, name, content_path, save_path: save, size });
         }
@@ -1272,7 +1302,7 @@ pub fn sanitize_name(name: &str) -> String {
     if trimmed.is_empty() { "torrent".into() } else { trimmed }
 }
 
-async fn add(sess: &Arc<Session>, req: &AddRequest) -> anyhow::Result<(InfoHash, String)> {
+async fn add(sess: &Arc<Session>, req: &AddRequest, peer_limit: Option<usize>) -> anyhow::Result<(InfoHash, String)> {
     let bytes = match &req.torrent_bytes {
         Some(b) => b.clone(),
         None => fetch_torrent_bytes(sess, &req.source).await?,
@@ -1291,6 +1321,7 @@ async fn add(sess: &Arc<Session>, req: &AddRequest) -> anyhow::Result<(InfoHash,
         only_files: req.only_files.clone(),
         output_folder: Some(output.to_string_lossy().into_owned()),
         overwrite: true,
+        peer_limit,
         ..Default::default()
     };
     match sess.add_torrent(AddTorrent::from_bytes(bytes), Some(opts)).await? {
