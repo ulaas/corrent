@@ -205,7 +205,7 @@ fn style(s: &mut egui::Style, p: &Palette, a: &Appearance) {
         Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(if p.dark { 110 } else { 40 }) };
     v.popup_shadow =
         Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(if p.dark { 80 } else { 30 }) };
-    v.selection = Selection { bg_fill: p.accent.gamma_multiply(0.35), stroke: Stroke::new(1.0, p.text) };
+    v.selection = Selection { bg_fill: p.accent.gamma_multiply(if p.dark { 0.35 } else { 0.2 }), stroke: Stroke::new(1.0, p.text) };
     v.striped = false;
     v.slider_trailing_fill = true;
     v.handle_shape = HandleShape::Circle;

@@ -838,6 +838,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "arc-swap",
+ "aws-lc-rs",
  "bytes",
  "directories",
  "eframe",

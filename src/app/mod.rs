@@ -4,6 +4,7 @@ mod actions;
 mod details;
 mod dialogs;
 mod dnd;
+mod extras;
 pub mod icon;
 mod integration_ui;
 pub mod log;
@@ -289,6 +290,8 @@ pub struct CorrentApp {
     pub speed_scope_torrent: bool,
     tray: Option<tray::Tray>,
     tray_failed: bool,
+    pub extras: extras::Extras,
+    icon_tex: Option<egui::TextureHandle>,
     #[cfg(debug_assertions)]
     dev_done: bool,
 }
@@ -348,6 +351,8 @@ impl CorrentApp {
             speed_scope_torrent: true,
             tray: None,
             tray_failed: false,
+            extras: Default::default(),
+            icon_tex: None,
             #[cfg(debug_assertions)]
             dev_done: false,
         }
@@ -518,6 +523,7 @@ impl eframe::App for CorrentApp {
             });
 
         self.drag_and_drop(&ctx, &p);
+        self.extra_windows(&ctx, &p);
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);
         self.shortcuts(&ctx);
@@ -565,6 +571,9 @@ impl CorrentApp {
             match w.as_str() {
                 "settings" => self.open_settings(),
                 "magnet" => self.open_magnet_dialog(),
+                "about" => self.extras.about = true,
+                "log" => self.extras.log = true,
+                "stats" => self.extras.stats = true,
                 _ => {}
             }
         }

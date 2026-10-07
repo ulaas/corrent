@@ -44,6 +44,8 @@ strip = true
 
 [target."cfg(windows)".dependencies]
 windows-registry = "0.6"
+# Lets Windows builds succeed without NASM installed (prebuilt objects are used instead).
+aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # ksni: pure-Rust StatusNotifierItem tray over D-Bus (no GTK needed at build or run time).

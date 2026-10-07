@@ -52,6 +52,7 @@ impl CorrentApp {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                self.overflow_menu(ui, p);
                 if icon_button(ui, p, icons::GEAR_SIX, "Settings (Ctrl+,)", true).clicked() {
                     self.open_settings();
                 }
