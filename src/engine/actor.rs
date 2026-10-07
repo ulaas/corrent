@@ -26,6 +26,8 @@ enum Internal {
     PreviewFinished { req: u64 },
     OpFinished { hash: InfoHash, what: &'static str, result: Result<(), String> },
     Deleted { hash: InfoHash, result: Result<(), String> },
+    RestoreReport(Vec<super::restore::FailedRestore>),
+    RestoreRetried { hash: InfoHash, result: Result<(), String>, quiet: bool },
 }
 
 struct PendingAdd {
@@ -89,6 +91,9 @@ pub struct Actor {
     slow_since: HashMap<InfoHash, Instant>,
     resumed_at: HashMap<InfoHash, Instant>,
     deferred_settings: Option<Box<Settings>>,
+    failed: HashMap<InfoHash, super::restore::FailedRestore>,
+    /// Pruning the store waits until failed restores have been identified.
+    restore_checked: bool,
 }
 
 impl Actor {
@@ -142,6 +147,8 @@ impl Actor {
             slow_since: HashMap::new(),
             resumed_at: HashMap::new(),
             deferred_settings: None,
+            failed: HashMap::new(),
+            restore_checked: false,
         }
     }
 
@@ -180,6 +187,7 @@ impl Actor {
     async fn start_session(&mut self) {
         self.engine_state = if self.session.is_some() { EngineState::Restarting } else { EngineState::Starting };
         self.publish();
+        self.purge_pending();
         let mut last_err = String::new();
         for attempt in 0..3 {
             match session::create(&self.paths, &self.settings, self.alt).await {
@@ -193,6 +201,7 @@ impl Actor {
                     self.engine_state = EngineState::Running;
                     self.apply_rate_limits();
                     tracing::info!("engine session started");
+                    self.detect_failed_restores();
                     self.publish();
                     return;
                 }
@@ -227,6 +236,7 @@ impl Actor {
         }
         self.store.maybe_save(true);
         self.stop_session().await;
+        self.purge_pending();
         self.store.maybe_save(true);
     }
 
@@ -303,12 +313,20 @@ impl Actor {
             }
             EngineCommand::Resume(hashes) => {
                 for h in hashes {
-                    self.resume(h, false).await;
+                    if self.failed.contains_key(&h) {
+                        self.retry_failed(h);
+                    } else {
+                        self.resume(h, false).await;
+                    }
                 }
             }
             EngineCommand::ForceStart(hashes) => {
                 for h in hashes {
-                    self.resume(h, true).await;
+                    if self.failed.contains_key(&h) {
+                        self.retry_failed(h);
+                    } else {
+                        self.resume(h, true).await;
+                    }
                 }
             }
             EngineCommand::PauseAll => {
@@ -325,7 +343,18 @@ impl Actor {
             }
             EngineCommand::Delete { hashes, with_data } => {
                 for hash in hashes {
-                    self.delete(hash, with_data);
+                    if self.failed.remove(&hash).is_some() {
+                        // The engine never loaded it; drop it from its database on the next stop.
+                        self.store.data.purge.push(hash);
+                        self.forget_hash(&hash);
+                        self.store.maybe_save(true);
+                        self.emit(EngineEvent::Removed { hash });
+                        if with_data {
+                            self.toast(ToastKind::Info, "The torrent was removed; its files were left in place because they couldn't be opened.");
+                        }
+                    } else {
+                        self.delete(hash, with_data);
+                    }
                 }
             }
             EngineCommand::SetFiles { hash, included } => {
@@ -590,6 +619,58 @@ impl Actor {
         });
     }
 
+    /// Drop queued entries from the engine database. Only call while no session is running.
+    fn purge_pending(&mut self) {
+        if self.store.data.purge.is_empty() {
+            return;
+        }
+        let set: HashSet<InfoHash> = self.store.data.purge.drain(..).collect();
+        super::restore::purge(&self.paths.session_dir(), &set);
+        self.store.mark_dirty();
+        self.store.maybe_save(true);
+    }
+
+    fn detect_failed_restores(&mut self) {
+        self.restore_checked = false;
+        let Some(sess) = self.session.clone() else { return };
+        let dir = self.paths.session_dir();
+        let tx = self.internal_tx.clone();
+        let skip: HashSet<InfoHash> = self.store.data.purge.iter().copied().collect();
+        tokio::spawn(async move {
+            let mut failed = Vec::new();
+            for mut f in super::restore::persisted_entries(&dir) {
+                if skip.contains(&f.hash) || sess.get(TorrentIdOrHash::Hash(Id20::new(f.hash.0))).is_some() {
+                    continue;
+                }
+                // One retry captures the actual error (and fixes transient failures).
+                match super::restore::retry(&sess, &dir, &f).await {
+                    Ok(()) => tracing::info!("restored {} on retry", f.hash.to_hex()),
+                    Err(e) => {
+                        tracing::warn!("torrent {} could not be loaded: {e}", f.hash.to_hex());
+                        f.error = e;
+                        failed.push(f);
+                    }
+                }
+            }
+            let _ = tx.send(Internal::RestoreReport(failed));
+        });
+    }
+
+    fn retry_failed(&mut self, hash: InfoHash) {
+        self.retry_failed_inner(hash, false);
+    }
+
+    fn retry_failed_inner(&mut self, hash: InfoHash, quiet: bool) {
+        let (Some(sess), Some(f)) = (self.session.clone(), self.failed.get(&hash).cloned()) else { return };
+        let dir = self.paths.session_dir();
+        let tx = self.internal_tx.clone();
+        self.busy.insert(hash, "Retrying…".into());
+        tokio::spawn(async move {
+            let result = super::restore::retry(&sess, &dir, &f).await;
+            let _ = tx.send(Internal::RestoreRetried { hash, result, quiet });
+        });
+    }
+
     fn forget_hash(&mut self, hash: &InfoHash) {
         self.store.remove(hash);
         self.static_info.remove(hash);
@@ -667,6 +748,34 @@ impl Actor {
                     Err(e) => self.toast(ToastKind::Error, format!("Operation failed: {e}")),
                 }
             }
+            Internal::RestoreReport(list) => {
+                if !list.is_empty() {
+                    let n = list.len();
+                    self.toast(
+                        ToastKind::Error,
+                        if n == 1 { "A torrent could not be loaded — see its error in the list.".to_string() } else { format!("{n} torrents could not be loaded — see their errors in the list.") },
+                    );
+                }
+                self.failed = list.into_iter().map(|f| (f.hash, f)).collect();
+                self.restore_checked = true;
+            }
+            Internal::RestoreRetried { hash, result, quiet } => {
+                self.busy.remove(&hash);
+                match result {
+                    Ok(()) => {
+                        self.failed.remove(&hash);
+                        self.toast(ToastKind::Success, "Torrent loaded.");
+                    }
+                    Err(e) => {
+                        if let Some(f) = self.failed.get_mut(&hash) {
+                            f.error = e;
+                        }
+                        if !quiet {
+                            self.toast(ToastKind::Error, "Still can't load the torrent — see the error in the list.");
+                        }
+                    }
+                }
+            }
             Internal::Deleted { hash, result } => {
                 self.busy.remove(&hash);
                 let gone = self.handle_for(&hash).is_none();
@@ -692,6 +801,13 @@ impl Actor {
         self.tick_count += 1;
 
         self.run_schedule();
+        // Files blocked by antivirus or another program are often released later.
+        if self.tick_count % 120 == 60 && !self.failed.is_empty() {
+            let hashes: Vec<InfoHash> = self.failed.keys().filter(|h| !self.busy.contains_key(h)).copied().collect();
+            for h in hashes {
+                self.retry_failed_inner(h, true);
+            }
+        }
 
         if self.tick_count % 20 == 1 {
             self.free_space = free_space(&self.settings.downloads.save_path);
@@ -741,6 +857,13 @@ impl Actor {
             views.push(v);
         }
 
+        for f in self.failed.values() {
+            if !present.contains(&f.hash) {
+                present.insert(f.hash);
+                views.push(failed_view(f, self.store.get(&f.hash)));
+            }
+        }
+
         // Torrents being resolved (magnets) are shown as placeholder rows.
         for p in self.pending.values() {
             if present.contains(&p.hash) {
@@ -749,7 +872,7 @@ impl Actor {
             views.push(pending_view(p));
         }
 
-        if self.tick_count % 20 == 10 && self.engine_state == EngineState::Running {
+        if self.tick_count % 20 == 10 && self.engine_state == EngineState::Running && self.restore_checked {
             let pending: HashSet<InfoHash> = self.pending.values().map(|p| p.hash).collect();
             let orphans: Vec<InfoHash> = self
                 .store
@@ -1001,6 +1124,7 @@ impl Actor {
             last_activity: m.last_activity,
             seeding_secs: m.seeding_seconds,
             pending: false,
+            restore_failed: false,
         };
 
         let hist = self.torrent_history.entry(hash).or_default();
@@ -1324,7 +1448,36 @@ fn pending_view(p: &PendingAdd) -> TorrentView {
         last_activity: 0,
         seeding_secs: 0,
         pending: true,
+        restore_failed: false,
     }
+}
+
+fn failed_view(f: &super::restore::FailedRestore, m: Option<&crate::store::TorrentMeta>) -> TorrentView {
+    let name = m
+        .and_then(|m| m.display_name.clone().or_else(|| (!m.name.is_empty()).then(|| m.name.clone())))
+        .unwrap_or_else(|| f.hash.to_hex());
+    let mut v = pending_view(&PendingAdd {
+        name,
+        hash: f.hash,
+        started: m.map(|m| m.added_at).unwrap_or(0),
+        save_path: f.output_folder.clone(),
+        task: None,
+    });
+    v.state = TorrentState::Error;
+    v.error = Some(f.error.clone());
+    v.busy = None;
+    v.pending = false;
+    v.restore_failed = true;
+    v.id = f.id;
+    if let Some(m) = m {
+        v.category = m.category.clone();
+        v.tags = m.tags.clone();
+        v.queue_pos = m.queue_pos;
+        v.uploaded = m.uploaded_total;
+        v.downloaded = m.downloaded_total;
+        v.completed_at = m.completed_at;
+    }
+    v
 }
 
 fn si_total(h: &ManagedTorrent) -> Option<u64> {

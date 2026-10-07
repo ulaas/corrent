@@ -24,8 +24,9 @@ impl CorrentApp {
         let single = sel.len() == 1;
         let first = sel[0].clone();
 
+        let label = if sel.iter().all(|t| t.restore_failed) { "Retry" } else { "Resume" };
         if sel.iter().any(|t| t.state.is_paused_like() || t.state == TorrentState::Error)
-            && item(ui, icons::PLAY, "Resume")
+            && item(ui, if label == "Retry" { icons::ARROW_CLOCKWISE } else { icons::PLAY }, label)
         {
             self.engine.send(EngineCommand::Resume(hashes.clone()));
         }

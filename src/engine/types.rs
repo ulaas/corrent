@@ -123,6 +123,8 @@ pub struct TorrentView {
     pub last_activity: i64,
     pub seeding_secs: u64,
     pub pending: bool,
+    /// The engine could not load this torrent at startup (see `error`).
+    pub restore_failed: bool,
 }
 
 impl TorrentView {

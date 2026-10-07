@@ -79,6 +79,9 @@ pub struct StoreData {
     pub categories: BTreeMap<String, CategoryInfo>,
     pub tags: Vec<String>,
     pub stats: GlobalStats,
+    /// Torrents to drop from the engine's database the next time it is stopped/started
+    /// (used for torrents the engine failed to restore and can't delete itself).
+    pub purge: Vec<InfoHash>,
 }
 
 pub struct Store {
