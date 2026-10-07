@@ -1,0 +1,227 @@
+//! Small helpers: atomic file writes, human-readable formatting, time.
+
+use std::io::Write;
+use std::path::Path;
+use std::time::Duration;
+
+use crate::config::SpeedUnits;
+
+/// Write a file atomically: write to a temp sibling, fsync, then rename over the target.
+/// The previous version is kept as `<name>.bak` so a crash mid-write never loses data.
+pub fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension(format!(
+        "{}.tmp",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("")
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+    }
+    if path.exists() {
+        let bak = path.with_extension(format!(
+            "{}.bak",
+            path.extension().and_then(|e| e.to_str()).unwrap_or("")
+        ));
+        let _ = std::fs::copy(path, bak);
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+pub fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+pub fn fmt_bytes(b: u64) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    if b < 1024 {
+        return format!("{b} B");
+    }
+    let mut v = b as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if v >= 100.0 {
+        format!("{v:.0} {}", UNITS[i])
+    } else if v >= 10.0 {
+        format!("{v:.1} {}", UNITS[i])
+    } else {
+        format!("{v:.2} {}", UNITS[i])
+    }
+}
+
+pub fn fmt_speed(bps: u64, units: SpeedUnits) -> String {
+    if bps == 0 {
+        return "—".into();
+    }
+    let (base, names): (f64, [&str; 5]) = match units {
+        SpeedUnits::Binary => (1024.0, ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"]),
+        SpeedUnits::Decimal => (1000.0, ["B/s", "kB/s", "MB/s", "GB/s", "TB/s"]),
+        SpeedUnits::Bits => (1000.0, ["bit/s", "kbit/s", "Mbit/s", "Gbit/s", "Tbit/s"]),
+    };
+    let mut v = if units == SpeedUnits::Bits { bps as f64 * 8.0 } else { bps as f64 };
+    let mut i = 0;
+    while v >= base && i < names.len() - 1 {
+        v /= base;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{v:.0} {}", names[i])
+    } else if v >= 100.0 {
+        format!("{v:.0} {}", names[i])
+    } else {
+        format!("{v:.1} {}", names[i])
+    }
+}
+
+pub fn fmt_duration(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 100 * 86400 {
+        return "∞".into();
+    }
+    let (days, h, m, sec) = (s / 86400, (s / 3600) % 24, (s / 60) % 60, s % 60);
+    if days > 0 {
+        format!("{days}d {h}h")
+    } else if h > 0 {
+        format!("{h}h {m:02}m")
+    } else if m > 0 {
+        format!("{m}m {sec:02}s")
+    } else {
+        format!("{sec}s")
+    }
+}
+
+pub fn fmt_date(ts: i64) -> String {
+    if ts <= 0 {
+        return "—".into();
+    }
+    // Civil-from-days (Howard Hinnant) in local-agnostic UTC; good enough for a list column.
+    let offset = local_offset_secs();
+    let t = ts + offset;
+    let days = t.div_euclid(86400);
+    let secs = t.rem_euclid(86400);
+    let (y, mo, d) = civil_from_days(days);
+    format!("{y:04}-{mo:02}-{d:02} {:02}:{:02}", secs / 3600, (secs / 60) % 60)
+}
+
+pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Local UTC offset in seconds, computed once.
+pub fn local_offset_secs() -> i64 {
+    use std::sync::OnceLock;
+    static OFF: OnceLock<i64> = OnceLock::new();
+    *OFF.get_or_init(|| {
+        #[cfg(windows)]
+        {
+            windows_offset().unwrap_or(0)
+        }
+        #[cfg(not(windows))]
+        {
+            unix_offset().unwrap_or(0)
+        }
+    })
+}
+
+#[cfg(not(windows))]
+fn unix_offset() -> Option<i64> {
+    // `date +%z` is available on Linux and macOS and avoids pulling a tz database.
+    let out = std::process::Command::new("date").arg("+%z").output().ok()?;
+    let s = String::from_utf8(out.stdout).ok()?;
+    let s = s.trim();
+    if s.len() != 5 {
+        return None;
+    }
+    let sign = if s.starts_with('-') { -1 } else { 1 };
+    let h: i64 = s[1..3].parse().ok()?;
+    let m: i64 = s[3..5].parse().ok()?;
+    Some(sign * (h * 3600 + m * 60))
+}
+
+#[cfg(windows)]
+fn windows_offset() -> Option<i64> {
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", "[int](Get-Date).ToUniversalTime().Subtract((Get-Date)).TotalSeconds"])
+        .creation_flags_no_window()
+        .output()
+        .ok()?;
+    let s = String::from_utf8(out.stdout).ok()?;
+    Some(-s.trim().parse::<i64>().ok()?)
+}
+
+#[cfg(windows)]
+trait NoWindow {
+    fn creation_flags_no_window(&mut self) -> &mut Self;
+}
+
+#[cfg(windows)]
+impl NoWindow for std::process::Command {
+    fn creation_flags_no_window(&mut self) -> &mut Self {
+        use std::os::windows::process::CommandExt;
+        self.creation_flags(0x0800_0000)
+    }
+}
+
+/// Minutes since local midnight and weekday (0 = Monday).
+pub fn local_minutes_and_weekday() -> (u16, u8) {
+    let t = now_unix() + local_offset_secs();
+    let days = t.div_euclid(86400);
+    let secs = t.rem_euclid(86400);
+    // 1970-01-01 was a Thursday (weekday 3 with Monday = 0).
+    let weekday = ((days + 3).rem_euclid(7)) as u8;
+    ((secs / 60) as u16, weekday)
+}
+
+pub fn fmt_ratio(r: f32) -> String {
+    if !r.is_finite() {
+        "∞".into()
+    } else {
+        format!("{r:.2}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formatting() {
+        assert_eq!(fmt_bytes(512), "512 B");
+        assert_eq!(fmt_bytes(1536), "1.50 KiB");
+        assert_eq!(fmt_speed(0, SpeedUnits::Binary), "—");
+        assert_eq!(fmt_speed(2048, SpeedUnits::Binary), "2.0 KiB/s");
+        assert_eq!(fmt_duration(Duration::from_secs(3725)), "1h 02m");
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(20000), (2024, 10, 4));
+    }
+
+    #[test]
+    fn atomic_write() {
+        let dir = std::env::temp_dir().join(format!("corrent-test-{}", std::process::id()));
+        let f = dir.join("x.json");
+        write_atomic(&f, b"one").unwrap();
+        write_atomic(&f, b"two").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"two");
+        assert_eq!(std::fs::read(dir.join("x.json.bak")).unwrap(), b"one");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

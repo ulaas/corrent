@@ -1,0 +1,344 @@
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::time::Duration;
+
+/// 20-byte BitTorrent v1 info hash, the stable identity of a torrent across restarts.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+pub struct InfoHash(pub [u8; 20]);
+
+impl InfoHash {
+    pub fn to_hex(&self) -> String {
+        let mut s = String::with_capacity(40);
+        for b in self.0 {
+            s.push_str(&format!("{b:02x}"));
+        }
+        s
+    }
+
+    pub fn from_hex(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.len() != 40 {
+            return None;
+        }
+        let mut out = [0u8; 20];
+        for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+            let hex = std::str::from_utf8(chunk).ok()?;
+            out[i] = u8::from_str_radix(hex, 16).ok()?;
+        }
+        Some(Self(out))
+    }
+}
+
+impl serde::Serialize for InfoHash {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for InfoHash {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        InfoHash::from_hex(&s).ok_or_else(|| serde::de::Error::custom("invalid info hash"))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum TorrentState {
+    /// Waiting for metadata from peers (magnet links).
+    Metadata,
+    Checking,
+    Downloading,
+    Stalled,
+    Seeding,
+    Completed,
+    Paused,
+    Queued,
+    Error,
+}
+
+impl TorrentState {
+    pub fn label(self) -> &'static str {
+        match self {
+            TorrentState::Metadata => "Fetching metadata",
+            TorrentState::Checking => "Checking",
+            TorrentState::Downloading => "Downloading",
+            TorrentState::Stalled => "Stalled",
+            TorrentState::Seeding => "Seeding",
+            TorrentState::Completed => "Completed",
+            TorrentState::Paused => "Paused",
+            TorrentState::Queued => "Queued",
+            TorrentState::Error => "Error",
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            TorrentState::Downloading | TorrentState::Seeding | TorrentState::Metadata | TorrentState::Checking
+        )
+    }
+
+    pub fn is_paused_like(self) -> bool {
+        matches!(self, TorrentState::Paused | TorrentState::Queued | TorrentState::Completed)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TorrentView {
+    pub id: usize,
+    pub hash: InfoHash,
+    pub name: String,
+    pub state: TorrentState,
+    pub error: Option<String>,
+    pub size: u64,
+    pub done: u64,
+    pub progress: f32,
+    pub uploaded: u64,
+    pub downloaded: u64,
+    pub down_bps: u64,
+    pub up_bps: u64,
+    pub eta: Option<Duration>,
+    pub ratio: f32,
+    pub peers_live: u32,
+    pub peers_seen: u32,
+    pub peers_connecting: u32,
+    /// Folder the user chose (parent of the content folder for multi-file torrents).
+    pub save_path: PathBuf,
+    /// The file (single-file torrent) or folder (multi-file torrent) holding the data.
+    pub content_path: PathBuf,
+    pub category: Option<String>,
+    pub tags: Vec<String>,
+    pub added_at: i64,
+    pub completed_at: Option<i64>,
+    pub queue_pos: u32,
+    pub trackers: Vec<String>,
+    pub has_metadata: bool,
+    pub file_count: usize,
+    pub piece_count: u32,
+    pub piece_size: u64,
+    pub comment: Option<String>,
+    pub created_by: Option<String>,
+    pub creation_date: Option<i64>,
+    pub busy: Option<String>,
+    pub last_activity: i64,
+    pub seeding_secs: u64,
+    pub pending: bool,
+}
+
+impl TorrentView {
+    pub fn magnet(&self) -> String {
+        let mut s = format!("magnet:?xt=urn:btih:{}", self.hash.to_hex());
+        s.push_str("&dn=");
+        s.push_str(&url_encode(&self.name));
+        for t in &self.trackers {
+            s.push_str("&tr=");
+            s.push_str(&url_encode(t));
+        }
+        s
+    }
+}
+
+pub fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+#[derive(Clone, Debug)]
+pub struct FileView {
+    pub index: usize,
+    pub path: String,
+    pub components: Vec<String>,
+    pub len: u64,
+    pub done: u64,
+    pub included: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PeerView {
+    pub addr: String,
+    pub client: Option<String>,
+    pub kind: String,
+    pub state: String,
+    pub downloaded: u64,
+    pub uploaded: u64,
+    pub down_bps: u64,
+    pub up_bps: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TorrentDetail {
+    pub hash: InfoHash,
+    pub files: Vec<FileView>,
+    pub peers: Vec<PeerView>,
+    /// MSB-first bitfield of pieces we have, plus total piece count.
+    pub pieces: Option<(Vec<u8>, u32)>,
+    pub history: VecDeque<(u64, u64)>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SessionView {
+    pub down_bps: u64,
+    pub up_bps: u64,
+    pub dht_nodes: Option<usize>,
+    pub listen_port: Option<u16>,
+    pub peers_live: u32,
+    pub alt_speed: bool,
+    pub uptime_secs: u64,
+    pub session_downloaded: u64,
+    pub session_uploaded: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum EngineState {
+    #[default]
+    Starting,
+    Running,
+    Restarting,
+    Failed(String),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Snapshot {
+    pub torrents: Vec<TorrentView>,
+    pub detail: Option<TorrentDetail>,
+    pub session: SessionView,
+    pub engine_state: EngineState,
+    /// Global (down, up) bytes/s samples, one per second, newest last.
+    pub history: VecDeque<(u64, u64)>,
+    pub generation: u64,
+    pub categories: std::collections::BTreeMap<String, crate::store::CategoryInfo>,
+    pub tags: Vec<String>,
+    pub all_time_downloaded: u64,
+    pub all_time_uploaded: u64,
+    pub free_space: Option<u64>,
+    pub warning: Option<String>,
+}
+
+/// Where a torrent to be added comes from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AddSource {
+    File(PathBuf),
+    Bytes { name: String, bytes: Vec<u8> },
+    Magnet(String),
+    Url(String),
+}
+
+impl AddSource {
+    pub fn describe(&self) -> String {
+        match self {
+            AddSource::File(p) => p
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string()),
+            AddSource::Bytes { name, .. } => name.clone(),
+            AddSource::Magnet(m) => magnet_display_name(m).unwrap_or_else(|| shorten(m, 60)),
+            AddSource::Url(u) => shorten(u, 60),
+        }
+    }
+
+    /// Classify user input (CLI argument, pasted text, forwarded launch item).
+    pub fn parse(input: &str) -> Option<AddSource> {
+        let s = input.trim().trim_matches('"');
+        if s.is_empty() {
+            return None;
+        }
+        let lower = s.to_ascii_lowercase();
+        if lower.starts_with("magnet:") {
+            return Some(AddSource::Magnet(s.to_string()));
+        }
+        if lower.starts_with("http://") || lower.starts_with("https://") {
+            return Some(AddSource::Url(s.to_string()));
+        }
+        if (s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+            || (s.len() == 32 && s.chars().all(|c| c.is_ascii_alphanumeric()))
+        {
+            return Some(AddSource::Magnet(format!("magnet:?xt=urn:btih:{s}")));
+        }
+        let path = PathBuf::from(s);
+        if lower.ends_with(".torrent") || path.is_file() {
+            return Some(AddSource::File(path));
+        }
+        None
+    }
+}
+
+pub fn magnet_display_name(m: &str) -> Option<String> {
+    let q = m.split_once('?')?.1;
+    for kv in q.split('&') {
+        if let Some(v) = kv.strip_prefix("dn=") {
+            return Some(url_decode(v));
+        }
+    }
+    None
+}
+
+pub fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                if let Ok(v) = u8::from_str_radix(hex, 16) {
+                    out.push(v);
+                    i += 2;
+                } else {
+                    out.push(b'%');
+                }
+            }
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn shorten(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(n).collect();
+        out.push('…');
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_roundtrip() {
+        let h = InfoHash([0xab; 20]);
+        assert_eq!(InfoHash::from_hex(&h.to_hex()), Some(h));
+    }
+
+    #[test]
+    fn parse_sources() {
+        assert!(matches!(AddSource::parse("magnet:?xt=urn:btih:abc"), Some(AddSource::Magnet(_))));
+        assert!(matches!(AddSource::parse("https://x/y.torrent"), Some(AddSource::Url(_))));
+        assert!(matches!(
+            AddSource::parse("0123456789abcdef0123456789abcdef01234567"),
+            Some(AddSource::Magnet(_))
+        ));
+        assert!(matches!(AddSource::parse("C:\\a b\\c.torrent"), Some(AddSource::File(_))));
+        assert_eq!(AddSource::parse("   "), None);
+    }
+
+    #[test]
+    fn magnet_name() {
+        assert_eq!(
+            magnet_display_name("magnet:?xt=urn:btih:x&dn=Hello%20World+2").as_deref(),
+            Some("Hello World 2")
+        );
+        assert_eq!(url_decode("a%2"), "a%2");
+    }
+}
