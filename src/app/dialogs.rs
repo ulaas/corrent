@@ -7,6 +7,7 @@ use egui::{Align, Context, Id, Layout, RichText, Ui, vec2};
 use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
+use super::pickers::{PickKind, PickTarget};
 use crate::engine::types::{AddSource, InfoHash};
 use crate::engine::{AddRequest, EngineCommand, Preview, ToastKind};
 use crate::ui::file_tree;
@@ -62,23 +63,19 @@ fn title(ui: &mut Ui, p: &Palette, icon: &str, text: &str) {
     ui.add_space(10.0);
 }
 
-fn path_field(ui: &mut Ui, p: &Palette, path: &mut String, width: f32) -> bool {
-    let mut changed = false;
+/// A path text field with a Browse button. Returns true when Browse was clicked; the caller opens
+/// a non-blocking picker whose result is applied later.
+fn path_field(ui: &mut Ui, p: &Palette, path: &mut String, width: f32, busy: bool) -> bool {
+    let mut browse = false;
     ui.horizontal(|ui| {
-        changed |= ui.add(egui::TextEdit::singleline(path).desired_width(width - 40.0)).changed();
-        if ui.button(icons::FOLDER_OPEN).on_hover_text("Browse…").clicked() {
-            let mut d = rfd::FileDialog::new();
-            if !path.is_empty() {
-                d = d.set_directory(&*path);
-            }
-            if let Some(dir) = d.pick_folder() {
-                *path = dir.display().to_string();
-                changed = true;
-            }
+        ui.add(egui::TextEdit::singleline(path).desired_width(width - 40.0));
+        if busy {
+            ui.add(egui::Spinner::new().color(p.accent));
+        } else if ui.button(icons::FOLDER_OPEN).on_hover_text("Browse…").clicked() {
+            browse = true;
         }
     });
-    let _ = p;
-    changed
+    browse
 }
 
 impl CorrentApp {
@@ -291,7 +288,9 @@ impl CorrentApp {
                 Modal::Move { hashes, path } => {
                     ui.set_width(520.0);
                     title(ui, p, icons::FOLDER_SIMPLE_DASHED, "Move data to another folder");
-                    path_field(ui, p, path, 476.0);
+                    if path_field(ui, p, path, 476.0, self.picker_busy()) {
+                        self.pick(PickTarget::MoveFolder, PickKind::Folder, Some(PathBuf::from(path.as_str())));
+                    }
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("Files are moved, then verified at the new location. Transfers pause during the move.")
@@ -338,7 +337,9 @@ impl CorrentApp {
                         ui.add_enabled(editing.is_none(), egui::TextEdit::singleline(name).desired_width(340.0).hint_text("e.g. Movies or Movies/HD"));
                         ui.end_row();
                         ui.label("Save path");
-                        path_field(ui, p, path, 340.0);
+                        if path_field(ui, p, path, 340.0, self.picker_busy()) {
+                            self.pick(PickTarget::CategoryFolder, PickKind::Folder, Some(PathBuf::from(path.as_str())));
+                        }
                         ui.end_row();
                     });
                     ui.label(RichText::new("Torrents added to this category are saved here (leave empty for the default).").small().color(p.text_dim));
@@ -482,6 +483,8 @@ impl CorrentApp {
         let categories = self.snap.categories.clone();
         let all_tags = self.snap.tags.clone();
         let recent = self.settings.downloads.recent_paths.clone();
+        let picker_busy = self.picker_busy();
+        let mut browse_req = false;
 
         let resp = egui::Modal::new(Id::new("add_dialog")).frame(modal_frame(p)).show(ctx, |ui| {
             ui.set_width(820.0);
@@ -501,7 +504,9 @@ impl CorrentApp {
                 ui.vertical(|ui| {
                     ui.set_width(300.0);
                     ui.label(RichText::new("Save to").small().strong().color(p.text_dim));
-                    path_field(ui, p, &mut d.save_path, 300.0);
+                    if path_field(ui, p, &mut d.save_path, 300.0, picker_busy) {
+                        browse_req = true;
+                    }
                     if !recent.is_empty() {
                         egui::ComboBox::from_id_salt("recent_paths")
                             .selected_text(RichText::new("Recent folders").small())
@@ -694,6 +699,9 @@ impl CorrentApp {
         });
         if resp.should_close() {
             close = true;
+        }
+        if browse_req {
+            self.pick(PickTarget::AddDialogFolder(d.req), PickKind::Folder, Some(PathBuf::from(&d.save_path)));
         }
 
         if add || add_without_preview {

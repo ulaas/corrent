@@ -6,6 +6,7 @@ use egui::{Align, Context, Id, Layout, RichText, Ui, vec2};
 use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
+use super::pickers::{PickKind, PickTarget};
 use crate::config::{Accent, AfterAdd, ListenMode, SeedAction, Settings, SpeedUnits, ThemeMode, WatchFolder};
 use crate::engine::{EngineCommand, ToastKind};
 use crate::integration::os_handler::{self, HandlerState};
@@ -147,16 +148,14 @@ fn kib(ui: &mut Ui, v: &mut u32) {
     );
 }
 
-fn path_input(ui: &mut Ui, path: &mut PathBuf) {
+/// Path field with a Browse button; returns true when Browse was clicked (right-to-left layout).
+fn path_input(ui: &mut Ui, path: &mut PathBuf) -> bool {
+    let browse = ui.button(icons::FOLDER_OPEN).on_hover_text("Browse…").clicked();
     let mut s = path.display().to_string();
-    if ui.button(icons::FOLDER_OPEN).on_hover_text("Browse…").clicked()
-        && let Some(d) = rfd::FileDialog::new().set_directory(&s).pick_folder()
-    {
-        s = d.display().to_string();
-    }
-    if ui.add(egui::TextEdit::singleline(&mut s).desired_width(220.0)).changed() || s != path.display().to_string() {
+    if ui.add(egui::TextEdit::singleline(&mut s).desired_width(220.0)).changed() {
         *path = PathBuf::from(s);
     }
+    browse
 }
 
 fn minutes_input(ui: &mut Ui, minutes: &mut u16) {
@@ -340,6 +339,14 @@ impl CorrentApp {
     }
 
     fn settings_page(&mut self, ui: &mut Ui, p: &Palette, d: &mut SettingsDraft) {
+        let mut browse: Option<(PickTarget, PathBuf)> = None;
+        self.settings_page_inner(ui, p, d, &mut browse);
+        if let Some((target, start)) = browse {
+            self.pick(target, PickKind::Folder, Some(start));
+        }
+    }
+
+    fn settings_page_inner(&mut self, ui: &mut Ui, p: &Palette, d: &mut SettingsDraft, browse: &mut Option<(PickTarget, PathBuf)>) {
         let s = &mut d.settings;
         match d.page {
             Page::Behavior => {
@@ -397,7 +404,11 @@ impl CorrentApp {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     heading(ui, p, "Saving");
-                    row(ui, p, "Default save folder", "", |ui| path_input(ui, &mut s.downloads.save_path));
+                    row(ui, p, "Default save folder", "", |ui| {
+                        if path_input(ui, &mut s.downloads.save_path) {
+                            *browse = Some((PickTarget::SettingsSaveFolder, s.downloads.save_path.clone()));
+                        }
+                    });
                     toggle(ui, p, "Create a subfolder for multi-file torrents", "", &mut s.downloads.create_subfolder);
                     toggle(ui, p, "Add torrents paused", "", &mut s.downloads.start_paused);
                     toggle(ui, p, "Remember recently used folders", "", &mut s.downloads.remember_last_path);
@@ -409,10 +420,8 @@ impl CorrentApp {
                     ui.horizontal(|ui| {
                         heading(ui, p, "Watch folders");
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button(format!("{}  Add folder", icons::PLUS)).clicked()
-                                && let Some(dir) = rfd::FileDialog::new().pick_folder()
-                            {
-                                s.watch.push(WatchFolder { path: dir, ..Default::default() });
+                            if ui.button(format!("{}  Add folder", icons::PLUS)).clicked() {
+                                *browse = Some((PickTarget::WatchFolderAdd, s.downloads.save_path.clone()));
                             }
                         });
                     });
@@ -464,7 +473,9 @@ impl CorrentApp {
                                 ui.checkbox(&mut custom, "Save to a different folder");
                                 if custom {
                                     let mut path = w.save_path.clone().unwrap_or_else(|| s.downloads.save_path.clone());
-                                    path_input(ui, &mut path);
+                                    if path_input(ui, &mut path) {
+                                        *browse = Some((PickTarget::WatchFolderSave(i), path.clone()));
+                                    }
                                     w.save_path = Some(path);
                                 } else {
                                     w.save_path = None;

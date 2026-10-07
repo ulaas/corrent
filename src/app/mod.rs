@@ -8,6 +8,7 @@ mod extras;
 pub mod icon;
 mod integration_ui;
 pub mod log;
+mod pickers;
 mod settings_window;
 mod sidebar;
 mod statusbar;
@@ -291,6 +292,8 @@ pub struct CorrentApp {
     pub speed_scope_torrent: bool,
     tray: Option<tray::Tray>,
     tray_failed: bool,
+    pub ctx: egui::Context,
+    pub pickers: pickers::Pickers,
     pub extras: extras::Extras,
     icon_tex: Option<egui::TextureHandle>,
     #[cfg(debug_assertions)]
@@ -353,6 +356,8 @@ impl CorrentApp {
             speed_scope_torrent: true,
             tray: None,
             tray_failed: false,
+            ctx: cc.egui_ctx.clone(),
+            pickers: Default::default(),
             extras: Default::default(),
             icon_tex: None,
             #[cfg(debug_assertions)]
@@ -463,11 +468,7 @@ impl CorrentApp {
     }
 
     pub fn pick_torrent_files(&mut self) {
-        if let Some(files) = rfd::FileDialog::new().add_filter("Torrent files", &["torrent"]).pick_files() {
-            for f in files {
-                self.launch_queue.push_back(AddSource::File(f));
-            }
-        }
+        self.pick(pickers::PickTarget::AddTorrents, pickers::PickKind::TorrentFiles, None);
     }
 
     fn process_launch_queue(&mut self) {
@@ -488,6 +489,7 @@ impl eframe::App for CorrentApp {
         #[cfg(debug_assertions)]
         self.dev_hooks(ctx);
         self.drain_ipc(ctx);
+        self.drain_pickers();
         self.drain_events(ctx);
         self.window_logic(ctx);
         self.process_launch_queue();
