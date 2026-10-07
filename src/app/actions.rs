@@ -141,7 +141,7 @@ impl CorrentApp {
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
         let typing = ctx.egui_wants_keyboard_input();
         let sc = |m: Modifiers, k: Key| KeyboardShortcut::new(m, k);
-        let mut consume = |s: KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(&s));
+        let consume = |s: KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(&s));
 
         if consume(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::O)) {
             self.open_magnet_dialog();

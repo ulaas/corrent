@@ -139,11 +139,17 @@ fn show_node(
 }
 
 fn row_tail(ui: &mut Ui, p: &Palette, len: u64, done: Option<u64>) {
+    // Fixed-width cells so sizes, percentages and bars line up across rows.
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.label(RichText::new(fmt_bytes(len)).monospace().small().color(p.text_dim));
+        let cell = |ui: &mut Ui, w: f32, text: RichText| {
+            ui.allocate_ui_with_layout(egui::vec2(w, 18.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(text);
+            });
+        };
+        cell(ui, 72.0, RichText::new(fmt_bytes(len)).monospace().small().color(p.text_dim));
         if let Some(d) = done {
             let frac = if len > 0 { d as f32 / len as f32 } else { 1.0 };
-            ui.label(RichText::new(format!("{:.0}%", frac * 100.0)).monospace().small().color(p.text_dim));
+            cell(ui, 40.0, RichText::new(format!("{:.0}%", (frac * 100.0).floor())).monospace().small().color(p.text_dim));
             super::widgets::progress_bar(
                 ui,
                 Id::new(("ft", len, d)),
@@ -151,7 +157,7 @@ fn row_tail(ui: &mut Ui, p: &Palette, len: u64, done: Option<u64>) {
                 if frac >= 1.0 { p.success } else { p.accent },
                 p.bg3,
                 5.0,
-                80.0,
+                90.0,
                 false,
                 false,
             );

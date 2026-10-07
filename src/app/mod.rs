@@ -1,11 +1,14 @@
 //! The eframe application: UI state, event handling and frame layout.
 
 mod actions;
+mod details;
 mod dialogs;
+mod dnd;
 pub mod icon;
 mod integration_ui;
 pub mod log;
 mod settings_window;
+mod sidebar;
 mod statusbar;
 mod table;
 mod toasts;
@@ -275,6 +278,15 @@ pub struct CorrentApp {
     pub handler_status: Arc<std::sync::Mutex<Option<crate::integration::os_handler::HandlerStatus>>>,
     pub window_hidden: bool,
     frame_seen: bool,
+
+    // sidebar & details
+    counts: sidebar::Counts,
+    sent_detail_target: Option<InfoHash>,
+    pub file_filter: String,
+    pub show_all_peers: bool,
+    pub speed_scope_torrent: bool,
+    #[cfg(debug_assertions)]
+    dev_done: bool,
 }
 
 impl CorrentApp {
@@ -325,6 +337,13 @@ impl CorrentApp {
             handler_status: Arc::new(std::sync::Mutex::new(None)),
             window_hidden: start_hidden,
             frame_seen: false,
+            counts: sidebar::Counts::default(),
+            sent_detail_target: None,
+            file_filter: String::new(),
+            show_all_peers: false,
+            speed_scope_torrent: true,
+            #[cfg(debug_assertions)]
+            dev_done: false,
         }
         .init_integration()
     }
@@ -432,6 +451,8 @@ impl eframe::App for CorrentApp {
         }
         self.frame_seen = true;
         self.snap = self.engine.snapshot();
+        #[cfg(debug_assertions)]
+        self.dev_hooks(ctx);
         self.drain_ipc(ctx);
         self.drain_events(ctx);
         self.process_launch_queue();
@@ -451,6 +472,25 @@ impl eframe::App for CorrentApp {
             .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin::symmetric(12, 4)))
             .show(ui, |ui| self.status_bar(ui, &p));
 
+        if self.prefs.show_sidebar {
+            egui::Panel::left("sidebar")
+                .resizable(true)
+                .default_size(220.0)
+                .size_range(170.0..=360.0)
+                .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 6 }))
+                .show(ui, |ui| self.sidebar(ui, &p));
+        }
+
+        self.sync_detail_target();
+        if self.prefs.show_details {
+            egui::Panel::bottom("details")
+                .resizable(true)
+                .default_size(280.0)
+                .size_range(160.0..=700.0)
+                .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin { left: 14, right: 14, top: 6, bottom: 8 }))
+                .show(ui, |ui| self.details_panel(ui, &p));
+        }
+
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p.bg0).inner_margin(egui::Margin::same(0)))
             .show(ui, |ui| {
@@ -458,6 +498,7 @@ impl eframe::App for CorrentApp {
                 self.torrent_table(ui, &p);
             });
 
+        self.drag_and_drop(&ctx, &p);
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);
         self.shortcuts(&ctx);
@@ -470,6 +511,47 @@ impl eframe::App for CorrentApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.engine.shutdown_blocking(std::time::Duration::from_secs(8));
+    }
+}
+
+#[cfg(debug_assertions)]
+impl CorrentApp {
+    /// Debug-only hooks for screenshot testing: CORRENT_DEV_SELECT=<n> selects the n-th row,
+    /// CORRENT_DEV_TAB=<files|peers|trackers|pieces|speed> picks the details tab,
+    /// CORRENT_DEV_OPEN=<settings|magnet|about|log> opens a window.
+    fn dev_hooks(&mut self, ctx: &Context) {
+        if self.dev_done || self.snap.torrents.is_empty() {
+            return;
+        }
+        self.dev_done = true;
+        if let Ok(n) = std::env::var("CORRENT_DEV_SELECT").map(|v| v.parse::<usize>().unwrap_or(0)) {
+            let rows = self.visible_rows().to_vec();
+            if let Some(&i) = rows.get(n) {
+                let h = self.snap.torrents[i].hash;
+                self.selected.insert(h);
+                self.focus = Some(h);
+            }
+        }
+        if let Ok(tab) = std::env::var("CORRENT_DEV_TAB") {
+            self.prefs.details_tab = match tab.as_str() {
+                "files" => DetailsTab::Files,
+                "peers" => DetailsTab::Peers,
+                "trackers" => DetailsTab::Trackers,
+                "pieces" => DetailsTab::Pieces,
+                "speed" => DetailsTab::Speed,
+                _ => DetailsTab::General,
+            };
+        }
+        if let Ok(w) = std::env::var("CORRENT_DEV_OPEN") {
+            match w.as_str() {
+                "settings" => self.open_settings(),
+                "magnet" => self.open_magnet_dialog(),
+                _ => {}
+            }
+        }
+        if std::env::var("CORRENT_DEV_LIGHT").is_ok() {
+            ctx.set_theme(egui::ThemePreference::Light);
+        }
     }
 }
 
