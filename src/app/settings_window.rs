@@ -275,6 +275,7 @@ impl CorrentApp {
                         });
                     // ---- content
                     ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(10.0, 6.0);
                         let content_w = size.x - 220.0;
                         ui.set_width(content_w);
                         egui::Frame::new().inner_margin(egui::Margin { left: 22, right: 22, top: 18, bottom: 0 }).show(ui, |ui| {

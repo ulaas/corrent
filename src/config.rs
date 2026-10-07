@@ -47,11 +47,17 @@ impl Paths {
     }
 }
 
-pub fn default_download_dir() -> PathBuf {
+/// The OS "Downloads" folder.
+pub fn os_download_dir() -> PathBuf {
     directories::UserDirs::new()
         .and_then(|u| u.download_dir().map(Path::to_path_buf))
         .or_else(|| directories::UserDirs::new().map(|u| u.home_dir().join("Downloads")))
         .unwrap_or_else(|| PathBuf::from("Downloads"))
+}
+
+/// Default save folder: a "Corrent" folder inside Downloads (created on demand).
+pub fn default_download_dir() -> PathBuf {
+    os_download_dir().join("Corrent")
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -451,7 +457,14 @@ impl Settings {
         let file = paths.settings_file();
         match std::fs::read_to_string(&file) {
             Ok(text) => match toml::from_str::<Settings>(&text) {
-                Ok(s) => (s, false),
+                Ok(mut s) => {
+                    // Earlier versions defaulted to the bare Downloads folder.
+                    if s.downloads.save_path == os_download_dir() {
+                        s.downloads.save_path = default_download_dir();
+                        let _ = s.save(paths);
+                    }
+                    (s, false)
+                }
                 Err(e) => {
                     tracing::error!("settings file is invalid ({e}); keeping a backup and using defaults");
                     let _ = std::fs::copy(&file, file.with_extension("toml.bad"));

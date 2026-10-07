@@ -436,10 +436,19 @@ impl CorrentApp {
             Col::Status => {
                 badge(ui, &status_text(t), color).on_hover_text(t.error.clone().unwrap_or_else(|| status_text(t)));
             }
-            Col::Peers => right(
-                ui,
-                num(if t.peers_seen > 0 { format!("{} ({})", t.peers_live, t.peers_seen) } else { format!("{}", t.peers_live) }),
-            ),
+            Col::Peers => {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if t.peers_seen > 0 {
+                        ui.label(RichText::new(format!("/ {}", t.peers_seen)).small().monospace().color(p.text_mute));
+                    }
+                    ui.label(num(t.peers_live.to_string()));
+                })
+                .response
+                .on_hover_text(format!(
+                    "{} connected · {} connecting · {} known\nA torrent with few seeders may only have a handful of connections.",
+                    t.peers_live, t.peers_connecting, t.peers_seen
+                ));
+            }
             Col::Down => right(ui, RichText::new(fmt_speed(t.down_bps, units)).monospace().color(if t.down_bps > 0 { p.accent } else { p.text_mute })),
             Col::Up => right(ui, RichText::new(fmt_speed(t.up_bps, units)).monospace().color(if t.up_bps > 0 { p.success } else { p.text_mute })),
             Col::Eta => right(ui, num(t.eta.map(fmt_duration).unwrap_or_else(|| if t.progress >= 1.0 { "Done".into() } else { "∞".into() }))),
@@ -493,7 +502,7 @@ impl CorrentApp {
                 if let Some(eta) = t.eta {
                     parts.push(format!("{} left", fmt_duration(eta)));
                 }
-                parts.push(format!("{} peers", t.peers_live));
+                parts.push(format!("{} of {} peers connected", t.peers_live, t.peers_seen.max(t.peers_live)));
             }
             TorrentState::Seeding => {
                 if t.up_bps > 0 {

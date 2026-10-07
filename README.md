@@ -11,7 +11,7 @@ A beautiful, stable, cross-platform BitTorrent client written in Rust with an
   (one click in Settings → General → *Open with Corrent*, or `corrent --register`)
 - Single instance: launching Corrent again hands the link to the running window
 - Add dialog with metadata preview (magnets are resolved first), file tree selection,
-  save folder with recent folders, categories, tags and free-space check
+  save folder (default: a `Corrent` folder in Downloads) with recent folders, categories, tags and free-space check
 - Drag & drop `.torrent` files or text files with magnet links; paste a magnet anywhere (Ctrl+V)
 - Watch folders with per-folder category, save path and start-paused options
 
@@ -32,6 +32,7 @@ A beautiful, stable, cross-platform BitTorrent client written in Rust with an
 - Falls back to a random port if the configured one is unavailable
 
 **Desktop**
+- Custom title bar in the app's own style (native window buttons on macOS)
 - Dark and light themes (or follow the system), six accent colors plus a custom color,
   interface scaling, speed units, animations
 - System tray with quick actions, close/minimize to tray, start minimized

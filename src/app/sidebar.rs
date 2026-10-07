@@ -223,25 +223,6 @@ impl CorrentApp {
                 });
             }
 
-            if !self.counts.trackers.is_empty() {
-                ui.add_space(10.0);
-                section(ui, p, "Trackers", None);
-                if row(ui, p, icons::GLOBE, p.text_dim, "All", Some(total), self.prefs.tracker_filter == GroupFilter::All).clicked() {
-                    self.prefs.tracker_filter = GroupFilter::All;
-                }
-                if self.counts.trackerless > 0
-                    && row(ui, p, icons::GLOBE_X, p.text_dim, "Trackerless", Some(self.counts.trackerless), self.prefs.tracker_filter == GroupFilter::None).clicked()
-                {
-                    self.prefs.tracker_filter = GroupFilter::None;
-                }
-                let trackers: Vec<(String, usize)> = self.counts.trackers.iter().map(|(k, v)| (k.clone(), *v)).collect();
-                for (host, n) in trackers {
-                    let sel = self.prefs.tracker_filter == GroupFilter::Named(host.clone());
-                    if row(ui, p, icons::BROADCAST, p.text_dim, &host, Some(n), sel).clicked() {
-                        self.prefs.tracker_filter = GroupFilter::Named(host);
-                    }
-                }
-            }
             ui.add_space(12.0);
         });
     }

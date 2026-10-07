@@ -84,6 +84,10 @@ fn main() -> eframe::Result {
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([760.0, 480.0])
         .with_drag_and_drop(true)
+        .with_decorations(cfg!(target_os = "macos"))
+        .with_fullsize_content_view(true)
+        .with_titlebar_shown(false)
+        .with_title_shown(false)
         .with_icon(Arc::new(icon))
         .with_visible(!start_minimized);
     let options = eframe::NativeOptions {

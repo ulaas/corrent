@@ -285,36 +285,121 @@ impl CorrentApp {
     }
 
     fn tab_trackers(&mut self, ui: &mut Ui, p: &Palette, t: &TorrentView) {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{} trackers", t.trackers.len())).small().color(p.text_dim));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button(format!("{}  Add trackers…", icons::PLUS)).clicked() {
-                    self.open_trackers_dialog(t.hash);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // ---- where peers come from
+            ui.label(RichText::new("PEER SOURCES").size(10.5).strong().color(p.text_mute));
+            ui.add_space(4.0);
+            let s = &self.snap.session;
+            let dht = match (self.settings.bittorrent.dht, s.dht_nodes) {
+                (false, _) => ("Off".to_string(), p.text_mute),
+                (true, Some(n)) if n > 0 => (format!("{n} nodes"), p.success),
+                (true, _) => ("Connecting…".to_string(), p.warn),
+            };
+            let lsd = if self.settings.bittorrent.lsd { ("On".to_string(), p.success) } else { ("Off".to_string(), p.text_mute) };
+            let trk = if !self.settings.bittorrent.trackers_enabled {
+                ("Disabled".to_string(), p.text_mute)
+            } else {
+                (format!("{} tracker(s)", t.trackers.len()), if t.trackers.is_empty() { p.text_mute } else { p.success })
+            };
+            let sources = [
+                (icons::GRAPH, "DHT", "Decentralized network", dht),
+                (icons::ARROWS_LEFT_RIGHT, "PEX", "Peers share peers", ("On".to_string(), p.success)),
+                (icons::WIFI_HIGH, "Local", "Same-network peers", lsd),
+                (icons::BROADCAST, "Trackers", "Announce servers", trk),
+            ];
+            let w = ((ui.available_width() - 3.0 * 10.0) / 4.0).max(140.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
+                for (icon, title, sub, (status, color)) in sources {
+                    card(p).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                        ui.set_width(w - 22.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(icon).size(18.0).color(color));
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                ui.label(RichText::new(title).strong().color(p.text));
+                                ui.label(RichText::new(sub).small().color(p.text_dim));
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.label(RichText::new(status).small().color(color));
+                            });
+                        });
+                    });
                 }
             });
-        });
-        ui.add_space(4.0);
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for (label, desc) in [("DHT", "Distributed hash table"), ("PEX", "Peer exchange"), ("LSD", "Local peer discovery")] {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(icons::GRAPH).color(p.text_dim));
-                    ui.label(RichText::new(label).strong().color(p.text));
-                    ui.label(RichText::new(desc).small().color(p.text_dim));
-                });
-            }
-            ui.separator();
-            if t.trackers.is_empty() {
-                ui.label(RichText::new("This torrent has no trackers; peers are found through DHT and PEX.").color(p.text_mute));
-            }
-            for tr in &t.trackers {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(icons::BROADCAST).color(p.accent));
-                    ui.label(RichText::new(tr).monospace().color(p.text));
-                    if ui.small_button(icons::COPY).on_hover_text("Copy URL").clicked() {
-                        self.copy(tr.clone());
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "{} connected · {} connecting · {} known peers",
+                    t.peers_live, t.peers_connecting, t.peers_seen
+                ))
+                .small()
+                .color(p.text_dim),
+            );
+
+            // ---- trackers
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("TRACKERS  ·  {}", t.trackers.len())).size(10.5).strong().color(p.text_mute));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button(format!("{}  Add trackers…", icons::PLUS)).clicked() {
+                        self.open_trackers_dialog(t.hash);
+                    }
+                    if !t.trackers.is_empty() && ui.button(format!("{}  Copy all", icons::COPY)).clicked() {
+                        self.copy(t.trackers.join("\n"));
                     }
                 });
+            });
+            ui.add_space(4.0);
+            if t.trackers.is_empty() {
+                ui.label(RichText::new("No trackers — peers are found through DHT and peer exchange.").color(p.text_mute));
             }
+            let mut trackers = t.trackers.clone();
+            trackers.sort_by_key(|u| super::table::tracker_host(u));
+            for url in &trackers {
+                let parsed = url::Url::parse(url).ok();
+                let scheme = parsed.as_ref().map(|u| u.scheme().to_ascii_uppercase()).unwrap_or_else(|| "?".into());
+                let host = super::table::tracker_host(url);
+                let port = parsed.as_ref().and_then(|u| u.port_or_known_default()).map(|p| format!(":{p}")).unwrap_or_default();
+                let path = parsed.as_ref().map(|u| u.path().to_string()).unwrap_or_default();
+                let color = match scheme.as_str() {
+                    "UDP" => p.accent,
+                    "HTTPS" => p.success,
+                    "HTTP" => p.warn,
+                    "WSS" | "WS" => p.queued,
+                    _ => p.text_dim,
+                };
+                egui::Frame::new()
+                    .fill(p.bg2)
+                    .stroke(egui::Stroke::new(1.0, p.border))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            ui.allocate_ui_with_layout(vec2(56.0, 20.0), Layout::left_to_right(Align::Center), |ui| {
+                                widgets::badge(ui, &scheme, color);
+                            });
+                            ui.label(RichText::new(&host).strong().color(p.text));
+                            ui.label(RichText::new(format!("{port}{path}")).monospace().small().color(p.text_dim));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.small_button(icons::COPY).on_hover_text("Copy URL").clicked() {
+                                    self.copy(url.clone());
+                                }
+                            });
+                        })
+                        .response
+                        .on_hover_text(url);
+                    });
+                ui.add_space(4.0);
+            }
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("The engine doesn't report per-tracker announce results; connected peers above reflect all sources.")
+                    .small()
+                    .color(p.text_mute),
+            );
         });
     }
 

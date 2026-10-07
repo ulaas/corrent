@@ -12,6 +12,7 @@ mod settings_window;
 mod sidebar;
 mod statusbar;
 mod table;
+mod titlebar;
 mod toasts;
 mod toolbar;
 mod tray;
@@ -309,7 +310,8 @@ impl CorrentApp {
     ) -> Self {
         theme::install_fonts(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        let prefs: UiPrefs = cc.storage.and_then(|s| eframe::get_value(s, "ui_prefs")).unwrap_or_default();
+        let mut prefs: UiPrefs = cc.storage.and_then(|s| eframe::get_value(s, "ui_prefs")).unwrap_or_default();
+        prefs.tracker_filter = GroupFilter::All;
         let (tx, rx) = std::sync::mpsc::channel();
         let engine = EngineHandle::start(&rt, paths.clone(), settings.clone(), cc.egui_ctx.clone(), tx);
         if first_run {
@@ -497,7 +499,8 @@ impl eframe::App for CorrentApp {
         let p = self.palette(&ctx);
 
         egui::Panel::top("toolbar")
-            .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin::symmetric(10, 6)))
+            .exact_size(titlebar::TITLEBAR_HEIGHT)
+            .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin { left: 12, right: 0, top: 0, bottom: 0 }))
             .show_separator_line(true)
             .show(ui, |ui| self.toolbar(ui, &p));
 
@@ -532,6 +535,7 @@ impl eframe::App for CorrentApp {
             });
 
         self.drag_and_drop(&ctx, &p);
+        self.window_frame(&ctx, &p);
         self.extra_windows(&ctx, &p);
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);

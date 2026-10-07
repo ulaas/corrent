@@ -8,12 +8,12 @@ use crate::ui::widgets::{icon_button, icon_button_sized};
 
 impl CorrentApp {
     pub(super) fn toolbar(&mut self, ui: &mut Ui, p: &Palette) {
-        ui.horizontal(|ui| {
+        ui.set_min_height(super::titlebar::TITLEBAR_HEIGHT);
+        self.titlebar_background(ui);
+        ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            // Brand mark
-            ui.label(RichText::new(icons::LIGHTNING).size(20.0).color(p.accent));
-            ui.label(RichText::new("Corrent").font(crate::ui::theme::bold(15.0)).color(p.text));
-            ui.add_space(14.0);
+            self.titlebar_logo(ui, p);
+            ui.add_space(16.0);
 
             if icon_button(ui, p, icons::FILE_PLUS, "Add torrent file… (Ctrl+O)", true).clicked() {
                 self.pick_torrent_files();
@@ -52,6 +52,13 @@ impl CorrentApp {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                self.window_controls(ui, p);
+                if super::titlebar::CUSTOM_DECORATIONS {
+                    ui.add_space(4.0);
+                    separator(ui, p);
+                } else {
+                    ui.add_space(8.0);
+                }
                 self.overflow_menu(ui, p);
                 if icon_button(ui, p, icons::GEAR_SIX, "Settings (Ctrl+,)", true).clicked() {
                     self.open_settings();

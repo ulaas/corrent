@@ -941,7 +941,7 @@ impl Actor {
         let done = stats.progress_bytes.min(size);
         let progress = if size > 0 { done as f32 / size as f32 } else { 0.0 };
         let remaining = size.saturating_sub(done);
-        let eta = (down_bps > 0 && remaining > 0 && !stats.finished).then(|| Duration::from_secs(remaining / down_bps));
+        let eta = (down_bps > 0 && remaining > 0 && !stats.finished).then(|| Duration::from_secs(remaining.div_ceil(down_bps)));
         let full_size = si_total(h).unwrap_or(size);
         let ratio = if full_size > 0 { m.uploaded_total as f32 / full_size as f32 } else { 0.0 };
 
@@ -1439,6 +1439,11 @@ async fn add(sess: &Arc<Session>, req: &AddRequest, peer_limit: Option<usize>) -
         anyhow::bail!("“{name}” is already in your list");
     }
     let multi = l.info.info().files.is_some();
+    // Trackers from the magnet link (tr=…) must reach the engine even when we add from bytes.
+    let magnet_trackers: Vec<String> = match &req.source {
+        AddSource::Magnet(m) => librqbit::Magnet::parse(m).map(|m| m.trackers).unwrap_or_default(),
+        _ => Vec::new(),
+    };
     let output = if multi && req.create_subfolder { req.save_path.join(sanitize_name(&name)) } else { req.save_path.clone() };
     tokio::fs::create_dir_all(&output).await.with_context(|| format!("creating {}", output.display()))?;
     let opts = AddTorrentOptions {
@@ -1447,6 +1452,7 @@ async fn add(sess: &Arc<Session>, req: &AddRequest, peer_limit: Option<usize>) -
         output_folder: Some(output.to_string_lossy().into_owned()),
         overwrite: true,
         peer_limit,
+        trackers: (!magnet_trackers.is_empty()).then_some(magnet_trackers),
         ..Default::default()
     };
     match sess.add_torrent(AddTorrent::from_bytes(bytes), Some(opts)).await? {
