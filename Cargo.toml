@@ -31,6 +31,7 @@ open = "5"
 arboard = "3"
 url = "2"
 fs4 = "1.1.0"
+interprocess = "2.4"
 
 [profile.dev.package."*"]
 opt-level = 2
@@ -39,3 +40,30 @@ opt-level = 2
 lto = "thin"
 codegen-units = 4
 strip = true
+
+[target."cfg(windows)".dependencies]
+windows-registry = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSAppleEventManager", "NSAppleEventDescriptor"] }
+
+# `cargo bundle --release` (cargo-bundle) produces Corrent.app with the magnet URL scheme
+# and .torrent document type declared, so Launch Services can route them to Corrent.
+[package.metadata.bundle]
+name = "Corrent"
+identifier = "app.corrent.Corrent"
+icon = ["assets/icon/corrent-256.png", "assets/icon/corrent-512.png"]
+category = "public.app-category.utilities"
+short_description = "A beautiful, stable BitTorrent client"
+osx_url_name = "Magnet link"
+osx_url_schemes = ["magnet"]
+osx_info_plist_exts = ["packaging/macos/Info.plist.ext"]
+linux_mime_types = ["x-scheme-handler/magnet", "application/x-bittorrent"]
+
+[patch.crates-io]
+# Keeps the DHT alive on Windows; see vendor/librqbit-dht/CORRENT-PATCH.md.
+librqbit-dht = { path = "vendor/librqbit-dht" }
+
+[build-dependencies]
+winresource = "0.1"

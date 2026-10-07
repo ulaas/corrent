@@ -199,6 +199,58 @@ pub fn fmt_ratio(r: f32) -> String {
     }
 }
 
+/// Encode RGBA8 pixels as a PNG (uncompressed deflate blocks; small icons only).
+pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in data {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            }
+        }
+        !crc
+    }
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut c = kind.to_vec();
+        c.extend_from_slice(data);
+        out.extend_from_slice(&c);
+        out.extend_from_slice(&crc32(&c).to_be_bytes());
+    }
+    let mut raw = Vec::with_capacity((width * height * 4 + height) as usize);
+    for y in 0..height as usize {
+        raw.push(0); // filter: none
+        raw.extend_from_slice(&rgba[y * width as usize * 4..(y + 1) * width as usize * 4]);
+    }
+    // zlib stream with stored blocks
+    let mut z = vec![0x78, 0x01];
+    let mut chunks = raw.chunks(65535).peekable();
+    while let Some(block) = chunks.next() {
+        z.push(if chunks.peek().is_none() { 1 } else { 0 });
+        let len = block.len() as u16;
+        z.extend_from_slice(&len.to_le_bytes());
+        z.extend_from_slice(&(!len).to_le_bytes());
+        z.extend_from_slice(block);
+    }
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in &raw {
+        a = (a + x as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    z.extend_from_slice(&((b << 16) | a).to_be_bytes());
+
+    let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &z);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +264,13 @@ mod tests {
         assert_eq!(fmt_duration(Duration::from_secs(3725)), "1h 02m");
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(20000), (2024, 10, 4));
+    }
+
+    #[test]
+    fn png_header() {
+        let png = encode_png(&[255u8; 4 * 4], 2, 2);
+        assert_eq!(&png[1..4], b"PNG");
+        assert_eq!(&png[png.len() - 8..png.len() - 4], b"IEND");
     }
 
     #[test]

@@ -1,0 +1,21 @@
+<key>CFBundleDocumentTypes</key>
+<array>
+  <dict>
+    <key>CFBundleTypeName</key>
+    <string>BitTorrent file</string>
+    <key>CFBundleTypeRole</key>
+    <string>Viewer</string>
+    <key>LSHandlerRank</key>
+    <string>Owner</string>
+    <key>CFBundleTypeExtensions</key>
+    <array>
+      <string>torrent</string>
+    </array>
+    <key>LSItemContentTypes</key>
+    <array>
+      <string>org.bittorrent.torrent</string>
+    </array>
+  </dict>
+</array>
+<key>NSHighResolutionCapable</key>
+<true/>

@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod engine;
+mod integration;
 mod store;
 mod ui;
 mod util;
@@ -14,13 +15,53 @@ use engine::types::AddSource;
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let portable = args.iter().any(|a| a == "--portable");
-    let paths = Paths::resolve(portable);
+    let flag = |f: &str| args.iter().any(|a| a == f);
+    let paths = Paths::resolve(flag("--portable"));
     let _ = std::fs::create_dir_all(&paths.data_dir);
-    let _log_guard = init_logging(&paths);
 
+    if flag("--help") || flag("-h") {
+        #[cfg(windows)]
+        attach_console();
+        println!("Corrent {}\n", env!("CARGO_PKG_VERSION"));
+        println!("Usage: corrent [OPTIONS] [MAGNET | URL | FILE.torrent]...\n");
+        println!("Options:");
+        println!("  --portable     keep all data next to the executable");
+        println!("  --minimized    start hidden in the tray");
+        println!("  --register     register as handler for magnet links and .torrent files");
+        println!("  --unregister   remove the handler registration");
+        println!("  --status       print handler registration status");
+        return Ok(());
+    }
+    if let Some(i) = args.iter().position(|a| a == "--write-icons") {
+        let dir = args.get(i + 1).map(std::path::PathBuf::from).unwrap_or_else(|| "assets/icon".into());
+        match app::icon::write_icon_set(&dir) {
+            Ok(()) => println!("wrote icons to {}", dir.display()),
+            Err(e) => eprintln!("error: {e}"),
+        }
+        return Ok(());
+    }
+    if flag("--register") || flag("--unregister") || flag("--status") {
+        std::process::exit(handler_cli(flag("--register"), flag("--unregister")));
+    }
+
+    let items: Vec<String> = args.iter().filter(|a| !a.starts_with("--")).cloned().collect();
+    let listener = match integration::single_instance::acquire(&paths, &items) {
+        integration::single_instance::Acquire::Forwarded => return Ok(()),
+        integration::single_instance::Acquire::Primary(l) => l,
+    };
+
+    let _log_guard = init_logging(&paths);
     let (settings, first_run) = Settings::load(&paths);
-    let launch: Vec<AddSource> = args.iter().filter(|a| !a.starts_with("--")).filter_map(|a| AddSource::parse(a)).collect();
+    let launch: Vec<AddSource> = items.iter().filter_map(|a| AddSource::parse(a)).collect();
+    let start_minimized = flag("--minimized") || settings.behavior.start_minimized;
+
+    let (ipc_tx, ipc_rx) = std::sync::mpsc::channel();
+    let ctx_cell: Arc<std::sync::OnceLock<egui::Context>> = Arc::new(std::sync::OnceLock::new());
+    #[cfg(target_os = "macos")]
+    integration::macos_events::install(&ipc_tx, &ctx_cell);
+    if let Some(l) = listener {
+        integration::single_instance::serve(l, ipc_tx, ctx_cell.clone());
+    }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -36,7 +77,8 @@ fn main() -> eframe::Result {
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([760.0, 480.0])
         .with_drag_and_drop(true)
-        .with_icon(Arc::new(icon));
+        .with_icon(Arc::new(icon))
+        .with_visible(!start_minimized);
     let options = eframe::NativeOptions {
         viewport,
         persist_window: true,
@@ -49,11 +91,45 @@ fn main() -> eframe::Result {
     let result = eframe::run_native(
         "Corrent",
         options,
-        Box::new(move |cc| Ok(Box::new(app::CorrentApp::new(cc, handle, paths, settings, first_run, launch)))),
+        Box::new(move |cc| {
+            let _ = ctx_cell.set(cc.egui_ctx.clone());
+            Ok(Box::new(app::CorrentApp::new(cc, handle, paths, settings, first_run, launch, ipc_rx, start_minimized)))
+        }),
     );
     // Let blocking hash/IO tasks finish briefly, but never hang on exit.
     rt.shutdown_timeout(std::time::Duration::from_secs(3));
     result
+}
+
+fn handler_cli(register: bool, unregister: bool) -> i32 {
+    use integration::os_handler;
+    #[cfg(windows)]
+    attach_console();
+    let result = if register {
+        os_handler::register(true, true)
+    } else if unregister {
+        os_handler::unregister(true, true)
+    } else {
+        Ok(())
+    };
+    if let Err(e) = &result {
+        eprintln!("error: {e:#}");
+    }
+    let st = os_handler::status();
+    println!("magnet:   {}", st.magnet.label());
+    println!(".torrent: {}", st.torrent.label());
+    i32::from(result.is_err())
+}
+
+/// Release builds use the GUI subsystem; reattach to the parent console for CLI output.
+#[cfg(windows)]
+fn attach_console() {
+    unsafe extern "system" {
+        fn AttachConsole(pid: u32) -> i32;
+    }
+    unsafe {
+        AttachConsole(u32::MAX);
+    }
 }
 
 fn init_logging(paths: &Paths) -> Option<()> {
@@ -61,6 +137,10 @@ fn init_logging(paths: &Paths) -> Option<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_env("CORRENT_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,librqbit=info,librqbit_dht=warn,tracing=warn"));
     let _ = std::fs::create_dir_all(paths.log_dir());
+    let log_file = paths.log_dir().join("corrent.log");
+    if std::fs::metadata(&log_file).map(|m| m.len() > 10 * 1024 * 1024).unwrap_or(false) {
+        let _ = std::fs::rename(&log_file, paths.log_dir().join("corrent.old.log"));
+    }
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

@@ -46,3 +46,34 @@ pub fn app_icon() -> egui::IconData {
     let size = 128;
     egui::IconData { rgba: icon_rgba(size), width: size, height: size }
 }
+
+/// A Windows .ico containing PNG-compressed images at the given sizes.
+pub fn ico(sizes: &[u32]) -> Vec<u8> {
+    let images: Vec<Vec<u8>> = sizes.iter().map(|&s| crate::util::encode_png(&icon_rgba(s), s, s)).collect();
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0, 0, 1, 0]);
+    out.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * sizes.len() as u32;
+    for (s, img) in sizes.iter().zip(&images) {
+        let dim = if *s >= 256 { 0 } else { *s as u8 };
+        out.extend_from_slice(&[dim, dim, 0, 0]);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&(img.len() as u32).to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        offset += img.len() as u32;
+    }
+    for img in images {
+        out.extend_from_slice(&img);
+    }
+    out
+}
+
+/// Development helper: `corrent --write-icons <dir>` renders the icon set used for packaging.
+pub fn write_icon_set(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for s in [32u32, 64, 128, 256, 512] {
+        std::fs::write(dir.join(format!("corrent-{s}.png")), crate::util::encode_png(&icon_rgba(s), s, s))?;
+    }
+    std::fs::write(dir.join("corrent.ico"), ico(&[16, 24, 32, 48, 64, 128, 256]))
+}

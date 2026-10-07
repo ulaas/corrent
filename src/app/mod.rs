@@ -3,6 +3,7 @@
 mod actions;
 mod dialogs;
 pub mod icon;
+mod integration_ui;
 pub mod log;
 mod settings_window;
 mod statusbar;
@@ -268,6 +269,12 @@ pub struct CorrentApp {
     pub first_run: bool,
     pub quitting: bool,
     applied_appearance: Option<crate::config::Appearance>,
+
+    // OS integration
+    ipc: std::sync::mpsc::Receiver<crate::integration::single_instance::IpcMessage>,
+    pub handler_status: Arc<std::sync::Mutex<Option<crate::integration::os_handler::HandlerStatus>>>,
+    pub window_hidden: bool,
+    frame_seen: bool,
 }
 
 impl CorrentApp {
@@ -278,6 +285,8 @@ impl CorrentApp {
         settings: Settings,
         first_run: bool,
         launch: Vec<AddSource>,
+        ipc: std::sync::mpsc::Receiver<crate::integration::single_instance::IpcMessage>,
+        start_hidden: bool,
     ) -> Self {
         theme::install_fonts(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
@@ -312,7 +321,12 @@ impl CorrentApp {
             first_run,
             quitting: false,
             applied_appearance: None,
+            ipc,
+            handler_status: Arc::new(std::sync::Mutex::new(None)),
+            window_hidden: start_hidden,
+            frame_seen: false,
         }
+        .init_integration()
     }
 
     pub fn palette(&self, ctx: &Context) -> Palette {
@@ -412,7 +426,13 @@ impl CorrentApp {
 
 impl eframe::App for CorrentApp {
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_os = "macos")]
+        if !self.frame_seen {
+            crate::integration::macos_events::reinstall();
+        }
+        self.frame_seen = true;
         self.snap = self.engine.snapshot();
+        self.drain_ipc(ctx);
         self.drain_events(ctx);
         self.process_launch_queue();
     }
@@ -433,7 +453,10 @@ impl eframe::App for CorrentApp {
 
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p.bg0).inner_margin(egui::Margin::same(0)))
-            .show(ui, |ui| self.torrent_table(ui, &p));
+            .show(ui, |ui| {
+                self.handler_banner(ui, &p);
+                self.torrent_table(ui, &p);
+            });
 
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);
