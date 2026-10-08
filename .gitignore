@@ -2,3 +2,4 @@
 *.log
 /.corrent-portable
 /.zigvenv
+/dist

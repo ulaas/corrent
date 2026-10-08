@@ -1,0 +1,7 @@
+# winget manifests (version 1.6). The release workflow fills in {{VERSION}}, {{URL}} and {{SHA256}}
+# and the owner submits them to microsoft/winget-pkgs (see docs/PACKAGING.md).
+PackageIdentifier: Corrent.Corrent
+PackageVersion: "{{VERSION}}"
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

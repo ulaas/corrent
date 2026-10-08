@@ -97,7 +97,8 @@ fn main() -> eframe::Result {
     let icon = app::icon::app_icon();
     let viewport = egui::ViewportBuilder::default()
         .with_title("Corrent")
-        .with_app_id("corrent")
+        // Wayland matches windows to their .desktop file by this id (Flatpak uses its app ID).
+        .with_app_id(std::env::var("FLATPAK_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "corrent".into()))
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([760.0, 480.0])
         .with_drag_and_drop(true)

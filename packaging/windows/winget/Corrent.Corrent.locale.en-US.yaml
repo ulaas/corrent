@@ -1,0 +1,15 @@
+PackageIdentifier: Corrent.Corrent
+PackageVersion: "{{VERSION}}"
+PackageLocale: en-US
+Publisher: Corrent
+PackageName: Corrent
+License: MIT OR Apache-2.0
+ShortDescription: A beautiful, stable, cross-platform BitTorrent client
+PackageUrl: https://github.com/ulaas/corrent
+Tags:
+  - bittorrent
+  - torrent
+  - magnet
+  - p2p
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

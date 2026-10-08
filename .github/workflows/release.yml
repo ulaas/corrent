@@ -1,0 +1,101 @@
+name: Release
+
+# Builds installers when a version tag is pushed (the owner pushes tags; nothing here pushes).
+# The draft release is published by hand after checking the artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-wix (WiX 3 is preinstalled on the runner)
+        run: cargo install cargo-wix --locked
+      - name: Portable zip and MSI
+        run: powershell -File scripts/package-windows.ps1 -Msi
+      - name: winget manifests
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          $msi = Get-ChildItem dist/*.msi | Select-Object -First 1
+          $sha = (Get-FileHash $msi -Algorithm SHA256).Hash
+          $url = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$($msi.Name)"
+          New-Item -ItemType Directory -Force dist/winget | Out-Null
+          Get-ChildItem packaging/windows/winget/*.yaml | ForEach-Object {
+            (Get-Content $_) -replace '\{\{VERSION\}\}', $version -replace '\{\{URL\}\}', $url -replace '\{\{SHA256\}\}', $sha |
+              Set-Content (Join-Path dist/winget $_.Name)
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/**
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libfuse2
+      - name: linuxdeploy
+        run: |
+          curl -fsSLo linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+      - name: AppImage
+        run: LINUXDEPLOY=./linuxdeploy scripts/package-appimage.sh
+      - name: Plain tarball
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          tar -C target/release -czf "dist/Corrent-$version-linux-x86_64.tar.gz" corrent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/**
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-bundle --locked
+      - name: App bundle and dmg (signed only when the owner adds the secrets)
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          NOTARY_PROFILE: ${{ secrets.MACOS_NOTARY_PROFILE }}
+        run: scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/**
+
+  release:
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            artifacts/windows/*.zip
+            artifacts/windows/*.msi
+            artifacts/linux/*.AppImage
+            artifacts/linux/*.tar.gz
+            artifacts/macos/*.dmg

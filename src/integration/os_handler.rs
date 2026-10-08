@@ -37,6 +37,12 @@ pub struct HandlerStatus {
 }
 
 pub fn exe_path() -> String {
+    // Inside an AppImage the binary runs from a temporary mount; register the AppImage itself.
+    if cfg!(target_os = "linux")
+        && let Some(appimage) = std::env::var_os("APPIMAGE").filter(|p| !p.is_empty())
+    {
+        return appimage.to_string_lossy().into_owned();
+    }
     std::env::current_exe()
         .ok()
         .and_then(|p| std::fs::canonicalize(&p).ok().or(Some(p)))

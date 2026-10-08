@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.ulaas.Corrent</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <name>Corrent</name>
+  <summary>A beautiful, stable BitTorrent client</summary>
+  <description>
+    <p>Corrent downloads and shares files over BitTorrent. It opens magnet links and .torrent
+    files, follows RSS feeds, streams media while it downloads and can stand in for qBittorrent
+    in Sonarr and Radarr.</p>
+  </description>
+  <launchable type="desktop-id">io.github.ulaas.Corrent.desktop</launchable>
+  <url type="homepage">https://github.com/ulaas/corrent</url>
+  <provides>
+    <mediatype>application/x-bittorrent</mediatype>
+    <mediatype>x-scheme-handler/magnet</mediatype>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-10-08" />
+  </releases>
+</component>

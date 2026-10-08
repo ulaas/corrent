@@ -1,0 +1,38 @@
+# Flatpak manifest. Generate the offline cargo sources first (see docs/PACKAGING.md):
+#   python3 flatpak-cargo-generator.py ../../../Cargo.lock -o cargo-sources.json
+app-id: io.github.ulaas.Corrent
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: corrent
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Downloads go to ~/Downloads/Corrent by default; other folders through the file chooser portal.
+  - --filesystem=xdg-download
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/corrent/cargo
+modules:
+  - name: corrent
+    buildsystem: simple
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml
+      - cargo --offline build --release --locked
+      - install -Dm755 target/release/corrent /app/bin/corrent
+      - install -Dm644 packaging/linux/corrent.desktop /app/share/applications/io.github.ulaas.Corrent.desktop
+      - desktop-file-edit --set-icon=io.github.ulaas.Corrent /app/share/applications/io.github.ulaas.Corrent.desktop
+      - install -Dm644 packaging/linux/io.github.ulaas.Corrent.metainfo.xml /app/share/metainfo/io.github.ulaas.Corrent.metainfo.xml
+      - for s in 32 64 128 256 512; do install -Dm644 assets/icon/corrent-$s.png /app/share/icons/hicolor/${s}x${s}/apps/io.github.ulaas.Corrent.png; done
+    sources:
+      - type: dir
+        path: ../../..
+      - cargo-sources.json

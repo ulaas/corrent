@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Corrent
+GenericName=BitTorrent Client
+Comment=Download and share files over BitTorrent
+Exec=corrent %U
+Icon=corrent
+Terminal=false
+Categories=Network;FileTransfer;P2P;
+Keywords=torrent;magnet;bittorrent;download;
+MimeType=x-scheme-handler/magnet;application/x-bittorrent;
+StartupWMClass=corrent
+SingleMainWindow=true

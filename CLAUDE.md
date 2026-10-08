@@ -95,9 +95,10 @@ onboarding, torrent creator (M16), streaming to a media player (M17), RSS feeds 
 search (M19), qBittorrent-compatible API (M20), 5k-torrent perf check + Activity sparklines +
 drag-to-reorder queue (M21), palettes/high contrast/theme editor/accessibility (M22),
 per-torrent speed limits + IP filter (M23), per-file priorities + category limits (M24), import from
-qBittorrent/Transmission/Deluge, when-done actions, opt-in update checks (M25).
+qBittorrent/Transmission/Deluge, when-done actions, opt-in update checks (M25), packaging (M26:
+MSI/portable zip/winget, AppImage/Flatpak, dmg; release workflow — see docs/PACKAGING.md).
 Fable reviews of M1–M15 were addressed. Default save folder: `Downloads/Corrent`.
 
-Next steps: M26 onward in `docs/ROADMAP.md`.
+Next steps: M27 in `docs/ROADMAP.md`.
 
 Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.

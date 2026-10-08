@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Corrent per-user MSI (WiX 3, built with `cargo wix`; see docs/PACKAGING.md).
+
+  - Installs to %LOCALAPPDATA%\Programs\Corrent without admin rights.
+  - Start Menu shortcut carries the AppUserModelID "Corrent.Corrent", so notifications show
+    Corrent's name and icon.
+  - Optional feature: open magnet links and .torrent files with Corrent. It runs corrent.exe
+    with the register / unregister switches, the same code as Settings › General, which
+    remembers the previous handler and gives it back on uninstall.
+  - User data (%APPDATA%\Corrent) is never removed by the uninstaller.
+-->
+<?if $(sys.BUILDARCH) = x64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Product
+        Id="*"
+        Name="Corrent"
+        UpgradeCode="6E2B1C4A-8F3D-4E57-9B21-0C7A5D3F9E11"
+        Manufacturer="Corrent"
+        Language="1033"
+        Codepage="1252"
+        Version="$(var.Version)">
+
+        <Package
+            Id="*"
+            Keywords="Installer"
+            Description="Corrent BitTorrent client"
+            Manufacturer="Corrent"
+            InstallerVersion="500"
+            Languages="1033"
+            Compressed="yes"
+            InstallScope="perUser"
+            SummaryCodepage="1252" />
+
+        <!-- Per-user install into %LOCALAPPDATA%\Programs (no UAC prompt). -->
+        <Property Id="ALLUSERS" Value="2" />
+        <Property Id="MSIINSTALLPERUSER" Value="1" />
+
+        <MajorUpgrade
+            Schedule="afterInstallInitialize"
+            DowngradeErrorMessage="A newer version of Corrent is already installed." />
+
+        <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" DiskPrompt="CD-ROM #1" />
+        <Property Id="DiskPrompt" Value="Corrent Installation" />
+
+        <Directory Id="TARGETDIR" Name="SourceDir">
+            <Directory Id="$(var.PlatformProgramFilesFolder)" Name="PFiles">
+                <Directory Id="APPLICATIONFOLDER" Name="Corrent">
+                    <Component Id="MainExecutable" Guid="*">
+                        <File Id="CorrentExe" Name="corrent.exe" DiskId="1" Source="$(var.CargoTargetBinDir)\corrent.exe" />
+                        <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="InstallDir" Type="string" Value="[APPLICATIONFOLDER]" KeyPath="yes" />
+                        <RemoveFolder Id="RemoveAppFolder" On="uninstall" />
+                    </Component>
+                    <Component Id="License" Guid="*">
+                        <File Id="LicenseMd" Name="LICENSE.txt" DiskId="1" Source="wix\License.txt" />
+                        <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="License" Type="integer" Value="1" KeyPath="yes" />
+                    </Component>
+                </Directory>
+            </Directory>
+            <Directory Id="ProgramMenuFolder">
+                <Component Id="StartMenuShortcut" Guid="*">
+                    <Shortcut
+                        Id="CorrentShortcut"
+                        Name="Corrent"
+                        Description="BitTorrent client"
+                        Target="[APPLICATIONFOLDER]corrent.exe"
+                        WorkingDirectory="APPLICATIONFOLDER">
+                        <!-- Must match integration/app_identity.rs APP_ID. -->
+                        <ShortcutProperty Key="System.AppUserModel.ID" Value="Corrent.Corrent" />
+                    </Shortcut>
+                    <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+                </Component>
+            </Directory>
+        </Directory>
+
+        <Feature Id="Main" Title="Corrent" Level="1" Absent="disallow" ConfigurableDirectory="APPLICATIONFOLDER" AllowAdvertise="no">
+            <ComponentRef Id="MainExecutable" />
+            <ComponentRef Id="License" />
+            <ComponentRef Id="StartMenuShortcut" />
+            <Feature Id="Associations" Title="Open magnet links and .torrent files with Corrent" Level="1" AllowAdvertise="no">
+                <!-- Feature with no files: its state drives the custom actions below. -->
+                <Component Id="AssociationsMarker" Directory="APPLICATIONFOLDER" Guid="*">
+                    <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="Associations" Type="integer" Value="1" KeyPath="yes" />
+                </Component>
+            </Feature>
+        </Feature>
+
+        <CustomAction Id="RegisterHandlers" FileKey="CorrentExe" ExeCommand="--register" Execute="deferred" Impersonate="yes" Return="ignore" />
+        <CustomAction Id="UnregisterHandlers" FileKey="CorrentExe" ExeCommand="--unregister" Execute="deferred" Impersonate="yes" Return="ignore" />
+        <InstallExecuteSequence>
+            <Custom Action="RegisterHandlers" After="InstallFiles">&amp;Associations = 3</Custom>
+            <Custom Action="UnregisterHandlers" Before="RemoveFiles">(&amp;Associations = 2) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+        </InstallExecuteSequence>
+
+        <Icon Id="CorrentIcon" SourceFile="assets\icon\corrent.ico" />
+        <Property Id="ARPPRODUCTICON" Value="CorrentIcon" />
+        <Property Id="ARPHELPLINK" Value="https://github.com/ulaas/corrent" />
+
+        <UI>
+            <UIRef Id="WixUI_FeatureTree" />
+        </UI>
+        <WixVariable Id="WixUILicenseRtf" Value="wix\License.rtf" />
+    </Product>
+</Wix>
