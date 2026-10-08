@@ -320,6 +320,7 @@ pub struct CorrentApp {
     pub ctx: egui::Context,
     previous_run: crate::crash::PreviousRun,
     pub data_notes: Vec<String>,
+    pub free_cache: Option<(String, std::time::Instant, Option<u64>)>,
     pub pickers: pickers::Pickers,
     pub extras: extras::Extras,
     icon_tex: Option<egui::TextureHandle>,
@@ -388,6 +389,7 @@ impl CorrentApp {
             ctx: cc.egui_ctx.clone(),
             previous_run: Default::default(),
             data_notes: Vec::new(),
+            free_cache: None,
             pickers: Default::default(),
             extras: Default::default(),
             icon_tex: None,
@@ -516,7 +518,10 @@ impl CorrentApp {
 
     pub fn save_settings(&mut self) {
         if let Err(e) = self.settings.save(&self.paths) {
-            self.toasts.push(ToastKind::Error, format!("Could not save settings: {e:#}"));
+            let msg = format!("Your settings couldn't be saved: {}", crate::util::explain_io(&format!("{e:#}")));
+            if !self.data_notes.contains(&msg) {
+                self.data_notes.push(msg);
+            }
         }
     }
 

@@ -36,6 +36,21 @@ impl CorrentApp {
         if item(ui, icons::LIGHTNING, "Force start") {
             self.engine.send(EngineCommand::ForceStart(hashes.clone()));
         }
+        // Disk-full / access problems: the fix is usually a different folder.
+        let io_problem = first.error.as_deref().map(crate::util::classify_io).is_some_and(|k| {
+            matches!(k, crate::util::IoKind::DiskFull | crate::util::IoKind::Permission | crate::util::IoKind::NotFound)
+        });
+        if single && io_problem && !first.restore_failed {
+            ui.separator();
+            if ui
+                .button(
+                    RichText::new(format!("{}  Choose another folder…", icons::FOLDER_SIMPLE_DASHED)).color(p.accent),
+                )
+                .clicked()
+            {
+                self.open_move_dialog(hashes.clone());
+            }
+        }
         ui.separator();
         if single && item(ui, icons::FOLDER_OPEN, "Open folder") {
             super::open_path(&first.save_path);

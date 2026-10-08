@@ -76,18 +76,7 @@ pub async fn retry(sess: &Arc<Session>, session_dir: &Path, f: &FailedRestore) -
 
 /// Make common OS errors understandable.
 pub fn friendly(e: &str) -> String {
-    if e.contains("os error 5") || e.contains("Access is denied") || e.contains("Permission denied") {
-        format!(
-            "A file can't be opened (access denied). It may be blocked or quarantined by antivirus software, \
-             open in another program, or read-only.\n\n{e}"
-        )
-    } else if e.contains("os error 32") {
-        format!("A file is in use by another program.\n\n{e}")
-    } else if e.contains("os error 112") || e.contains("No space left") {
-        format!("The disk is full.\n\n{e}")
-    } else {
-        e.to_string()
-    }
+    crate::util::explain_io(e)
 }
 
 /// Remove entries from librqbit's database while the session is stopped.
@@ -154,7 +143,7 @@ mod more_tests {
     #[test]
     fn friendly_messages() {
         assert!(friendly("error opening x: Access is denied. (os error 5)").contains("antivirus"));
-        assert!(friendly("os error 32").contains("in use"));
+        assert!(friendly("(os error 32)").contains("in use"));
         assert!(friendly("No space left on device").contains("disk is full"));
         assert_eq!(friendly("something else"), "something else");
     }

@@ -26,6 +26,62 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What kind of I/O problem an error message describes (works across OSes and wrappers).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IoKind {
+    DiskFull,
+    Permission,
+    Locked,
+    NotFound,
+    Other,
+}
+
+pub fn classify_io(msg: &str) -> IoKind {
+    let m = msg.to_ascii_lowercase();
+    if m.contains("os error 28")
+        || m.contains("os error 112")
+        || m.contains("os error 39")
+        || m.contains("no space left")
+        || m.contains("not enough space")
+        || m.contains("disk is full")
+    {
+        IoKind::DiskFull
+    } else if m.contains("os error 32") || m.contains("os error 33") || m.contains("being used by another process") {
+        IoKind::Locked
+    } else if m.contains("os error 5)")
+        || m.contains("os error 13")
+        || m.contains("access is denied")
+        || m.contains("permission denied")
+        || m.contains("read-only file system")
+        || m.contains("os error 30")
+    {
+        IoKind::Permission
+    } else if m.contains("os error 2)")
+        || m.contains("os error 3)")
+        || m.contains("no such file")
+        || m.contains("cannot find the path")
+    {
+        IoKind::NotFound
+    } else {
+        IoKind::Other
+    }
+}
+
+/// A plain-language explanation for an I/O error, followed by the original message.
+pub fn explain_io(msg: &str) -> String {
+    let hint = match classify_io(msg) {
+        IoKind::DiskFull => "The disk is full. Free up space or move the download to another drive.",
+        IoKind::Permission => {
+            "Access was denied. The file may be blocked or quarantined by antivirus software, read-only, or in a \
+             folder Corrent may not write to."
+        }
+        IoKind::Locked => "A file is in use by another program. Close it and retry.",
+        IoKind::NotFound => "A file or folder is missing (for example, a disconnected drive).",
+        IoKind::Other => return msg.to_string(),
+    };
+    format!("{hint}\n\n{msg}")
+}
+
 pub fn now_unix() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -254,6 +310,22 @@ mod tests {
         let png = encode_png(&[255u8; 4 * 4], 2, 2);
         assert_eq!(&png[1..4], b"PNG");
         assert_eq!(&png[png.len() - 8..png.len() - 4], b"IEND");
+    }
+
+    #[test]
+    fn io_classification() {
+        assert_eq!(
+            classify_io("error writing: There is not enough space on the disk. (os error 112)"),
+            IoKind::DiskFull
+        );
+        assert_eq!(classify_io("No space left on device (os error 28)"), IoKind::DiskFull);
+        assert_eq!(classify_io("Access is denied. (os error 5)"), IoKind::Permission);
+        assert_eq!(classify_io("Permission denied (os error 13)"), IoKind::Permission);
+        assert_eq!(classify_io("being used by another process. (os error 32)"), IoKind::Locked);
+        assert_eq!(classify_io("The system cannot find the path specified. (os error 3)"), IoKind::NotFound);
+        assert_eq!(classify_io("os error 50"), IoKind::Other, "not confused with 5");
+        assert_eq!(explain_io("weird"), "weird");
+        assert!(explain_io("os error 112").starts_with("The disk is full"));
     }
 
     #[test]

@@ -110,6 +110,7 @@ pub struct Actor {
     undo: HashMap<InfoHash, UndoEntry>,
     /// Pruning the store waits until failed restores have been identified.
     restore_checked: bool,
+    low_space_warned: bool,
 }
 
 impl Actor {
@@ -167,6 +168,7 @@ impl Actor {
             undo_pending: HashMap::new(),
             undo: HashMap::new(),
             restore_checked: false,
+            low_space_warned: false,
         }
     }
 
@@ -753,6 +755,25 @@ impl Actor {
         });
     }
 
+    /// Warn once when the default download folder runs low while something is downloading.
+    fn check_free_space(&mut self) {
+        const LOW: u64 = 1024 * 1024 * 1024;
+        let Some(free) = self.free_space else { return };
+        let downloading = self.snapshot.load().torrents.iter().any(|t| t.state == TorrentState::Downloading);
+        if free < LOW && downloading && !self.low_space_warned {
+            self.low_space_warned = true;
+            self.toast(
+                ToastKind::Warning,
+                format!(
+                    "Only {} free in the download folder. Downloads will fail when the disk is full.",
+                    crate::util::fmt_bytes(free)
+                ),
+            );
+        } else if free >= 2 * LOW {
+            self.low_space_warned = false;
+        }
+    }
+
     fn forget_hash(&mut self, hash: &InfoHash) {
         self.store.remove(hash);
         self.static_info.remove(hash);
@@ -1079,6 +1100,13 @@ impl Actor {
         };
         self.snapshot.store(Arc::new(snap));
         self.store.maybe_save(false);
+        if let Some(e) = self.store.take_save_error() {
+            self.emit(EngineEvent::DataWarning(format!(
+                "Corrent couldn't save its data: {}",
+                crate::util::explain_io(&e)
+            )));
+        }
+        self.check_free_space();
         self.ctx.request_repaint();
     }
 
@@ -1224,7 +1252,7 @@ impl Actor {
             hash,
             name: name.clone(),
             state,
-            error: stats.error.clone(),
+            error: stats.error.as_deref().map(crate::util::explain_io),
             size,
             done,
             progress,

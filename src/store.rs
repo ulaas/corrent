@@ -98,6 +98,8 @@ pub struct Store {
     pub warning: Option<String>,
     /// The file belongs to a newer Corrent: never overwrite it.
     read_only: bool,
+    last_error: Option<String>,
+    pending_error: Option<String>,
 }
 
 impl Store {
@@ -178,7 +180,17 @@ impl Store {
             migrate_store(&mut data, from);
             dirty = true;
         }
-        Store { data, path, dirty, soft_dirty: false, last_save: std::time::Instant::now(), warning, read_only }
+        Store {
+            data,
+            path,
+            dirty,
+            soft_dirty: false,
+            last_save: std::time::Instant::now(),
+            warning,
+            read_only,
+            last_error: None,
+            pending_error: None,
+        }
     }
 
     /// Mutable access that marks the store for a prompt save.
@@ -213,6 +225,11 @@ impl Store {
             self.dirty = true;
             self.normalize_queue();
         }
+    }
+
+    /// A new save failure to report (each distinct failure is reported once).
+    pub fn take_save_error(&mut self) -> Option<String> {
+        self.pending_error.take()
     }
 
     pub fn mark_dirty(&mut self) {
@@ -270,11 +287,21 @@ impl Store {
         match serde_json::to_vec_pretty(&self.data) {
             Ok(bytes) => match crate::util::write_atomic(&self.path, &bytes) {
                 Ok(()) => {
+                    self.last_error = None;
                     self.dirty = false;
                     self.soft_dirty = false;
                     self.last_save = std::time::Instant::now();
                 }
-                Err(e) => tracing::error!("failed to save store: {e:#}"),
+                Err(e) => {
+                    tracing::error!("failed to save store: {e:#}");
+                    let msg = format!("{e:#}");
+                    if self.last_error.as_deref() != Some(msg.as_str()) {
+                        self.pending_error = Some(msg.clone());
+                    }
+                    self.last_error = Some(msg);
+                    // Retry later instead of every tick.
+                    self.last_save = std::time::Instant::now();
+                }
             },
             Err(e) => tracing::error!("failed to serialize store: {e:#}"),
         }
@@ -409,5 +436,28 @@ mod schema_tests {
         s.maybe_save(true);
         assert_eq!(std::fs::read_to_string(&p).unwrap(), future);
         let _ = std::fs::remove_file(&p);
+    }
+}
+
+#[cfg(test)]
+mod save_error_tests {
+    use super::*;
+
+    #[test]
+    fn save_failures_are_reported_once() {
+        let base = std::env::temp_dir().join(format!("corrent-store-err-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // A *file* where the store's folder should be makes every save fail.
+        std::fs::write(base.join("blocked"), b"x").unwrap();
+        let mut s = Store::load(base.join("blocked").join("store.json"));
+        s.meta_mut(InfoHash([1; 20]));
+        s.maybe_save(true);
+        assert!(s.take_save_error().is_some(), "first failure is reported");
+        s.mark_dirty();
+        s.maybe_save(true);
+        assert!(s.take_save_error().is_none(), "the same failure isn't repeated");
+        assert!(s.dirty, "data stays marked for a later retry");
+        let _ = std::fs::remove_dir_all(base);
     }
 }

@@ -88,6 +88,19 @@ impl CorrentApp {
         self.modal.is_some() || !self.add_dialogs.is_empty() || self.settings_draft.is_some()
     }
 
+    /// Free space for a path typed in a dialog, refreshed at most every two seconds.
+    pub fn cached_free_space(&mut self, path: &str) -> Option<u64> {
+        let stale = self
+            .free_cache
+            .as_ref()
+            .is_none_or(|(p, t, _)| p != path || t.elapsed() >= std::time::Duration::from_secs(2));
+        if stale {
+            let free = crate::engine::free_space_for(&PathBuf::from(path));
+            self.free_cache = Some((path.to_string(), Instant::now(), free));
+        }
+        self.free_cache.as_ref().and_then(|c| c.2)
+    }
+
     pub fn open_magnet_dialog(&mut self) {
         // Pre-fill from the clipboard when it holds something addable.
         let clip = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()).unwrap_or_default();
@@ -314,6 +327,20 @@ impl CorrentApp {
                         self.pick(PickTarget::MoveFolder, PickKind::Folder, Some(PathBuf::from(path.as_str())));
                     }
                     ui.add_space(4.0);
+                    let need: u64 =
+                        self.snap.torrents.iter().filter(|t| hashes.contains(&t.hash)).map(|t| t.done).sum();
+                    let free = self.cached_free_space(path);
+                    if let Some(free) = free {
+                        let short = need > free;
+                        ui.label(
+                            RichText::new(format!("{} needed · {} free", fmt_bytes(need), fmt_bytes(free)))
+                                .small()
+                                .color(if short { p.error } else { p.text_dim }),
+                        );
+                        if short {
+                            ui.label(RichText::new("There isn't enough space in that folder.").small().color(p.error));
+                        }
+                    }
                     ui.label(
                         RichText::new(
                             "Files are moved, then verified at the new location. Transfers pause during the move.",
