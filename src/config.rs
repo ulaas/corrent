@@ -61,6 +61,8 @@ pub fn default_download_dir() -> PathBuf {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct Settings {
+    /// File format version (see `migrate.rs`); 0 = written before versioning.
+    pub schema_version: u32,
     pub behavior: Behavior,
     pub downloads: Downloads,
     pub connection: Connection,
@@ -457,12 +459,39 @@ impl Settings {
         match std::fs::read_to_string(&file) {
             Ok(text) => match toml::from_str::<Settings>(&text) {
                 Ok(mut s) => {
-                    // Earlier versions defaulted to the bare Downloads folder.
-                    if s.downloads.save_path == os_download_dir() {
-                        s.downloads.save_path = default_download_dir();
+                    use crate::migrate::{SETTINGS_VERSION, migrate_settings};
+                    let from = s.schema_version;
+                    if from > SETTINGS_VERSION {
+                        crate::migrate::SETTINGS_READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return (
+                            s,
+                            false,
+                            Some(format!(
+                                "Your settings were saved by a newer version of Corrent (format {from}). They are used as-is \
+                                 but won't be saved, so the newer version keeps working. Update Corrent to change settings."
+                            )),
+                        );
+                    }
+                    if from < SETTINGS_VERSION {
+                        let backup = crate::migrate::backup_before_migration(&file, from);
+                        migrate_settings(&mut s, from);
                         let _ = s.save(paths);
+                        tracing::info!(
+                            "migrated settings from format {from} to {SETTINGS_VERSION} (backup: {backup:?})"
+                        );
                     }
                     (s, false, None)
+                }
+                Err(e) if crate::migrate::toml_version(&text) > crate::migrate::SETTINGS_VERSION => {
+                    // A newer format we can't read is not damage: never overwrite it.
+                    tracing::warn!("settings from a newer version can't be read ({e})");
+                    crate::migrate::SETTINGS_READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let (s, _) = Settings::salvage(&text);
+                    (
+                        s,
+                        false,
+                        Some("Your settings were saved by a newer version of Corrent and couldn't be fully read. Defaults are used for the rest of this session; the file is left untouched.".into()),
+                    )
                 }
                 Err(e) => {
                     tracing::error!("settings file is invalid ({e}); salvaging what parses");
@@ -478,13 +507,13 @@ impl Settings {
                     (s, false, Some(format!("{what}. The damaged file was kept as {}.", bad.display())))
                 }
             },
-            Err(_) => (Settings::default(), true, None),
+            Err(_) => (Settings { schema_version: crate::migrate::SETTINGS_VERSION, ..Default::default() }, true, None),
         }
     }
 
     /// Recover every section of a damaged settings file that still deserializes.
     pub fn salvage(text: &str) -> (Settings, Vec<String>) {
-        let mut s = Settings::default();
+        let mut s = Settings { schema_version: crate::migrate::SETTINGS_VERSION, ..Default::default() };
         let Ok(table) = text.parse::<toml::Table>() else {
             return (s, vec!["all (the file is not valid TOML)".into()]);
         };
@@ -513,7 +542,13 @@ impl Settings {
     }
 
     pub fn save(&self, paths: &Paths) -> anyhow::Result<()> {
-        let text = toml::to_string_pretty(self)?;
+        if crate::migrate::settings_read_only() {
+            tracing::warn!("not saving settings: the file belongs to a newer version of Corrent");
+            return Ok(());
+        }
+        let mut s = self.clone();
+        s.schema_version = crate::migrate::SETTINGS_VERSION;
+        let text = toml::to_string_pretty(&s)?;
         crate::util::write_atomic(&paths.settings_file(), text.as_bytes())
     }
 

@@ -75,6 +75,8 @@ pub struct GlobalStats {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct StoreData {
+    /// File format version (see `migrate.rs`); 0 = written before versioning.
+    pub schema_version: u32,
     pub torrents: HashMap<InfoHash, TorrentMeta>,
     pub categories: BTreeMap<String, CategoryInfo>,
     pub tags: Vec<String>,
@@ -94,6 +96,8 @@ pub struct Store {
     last_save: std::time::Instant,
     /// Set when loading had to recover from a damaged file.
     pub warning: Option<String>,
+    /// The file belongs to a newer Corrent: never overwrite it.
+    read_only: bool,
 }
 
 impl Store {
@@ -108,10 +112,17 @@ impl Store {
             }
         }
         let mut warning = None;
+        let mut newer_unreadable = false;
         let data = match std::fs::read(&path) {
             Err(_) => None,
             Ok(b) => match serde_json::from_slice::<StoreData>(&b) {
                 Ok(d) => Some(d),
+                Err(e) if crate::migrate::json_version(&b) > crate::migrate::STORE_VERSION => {
+                    // Newer format, not damage: start empty in memory and never overwrite the file.
+                    tracing::warn!("store.json from a newer version can't be read ({e})");
+                    newer_unreadable = true;
+                    None
+                }
                 Err(e) => {
                     tracing::error!("store.json is corrupt ({e}); trying backup");
                     let bad = path.with_extension(format!("json.bad-{}", crate::util::now_unix()));
@@ -143,7 +154,31 @@ impl Store {
             },
         }
         .unwrap_or_default();
-        Store { data, path, dirty: warning.is_some(), soft_dirty: false, last_save: std::time::Instant::now(), warning }
+        let mut data = data;
+        let mut read_only = newer_unreadable;
+        if newer_unreadable {
+            warning = Some(
+                "Corrent's data was saved by a newer version and can't be read by this one. Categories and tags are                  hidden and nothing is saved until you update Corrent; your torrents are unaffected."
+                    .into(),
+            );
+        }
+        let mut dirty = warning.is_some();
+        use crate::migrate::{STORE_VERSION, migrate_store};
+        let from = data.schema_version;
+        if from > STORE_VERSION {
+            read_only = true;
+            warning.get_or_insert(format!(
+                "Corrent's data was saved by a newer version (format {from}). Changes to categories, tags and \
+                 totals won't be saved until you update Corrent."
+            ));
+        } else if from < STORE_VERSION {
+            if path.exists() {
+                let _ = crate::migrate::backup_before_migration(&path, from);
+            }
+            migrate_store(&mut data, from);
+            dirty = true;
+        }
+        Store { data, path, dirty, soft_dirty: false, last_save: std::time::Instant::now(), warning, read_only }
     }
 
     /// Mutable access that marks the store for a prompt save.
@@ -225,7 +260,7 @@ impl Store {
 
     /// Debounced save; `force` writes immediately (shutdown).
     pub fn maybe_save(&mut self, force: bool) {
-        if !self.dirty && !self.soft_dirty {
+        if !self.dirty && !self.soft_dirty || self.read_only {
             return;
         }
         let wait = if self.dirty { std::time::Duration::from_secs(2) } else { std::time::Duration::from_secs(30) };
@@ -356,5 +391,23 @@ mod more_tests {
         let mut m = TorrentMeta::default();
         assert_eq!(m.absorb_counters(10, 20), (10, 20));
         assert_eq!(m.absorb_counters(10, 20), (0, 0));
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    #[test]
+    fn newer_unreadable_store_is_never_overwritten() {
+        let p = std::env::temp_dir().join(format!("corrent-store-newer-{}.json", std::process::id()));
+        let future = r#"{"schema_version": 99, "torrents": "a new shape"}"#;
+        std::fs::write(&p, future).unwrap();
+        let mut s = Store::load(p.clone());
+        assert!(s.warning.is_some());
+        s.meta_mut(InfoHash([1; 20]));
+        s.maybe_save(true);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), future);
+        let _ = std::fs::remove_file(&p);
     }
 }

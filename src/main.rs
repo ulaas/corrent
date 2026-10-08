@@ -6,6 +6,7 @@ mod config;
 mod crash;
 mod engine;
 mod integration;
+mod migrate;
 mod store;
 mod ui;
 mod util;
