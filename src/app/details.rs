@@ -246,6 +246,15 @@ impl CorrentApp {
             let n_sel = d.files.iter().filter(|f| f.included).count();
             ui.label(RichText::new(format!("{n_sel} of {} files selected", d.files.len())).small().color(p.text_dim));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let media = self.media_files(t.hash);
+                if let Some((idx, name, _)) = media.first().cloned()
+                    && ui
+                        .small_button(format!("{}  Play", icons::PLAY_CIRCLE))
+                        .on_hover_text(format!("Stream “{name}” in your media player (works while downloading)"))
+                        .clicked()
+                {
+                    self.play(t.hash, idx, &name);
+                }
                 if ui.small_button("Select all").clicked() {
                     self.engine.send(EngineCommand::SetFiles {
                         hash: t.hash,

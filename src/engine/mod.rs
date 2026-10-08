@@ -9,6 +9,7 @@ mod e2e_tests;
 pub mod logic;
 mod restore;
 mod session;
+pub mod stream;
 pub mod types;
 
 use std::collections::BTreeMap;

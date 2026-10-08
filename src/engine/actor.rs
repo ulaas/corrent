@@ -111,6 +111,7 @@ pub struct Actor {
     /// Pruning the store waits until failed restores have been identified.
     restore_checked: bool,
     low_space_warned: bool,
+    stream: Option<Arc<super::stream::StreamServer>>,
 }
 
 impl Actor {
@@ -169,6 +170,7 @@ impl Actor {
             undo: HashMap::new(),
             restore_checked: false,
             low_space_warned: false,
+            stream: None,
         }
     }
 
@@ -176,6 +178,10 @@ impl Actor {
         let mut internal_rx = self.internal_rx.take().expect("run called once");
         if let Some(w) = self.store.warning.take() {
             self.emit(EngineEvent::DataWarning(w));
+        }
+        match super::stream::StreamServer::start().await {
+            Ok(s) => self.stream = Some(s),
+            Err(e) => tracing::warn!("streaming server unavailable: {e:#}"),
         }
         self.start_session().await;
         let mut tick =
@@ -221,6 +227,9 @@ impl Actor {
                     }
                     self.warning = warning;
                     self.api = Some(Api::new(sess.clone(), None));
+                    if let Some(st) = &self.stream {
+                        st.set_session(Some(sess.clone()));
+                    }
                     self.session = Some(sess);
                     self.engine_state = EngineState::Running;
                     self.apply_rate_limits();
@@ -243,6 +252,9 @@ impl Actor {
 
     async fn stop_session(&mut self) {
         self.api = None;
+        if let Some(st) = &self.stream {
+            st.set_session(None);
+        }
         if let Some(sess) = self.session.take() {
             if tokio::time::timeout(Duration::from_secs(6), sess.stop()).await.is_err() {
                 tracing::warn!("session stop timed out");
@@ -1153,6 +1165,7 @@ impl Actor {
             uptime_secs: st.uptime_seconds,
             session_downloaded: self.session_down_total,
             session_uploaded: self.session_up_total,
+            stream: self.stream.as_ref().map(|s| (s.port, s.token.clone())),
         };
 
         self.generation += 1;

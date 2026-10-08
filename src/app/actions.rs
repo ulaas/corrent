@@ -58,6 +58,27 @@ impl CorrentApp {
         if single && first.progress >= 1.0 && item(ui, icons::ARROW_SQUARE_OUT, "Open") {
             super::open_path(&first.content_path);
         }
+        if single {
+            let media = self.media_files(first.hash);
+            if !media.is_empty() {
+                ui.menu_button(format!("{}  Play", icons::PLAY_CIRCLE), |ui| {
+                    ui.label(RichText::new("Streams while downloading").small().color(p.text_dim));
+                    for (idx, name, _) in media.iter().take(12) {
+                        let short = name.rsplit(['/', '\\']).next().unwrap_or(name);
+                        if ui.button(format!("{}  {short}", icons::PLAY)).clicked() {
+                            self.play(first.hash, *idx, name);
+                        }
+                    }
+                    ui.separator();
+                    if let Some((idx, name, _)) = media.first()
+                        && ui.button(format!("{}  Copy stream link", icons::LINK)).clicked()
+                        && let Some(url) = self.stream_url(first.hash, *idx, name)
+                    {
+                        self.copy(url);
+                    }
+                });
+            }
+        }
         if item(ui, icons::FOLDER_SIMPLE_DASHED, "Move to…") {
             self.open_move_dialog(hashes.clone());
         }
@@ -143,6 +164,37 @@ impl CorrentApp {
         }
         if ui.button(RichText::new(format!("{}  Remove with files…", icons::TRASH_SIMPLE)).color(p.error)).clicked() {
             self.request_delete(hashes, true);
+        }
+    }
+
+    /// Playable files of a torrent (from the details data), largest first: (index, path, size).
+    pub fn media_files(&self, hash: crate::engine::types::InfoHash) -> Vec<(usize, String, u64)> {
+        let Some(d) = self.snap.detail.as_ref().filter(|d| d.hash == hash) else { return Vec::new() };
+        let mut v: Vec<(usize, String, u64)> = d
+            .files
+            .iter()
+            .filter(|f| f.included)
+            .map(|f| (f.index, f.components.join("/"), f.len))
+            .filter(|(_, n, _)| crate::engine::stream::is_media(n))
+            .collect();
+        v.sort_by_key(|f| std::cmp::Reverse(f.2));
+        v
+    }
+
+    pub fn stream_url(&self, hash: crate::engine::types::InfoHash, idx: usize, name: &str) -> Option<String> {
+        let (port, token) = self.snap.session.stream.clone()?;
+        Some(crate::engine::stream::stream_url(port, &token, hash, idx, name))
+    }
+
+    /// Open a file in the default media player via the local streaming server.
+    pub fn play(&mut self, hash: crate::engine::types::InfoHash, idx: usize, name: &str) {
+        let Some(url) = self.stream_url(hash, idx, name) else {
+            self.toasts.push(crate::engine::ToastKind::Error, "Streaming isn't available right now.");
+            return;
+        };
+        let title = name.rsplit(['/', '\\']).next().unwrap_or(name).to_string();
+        if let Err(e) = crate::engine::stream::open_in_player(&self.paths.data_dir, &title, &url) {
+            self.toasts.push(crate::engine::ToastKind::Error, format!("Couldn't open a media player: {e}"));
         }
     }
 

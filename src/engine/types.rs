@@ -194,6 +194,8 @@ pub struct SessionView {
     pub uptime_secs: u64,
     pub session_downloaded: u64,
     pub session_uploaded: u64,
+    /// Local streaming server (port, URL token) for playing files while they download.
+    pub stream: Option<(u16, String)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

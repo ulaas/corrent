@@ -391,3 +391,42 @@ async fn created_torrent_seeds_and_downloads() {
     stop(a).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn streaming_server_serves_ranges() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let dir = temp_dir("stream");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    download(&l, &s, &dir).await;
+    let (port, token) = l.engine.snapshot().session.stream.clone().expect("stream server running");
+
+    async fn get(port: u16, path: &str, range: Option<&str>) -> (String, Vec<u8>) {
+        let mut c = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n");
+        if let Some(r) = range {
+            req.push_str(&format!("Range: {r}\r\n"));
+        }
+        req.push_str("\r\n");
+        c.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        c.read_to_end(&mut buf).await.unwrap();
+        let split = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        (String::from_utf8_lossy(&buf[..split]).into_owned(), buf[split + 4..].to_vec())
+    }
+
+    let path = format!("/{token}/{}/0/data.bin", s.hash.to_hex());
+    let (head, body) = get(port, &path, Some("bytes=100-199")).await;
+    assert!(head.starts_with("HTTP/1.1 206"), "{head}");
+    assert!(head.contains(&format!("Content-Range: bytes 100-199/{SIZE}")));
+    assert_eq!(body, s.content[100..200]);
+
+    let (head, body) = get(port, &path, None).await;
+    assert!(head.starts_with("HTTP/1.1 200"));
+    assert_eq!(body.len(), SIZE);
+
+    let (head, _) = get(port, &format!("/wrong-token/{}/0/data.bin", s.hash.to_hex()), None).await;
+    assert!(head.starts_with("HTTP/1.1 404"), "a wrong token is rejected");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
