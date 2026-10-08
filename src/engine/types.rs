@@ -256,7 +256,8 @@ impl AddSource {
             }
             AddSource::Bytes { name, .. } => name.clone(),
             AddSource::Magnet(m) => magnet_display_name(m).unwrap_or_else(|| shorten(m, 60)),
-            AddSource::Url(u) => shorten(u, 60),
+            // The query may carry a tracker passkey or an indexer API key.
+            AddSource::Url(u) => shorten(&crate::util::redact_url(u), 60),
         }
     }
 

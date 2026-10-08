@@ -198,7 +198,12 @@ impl CorrentApp {
                             .filter(|t| !t.is_empty())
                             .map(String::from)
                             .collect(),
-                        piece_length: (c.piece_length > 0).then_some(c.piece_length),
+                        // The size shown as "Automatic" is the one used.
+                        piece_length: Some(if c.piece_length > 0 {
+                            c.piece_length
+                        } else {
+                            auto_piece_length(c.size.max(1))
+                        }),
                         private: c.private,
                         comment: Some(c.comment.clone()),
                         save_to: c.output.clone().unwrap(),

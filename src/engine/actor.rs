@@ -392,7 +392,7 @@ impl Actor {
                 let id = req.id;
                 let events = self.events.clone();
                 let ctx = self.ctx.clone();
-                let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
+                let self_tx = self.self_tx.clone();
                 tokio::spawn(async move {
                     let result = async {
                         let created = super::creator::create(&req).await?;
@@ -416,12 +416,13 @@ impl Actor {
                                 add_to_top: false,
                                 initial_peers: None,
                             };
-                            let sess = sess.ok_or_else(|| {
-                                anyhow::anyhow!(
+                            if sess.is_none() {
+                                anyhow::bail!(t!(
                                     "the torrent file was saved, but seeding needs the engine, which isn't running"
-                                )
-                            })?;
-                            add_torrent(&sess, &add, peer_limit).await?;
+                                ));
+                            }
+                            // The normal add path records added date, name and queue position.
+                            let _ = self_tx.send(EngineCommand::Add(Box::new(add)));
                         }
                         anyhow::Ok((
                             created.name,
@@ -1032,6 +1033,7 @@ impl Actor {
         let dir = self.paths.session_dir();
         let tx = self.internal_tx.clone();
         let skip: HashSet<InfoHash> = self.store.data.purge.iter().copied().collect();
+        let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
         tokio::spawn(async move {
             let mut failed = Vec::new();
             for mut f in super::restore::persisted_entries(&dir) {
@@ -1039,7 +1041,7 @@ impl Actor {
                     continue;
                 }
                 // One retry captures the actual error (and fixes transient failures).
-                match super::restore::retry(&sess, &dir, &f).await {
+                match super::restore::retry(&sess, &dir, &f, peer_limit).await {
                     Ok(()) => tracing::info!("restored {} on retry", f.hash.to_hex()),
                     Err(e) => {
                         tracing::warn!("torrent {} could not be loaded: {e}", f.hash.to_hex());
@@ -1061,8 +1063,9 @@ impl Actor {
         let dir = self.paths.session_dir();
         let tx = self.internal_tx.clone();
         self.busy.insert(hash, t!("Retrying…").into());
+        let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
         tokio::spawn(async move {
-            let result = super::restore::retry(&sess, &dir, &f).await;
+            let result = super::restore::retry(&sess, &dir, &f, peer_limit).await;
             let _ = tx.send(Internal::RestoreRetried { hash, result, quiet });
         });
     }

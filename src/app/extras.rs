@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use egui::{Align, Context, Id, Layout, RichText, Ui, vec2};
 use egui_phosphor::regular as icons;
+
+use crate::ui::widgets::Labeled;
 use tracing::Level;
 
 use super::CorrentApp;
@@ -22,7 +24,7 @@ pub struct Extras {
 
 impl CorrentApp {
     pub(super) fn overflow_menu(&mut self, ui: &mut Ui, p: &Palette) {
-        ui.menu_button(RichText::new(icons::DOTS_THREE_VERTICAL).size(18.0).color(p.text_dim), |ui| {
+        let r = ui.menu_button(RichText::new(icons::DOTS_THREE_VERTICAL).size(18.0).color(p.text_dim), |ui| {
             ui.set_min_width(220.0);
             if ui.button(format!("{}  {}", icons::PAUSE, t!("Pause all"))).clicked() {
                 self.engine.send(crate::engine::EngineCommand::PauseAll);
@@ -96,6 +98,8 @@ impl CorrentApp {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
+        // Icon-only: give screen readers a name.
+        let _ = r.response.labeled(t!("More"));
     }
 
     pub(super) fn extra_windows(&mut self, ctx: &Context, p: &Palette) {

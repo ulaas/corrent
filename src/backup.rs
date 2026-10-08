@@ -88,8 +88,13 @@ pub fn stage_import(paths: &Paths, src: &Path) -> anyhow::Result<Vec<&'static st
             if let Some(p) = out.parent() {
                 std::fs::create_dir_all(p)?;
             }
+            // Corrent's own files are small; refuse absurd entries (zip bombs).
+            const MAX_ENTRY: u64 = 512 * 1024 * 1024;
+            if f.size() > MAX_ENTRY {
+                anyhow::bail!(t!("the backup contains an unexpectedly large file"));
+            }
             let mut buf = Vec::new();
-            f.read_to_end(&mut buf)?;
+            std::io::Read::by_ref(&mut f).take(MAX_ENTRY).read_to_end(&mut buf)?;
             std::fs::write(out, buf)?;
         }
         std::fs::write(tmp.join(COMPLETE), b"ok")?;

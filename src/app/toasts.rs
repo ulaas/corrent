@@ -6,6 +6,7 @@ use egui::{Align2, Color32, Context, CornerRadius, FontId, Id, Order, RichText, 
 
 use crate::engine::ToastKind;
 use crate::ui::theme::Palette;
+use crate::ui::widgets::Labeled;
 
 /// Something a toast button can do; resolved by the app.
 #[derive(Clone, Debug, PartialEq)]
@@ -156,7 +157,7 @@ impl Toasts {
                                     egui::Button::new(RichText::new(egui_phosphor::regular::X).color(p.text_dim))
                                         .frame(false),
                                 )
-                                .on_hover_text(t!("Dismiss"))
+                                .labeled(t!("Dismiss"))
                                 .clicked()
                             {
                                 remove_now.push(t.id);

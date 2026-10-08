@@ -241,6 +241,7 @@ async fn respond(conn: &mut TcpStream, status: &str, extra: &[(&str, &str)], bod
 /// Write an .m3u playlist for `url` and open it with the default media player.
 pub fn open_in_player(dir: &std::path::Path, title: &str, url: &str) -> std::io::Result<()> {
     let path = dir.join("corrent-stream.m3u");
+    let title: String = title.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     std::fs::write(&path, format!("#EXTM3U\n#EXTINF:-1,{title}\n{url}\n"))?;
     open::that_detached(&path)
 }

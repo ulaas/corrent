@@ -53,7 +53,12 @@ pub fn persisted_entries(session_dir: &Path) -> Vec<FailedRestore> {
 }
 
 /// Try to add a persisted torrent back into the session; returns the error text on failure.
-pub async fn retry(sess: &Arc<Session>, session_dir: &Path, f: &FailedRestore) -> Result<(), String> {
+pub async fn retry(
+    sess: &Arc<Session>,
+    session_dir: &Path,
+    f: &FailedRestore,
+    peer_limit: Option<usize>,
+) -> Result<(), String> {
     if sess.get(TorrentIdOrHash::Hash(Id20::new(f.hash.0))).is_some() {
         return Ok(());
     }
@@ -67,11 +72,18 @@ pub async fn retry(sess: &Arc<Session>, session_dir: &Path, f: &FailedRestore) -
         only_files: f.only_files.clone(),
         output_folder: Some(f.output_folder.to_string_lossy().into_owned()),
         overwrite: true,
-        preferred_id: Some(f.id),
+        // No preferred id: a torrent added since may have been given this one, and librqbit would
+        // then report that torrent as "already managed".
         trackers: (!f.trackers.is_empty()).then(|| f.trackers.clone()),
+        peer_limit,
         ..Default::default()
     };
-    sess.add_torrent(add, Some(opts)).await.map(|_| ()).map_err(|e| friendly(&format!("{e:#}")))
+    match sess.add_torrent(add, Some(opts)).await {
+        Ok(librqbit::AddTorrentResponse::Added(..)) => Ok(()),
+        Ok(librqbit::AddTorrentResponse::AlreadyManaged(_, h)) if h.info_hash().0 == f.hash.0 => Ok(()),
+        Ok(_) => Err(t!("the engine didn't take the torrent back").into()),
+        Err(e) => Err(friendly(&format!("{e:#}"))),
+    }
 }
 
 /// Make common OS errors understandable.

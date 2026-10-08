@@ -351,6 +351,8 @@ pub struct CorrentApp {
     pub when_done: when_done::WhenDoneState,
     /// Newest crash report while the engine is down (looked up once).
     engine_report: Option<Option<std::path::PathBuf>>,
+    /// Generation of the latest engine snapshot and when it arrived (stall detection).
+    last_snapshot: (u64, std::time::Instant),
     /// Mica spike (B5b, debug only): translucent backgrounds over the DWM backdrop.
     mica: bool,
     pub main_view: feeds::MainView,
@@ -472,6 +474,7 @@ impl CorrentApp {
             import: None,
             when_done: Default::default(),
             engine_report: None,
+            last_snapshot: (0, std::time::Instant::now()),
             mica: false,
             main_view: Default::default(),
             feeds: Default::default(),
@@ -565,6 +568,30 @@ impl CorrentApp {
 
     /// Shown when the engine task stopped unexpectedly; offers a restart.
     fn engine_banner(&mut self, ui: &mut Ui, p: &Palette) {
+        // The engine publishes a snapshot every tick; none for a long time means it is stuck.
+        let stalled = self.engine.is_alive()
+            && !self.quitting
+            && self.snap.engine_state == crate::engine::types::EngineState::Running
+            && self.last_snapshot.1.elapsed() > std::time::Duration::from_secs(30);
+        if stalled {
+            let secs = self.last_snapshot.1.elapsed().as_secs();
+            egui::Frame::new()
+                .fill(p.warn.gamma_multiply(0.12))
+                .stroke(egui::Stroke::new(1.0, p.warn.gamma_multiply(0.5)))
+                .corner_radius(egui::CornerRadius::same(10))
+                .inner_margin(egui::Margin::symmetric(14, 10))
+                .outer_margin(egui::Margin { left: 10, right: 10, top: 8, bottom: 2 })
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(t!(
+                            "The torrent engine hasn't responded for {secs} seconds. If this doesn't clear up, restart Corrent.",
+                            secs = secs
+                        ))
+                        .color(p.text),
+                    );
+                });
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+        }
         if self.engine.is_alive() || self.quitting {
             self.engine_report = None;
             return;
@@ -907,6 +934,9 @@ impl eframe::App for CorrentApp {
         }
         self.frame_seen = true;
         self.snap = self.engine.snapshot();
+        if self.snap.generation != self.last_snapshot.0 {
+            self.last_snapshot = (self.snap.generation, std::time::Instant::now());
+        }
         #[cfg(debug_assertions)]
         self.dev_hooks(ctx);
         self.drain_ipc(ctx);

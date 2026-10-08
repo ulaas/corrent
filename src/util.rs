@@ -40,7 +40,7 @@ pub fn classify_io(msg: &str) -> IoKind {
     let m = msg.to_ascii_lowercase();
     if m.contains("os error 28")
         || m.contains("os error 112")
-        || m.contains("os error 39")
+        || (cfg!(windows) && m.contains("os error 39"))
         || m.contains("no space left")
         || m.contains("not enough space")
         || m.contains("disk is full")
@@ -195,18 +195,22 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// Local UTC offset in seconds, computed once.
 pub fn local_offset_secs() -> i64 {
-    use std::sync::OnceLock;
-    static OFF: OnceLock<i64> = OnceLock::new();
-    *OFF.get_or_init(|| {
-        #[cfg(windows)]
-        {
-            windows_offset().unwrap_or(0)
-        }
-        #[cfg(not(windows))]
-        {
-            unix_offset().unwrap_or(0)
-        }
-    })
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    // Re-read every 10 minutes so a daylight-saving change while Corrent runs is picked up.
+    static OFF: Mutex<Option<(Instant, i64)>> = Mutex::new(None);
+    let mut g = OFF.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, v)) = *g
+        && at.elapsed() < Duration::from_secs(600)
+    {
+        return v;
+    }
+    #[cfg(windows)]
+    let v = windows_offset().unwrap_or(0);
+    #[cfg(not(windows))]
+    let v = unix_offset().unwrap_or(0);
+    *g = Some((Instant::now(), v));
+    v
 }
 
 #[cfg(not(windows))]

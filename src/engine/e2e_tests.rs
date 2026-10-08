@@ -790,7 +790,7 @@ async fn category_speed_limit_applies() {
     l.engine.send(EngineCommand::SetCategories(cats));
     wait_for(&l, "category limit stored", 10, |sn| sn.categories.get("Tests").is_some_and(|c| c.up_limit_kib == 64))
         .await;
-    tokio::time::sleep(Duration::from_millis(600)).await; // applied within two ticks
+    tokio::time::sleep(Duration::from_millis(1500)).await; // applied within two ticks (200 ms each), with slack
     let (_sess, h) = client_of(&dir, &s, port).await;
     assert_rate_limited(&h, 64, "category upload limit").await;
     stop(l).await;
