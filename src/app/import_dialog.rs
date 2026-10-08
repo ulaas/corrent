@@ -82,7 +82,7 @@ impl CorrentApp {
             ui.set_width(620.0_f32.min(ctx.content_rect().width() - 60.0));
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icons::ARROW_SQUARE_IN).size(20.0).color(p.accent));
-                ui.label(RichText::new("Import from another client").font(theme::title()).color(p.text));
+                ui.label(RichText::new(t!("Import from another client")).font(theme::title()).color(p.text));
             });
             ui.label(
                 RichText::new(
@@ -94,7 +94,7 @@ impl CorrentApp {
             );
             ui.add_space(10.0);
             if d.sources.is_empty() {
-                ui.label(RichText::new("No other torrent client was found in its usual place.").color(p.text_dim));
+                ui.label(RichText::new(t!("No other torrent client was found in its usual place.")).color(p.text_dim));
             }
             for s in &mut d.sources {
                 ui.horizontal(|ui| {
@@ -113,7 +113,7 @@ impl CorrentApp {
                             None => {
                                 ui.horizontal(|ui| {
                                     ui.add(egui::Spinner::new().size(12.0));
-                                    ui.label(RichText::new("Looking for torrents…").small().color(p.text_dim));
+                                    ui.label(RichText::new(t!("Looking for torrents…")).small().color(p.text_dim));
                                 });
                             }
                             Some(Err(e)) => {
@@ -123,7 +123,7 @@ impl CorrentApp {
                                 let already = count - new;
                                 let mut t = format!("{count} torrent{}", if count == 1 { "" } else { "s" });
                                 if already > 0 {
-                                    t.push_str(&format!(" · {already} already in Corrent"));
+                                    t.push_str(&t!(" · {already} already in Corrent", already = already));
                                 }
                                 ui.label(RichText::new(t).small().color(p.text_dim));
                             }
@@ -139,14 +139,14 @@ impl CorrentApp {
                     }
                 });
                 let hint = match d.other_client {
-                    Client::QBittorrent => "Choose its BT_backup folder",
-                    Client::Transmission => "Choose the folder that contains “torrents” and “resume”",
-                    Client::Deluge => "Choose its “state” folder",
+                    Client::QBittorrent => t!("Choose its BT_backup folder"),
+                    Client::Transmission => t!("Choose the folder that contains “torrents” and “resume”"),
+                    Client::Deluge => t!("Choose its “state” folder"),
                 };
                 if ui
                     .add_enabled(
                         !busy_picker,
-                        egui::Button::new(format!("{}  Scan another folder…", icons::FOLDER_OPEN)),
+                        egui::Button::new(format!("{}  {}", icons::FOLDER_OPEN, t!("Scan another folder…"))),
                     )
                     .on_hover_text(hint)
                     .clicked()
@@ -155,8 +155,8 @@ impl CorrentApp {
                 }
             });
             ui.add_space(8.0);
-            ui.checkbox(&mut d.start_paused, "Add paused")
-                .on_hover_text("Recommended while the other client still runs, so both don't use the same files");
+            ui.checkbox(&mut d.start_paused, t!("Add paused"))
+                .on_hover_text(t!("Recommended while the other client still runs, so both don't use the same files"));
             ui.add_space(12.0);
             let total: usize = d
                 .sources
@@ -171,7 +171,7 @@ impl CorrentApp {
                 if ui.add_enabled_ui(total > 0, |ui| primary_button(ui, p, &label)).inner.clicked() {
                     import = true;
                 }
-                if secondary_button(ui, "Cancel").clicked() {
+                if secondary_button(ui, t!("Cancel")).clicked() {
                     close = true;
                 }
             });

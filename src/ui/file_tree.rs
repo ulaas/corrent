@@ -19,9 +19,9 @@ pub struct Entry<'a> {
 
 pub fn priority_label(p: i8) -> &'static str {
     match p {
-        1.. => "High",
-        0 => "Normal",
-        _ => "Low",
+        1.. => t!("High"),
+        0 => t!("Normal"),
+        _ => t!("Low"),
     }
 }
 
@@ -57,7 +57,7 @@ pub struct TreeChange {
 
 /// "Priority" submenu for a set of files.
 fn priority_menu(ui: &mut Ui, files: &[usize], current: Option<i8>, change: &mut TreeChange) {
-    ui.menu_button(format!("{}  Priority", icons::FLAG), |ui| {
+    ui.menu_button(format!("{}  {}", icons::FLAG, t!("Priority")), |ui| {
         for (v, icon) in [(1i8, icons::ARROW_FAT_UP), (0, icons::MINUS), (-1, icons::ARROW_FAT_DOWN)] {
             let label = format!("{icon}  {}", priority_label(v));
             if ui.add(egui::Button::selectable(current == Some(v), label)).clicked() {
@@ -206,7 +206,7 @@ fn row_tail(ui: &mut Ui, p: &Palette, len: u64, done: Option<u64>, priority: Opt
             let (icon, color) =
                 if pr > 0 { (icons::ARROW_FAT_UP, p.accent) } else { (icons::ARROW_FAT_DOWN, p.text_mute) };
             ui.label(RichText::new(format!("{icon} {}", priority_label(pr))).small().color(color))
-                .on_hover_text("Download priority (right-click to change)");
+                .on_hover_text(t!("Download priority (right-click to change)"));
         }
     });
 }

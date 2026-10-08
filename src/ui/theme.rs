@@ -332,22 +332,22 @@ pub fn parse_color(s: &str) -> Option<Color32> {
 
 /// The editable colors, in display order: (field name, label).
 pub const PALETTE_FIELDS: [(&str, &str); 16] = [
-    ("bg0", "Window background"),
-    ("bg1", "Panels"),
-    ("bg2", "Cards"),
-    ("bg3", "Controls"),
-    ("border", "Borders"),
-    ("border_hi", "Strong borders"),
-    ("text", "Text"),
-    ("text_dim", "Secondary text"),
-    ("text_mute", "Muted text"),
-    ("accent", "Accent"),
-    ("success", "Seeding / success"),
-    ("warn", "Checking / warning"),
-    ("error", "Errors"),
-    ("queued", "Queued"),
-    ("paused", "Paused"),
-    ("completed", "Completed"),
+    ("bg0", tk!("Window background")),
+    ("bg1", tk!("Panels")),
+    ("bg2", tk!("Cards")),
+    ("bg3", tk!("Controls")),
+    ("border", tk!("Borders")),
+    ("border_hi", tk!("Strong borders")),
+    ("text", tk!("Text")),
+    ("text_dim", tk!("Secondary text")),
+    ("text_mute", tk!("Muted text")),
+    ("accent", tk!("Accent")),
+    ("success", tk!("Seeding / success")),
+    ("warn", tk!("Checking / warning")),
+    ("error", tk!("Errors")),
+    ("queued", tk!("Queued")),
+    ("paused", tk!("Paused")),
+    ("completed", tk!("Completed")),
 ];
 
 impl Palette {
@@ -400,7 +400,9 @@ impl PaletteDef {
     }
 
     pub fn to_palette(&self) -> Result<Palette, String> {
-        let c = |field: &str, v: &str| parse_color(v).ok_or_else(|| format!("“{field}” is not a #rrggbb color: {v}"));
+        let c = |field: &str, v: &str| {
+            parse_color(v).ok_or_else(|| t!("“{field}” is not a #rrggbb color: {v}", field = field, v = v))
+        };
         Ok(Palette {
             dark: self.dark,
             high_contrast: false,
@@ -498,22 +500,22 @@ pub fn install_fonts(ctx: &Context) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("corrent_fonts_installed"), true));
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
-        "Inter".into(),
+        t!("Inter").into(),
         Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/Inter-Regular.ttf"))),
     );
     fonts.font_data.insert(
-        "InterSemiBold".into(),
+        t!("InterSemiBold").into(),
         Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/Inter-SemiBold.ttf"))),
     );
     fonts.font_data.insert(
-        "JetBrainsMono".into(),
+        t!("JetBrainsMono").into(),
         Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf"))),
     );
-    fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "Inter".into());
-    fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "JetBrainsMono".into());
+    fonts.families.entry(FontFamily::Proportional).or_default().insert(0, t!("Inter").into());
+    fonts.families.entry(FontFamily::Monospace).or_default().insert(0, t!("JetBrainsMono").into());
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     // A bold family for headings; falls back to the regular stack for icons and symbols.
-    let mut bold = vec!["InterSemiBold".to_string()];
+    let mut bold = vec![t!("InterSemiBold").to_string()];
     bold.extend(fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
     fonts.families.insert(FontFamily::Name("bold".into()), bold);
     ctx.set_fonts(fonts);

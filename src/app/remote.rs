@@ -61,7 +61,7 @@ impl CorrentApp {
         r.pending = wanted.clone();
         let Some(cfg) = wanted else {
             r.status = if self.settings.web_api.enabled {
-                RemoteStatus::Failed("Set a password to turn it on.".into())
+                RemoteStatus::Failed(t!("Set a password to turn it on.").into())
             } else {
                 RemoteStatus::Off
             };
@@ -100,7 +100,7 @@ impl CorrentApp {
                 Err(e) => {
                     tracing::warn!("web API: {e}");
                     r.status = RemoteStatus::Failed(e.clone());
-                    self.toasts.push(crate::engine::ToastKind::Error, format!("Remote control couldn't start: {e}"));
+                    self.toasts.push(crate::engine::ToastKind::Error, t!("Remote control couldn't start: {e}", e = e));
                 }
             }
         }

@@ -60,7 +60,7 @@ impl CorrentApp {
             ui.set_width(420.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icons::POWER).size(22.0).color(p.accent));
-                ui.label(RichText::new("All downloads finished").font(theme::title()).color(p.text));
+                ui.label(RichText::new(t!("All downloads finished")).font(theme::title()).color(p.text));
             });
             ui.add_space(6.0);
             ui.label(
@@ -70,10 +70,10 @@ impl CorrentApp {
             );
             ui.add_space(14.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if danger_button(ui, p, "Now").clicked() {
+                if danger_button(ui, p, t!("Now")).clicked() {
                     now = true;
                 }
-                if secondary_button(ui, "Cancel").clicked() {
+                if secondary_button(ui, t!("Cancel")).clicked() {
                     cancel = true;
                 }
             });
@@ -84,7 +84,7 @@ impl CorrentApp {
         if cancel {
             self.when_done =
                 WhenDoneState { update_rx: self.when_done.update_rx.take(), auto_checked: true, ..Default::default() };
-            self.toasts.push(ToastKind::Info, "Cancelled; Corrent will keep running.");
+            self.toasts.push(ToastKind::Info, t!("Cancelled; Corrent will keep running."));
             return;
         }
         if !now {
@@ -99,12 +99,12 @@ impl CorrentApp {
             WhenDone::Quit => self.quit_now(ctx),
             WhenDone::Sleep => {
                 if let Err(e) = crate::integration::power::perform(WhenDone::Sleep) {
-                    self.toasts.push(ToastKind::Error, format!("Couldn't put the computer to sleep: {e}"));
+                    self.toasts.push(ToastKind::Error, t!("Couldn't put the computer to sleep: {e}", e = e));
                 }
             }
             WhenDone::Shutdown => match crate::integration::power::perform(WhenDone::Shutdown) {
                 Ok(()) => self.quit_now(ctx),
-                Err(e) => self.toasts.push(ToastKind::Error, format!("Couldn't shut down: {e}")),
+                Err(e) => self.toasts.push(ToastKind::Error, t!("Couldn't shut down: {e}", e = e)),
             },
         }
     }
@@ -149,14 +149,14 @@ impl CorrentApp {
                     ToastKind::Info,
                     format!("Corrent {} is available (you have {}).", r.version, env!("CARGO_PKG_VERSION")),
                     vec![
-                        ("Download".into(), toasts::ToastAction::OpenUrl(r.url)),
-                        ("Skip this version".into(), toasts::ToastAction::SkipVersion(r.version)),
+                        (t!("Download").into(), toasts::ToastAction::OpenUrl(r.url)),
+                        (t!("Skip this version").into(), toasts::ToastAction::SkipVersion(r.version)),
                     ],
                 );
             }
-            Ok(_) if manual => self.toasts.push(ToastKind::Success, "Corrent is up to date."),
+            Ok(_) if manual => self.toasts.push(ToastKind::Success, t!("Corrent is up to date.")),
             Ok(_) => {}
-            Err(e) if manual => self.toasts.push(ToastKind::Error, format!("Couldn't check for updates: {e}")),
+            Err(e) if manual => self.toasts.push(ToastKind::Error, t!("Couldn't check for updates: {e}", e = e)),
             Err(e) => tracing::info!("update check failed: {e}"),
         }
     }

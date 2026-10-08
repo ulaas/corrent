@@ -47,7 +47,8 @@ impl CorrentApp {
         match result.and(unreg) {
             Ok(()) => {
                 if magnet || torrent {
-                    self.toasts.push(ToastKind::Success, "Corrent is registered for magnet links and torrent files.");
+                    self.toasts
+                        .push(ToastKind::Success, t!("Corrent is registered for magnet links and torrent files."));
                 }
             }
             Err(e) => self.toasts.push(ToastKind::Error, format!("Registration failed: {e:#}")),
@@ -58,7 +59,7 @@ impl CorrentApp {
         if magnet && matches!(st.magnet, HandlerState::OtherDefault(_)) {
             self.toasts.push(
                 ToastKind::Info,
-                "Another app is still the default for magnet links. Confirm Corrent in system settings.",
+                t!("Another app is still the default for magnet links. Confirm Corrent in system settings."),
             );
         }
         if let Ok(mut s) = self.handler_status.lock() {
@@ -115,24 +116,26 @@ impl CorrentApp {
                     ui.label(RichText::new(icons::MAGNET).size(20.0).color(p.accent));
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new("Open magnet links and .torrent files with Corrent?").strong().color(p.text),
+                            RichText::new(t!("Open magnet links and .torrent files with Corrent?"))
+                                .strong()
+                                .color(p.text),
                         );
                         let detail = match &st.magnet {
-                            HandlerState::OtherDefault(app) => format!("Currently they open with {app}."),
-                            _ => "Clicking a magnet link in your browser will add it here.".to_string(),
+                            HandlerState::OtherDefault(app) => t!("Currently they open with {app}.", app = app),
+                            _ => t!("Clicking a magnet link in your browser will add it here.").to_string(),
                         };
                         ui.label(RichText::new(detail).small().color(p.text_dim));
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if secondary_button(ui, "Not now").clicked() {
+                        if secondary_button(ui, t!("Not now")).clicked() {
                             self.settings.behavior.handler_prompt_dismissed = true;
                             self.save_settings();
                         }
                         let other = matches!(st.magnet, HandlerState::OtherDefault(_));
-                        if cfg!(windows) && other && secondary_button(ui, "Open system settings").clicked() {
+                        if cfg!(windows) && other && secondary_button(ui, t!("Open system settings")).clicked() {
                             os_handler::open_system_default_settings();
                         }
-                        if primary_button(ui, p, "Set as default").clicked() {
+                        if primary_button(ui, p, t!("Set as default")).clicked() {
                             self.set_handlers(true, true);
                             self.settings.behavior.handler_prompt_dismissed = true;
                             self.save_settings();

@@ -36,7 +36,7 @@ impl CorrentApp {
         let tex = self.app_icon_texture(ui.ctx());
         ui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(22.0, 22.0)).corner_radius(CornerRadius::same(5)));
         ui.add_space(2.0);
-        ui.label(egui::RichText::new("Corrent").font(crate::ui::theme::bold(15.0)).color(p.text));
+        ui.label(egui::RichText::new(t!("Corrent")).font(crate::ui::theme::bold(15.0)).color(p.text));
     }
 
     pub fn app_icon_texture(&mut self, ctx: &Context) -> egui::TextureHandle {
@@ -57,14 +57,14 @@ impl CorrentApp {
         let maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
         let spacing = ui.spacing().item_spacing.x;
         ui.spacing_mut().item_spacing.x = 0.0;
-        if control(ui, p, icons::X, "Close", true).clicked() {
+        if control(ui, p, icons::X, t!("Close"), true).clicked() {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
-        let (icon, tip) = if maximized { (icons::COPY_SIMPLE, "Restore") } else { (icons::SQUARE, "Maximize") };
+        let (icon, tip) = if maximized { (icons::COPY_SIMPLE, t!("Restore")) } else { (icons::SQUARE, t!("Maximize")) };
         if control(ui, p, icon, tip, false).clicked() {
             ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
         }
-        if control(ui, p, icons::MINUS, "Minimize", false).clicked() {
+        if control(ui, p, icons::MINUS, t!("Minimize"), false).clicked() {
             ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
         }
         ui.spacing_mut().item_spacing.x = spacing;

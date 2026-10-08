@@ -155,11 +155,11 @@ impl CorrentApp {
         egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 16, top: 12, bottom: 8 }).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icons::MAGNIFYING_GLASS).size(20.0).color(p.accent));
-                ui.label(RichText::new("Search").font(theme::title()).color(p.text));
+                ui.label(RichText::new(t!("Search")).font(theme::title()).color(p.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
-                        .button(format!("{}  Providers…", icons::GEAR_SIX))
-                        .on_hover_text("Configure Torznab providers (Jackett, Prowlarr, …)")
+                        .button(format!("{}  {}", icons::GEAR_SIX, t!("Providers…")))
+                        .on_hover_text(t!("Configure Torznab providers (Jackett, Prowlarr, …)"))
                         .clicked()
                     {
                         self.open_settings_at(super::settings_window::Page::Search);
@@ -177,7 +177,7 @@ impl CorrentApp {
                     configured > 0,
                     egui::TextEdit::singleline(&mut self.torznab.query)
                         .desired_width((ui.available_width() - 110.0).max(200.0))
-                        .hint_text("Search your providers, e.g. a Linux distribution or an open movie"),
+                        .hint_text(t!("Search your providers, e.g. a Linux distribution or an open movie")),
                 );
                 if self.torznab.focus && configured > 0 {
                     edit.request_focus();
@@ -186,7 +186,9 @@ impl CorrentApp {
                 let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let ok = configured > 0 && !self.torznab.query.trim().is_empty();
                 if ui
-                    .add_enabled_ui(ok, |ui| primary_button(ui, p, &format!("{}  Search", icons::MAGNIFYING_GLASS)))
+                    .add_enabled_ui(ok, |ui| {
+                        primary_button(ui, p, &format!("{}  {}", icons::MAGNIFYING_GLASS, t!("Search")))
+                    })
                     .inner
                     .clicked()
                     || (enter && ok)
@@ -202,11 +204,11 @@ impl CorrentApp {
                 ui,
                 p,
                 icons::MAGNIFYING_GLASS,
-                "No search providers",
-                "Corrent searches through Torznab providers you run or trust, such as Jackett or Prowlarr.",
+                t!("No search providers"),
+                t!("Corrent searches through Torznab providers you run or trust, such as Jackett or Prowlarr."),
             );
             ui.vertical_centered(|ui| {
-                if primary_button(ui, p, &format!("{}  Add a provider", icons::PLUS)).clicked() {
+                if primary_button(ui, p, &format!("{}  {}", icons::PLUS, t!("Add a provider"))).clicked() {
                     self.open_settings_at(super::settings_window::Page::Search);
                 }
             });
@@ -242,9 +244,11 @@ impl CorrentApp {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.torznab.filter)
-                            .desired_width(200.0)
-                            .hint_text(format!("{}  Filter results", icons::FUNNEL)),
+                        egui::TextEdit::singleline(&mut self.torznab.filter).desired_width(200.0).hint_text(format!(
+                            "{}  {}",
+                            icons::FUNNEL,
+                            t!("Filter results")
+                        )),
                     );
                 });
             });
@@ -257,18 +261,18 @@ impl CorrentApp {
         if rows.is_empty() {
             if self.torznab.searched && self.torznab.pending == 0 {
                 let hint = if self.torznab.errors.is_empty() {
-                    "Try other words."
+                    t!("Try other words.")
                 } else {
-                    "Some providers failed; hover the warnings for details."
+                    t!("Some providers failed; hover the warnings for details.")
                 };
-                empty_compact(ui, p, icons::MAGNIFYING_GLASS, "Nothing found", hint);
+                empty_compact(ui, p, icons::MAGNIFYING_GLASS, t!("Nothing found"), hint);
             } else if !self.torznab.searched {
                 empty_compact(
                     ui,
                     p,
                     icons::MAGNIFYING_GLASS,
-                    "Type something and press Enter",
-                    "Results from all providers appear here.",
+                    t!("Type something and press Enter"),
+                    t!("Results from all providers appear here."),
                 );
             }
             return;
@@ -314,14 +318,14 @@ impl CorrentApp {
                             sort_clicked = Some(b);
                         }
                     };
-                    head(&mut h, "Name", Some(SortBy::Title));
+                    head(&mut h, t!("Name"), Some(SortBy::Title));
                     if multi {
-                        head(&mut h, "Provider", None);
+                        head(&mut h, t!("Provider"), None);
                     }
-                    head(&mut h, "Category", None);
-                    head(&mut h, "Size", Some(SortBy::Size));
-                    head(&mut h, "Seeds", Some(SortBy::Seeders));
-                    head(&mut h, "Published", Some(SortBy::Published));
+                    head(&mut h, t!("Category"), None);
+                    head(&mut h, t!("Size"), Some(SortBy::Size));
+                    head(&mut h, t!("Seeds"), Some(SortBy::Seeders));
+                    head(&mut h, t!("Published"), Some(SortBy::Published));
                     head(&mut h, "", None);
                 })
                 .body(|body| {
@@ -331,7 +335,7 @@ impl CorrentApp {
                             let resp = ui.add(egui::Label::new(RichText::new(&r.title).color(p.text)).truncate());
                             if let Some(page) = &r.page {
                                 resp.context_menu(|ui| {
-                                    if ui.button(format!("{}  Open details page", icons::GLOBE)).clicked() {
+                                    if ui.button(format!("{}  {}", icons::GLOBE, t!("Open details page"))).clicked() {
                                         let _ = open::that_detached(page);
                                         ui.close();
                                     }
@@ -375,12 +379,13 @@ impl CorrentApp {
                         });
                         row.col(|ui| match &r.link {
                             Some(link) => {
-                                if ui.small_button(format!("{}  Download", icons::DOWNLOAD_SIMPLE)).clicked() {
+                                if ui.small_button(format!("{}  {}", icons::DOWNLOAD_SIMPLE, t!("Download"))).clicked()
+                                {
                                     add = Some(link.clone());
                                 }
                             }
                             None => {
-                                ui.label(RichText::new("No link").small().color(p.text_mute));
+                                ui.label(RichText::new(t!("No link")).small().color(p.text_mute));
                             }
                         });
                     });

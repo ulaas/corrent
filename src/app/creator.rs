@@ -92,27 +92,27 @@ impl CorrentApp {
             ui.set_width(600.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icons::FILE_PLUS).size(20.0).color(p.accent));
-                ui.label(RichText::new("Create torrent").font(theme::title()).color(p.text));
+                ui.label(RichText::new(t!("Create torrent")).font(theme::title()).color(p.text));
             });
             ui.add_space(10.0);
             egui::Grid::new("creator_grid").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
-                ui.label("Source");
+                ui.label(t!("Source"));
                 ui.horizontal(|ui| {
                     let label = c
                         .source
                         .as_ref()
                         .map(|s| s.display().to_string())
-                        .unwrap_or_else(|| "Choose a file or folder…".into());
+                        .unwrap_or_else(|| t!("Choose a file or folder…").into());
                     ui.add(egui::Label::new(RichText::new(label).color(p.text_dim)).truncate());
                 });
                 ui.end_row();
                 ui.label("");
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(!busy_picker && !c.busy, |ui| {
-                        if ui.button(format!("{}  File…", icons::FILE)).clicked() {
+                        if ui.button(format!("{}  {}", icons::FILE, t!("File…"))).clicked() {
                             pick = Some((PickTarget::CreatorSource, PickKind::AnyFile));
                         }
-                        if ui.button(format!("{}  Folder…", icons::FOLDER)).clicked() {
+                        if ui.button(format!("{}  {}", icons::FOLDER, t!("Folder…"))).clicked() {
                             pick = Some((PickTarget::CreatorSource, PickKind::Folder));
                         }
                     });
@@ -123,21 +123,21 @@ impl CorrentApp {
                     }
                 });
                 ui.end_row();
-                ui.label("Name");
+                ui.label(t!("Name"));
                 let is_file = c.source_is_file;
                 ui.add_enabled(!is_file, egui::TextEdit::singleline(&mut c.name).desired_width(420.0))
-                    .on_disabled_hover_text("A single-file torrent is named after its file");
+                    .on_disabled_hover_text(t!("A single-file torrent is named after its file"));
                 ui.end_row();
-                ui.label("Trackers");
+                ui.label(t!("Trackers"));
                 ui.add(
                     egui::TextEdit::multiline(&mut c.trackers)
                         .desired_rows(3)
                         .desired_width(420.0)
-                        .hint_text("One per line (optional; DHT works without)")
+                        .hint_text(t!("One per line (optional; DHT works without)"))
                         .font(egui::TextStyle::Monospace),
                 );
                 ui.end_row();
-                ui.label("Piece size");
+                ui.label(t!("Piece size"));
                 let auto = auto_piece_length(c.size.max(1));
                 egui::ComboBox::from_id_salt("piece_size")
                     .selected_text(if c.piece_length == 0 {
@@ -157,16 +157,16 @@ impl CorrentApp {
                         }
                     });
                 ui.end_row();
-                ui.label("Comment");
+                ui.label(t!("Comment"));
                 ui.add(egui::TextEdit::singleline(&mut c.comment).desired_width(420.0));
                 ui.end_row();
-                ui.label("Save .torrent as");
+                ui.label(t!("Save .torrent as"));
                 ui.horizontal(|ui| {
                     let label = c.output.as_ref().map(|s| s.display().to_string()).unwrap_or_default();
                     ui.add(egui::Label::new(RichText::new(label).color(p.text_dim)).truncate());
                     if ui
                         .add_enabled(!busy_picker && c.source.is_some(), egui::Button::new(icons::FOLDER_OPEN))
-                        .labeled("Choose where to save the .torrent file")
+                        .labeled(t!("Choose where to save the .torrent file"))
                         .clicked()
                     {
                         pick = Some((PickTarget::CreatorOutput, PickKind::SaveTorrent(format!("{}.torrent", c.name))));
@@ -175,12 +175,13 @@ impl CorrentApp {
                 ui.end_row();
             });
             ui.add_space(6.0);
-            ui.checkbox(&mut c.private, "Private torrent (only trackers, no DHT/peer exchange)");
-            ui.checkbox(&mut c.seed, "Start seeding right away");
+            ui.checkbox(&mut c.private, t!("Private torrent (only trackers, no DHT/peer exchange)"));
+            ui.checkbox(&mut c.seed, t!("Start seeding right away"));
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let ready = c.source.is_some() && c.output.is_some() && !c.name.trim().is_empty() && !c.busy;
-                let label = if c.busy { "Hashing…".to_string() } else { format!("{}  Create", icons::CHECK) };
+                let label =
+                    if c.busy { t!("Hashing…").to_string() } else { format!("{}  {}", icons::CHECK, t!("Create")) };
                 if ui.add_enabled_ui(ready, |ui| primary_button(ui, p, &label)).inner.clicked() {
                     c.busy = true;
                     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -208,7 +209,7 @@ impl CorrentApp {
                 if c.busy {
                     ui.add(egui::Spinner::new().color(p.accent));
                 }
-                if secondary_button(ui, "Close").clicked() {
+                if secondary_button(ui, t!("Close")).clicked() {
                     close = true;
                 }
             });

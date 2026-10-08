@@ -24,16 +24,16 @@ impl CorrentApp {
         let single = sel.len() == 1;
         let first = sel[0].clone();
 
-        let label = if sel.iter().all(|t| t.restore_failed) { "Retry" } else { "Resume" };
+        let label = if sel.iter().all(|t| t.restore_failed) { t!("Retry") } else { t!("Resume") };
         if sel.iter().any(|t| t.state.is_paused_like() || t.state == TorrentState::Error)
-            && item(ui, if label == "Retry" { icons::ARROW_CLOCKWISE } else { icons::PLAY }, label)
+            && item(ui, if label == t!("Retry") { icons::ARROW_CLOCKWISE } else { icons::PLAY }, label)
         {
             self.engine.send(EngineCommand::Resume(hashes.clone()));
         }
-        if sel.iter().any(|t| !t.state.is_paused_like()) && item(ui, icons::PAUSE, "Pause") {
+        if sel.iter().any(|t| !t.state.is_paused_like()) && item(ui, icons::PAUSE, t!("Pause")) {
             self.engine.send(EngineCommand::Pause(hashes.clone()));
         }
-        if item(ui, icons::LIGHTNING, "Force start") {
+        if item(ui, icons::LIGHTNING, t!("Force start")) {
             self.engine.send(EngineCommand::ForceStart(hashes.clone()));
         }
         // Disk-full / access problems: the fix is usually a different folder.
@@ -44,7 +44,8 @@ impl CorrentApp {
             ui.separator();
             if ui
                 .button(
-                    RichText::new(format!("{}  Choose another folder…", icons::FOLDER_SIMPLE_DASHED)).color(p.accent),
+                    RichText::new(format!("{}  {}", icons::FOLDER_SIMPLE_DASHED, t!("Choose another folder…")))
+                        .color(p.accent),
                 )
                 .clicked()
             {
@@ -52,17 +53,17 @@ impl CorrentApp {
             }
         }
         ui.separator();
-        if single && item(ui, icons::FOLDER_OPEN, "Open folder") {
+        if single && item(ui, icons::FOLDER_OPEN, t!("Open folder")) {
             super::open_path(&first.save_path);
         }
-        if single && first.progress >= 1.0 && item(ui, icons::ARROW_SQUARE_OUT, "Open") {
+        if single && first.progress >= 1.0 && item(ui, icons::ARROW_SQUARE_OUT, t!("Open")) {
             super::open_path(&first.content_path);
         }
         if single {
             let media = self.media_files(first.hash);
             if !media.is_empty() {
-                ui.menu_button(format!("{}  Play", icons::PLAY_CIRCLE), |ui| {
-                    ui.label(RichText::new("Streams while downloading").small().color(p.text_dim));
+                ui.menu_button(format!("{}  {}", icons::PLAY_CIRCLE, t!("Play")), |ui| {
+                    ui.label(RichText::new(t!("Streams while downloading")).small().color(p.text_dim));
                     for (idx, name, _) in media.iter().take(12) {
                         let short = name.rsplit(['/', '\\']).next().unwrap_or(name);
                         if ui.button(format!("{}  {short}", icons::PLAY)).clicked() {
@@ -71,7 +72,7 @@ impl CorrentApp {
                     }
                     ui.separator();
                     if let Some((idx, name, _)) = media.first()
-                        && ui.button(format!("{}  Copy stream link", icons::LINK)).clicked()
+                        && ui.button(format!("{}  {}", icons::LINK, t!("Copy stream link"))).clicked()
                         && let Some(url) = self.stream_url(first.hash, *idx, name)
                     {
                         self.copy(url);
@@ -79,19 +80,19 @@ impl CorrentApp {
                 });
             }
         }
-        if item(ui, icons::FOLDER_SIMPLE_DASHED, "Move to…") {
+        if item(ui, icons::FOLDER_SIMPLE_DASHED, t!("Move to…")) {
             self.open_move_dialog(hashes.clone());
         }
-        if single && item(ui, icons::PENCIL_SIMPLE, "Rename…  (F2)") {
+        if single && item(ui, icons::PENCIL_SIMPLE, t!("Rename…  (F2)")) {
             self.open_rename_dialog(first.hash, first.name.clone());
         }
 
-        ui.menu_button(format!("{}  Category", icons::FOLDER_SIMPLE), |ui| {
-            if ui.button("New category…").clicked() {
+        ui.menu_button(format!("{}  {}", icons::FOLDER_SIMPLE, t!("Category")), |ui| {
+            if ui.button(t!("New category…")).clicked() {
                 self.open_new_category(Some(hashes.clone()));
             }
             ui.separator();
-            if ui.selectable_label(sel.iter().all(|t| t.category.is_none()), "None").clicked() {
+            if ui.selectable_label(sel.iter().all(|t| t.category.is_none()), t!("None")).clicked() {
                 self.engine.send(EngineCommand::SetCategory { hashes: hashes.clone(), category: None });
             }
             for c in self.snap.categories.keys() {
@@ -101,8 +102,8 @@ impl CorrentApp {
                 }
             }
         });
-        ui.menu_button(format!("{}  Tags", icons::TAG), |ui| {
-            if ui.button("New tag…").clicked() {
+        ui.menu_button(format!("{}  {}", icons::TAG, t!("Tags")), |ui| {
+            if ui.button(t!("New tag…")).clicked() {
                 self.open_new_tag(Some(hashes.clone()));
             }
             if !self.snap.tags.is_empty() {
@@ -117,55 +118,58 @@ impl CorrentApp {
             }
             if sel.iter().any(|t| !t.tags.is_empty()) {
                 ui.separator();
-                if ui.button("Remove all tags").clicked() {
+                if ui.button(t!("Remove all tags")).clicked() {
                     self.engine.send(EngineCommand::SetTags { hashes: hashes.clone(), tags: Vec::new() });
                 }
             }
         });
-        ui.menu_button(format!("{}  Queue", icons::LIST_NUMBERS), |ui| {
+        ui.menu_button(format!("{}  {}", icons::LIST_NUMBERS, t!("Queue")), |ui| {
             for (label, mv) in [
-                ("Move to top", QueueMove::Top),
-                ("Move up", QueueMove::Up),
-                ("Move down", QueueMove::Down),
-                ("Move to bottom", QueueMove::Bottom),
+                (t!("Move to top"), QueueMove::Top),
+                (t!("Move up"), QueueMove::Up),
+                (t!("Move down"), QueueMove::Down),
+                (t!("Move to bottom"), QueueMove::Bottom),
             ] {
                 if ui.button(label).clicked() {
                     self.engine.send(EngineCommand::QueueMove { hashes: hashes.clone(), mv });
                 }
             }
         });
-        if item(ui, icons::GAUGE, "Speed limits…") {
+        if item(ui, icons::GAUGE, t!("Speed limits…")) {
             self.open_speed_limits(hashes.clone());
         }
-        if item(ui, icons::SCALES, "Seeding limits…") {
+        if item(ui, icons::SCALES, t!("Seeding limits…")) {
             self.open_seed_limits(hashes.clone());
         }
         ui.separator();
-        if item(ui, icons::ARROWS_CLOCKWISE, "Force recheck") {
+        if item(ui, icons::ARROWS_CLOCKWISE, t!("Force recheck")) {
             self.engine.send(EngineCommand::Recheck(hashes.clone()));
         }
-        if single && item(ui, icons::BROADCAST, "Add trackers…") {
+        if single && item(ui, icons::BROADCAST, t!("Add trackers…")) {
             self.open_trackers_dialog(first.hash);
         }
-        ui.menu_button(format!("{}  Copy", icons::COPY), |ui| {
-            if ui.button("Name").clicked() {
+        ui.menu_button(format!("{}  {}", icons::COPY, t!("Copy")), |ui| {
+            if ui.button(t!("Name")).clicked() {
                 self.copy(sel.iter().map(|t| t.name.clone()).collect::<Vec<_>>().join("\n"));
             }
-            if ui.button("Info hash").clicked() {
+            if ui.button(t!("Info hash")).clicked() {
                 self.copy(sel.iter().map(|t| t.hash.to_hex()).collect::<Vec<_>>().join("\n"));
             }
-            if ui.button("Magnet link").clicked() {
+            if ui.button(t!("Magnet link")).clicked() {
                 self.copy(sel.iter().map(|t| t.magnet()).collect::<Vec<_>>().join("\n"));
             }
-            if ui.button("Save path").clicked() {
+            if ui.button(t!("Save path")).clicked() {
                 self.copy(sel.iter().map(|t| t.content_path.display().to_string()).collect::<Vec<_>>().join("\n"));
             }
         });
         ui.separator();
-        if ui.button(RichText::new(format!("{}  Remove…", icons::TRASH))).clicked() {
+        if ui.button(RichText::new(format!("{}  {}", icons::TRASH, t!("Remove…")))).clicked() {
             self.request_delete(hashes.clone(), false);
         }
-        if ui.button(RichText::new(format!("{}  Remove with files…", icons::TRASH_SIMPLE)).color(p.error)).clicked() {
+        if ui
+            .button(RichText::new(format!("{}  {}", icons::TRASH_SIMPLE, t!("Remove with files…"))).color(p.error))
+            .clicked()
+        {
             self.request_delete(hashes, true);
         }
     }
@@ -192,19 +196,19 @@ impl CorrentApp {
     /// Open a file in the default media player via the local streaming server.
     pub fn play(&mut self, hash: crate::engine::types::InfoHash, idx: usize, name: &str) {
         let Some(url) = self.stream_url(hash, idx, name) else {
-            self.toasts.push(crate::engine::ToastKind::Error, "Streaming isn't available right now.");
+            self.toasts.push(crate::engine::ToastKind::Error, t!("Streaming isn't available right now."));
             return;
         };
         let title = name.rsplit(['/', '\\']).next().unwrap_or(name).to_string();
         if let Err(e) = crate::engine::stream::open_in_player(&self.paths.data_dir, &title, &url) {
-            self.toasts.push(crate::engine::ToastKind::Error, format!("Couldn't open a media player: {e}"));
+            self.toasts.push(crate::engine::ToastKind::Error, t!("Couldn't open a media player: {e}", e = e));
         }
     }
 
     pub fn copy(&mut self, text: String) {
         match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-            Ok(()) => self.toasts.push(crate::engine::ToastKind::Info, "Copied to clipboard"),
-            Err(e) => self.toasts.push(crate::engine::ToastKind::Error, format!("Clipboard error: {e}")),
+            Ok(()) => self.toasts.push(crate::engine::ToastKind::Info, t!("Copied to clipboard")),
+            Err(e) => self.toasts.push(crate::engine::ToastKind::Error, t!("Clipboard error: {e}", e = e)),
         }
     }
 
@@ -256,7 +260,7 @@ impl CorrentApp {
             if sources.is_empty() {
                 self.toasts.push(
                     crate::engine::ToastKind::Warning,
-                    "The clipboard doesn't contain a magnet link or torrent URL.",
+                    t!("The clipboard doesn't contain a magnet link or torrent URL."),
                 );
             }
             for s in sources {

@@ -31,14 +31,14 @@ impl CorrentApp {
             painter.text(
                 c + vec2(0.0, 22.0),
                 Align2::CENTER_CENTER,
-                "Drop to add torrents",
+                t!("Drop to add torrents"),
                 crate::ui::theme::bold(20.0),
                 p.text.gamma_multiply(t),
             );
             painter.text(
                 c + vec2(0.0, 48.0),
                 Align2::CENTER_CENTER,
-                ".torrent files or text files with magnet links",
+                t!(".torrent files or text files with magnet links"),
                 FontId::proportional(13.0),
                 p.text_dim.gamma_multiply(t),
             );
@@ -70,7 +70,8 @@ impl CorrentApp {
             ignored += 1;
         }
         if ignored > 0 {
-            self.toasts.push(ToastKind::Warning, format!("Ignored {ignored} file(s) that aren't torrents."));
+            self.toasts
+                .push(ToastKind::Warning, t!("Ignored {ignored} file(s) that aren't torrents.", ignored = ignored));
         }
     }
 }

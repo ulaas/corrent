@@ -150,7 +150,7 @@ fn section(ui: &mut Ui, p: &Palette, title: &str, add: Option<&str>, collapsed: 
             )
             .sense(Sense::click()),
         );
-        if header.on_hover_text(if *collapsed { "Expand" } else { "Collapse" }).clicked() {
+        if header.on_hover_text(if *collapsed { t!("Expand") } else { t!("Collapse") }).clicked() {
             *collapsed = !*collapsed;
         }
         if let Some(tip) = add {
@@ -179,7 +179,7 @@ impl CorrentApp {
             let total = self.snap.torrents.len();
             ui.add_space(4.0);
             let mut c = self.prefs.collapsed.contains(&"status".to_string());
-            section(ui, p, "Status", None, &mut c);
+            section(ui, p, t!("Status"), None, &mut c);
             set_collapsed(&mut self.prefs.collapsed, "status", c);
             if !c {
                 for (i, f) in StatusFilter::ALL.iter().enumerate() {
@@ -207,7 +207,7 @@ impl CorrentApp {
             }
             ui.add_space(10.0);
             let mut c = self.prefs.collapsed.contains(&"categories".to_string());
-            if section(ui, p, "Categories", Some("New category…"), &mut c) {
+            if section(ui, p, t!("Categories"), Some(t!("New category…")), &mut c) {
                 self.open_new_category(None);
             }
             set_collapsed(&mut self.prefs.collapsed, "categories", c);
@@ -217,7 +217,7 @@ impl CorrentApp {
                     p,
                     icons::FOLDERS,
                     p.text_dim,
-                    "All",
+                    t!("All"),
                     Some(total),
                     tv && self.prefs.category_filter == GroupFilter::All,
                 )
@@ -231,7 +231,7 @@ impl CorrentApp {
                     p,
                     icons::FOLDER_DASHED,
                     p.text_dim,
-                    "Uncategorized",
+                    t!("Uncategorized"),
                     Some(self.counts.uncategorized),
                     tv && self.prefs.category_filter == GroupFilter::None,
                 )
@@ -242,7 +242,7 @@ impl CorrentApp {
                 }
                 let cats: Vec<(String, usize)> = self.counts.categories.iter().map(|(k, v)| (k.clone(), *v)).collect();
                 if cats.is_empty() {
-                    hint(ui, p, "Categories group torrents and can have their own save folder.");
+                    hint(ui, p, t!("Categories group torrents and can have their own save folder."));
                 }
                 for (c, n) in cats {
                     let depth = c.matches('/').count();
@@ -256,16 +256,17 @@ impl CorrentApp {
                             self.main_view = super::feeds::MainView::Torrents;
                         }
                         r.context_menu(|ui| {
-                            if ui.button(format!("{}  Edit…", icons::PENCIL_SIMPLE)).clicked() {
+                            if ui.button(format!("{}  {}", icons::PENCIL_SIMPLE, t!("Edit…"))).clicked() {
                                 self.open_edit_category(c.clone());
                             }
-                            if ui.button(format!("{}  Add subcategory…", icons::FOLDER_SIMPLE_PLUS)).clicked() {
+                            if ui.button(format!("{}  {}", icons::FOLDER_SIMPLE_PLUS, t!("Add subcategory…"))).clicked()
+                            {
                                 self.open_new_category(None);
                                 if let Some(super::dialogs::Modal::Category { name, .. }) = &mut self.modal {
                                     *name = format!("{c}/");
                                 }
                             }
-                            if ui.button(format!("{}  Remove category", icons::TRASH)).clicked() {
+                            if ui.button(format!("{}  {}", icons::TRASH, t!("Remove category"))).clicked() {
                                 let mut cats = self.snap.categories.clone();
                                 cats.retain(|k, _| k != &c && !k.starts_with(&format!("{c}/")));
                                 self.engine.send(EngineCommand::SetCategories(cats));
@@ -279,7 +280,7 @@ impl CorrentApp {
             }
             ui.add_space(10.0);
             let mut c = self.prefs.collapsed.contains(&"tags".to_string());
-            if section(ui, p, "Tags", Some("New tag…"), &mut c) {
+            if section(ui, p, t!("Tags"), Some(t!("New tag…")), &mut c) {
                 self.open_new_tag(None);
             }
             set_collapsed(&mut self.prefs.collapsed, "tags", c);
@@ -289,7 +290,7 @@ impl CorrentApp {
                     p,
                     icons::TAG,
                     p.text_dim,
-                    "All",
+                    t!("All"),
                     Some(total),
                     tv && self.prefs.tag_filter == GroupFilter::All,
                 )
@@ -303,7 +304,7 @@ impl CorrentApp {
                     p,
                     icons::TAG_SIMPLE,
                     p.text_dim,
-                    "Untagged",
+                    t!("Untagged"),
                     Some(self.counts.untagged),
                     tv && self.prefs.tag_filter == GroupFilter::None,
                 )
@@ -314,7 +315,7 @@ impl CorrentApp {
                 }
                 let tags: Vec<(String, usize)> = self.counts.tags.iter().map(|(k, v)| (k.clone(), *v)).collect();
                 if tags.is_empty() {
-                    hint(ui, p, "Tags are free-form labels; a torrent can have several.");
+                    hint(ui, p, t!("Tags are free-form labels; a torrent can have several."));
                 }
                 for (tag, n) in tags {
                     let sel = self.prefs.tag_filter == GroupFilter::Named(tag.clone());
@@ -324,7 +325,7 @@ impl CorrentApp {
                         self.main_view = super::feeds::MainView::Torrents;
                     }
                     r.context_menu(|ui| {
-                        if ui.button(format!("{}  Remove tag", icons::TRASH)).clicked() {
+                        if ui.button(format!("{}  {}", icons::TRASH, t!("Remove tag"))).clicked() {
                             let tags: Vec<String> = self.snap.tags.iter().filter(|t| **t != tag).cloned().collect();
                             self.engine.send(EngineCommand::SetTagList(tags));
                             if sel {
@@ -336,29 +337,29 @@ impl CorrentApp {
             }
             ui.add_space(10.0);
             let mut c = self.prefs.collapsed.contains(&"feeds".to_string());
-            section(ui, p, "Discover", None, &mut c);
+            section(ui, p, t!("Discover"), None, &mut c);
             set_collapsed(&mut self.prefs.collapsed, "feeds", c);
             if !c {
                 let rss = self.snap.rss.clone();
                 let errors = rss.feeds.iter().filter(|f| f.error.is_some()).count();
                 let (icon, color) = if errors > 0 { (icons::WARNING_CIRCLE, p.error) } else { (icons::RSS, p.accent) };
                 let feeds_view = self.main_view == super::feeds::MainView::Feeds;
-                let r = row(ui, p, icon, color, "RSS feeds", Some(rss.feeds.len()), feeds_view);
+                let r = row(ui, p, icon, color, t!("RSS feeds"), Some(rss.feeds.len()), feeds_view);
                 let r = if errors > 0 {
                     r.on_hover_text(format!(
                         "{errors} feed{} couldn't be refreshed",
                         if errors == 1 { "" } else { "s" }
                     ))
                 } else {
-                    r.on_hover_text("Follow feeds and download new items automatically")
+                    r.on_hover_text(t!("Follow feeds and download new items automatically"))
                 };
                 if r.clicked() {
                     self.main_view = super::feeds::MainView::Feeds;
                 }
                 let search_view = self.main_view == super::feeds::MainView::Search;
                 let n = self.torznab.results.len();
-                if row(ui, p, icons::MAGNIFYING_GLASS, p.text_dim, "Search", Some(n), search_view)
-                    .on_hover_text("Search your Torznab providers (Jackett, Prowlarr, …)")
+                if row(ui, p, icons::MAGNIFYING_GLASS, p.text_dim, t!("Search"), Some(n), search_view)
+                    .on_hover_text(t!("Search your Torznab providers (Jackett, Prowlarr, …)"))
                     .clicked()
                 {
                     self.main_view = super::feeds::MainView::Search;

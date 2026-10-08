@@ -14,14 +14,14 @@ impl CorrentApp {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             let (dot, text) = match &self.snap.engine_state {
-                _ if !self.engine.is_alive() => (p.error, "Engine stopped".to_string()),
-                EngineState::Starting => (p.warn, "Starting…".to_string()),
-                EngineState::Restarting => (p.warn, "Reconnecting…".to_string()),
-                EngineState::Failed(e) => (p.error, format!("Engine error: {e}")),
+                _ if !self.engine.is_alive() => (p.error, t!("Engine stopped").to_string()),
+                EngineState::Starting => (p.warn, t!("Starting…").to_string()),
+                EngineState::Restarting => (p.warn, t!("Reconnecting…").to_string()),
+                EngineState::Failed(e) => (p.error, t!("Engine error: {e}", e = e)),
                 EngineState::Running => match s.dht_nodes {
-                    Some(n) if n > 0 => (p.success, format!("DHT: {n} nodes")),
-                    Some(_) => (p.warn, "DHT: bootstrapping".into()),
-                    None => (p.text_mute, "DHT off".into()),
+                    Some(n) if n > 0 => (p.success, t!("DHT: {n} nodes", n = n)),
+                    Some(_) => (p.warn, t!("DHT: bootstrapping").into()),
+                    None => (p.text_mute, t!("DHT off").into()),
                 },
             };
             let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), egui::Sense::hover());
@@ -37,21 +37,21 @@ impl CorrentApp {
                         )
                         .sense(egui::Sense::click()),
                     )
-                    .on_hover_text("When all downloads finish. Click to cancel.");
+                    .on_hover_text(t!("When all downloads finish. Click to cancel."));
                 if r.clicked() {
                     self.set_when_done(crate::integration::power::WhenDone::Nothing);
                 }
             }
             if let Some(port) = s.listen_port {
                 ui.label(RichText::new(format!("{} Port {port}", icons::PLUGS)).small().color(p.text_dim))
-                    .on_hover_text("Incoming connection port");
+                    .on_hover_text(t!("Incoming connection port"));
             }
             ui.label(RichText::new(format!("{} {} peers", icons::USERS, s.peers_live)).small().color(p.text_dim));
             if let Some(free) = self.snap.free_space {
                 ui.label(
                     RichText::new(format!("{} {} free", icons::HARD_DRIVE, fmt_bytes(free))).small().color(p.text_dim),
                 )
-                .on_hover_text("Free space in the default download folder");
+                .on_hover_text(t!("Free space in the default download folder"));
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -59,7 +59,7 @@ impl CorrentApp {
                 let ups: Vec<f32> = self.snap.history.iter().rev().take(90).rev().map(|(_, u)| *u as f32).collect();
                 let downs: Vec<f32> = self.snap.history.iter().rev().take(90).rev().map(|(d, _)| *d as f32).collect();
                 if s.alt_speed {
-                    ui.label(RichText::new(format!("{} Alt speed", icons::GAUGE)).small().color(p.warn));
+                    ui.label(RichText::new(format!("{} {}", icons::GAUGE, t!("Alt speed"))).small().color(p.warn));
                 }
                 let up_r = ui
                     .add(
@@ -98,15 +98,15 @@ impl CorrentApp {
     fn limit_menu(&mut self, resp: &egui::Response, download: bool) {
         egui::Popup::menu(resp).show(|ui| {
             ui.set_min_width(170.0);
-            ui.label(RichText::new(if download { "Download limit" } else { "Upload limit" }).strong());
+            ui.label(RichText::new(if download { t!("Download limit") } else { t!("Upload limit") }).strong());
             let current = if download { self.settings.speed.download_limit } else { self.settings.speed.upload_limit };
             for (label, kib) in [
-                ("Unlimited", 0u32),
-                ("256 KiB/s", 256),
-                ("1 MiB/s", 1024),
-                ("5 MiB/s", 5120),
-                ("10 MiB/s", 10240),
-                ("50 MiB/s", 51200),
+                (t!("Unlimited"), 0u32),
+                (t!("256 KiB/s"), 256),
+                (t!("1 MiB/s"), 1024),
+                (t!("5 MiB/s"), 5120),
+                (t!("10 MiB/s"), 10240),
+                (t!("50 MiB/s"), 51200),
             ] {
                 if ui.selectable_label(current == kib, label).clicked() {
                     let mut s = self.settings.clone();
@@ -124,7 +124,7 @@ impl CorrentApp {
             }
             if self.snap.session.alt_speed {
                 ui.separator();
-                ui.label(RichText::new("Alternative limits are active").small());
+                ui.label(RichText::new(t!("Alternative limits are active")).small());
             }
         });
     }

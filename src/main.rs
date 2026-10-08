@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![recursion_limit = "256"]
 
+#[macro_use]
+mod i18n;
 mod app;
 mod backup;
 mod config;

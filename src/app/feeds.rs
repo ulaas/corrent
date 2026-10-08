@@ -57,11 +57,11 @@ impl CorrentApp {
     fn add_feed(&mut self) {
         let url = self.feeds.new_url.trim().to_string();
         if !valid_feed_url(&url) {
-            self.toasts.push(ToastKind::Error, "That doesn't look like a feed address (http:// or https://).");
+            self.toasts.push(ToastKind::Error, t!("That doesn't look like a feed address (http:// or https://)."));
             return;
         }
         if self.settings.rss.feeds.iter().any(|f| f.url == url) {
-            self.toasts.push(ToastKind::Info, "That feed is already in your list.");
+            self.toasts.push(ToastKind::Info, t!("That feed is already in your list."));
             return;
         }
         self.update_rss(|r| r.feeds.push(FeedConfig { url: url.clone(), ..Default::default() }));
@@ -74,7 +74,7 @@ impl CorrentApp {
         egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 16, top: 12, bottom: 8 }).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icons::RSS).size(20.0).color(p.accent));
-                ui.label(RichText::new("Feeds").font(theme::title()).color(p.text));
+                ui.label(RichText::new(t!("Feeds")).font(theme::title()).color(p.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let n = self.settings.rss.rules.iter().filter(|r| rule_is_active(r)).count();
                     if primary_button(ui, p, &format!("{}  Download rules ({n})", icons::FUNNEL)).clicked() {
@@ -84,7 +84,7 @@ impl CorrentApp {
                     if ui
                         .add_enabled(
                             !loading && !rss.feeds.is_empty(),
-                            egui::Button::new(format!("{}  Refresh all", icons::ARROWS_CLOCKWISE)),
+                            egui::Button::new(format!("{}  {}", icons::ARROWS_CLOCKWISE, t!("Refresh all"))),
                         )
                         .clicked()
                     {
@@ -95,8 +95,8 @@ impl CorrentApp {
                     }
                     let mut auto = self.settings.rss.auto_download;
                     if ui
-                        .checkbox(&mut auto, "Auto-download")
-                        .on_hover_text("Add matching articles automatically using your download rules")
+                        .checkbox(&mut auto, t!("Auto-download"))
+                        .on_hover_text(t!("Add matching articles automatically using your download rules"))
                         .changed()
                     {
                         self.update_rss(|r| r.auto_download = auto);
@@ -108,11 +108,13 @@ impl CorrentApp {
                 let edit = ui.add(
                     egui::TextEdit::singleline(&mut self.feeds.new_url)
                         .desired_width((ui.available_width() - 120.0).max(200.0))
-                        .hint_text("Paste a feed address (RSS or Atom), e.g. a tracker's or a distro's release feed"),
+                        .hint_text(t!(
+                            "Paste a feed address (RSS or Atom), e.g. a tracker's or a distro's release feed"
+                        )),
                 );
                 let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let ok = !self.feeds.new_url.trim().is_empty();
-                if ui.add_enabled(ok, egui::Button::new(format!("{}  Add feed", icons::PLUS))).clicked()
+                if ui.add_enabled(ok, egui::Button::new(format!("{}  {}", icons::PLUS, t!("Add feed")))).clicked()
                     || (enter && ok)
                 {
                     self.add_feed();
@@ -126,8 +128,8 @@ impl CorrentApp {
                 ui,
                 p,
                 icons::RSS,
-                "No feeds yet",
-                "Add a feed above. Rules can then download new items automatically — e.g. every new episode.",
+                t!("No feeds yet"),
+                t!("Add a feed above. Rules can then download new items automatically — e.g. every new episode."),
             );
             return;
         }
@@ -160,7 +162,7 @@ impl CorrentApp {
                 p,
                 icons::STACK,
                 p.text_dim,
-                "All feeds",
+                t!("All feeds"),
                 Some(total),
                 self.feeds.selected.is_none(),
             )
@@ -189,21 +191,24 @@ impl CorrentApp {
                     self.feeds.selected = Some(f.url.clone());
                 }
                 resp.context_menu(|ui| {
-                    if ui.button(format!("{}  Refresh", icons::ARROWS_CLOCKWISE)).clicked() {
+                    if ui.button(format!("{}  {}", icons::ARROWS_CLOCKWISE, t!("Refresh"))).clicked() {
                         self.engine.send(EngineCommand::RssRefresh(Some(f.url.clone())));
                         ui.close();
                     }
-                    if ui.button(format!("{}  Copy address", icons::LINK)).clicked() {
+                    if ui.button(format!("{}  {}", icons::LINK, t!("Copy address"))).clicked() {
                         self.copy(f.url.clone());
                         ui.close();
                     }
-                    let label = if f.enabled { "Pause updates" } else { "Resume updates" };
+                    let label = if f.enabled { t!("Pause updates") } else { t!("Resume updates") };
                     if ui.button(format!("{}  {label}", icons::PAUSE)).clicked() {
                         toggle = Some(f.url.clone());
                         ui.close();
                     }
                     ui.separator();
-                    if ui.button(RichText::new(format!("{}  Remove feed", icons::TRASH)).color(p.error)).clicked() {
+                    if ui
+                        .button(RichText::new(format!("{}  {}", icons::TRASH, t!("Remove feed"))).color(p.error))
+                        .clicked()
+                    {
                         remove = Some(f.url.clone());
                         ui.close();
                     }
@@ -229,7 +234,7 @@ impl CorrentApp {
                         }
                     }
                 });
-                self.toasts.push(ToastKind::Info, "Feed removed");
+                self.toasts.push(ToastKind::Info, t!("Feed removed"));
             }
         });
     }
@@ -243,19 +248,19 @@ impl CorrentApp {
                 let status = match (&one.error, one.last_ok) {
                     (Some(e), _) => RichText::new(format!("{}  {e}", icons::WARNING)).small().color(p.error),
                     (None, Some(t)) => RichText::new(format!("Updated {}", fmt_date(t))).small().color(p.text_dim),
-                    (None, None) if one.loading => RichText::new("Loading…").small().color(p.text_dim),
-                    (None, None) => RichText::new("Not loaded yet").small().color(p.text_dim),
+                    (None, None) if one.loading => RichText::new(t!("Loading…")).small().color(p.text_dim),
+                    (None, None) => RichText::new(t!("Not loaded yet")).small().color(p.text_dim),
                 };
                 ui.label(status);
             } else {
-                ui.label(RichText::new("All feeds").font(theme::heading()).color(p.text));
+                ui.label(RichText::new(t!("All feeds")).font(theme::heading()).color(p.text));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.feeds.search)
-                        .desired_width(200.0)
-                        .hint_text(format!("{}  Filter articles", icons::MAGNIFYING_GLASS)),
-                );
+                ui.add(egui::TextEdit::singleline(&mut self.feeds.search).desired_width(200.0).hint_text(format!(
+                    "{}  {}",
+                    icons::MAGNIFYING_GLASS,
+                    t!("Filter articles")
+                )));
             });
         });
         ui.add_space(6.0);
@@ -270,9 +275,12 @@ impl CorrentApp {
             rows.sort_by_key(|(_, a)| std::cmp::Reverse(a.article.published.unwrap_or(0)));
         }
         if rows.is_empty() {
-            let hint =
-                if q.is_empty() { "Articles appear here after the next refresh." } else { "Try a different filter." };
-            empty_compact(ui, p, icons::NEWSPAPER, "No articles", hint);
+            let hint = if q.is_empty() {
+                t!("Articles appear here after the next refresh.")
+            } else {
+                t!("Try a different filter.")
+            };
+            empty_compact(ui, p, icons::NEWSPAPER, t!("No articles"), hint);
             return;
         }
 
@@ -307,12 +315,12 @@ impl CorrentApp {
                     });
                 };
                 head(&mut h, "");
-                head(&mut h, "Title");
+                head(&mut h, t!("Title"));
                 if multi {
-                    head(&mut h, "Feed");
+                    head(&mut h, t!("Feed"));
                 }
-                head(&mut h, "Size");
-                head(&mut h, "Published");
+                head(&mut h, t!("Size"));
+                head(&mut h, t!("Published"));
                 head(&mut h, "");
             })
             .body(|body| {
@@ -324,10 +332,11 @@ impl CorrentApp {
                         .map(|(n, _, _)| n.as_str());
                     row.col(|ui| {
                         if a.downloaded {
-                            ui.label(RichText::new(icons::CHECK_CIRCLE).color(p.success)).on_hover_text("Downloaded");
+                            ui.label(RichText::new(icons::CHECK_CIRCLE).color(p.success))
+                                .on_hover_text(t!("Downloaded"));
                         } else if let Some(r) = rule {
                             ui.label(RichText::new(icons::FUNNEL).color(p.accent))
-                                .on_hover_text(format!("Matches rule “{r}”"));
+                                .on_hover_text(t!("Matches rule “{r}”", r = r));
                         }
                     });
                     row.col(|ui| {
@@ -335,7 +344,7 @@ impl CorrentApp {
                         let resp = ui.add(egui::Label::new(RichText::new(&a.article.title).color(color)).truncate());
                         if let Some(page) = &a.article.page {
                             resp.context_menu(|ui| {
-                                if ui.button(format!("{}  Open web page", icons::GLOBE)).clicked() {
+                                if ui.button(format!("{}  {}", icons::GLOBE, t!("Open web page"))).clicked() {
                                     let _ = open::that_detached(page);
                                     ui.close();
                                 }
@@ -359,7 +368,7 @@ impl CorrentApp {
                     });
                     row.col(|ui| match &a.article.torrent {
                         Some(link) => {
-                            let label = if a.downloaded { "Again" } else { "Download" };
+                            let label = if a.downloaded { t!("Again") } else { t!("Download") };
                             if ui
                                 .small_button(format!("{}  {label}", icons::DOWNLOAD_SIMPLE))
                                 .on_hover_text(link)
@@ -369,7 +378,7 @@ impl CorrentApp {
                             }
                         }
                         None => {
-                            ui.label(RichText::new("No link").small().color(p.text_mute));
+                            ui.label(RichText::new(t!("No link")).small().color(p.text_mute));
                         }
                     });
                 });
@@ -393,7 +402,7 @@ impl CorrentApp {
             ui.set_width(860.0_f32.min(ctx.content_rect().width() - 60.0));
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icons::FUNNEL).size(20.0).color(p.accent));
-                ui.label(RichText::new("Download rules").font(theme::title()).color(p.text));
+                ui.label(RichText::new(t!("Download rules")).font(theme::title()).color(p.text));
             });
             ui.label(
                 RichText::new(
@@ -410,7 +419,7 @@ impl CorrentApp {
                     ui.set_width(200.0);
                     egui::ScrollArea::vertical().id_salt("rule_list").max_height(420.0).show(ui, |ui| {
                         for (i, r) in ed.rules.iter().enumerate() {
-                            let name = if r.name.trim().is_empty() { "Unnamed rule" } else { r.name.as_str() };
+                            let name = if r.name.trim().is_empty() { t!("Unnamed rule") } else { r.name.as_str() };
                             let (icon, color) = if rule_is_active(r) {
                                 (icons::FUNNEL, p.accent)
                             } else {
@@ -423,14 +432,14 @@ impl CorrentApp {
                     });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button(format!("{}  New rule", icons::PLUS)).clicked() {
+                        if ui.button(format!("{}  {}", icons::PLUS, t!("New rule"))).clicked() {
                             let n = ed.rules.len() + 1;
-                            ed.rules.push(RssRule { name: format!("Rule {n}"), ..Default::default() });
+                            ed.rules.push(RssRule { name: t!("Rule {n}", n = n), ..Default::default() });
                             ed.selected = ed.rules.len() - 1;
                         }
                         if ui
                             .add_enabled(!ed.rules.is_empty(), egui::Button::new(icons::TRASH))
-                            .labeled("Delete rule")
+                            .labeled(t!("Delete rule"))
                             .clicked()
                         {
                             ed.rules.remove(ed.selected.min(ed.rules.len() - 1));
@@ -442,7 +451,13 @@ impl CorrentApp {
                 ui.vertical(|ui| {
                     ui.set_width(620.0);
                     let Some(rule) = ed.rules.get_mut(ed.selected) else {
-                        empty_compact(ui, p, icons::FUNNEL, "No rules", "Create one to download matching articles.");
+                        empty_compact(
+                            ui,
+                            p,
+                            icons::FUNNEL,
+                            t!("No rules"),
+                            t!("Create one to download matching articles."),
+                        );
                         return;
                     };
                     rule_form(ui, p, rule, &rss.feeds, &categories, &mut pick);
@@ -460,16 +475,17 @@ impl CorrentApp {
                     names.len() == n && !names.contains(&"")
                 };
                 let errors = ed.rules.iter().any(|r| Matcher::new(r).is_err());
-                if ui.add_enabled_ui(names_ok && !errors, |ui| primary_button(ui, p, "Save rules")).inner.clicked() {
+                if ui.add_enabled_ui(names_ok && !errors, |ui| primary_button(ui, p, t!("Save rules"))).inner.clicked()
+                {
                     save = true;
                 }
-                if secondary_button(ui, "Cancel").clicked() {
+                if secondary_button(ui, t!("Cancel")).clicked() {
                     close = true;
                 }
                 if !names_ok {
-                    ui.label(RichText::new("Each rule needs a unique name").small().color(p.warn));
+                    ui.label(RichText::new(t!("Each rule needs a unique name")).small().color(p.warn));
                 } else if errors {
-                    ui.label(RichText::new("Fix the highlighted rule first").small().color(p.warn));
+                    ui.label(RichText::new(t!("Fix the highlighted rule first")).small().color(p.warn));
                 }
             });
         });
@@ -489,7 +505,7 @@ impl CorrentApp {
                 })
                 .collect();
             self.update_rss(|s| s.rules = rules);
-            self.toasts.push(ToastKind::Success, "Download rules saved");
+            self.toasts.push(ToastKind::Success, t!("Download rules saved"));
             return;
         }
         if !close {
@@ -500,38 +516,40 @@ impl CorrentApp {
 
 fn rule_form(ui: &mut Ui, p: &Palette, r: &mut RssRule, feeds: &[FeedView], categories: &[String], pick: &mut bool) {
     egui::Grid::new("rule_form").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
-        ui.label("Name");
+        ui.label(t!("Name"));
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut r.name).desired_width(260.0));
-            ui.checkbox(&mut r.enabled, "Enabled");
+            ui.checkbox(&mut r.enabled, t!("Enabled"));
         });
         ui.end_row();
-        ui.label("Must contain");
+        ui.label(t!("Must contain"));
         ui.add(
             egui::TextEdit::singleline(&mut r.must_contain)
                 .desired_width(420.0)
-                .hint_text("e.g. sintel 1080p | big buck bunny"),
+                .hint_text(t!("e.g. sintel 1080p | big buck bunny")),
         );
         ui.end_row();
-        ui.label("Must not contain");
-        ui.add(egui::TextEdit::singleline(&mut r.must_not_contain).desired_width(420.0).hint_text("e.g. cam | sample"));
+        ui.label(t!("Must not contain"));
+        ui.add(
+            egui::TextEdit::singleline(&mut r.must_not_contain).desired_width(420.0).hint_text(t!("e.g. cam | sample")),
+        );
         ui.end_row();
         ui.label("");
-        ui.checkbox(&mut r.use_regex, "Use regular expressions");
+        ui.checkbox(&mut r.use_regex, t!("Use regular expressions"));
         ui.end_row();
-        ui.label("Episodes");
+        ui.label(t!("Episodes"));
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut r.episode_filter).desired_width(160.0).hint_text("e.g. 1x1-5;8;10-"),
             );
-            ui.checkbox(&mut r.smart_episodes, "Each episode only once")
-                .on_hover_text("Skip other releases of an episode this rule already downloaded");
+            ui.checkbox(&mut r.smart_episodes, t!("Each episode only once"))
+                .on_hover_text(t!("Skip other releases of an episode this rule already downloaded"));
         });
         ui.end_row();
-        ui.label("Feeds");
+        ui.label(t!("Feeds"));
         ui.horizontal_wrapped(|ui| {
             let mut all = r.feeds.is_empty();
-            if ui.checkbox(&mut all, "All feeds").changed() && all {
+            if ui.checkbox(&mut all, t!("All feeds")).changed() && all {
                 r.feeds.clear();
             }
             for f in feeds {
@@ -546,35 +564,35 @@ fn rule_form(ui: &mut Ui, p: &Palette, r: &mut RssRule, feeds: &[FeedView], cate
             }
         });
         ui.end_row();
-        ui.label("Category");
+        ui.label(t!("Category"));
         let current = r.category.clone().unwrap_or_default();
         egui::ComboBox::from_id_salt("rule_category")
-            .selected_text(if current.is_empty() { "None".to_string() } else { current.clone() })
+            .selected_text(if current.is_empty() { t!("None").to_string() } else { current.clone() })
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut r.category, None, "None");
+                ui.selectable_value(&mut r.category, None, t!("None"));
                 for c in categories {
                     ui.selectable_value(&mut r.category, Some(c.clone()), c);
                 }
             });
         ui.end_row();
-        ui.label("Save to");
+        ui.label(t!("Save to"));
         ui.horizontal(|ui| {
             let label = r
                 .save_path
                 .as_ref()
                 .map(|s| s.display().to_string())
-                .unwrap_or_else(|| "Category or default folder".into());
+                .unwrap_or_else(|| t!("Category or default folder").into());
             ui.add(egui::Label::new(RichText::new(label).color(p.text_dim)).truncate());
-            if ui.button(icons::FOLDER_OPEN).labeled("Choose folder").clicked() {
+            if ui.button(icons::FOLDER_OPEN).labeled(t!("Choose folder")).clicked() {
                 *pick = true;
             }
-            if r.save_path.is_some() && ui.button(icons::X).labeled("Use the default").clicked() {
+            if r.save_path.is_some() && ui.button(icons::X).labeled(t!("Use the default")).clicked() {
                 r.save_path = None;
             }
         });
         ui.end_row();
         ui.label("");
-        ui.checkbox(&mut r.start_paused, "Add paused");
+        ui.checkbox(&mut r.start_paused, t!("Add paused"));
         ui.end_row();
     });
 }
@@ -588,7 +606,8 @@ fn rule_preview(ui: &mut Ui, p: &Palette, r: &RssRule, feeds: &[FeedView], auto:
         }
     };
     if !rule_is_active(r) {
-        let why = if r.enabled { "Add words to match to activate this rule." } else { "This rule is disabled." };
+        let why =
+            if r.enabled { t!("Add words to match to activate this rule.") } else { t!("This rule is disabled.") };
         ui.label(RichText::new(why).small().color(p.text_dim));
         return;
     }
@@ -601,7 +620,7 @@ fn rule_preview(ui: &mut Ui, p: &Palette, r: &RssRule, feeds: &[FeedView], auto:
         .collect();
     let new = hits.iter().filter(|(_, d)| !d).count();
     let text = match (hits.len(), new) {
-        (0, _) => "Matches no current articles".to_string(),
+        (0, _) => t!("Matches no current articles").to_string(),
         (n, 0) => format!("Matches {n} current article{} (all downloaded)", if n == 1 { "" } else { "s" }),
         (n, k) if auto => {
             format!(

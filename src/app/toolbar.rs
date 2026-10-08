@@ -16,10 +16,10 @@ impl CorrentApp {
             self.titlebar_logo(ui, p);
             ui.add_space(16.0);
 
-            if icon_button(ui, p, icons::FILE_PLUS, "Add torrent file… (Ctrl+O)", true).clicked() {
+            if icon_button(ui, p, icons::FILE_PLUS, t!("Add torrent file… (Ctrl+O)"), true).clicked() {
                 self.pick_torrent_files();
             }
-            if icon_button(ui, p, icons::MAGNET, "Add magnet link or URL… (Ctrl+Shift+O)", true).clicked() {
+            if icon_button(ui, p, icons::MAGNET, t!("Add magnet link or URL… (Ctrl+Shift+O)"), true).clicked() {
                 self.open_magnet_dialog();
             }
             separator(ui, p);
@@ -30,27 +30,27 @@ impl CorrentApp {
                 sel.iter().any(|t| t.state.is_paused_like() || t.state == crate::engine::types::TorrentState::Error);
             let can_pause = sel.iter().any(|t| !t.state.is_paused_like());
             let hashes = self.selected_hashes();
-            if icon_button(ui, p, icons::PLAY, "Resume (Space)", can_resume).clicked() {
+            if icon_button(ui, p, icons::PLAY, t!("Resume (Space)"), can_resume).clicked() {
                 self.engine.send(EngineCommand::Resume(hashes.clone()));
             }
-            if icon_button(ui, p, icons::PAUSE, "Pause (Space)", can_pause).clicked() {
+            if icon_button(ui, p, icons::PAUSE, t!("Pause (Space)"), can_pause).clicked() {
                 self.engine.send(EngineCommand::Pause(hashes.clone()));
             }
-            if icon_button(ui, p, icons::TRASH, "Remove… (Del)", any).clicked() {
+            if icon_button(ui, p, icons::TRASH, t!("Remove… (Del)"), any).clicked() {
                 self.request_delete(hashes.clone(), false);
             }
             separator(ui, p);
-            if icon_button(ui, p, icons::CARET_DOUBLE_UP, "Move to top of queue", any).clicked() {
+            if icon_button(ui, p, icons::CARET_DOUBLE_UP, t!("Move to top of queue"), any).clicked() {
                 self.engine.send(EngineCommand::QueueMove { hashes: hashes.clone(), mv: crate::store::QueueMove::Top });
             }
-            if icon_button(ui, p, icons::CARET_UP, "Move up in queue", any).clicked() {
+            if icon_button(ui, p, icons::CARET_UP, t!("Move up in queue"), any).clicked() {
                 self.engine.send(EngineCommand::QueueMove { hashes: hashes.clone(), mv: crate::store::QueueMove::Up });
             }
-            if icon_button(ui, p, icons::CARET_DOWN, "Move down in queue", any).clicked() {
+            if icon_button(ui, p, icons::CARET_DOWN, t!("Move down in queue"), any).clicked() {
                 self.engine
                     .send(EngineCommand::QueueMove { hashes: hashes.clone(), mv: crate::store::QueueMove::Down });
             }
-            if icon_button(ui, p, icons::CARET_DOUBLE_DOWN, "Move to bottom of queue", any).clicked() {
+            if icon_button(ui, p, icons::CARET_DOUBLE_DOWN, t!("Move to bottom of queue"), any).clicked() {
                 self.engine.send(EngineCommand::QueueMove { hashes, mv: crate::store::QueueMove::Bottom });
             }
 
@@ -63,7 +63,7 @@ impl CorrentApp {
                     ui.add_space(8.0);
                 }
                 self.overflow_menu(ui, p);
-                if icon_button(ui, p, icons::GEAR_SIX, "Settings (Ctrl+,)", true).clicked() {
+                if icon_button(ui, p, icons::GEAR_SIX, t!("Settings (Ctrl+,)"), true).clicked() {
                     self.open_settings();
                 }
                 let alt = self.snap.session.alt_speed;
@@ -72,9 +72,9 @@ impl CorrentApp {
                     p,
                     icons::GAUGE,
                     if alt {
-                        "Alternative speed limits are ON (Ctrl+Shift+S)"
+                        t!("Alternative speed limits are ON (Ctrl+Shift+S)")
                     } else {
-                        "Use alternative speed limits (Ctrl+Shift+S)"
+                        t!("Use alternative speed limits (Ctrl+Shift+S)")
                     },
                     true,
                     alt,
@@ -104,7 +104,7 @@ impl CorrentApp {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.search)
                         .id(id)
-                        .hint_text("Search torrents  (Ctrl+F)")
+                        .hint_text(t!("Search torrents  (Ctrl+F)"))
                         .frame(egui::Frame::NONE)
                         .desired_width(220.0),
                 );
@@ -113,7 +113,7 @@ impl CorrentApp {
                     resp.surrender_focus();
                 }
                 if !self.search.is_empty()
-                    && ui.add(egui::Button::new(icons::X).frame(false).small()).labeled("Clear search").clicked()
+                    && ui.add(egui::Button::new(icons::X).frame(false).small()).labeled(t!("Clear search")).clicked()
                 {
                     self.search.clear();
                 }

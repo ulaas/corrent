@@ -33,12 +33,12 @@ impl Tray {
     /// Create the tray. Must run on the event-loop thread (Windows/macOS); failures are non-fatal.
     pub fn new(ctx: &egui::Context) -> Option<Tray> {
         let menu = Menu::new();
-        let show = MenuItem::new("Show Corrent", true, None);
-        let pause_all = MenuItem::new("Pause all", true, None);
-        let resume_all = MenuItem::new("Resume all", true, None);
-        let alt = CheckMenuItem::new("Alternative speed limits", true, false, None);
-        let settings = MenuItem::new("Settings…", true, None);
-        let quit = MenuItem::new("Quit", true, None);
+        let show = MenuItem::new(t!("Show Corrent"), true, None);
+        let pause_all = MenuItem::new(t!("Pause all"), true, None);
+        let resume_all = MenuItem::new(t!("Resume all"), true, None);
+        let alt = CheckMenuItem::new(t!("Alternative speed limits"), true, false, None);
+        let settings = MenuItem::new(t!("Settings…"), true, None);
+        let quit = MenuItem::new(t!("Quit"), true, None);
         let sep = PredefinedMenuItem::separator();
         let sep2 = PredefinedMenuItem::separator();
         if let Err(e) = menu.append_items(&[&show, &sep, &resume_all, &pause_all, &alt, &sep2, &settings, &quit]) {
@@ -64,7 +64,7 @@ impl Tray {
 
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("Corrent")
+            .with_tooltip(t!("Corrent"))
             .with_icon(icon)
             .with_menu_on_left_click(false)
             .build();
@@ -126,7 +126,7 @@ impl Tray {
             return;
         }
         self.last_tooltip = Instant::now();
-        let tip = format!("Corrent\n↓ {down}   ↑ {up}\n{active} active");
+        let tip = t!("Corrent\n↓ {down}   ↑ {up}\n{active} active", down = down, up = up, active = active);
         let _ = self.icon.set_tooltip(Some(tip));
     }
 }

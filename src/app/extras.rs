@@ -24,10 +24,10 @@ impl CorrentApp {
     pub(super) fn overflow_menu(&mut self, ui: &mut Ui, p: &Palette) {
         ui.menu_button(RichText::new(icons::DOTS_THREE_VERTICAL).size(18.0).color(p.text_dim), |ui| {
             ui.set_min_width(220.0);
-            if ui.button(format!("{}  Pause all", icons::PAUSE)).clicked() {
+            if ui.button(format!("{}  {}", icons::PAUSE, t!("Pause all"))).clicked() {
                 self.engine.send(crate::engine::EngineCommand::PauseAll);
             }
-            if ui.button(format!("{}  Resume all", icons::PLAY)).clicked() {
+            if ui.button(format!("{}  {}", icons::PLAY, t!("Resume all"))).clicked() {
                 self.engine.send(crate::engine::EngineCommand::ResumeAll);
             }
             if !self.snap.undoable.is_empty() {
@@ -44,23 +44,23 @@ impl CorrentApp {
             }
             ui.separator();
             let mut sidebar = self.prefs.show_sidebar;
-            if ui.checkbox(&mut sidebar, "Sidebar  (Ctrl+B)").changed() {
+            if ui.checkbox(&mut sidebar, t!("Sidebar  (Ctrl+B)")).changed() {
                 self.prefs.show_sidebar = sidebar;
             }
             let mut details = self.prefs.show_details;
-            if ui.checkbox(&mut details, "Details panel  (Ctrl+I)").changed() {
+            if ui.checkbox(&mut details, t!("Details panel  (Ctrl+I)")).changed() {
                 self.prefs.show_details = details;
             }
             let mut compact = self.settings.appearance.compact_rows;
-            if ui.checkbox(&mut compact, "Compact rows").changed() {
+            if ui.checkbox(&mut compact, t!("Compact rows")).changed() {
                 self.settings.appearance.compact_rows = compact;
                 self.save_settings();
             }
             ui.separator();
-            if ui.button(format!("{}  Create torrent…  (Ctrl+N)", icons::FILE_PLUS)).clicked() {
+            if ui.button(format!("{}  {}", icons::FILE_PLUS, t!("Create torrent…  (Ctrl+N)"))).clicked() {
                 self.open_creator();
             }
-            ui.menu_button(format!("{}  When downloads finish", icons::POWER), |ui| {
+            ui.menu_button(format!("{}  {}", icons::POWER, t!("When downloads finish")), |ui| {
                 for a in crate::integration::power::WhenDone::ALL {
                     if ui.add(egui::Button::selectable(self.when_done.action == a, a.label())).clicked() {
                         self.set_when_done(a);
@@ -68,26 +68,26 @@ impl CorrentApp {
                     }
                 }
             });
-            if ui.button(format!("{}  Check for updates", icons::ARROW_CIRCLE_UP)).clicked() {
+            if ui.button(format!("{}  {}", icons::ARROW_CIRCLE_UP, t!("Check for updates"))).clicked() {
                 self.check_for_updates(true);
             }
-            if ui.button(format!("{}  Import from another client…", icons::ARROW_SQUARE_IN)).clicked() {
+            if ui.button(format!("{}  {}", icons::ARROW_SQUARE_IN, t!("Import from another client…"))).clicked() {
                 self.open_import();
             }
-            if ui.button(format!("{}  Statistics", icons::CHART_BAR)).clicked() {
+            if ui.button(format!("{}  {}", icons::CHART_BAR, t!("Statistics"))).clicked() {
                 self.extras.stats = true;
             }
-            if ui.button(format!("{}  Log", icons::SCROLL)).clicked() {
+            if ui.button(format!("{}  {}", icons::SCROLL, t!("Log"))).clicked() {
                 self.extras.log = true;
             }
-            if ui.button(format!("{}  Open data folder", icons::FOLDER_OPEN)).clicked() {
+            if ui.button(format!("{}  {}", icons::FOLDER_OPEN, t!("Open data folder"))).clicked() {
                 super::open_path(&self.paths.data_dir);
             }
             ui.separator();
-            if ui.button(format!("{}  About Corrent", icons::INFO)).clicked() {
+            if ui.button(format!("{}  {}", icons::INFO, t!("About Corrent"))).clicked() {
                 self.extras.about = true;
             }
-            if ui.button(format!("{}  Quit", icons::SIGN_OUT)).clicked() {
+            if ui.button(format!("{}  {}", icons::SIGN_OUT, t!("Quit"))).clicked() {
                 self.quitting = true;
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -110,18 +110,18 @@ impl CorrentApp {
                 let tex = self.app_icon_texture(ctx);
                 ui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(72.0, 72.0)));
                 ui.add_space(8.0);
-                ui.label(RichText::new("Corrent").font(theme::bold(theme::type_scale::DISPLAY)).color(p.text));
+                ui.label(RichText::new(t!("Corrent")).font(theme::bold(theme::type_scale::DISPLAY)).color(p.text));
                 ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(p.text_dim));
                 ui.add_space(8.0);
-                ui.label(RichText::new("A beautiful, stable BitTorrent client.").color(p.text));
+                ui.label(RichText::new(t!("A beautiful, stable BitTorrent client.")).color(p.text));
                 ui.add_space(8.0);
                 ui.label(
-                    RichText::new("Built with Rust, egui and librqbit.\nInter and JetBrains Mono fonts (SIL OFL), Phosphor icons (MIT).")
+                    RichText::new(t!("Built with Rust, egui and librqbit.\nInter and JetBrains Mono fonts (SIL OFL), Phosphor icons (MIT)."))
                         .small()
                         .color(p.text_dim),
                 );
                 ui.add_space(12.0);
-                if secondary_button(ui, "Close").clicked() {
+                if secondary_button(ui, t!("Close")).clicked() {
                     self.extras.about = false;
                 }
             });
@@ -138,7 +138,7 @@ impl CorrentApp {
         let snap = self.snap.clone();
         let s = &snap.session;
         let mut open = true;
-        egui::Window::new(RichText::new(format!("{}  Statistics", icons::CHART_BAR)).strong())
+        egui::Window::new(RichText::new(format!("{}  {}", icons::CHART_BAR, t!("Statistics"))).strong())
             .id(Id::new("stats_window"))
             .open(&mut open)
             .resizable(false)
@@ -152,24 +152,24 @@ impl CorrentApp {
                 };
                 card(p).show(ui, |ui| {
                     ui.set_width(380.0);
-                    ui.label(RichText::new("All time").strong().color(p.text));
+                    ui.label(RichText::new(t!("All time")).strong().color(p.text));
                     egui::Grid::new("stats_all").num_columns(2).spacing(vec2(24.0, 6.0)).show(ui, |ui| {
-                        kv(ui, p, "Downloaded", fmt_bytes(snap.all_time_downloaded));
-                        kv(ui, p, "Uploaded", fmt_bytes(snap.all_time_uploaded));
-                        kv(ui, p, "Share ratio", fmt_ratio(all_ratio));
+                        kv(ui, p, t!("Downloaded"), fmt_bytes(snap.all_time_downloaded));
+                        kv(ui, p, t!("Uploaded"), fmt_bytes(snap.all_time_uploaded));
+                        kv(ui, p, t!("Share ratio"), fmt_ratio(all_ratio));
                     });
                 });
                 ui.add_space(8.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(380.0);
-                    ui.label(RichText::new("This session").strong().color(p.text));
+                    ui.label(RichText::new(t!("This session")).strong().color(p.text));
                     egui::Grid::new("stats_session").num_columns(2).spacing(vec2(24.0, 6.0)).show(ui, |ui| {
-                        kv(ui, p, "Uptime", fmt_duration(Duration::from_secs(s.uptime_secs)));
-                        kv(ui, p, "Downloaded", fmt_bytes(s.session_downloaded));
-                        kv(ui, p, "Uploaded", fmt_bytes(s.session_uploaded));
-                        kv(ui, p, "Connected peers", s.peers_live.to_string());
-                        kv(ui, p, "DHT nodes", s.dht_nodes.map(|n| n.to_string()).unwrap_or_else(|| "off".into()));
-                        kv(ui, p, "Torrents", snap.torrents.len().to_string());
+                        kv(ui, p, t!("Uptime"), fmt_duration(Duration::from_secs(s.uptime_secs)));
+                        kv(ui, p, t!("Downloaded"), fmt_bytes(s.session_downloaded));
+                        kv(ui, p, t!("Uploaded"), fmt_bytes(s.session_uploaded));
+                        kv(ui, p, t!("Connected peers"), s.peers_live.to_string());
+                        kv(ui, p, t!("DHT nodes"), s.dht_nodes.map(|n| n.to_string()).unwrap_or_else(|| "off".into()));
+                        kv(ui, p, t!("Torrents"), snap.torrents.len().to_string());
                     });
                 });
             });
@@ -183,7 +183,7 @@ impl CorrentApp {
             return;
         }
         let mut open = true;
-        egui::Window::new(RichText::new(format!("{}  Log", icons::SCROLL)).strong())
+        egui::Window::new(RichText::new(format!("{}  {}", icons::SCROLL, t!("Log"))).strong())
             .id(Id::new("log_window"))
             .open(&mut open)
             .default_size(vec2(760.0, 420.0))
@@ -192,14 +192,14 @@ impl CorrentApp {
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.extras.log_filter)
-                            .hint_text(format!("{}  Filter", icons::FUNNEL))
+                            .hint_text(format!("{}  {}", icons::FUNNEL, t!("Filter")))
                             .desired_width(220.0),
                     );
-                    ui.selectable_value(&mut self.extras.log_level, 0, "All");
-                    ui.selectable_value(&mut self.extras.log_level, 1, "Warnings");
-                    ui.selectable_value(&mut self.extras.log_level, 2, "Errors");
+                    ui.selectable_value(&mut self.extras.log_level, 0, t!("All"));
+                    ui.selectable_value(&mut self.extras.log_level, 1, t!("Warnings"));
+                    ui.selectable_value(&mut self.extras.log_level, 2, t!("Errors"));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button(format!("{}  Copy", icons::COPY)).clicked() {
+                        if ui.button(format!("{}  {}", icons::COPY, t!("Copy"))).clicked() {
                             let text = super::log::LINES
                                 .lock()
                                 .map(|l| {
@@ -219,7 +219,7 @@ impl CorrentApp {
                                 .unwrap_or_default();
                             self.copy(text);
                         }
-                        if ui.button(format!("{}  Clear", icons::TRASH)).clicked()
+                        if ui.button(format!("{}  {}", icons::TRASH, t!("Clear"))).clicked()
                             && let Ok(mut l) = super::log::LINES.lock()
                         {
                             l.clear();
@@ -252,8 +252,8 @@ impl CorrentApp {
                         ui,
                         p,
                         icons::SCROLL,
-                        "No log entries",
-                        "Messages appear here as Corrent works.",
+                        t!("No log entries"),
+                        t!("Messages appear here as Corrent works."),
                     );
                     return;
                 }

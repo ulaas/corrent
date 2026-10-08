@@ -14,12 +14,12 @@ use crate::ui::widgets::{self, card};
 use crate::util::{fmt_bytes, fmt_date, fmt_duration, fmt_ratio, fmt_speed};
 
 const TABS: [(DetailsTab, &str, &str); 6] = [
-    (DetailsTab::General, icons::INFO, "General"),
-    (DetailsTab::Files, icons::FILES, "Files"),
-    (DetailsTab::Peers, icons::USERS_THREE, "Peers"),
-    (DetailsTab::Trackers, icons::BROADCAST, "Trackers"),
-    (DetailsTab::Pieces, icons::SQUARES_FOUR, "Pieces"),
-    (DetailsTab::Speed, icons::CHART_LINE, "Speed"),
+    (DetailsTab::General, icons::INFO, tk!("General")),
+    (DetailsTab::Files, icons::FILES, tk!("Files")),
+    (DetailsTab::Peers, icons::USERS_THREE, tk!("Peers")),
+    (DetailsTab::Trackers, icons::BROADCAST, tk!("Trackers")),
+    (DetailsTab::Pieces, icons::SQUARES_FOUR, tk!("Pieces")),
+    (DetailsTab::Speed, icons::CHART_LINE, tk!("Speed")),
 ];
 
 impl CorrentApp {
@@ -72,7 +72,7 @@ impl CorrentApp {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
                     .add(egui::Button::new(RichText::new(icons::CARET_DOWN).color(p.text_dim)).frame(false))
-                    .labeled("Hide details (Ctrl+I)")
+                    .labeled(t!("Hide details (Ctrl+I)"))
                     .clicked()
                 {
                     self.prefs.show_details = false;
@@ -89,7 +89,7 @@ impl CorrentApp {
                     ui,
                     p,
                     icons::STACK,
-                    &format!("{n} torrents selected"),
+                    &t!("{n} torrents selected", n = n),
                     &format!("{} in total", fmt_bytes(total)),
                 );
             } else {
@@ -97,8 +97,8 @@ impl CorrentApp {
                     ui,
                     p,
                     icons::CURSOR_CLICK,
-                    "Nothing selected",
-                    "Select a torrent to see its details.",
+                    t!("Nothing selected"),
+                    t!("Select a torrent to see its details."),
                 );
             }
             return;
@@ -151,19 +151,19 @@ impl CorrentApp {
             ui.add_space(8.0);
             let cols = 3;
             let kv: Vec<(&str, String)> = vec![
-                ("Status", super::table::status_text(t)),
-                ("Size", if t.size > 0 { fmt_bytes(t.size) } else { "—".into() }),
-                ("Done", fmt_bytes(t.done)),
-                ("Download speed", fmt_speed(t.down_bps, units)),
-                ("Upload speed", fmt_speed(t.up_bps, units)),
+                (t!("Status"), super::table::status_text(t)),
+                (t!("Size"), if t.size > 0 { fmt_bytes(t.size) } else { "—".into() }),
+                (t!("Done"), fmt_bytes(t.done)),
+                (t!("Download speed"), fmt_speed(t.down_bps, units)),
+                (t!("Upload speed"), fmt_speed(t.up_bps, units)),
                 ("ETA", t.eta.map(fmt_duration).unwrap_or_else(|| "—".into())),
-                ("Downloaded", fmt_bytes(t.downloaded)),
-                ("Uploaded", fmt_bytes(t.uploaded)),
-                ("Ratio", fmt_ratio(t.ratio)),
+                (t!("Downloaded"), fmt_bytes(t.downloaded)),
+                (t!("Uploaded"), fmt_bytes(t.uploaded)),
+                (t!("Ratio"), fmt_ratio(t.ratio)),
                 (
-                    "Speed limits",
+                    t!("Speed limits"),
                     match (t.down_limit_kib, t.up_limit_kib) {
-                        (0, 0) => "Global only".into(),
+                        (0, 0) => t!("Global only").into(),
                         (d, u) => {
                             let f = |k: u32| if k == 0 { "∞".to_string() } else { fmt_speed(k as u64 * 1024, units) };
                             format!("↓ {} · ↑ {}", f(d), f(u))
@@ -171,25 +171,25 @@ impl CorrentApp {
                     },
                 ),
                 (
-                    "Peers",
+                    t!("Peers"),
                     format!("{} connected · {} known · {} connecting", t.peers_live, t.peers_seen, t.peers_connecting),
                 ),
                 (
-                    "Seeding time",
+                    t!("Seeding time"),
                     if t.seeding_secs > 0 { fmt_duration(Duration::from_secs(t.seeding_secs)) } else { "—".into() },
                 ),
-                ("Files", if t.file_count > 0 { t.file_count.to_string() } else { "—".into() }),
+                (t!("Files"), if t.file_count > 0 { t.file_count.to_string() } else { "—".into() }),
                 (
-                    "Pieces",
+                    t!("Pieces"),
                     if t.piece_count > 0 {
                         format!("{} × {}", t.piece_count, fmt_bytes(t.piece_size))
                     } else {
                         "—".into()
                     },
                 ),
-                ("Added", fmt_date(t.added_at)),
-                ("Completed", t.completed_at.map(fmt_date).unwrap_or_else(|| "—".into())),
-                ("Created", t.creation_date.map(fmt_date).unwrap_or_else(|| "—".into())),
+                (t!("Added"), fmt_date(t.added_at)),
+                (t!("Completed"), t.completed_at.map(fmt_date).unwrap_or_else(|| "—".into())),
+                (t!("Created"), t.creation_date.map(fmt_date).unwrap_or_else(|| "—".into())),
             ];
             egui::Grid::new("general_grid").num_columns(cols * 2).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
                 for (i, (k, v)) in kv.iter().enumerate() {
@@ -207,34 +207,34 @@ impl CorrentApp {
             card(p).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 egui::Grid::new("general_paths").num_columns(2).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
-                    ui.label(RichText::new("Save path").small().color(p.text_dim));
+                    ui.label(RichText::new(t!("Save path")).small().color(p.text_dim));
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(t.save_path.display().to_string()).color(p.text));
-                        if ui.small_button(icons::FOLDER_OPEN).labeled("Open folder").clicked() {
+                        if ui.small_button(icons::FOLDER_OPEN).labeled(t!("Open folder")).clicked() {
                             super::open_path(&t.save_path);
                         }
                     });
                     ui.end_row();
-                    ui.label(RichText::new("Info hash").small().color(p.text_dim));
+                    ui.label(RichText::new(t!("Info hash")).small().color(p.text_dim));
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(t.hash.to_hex()).monospace().color(p.text));
-                        if ui.small_button(icons::COPY).labeled("Copy").clicked() {
+                        if ui.small_button(icons::COPY).labeled(t!("Copy")).clicked() {
                             self.copy(t.hash.to_hex());
                         }
                     });
                     ui.end_row();
                     if let Some(c) = &t.created_by {
-                        ui.label(RichText::new("Created by").small().color(p.text_dim));
+                        ui.label(RichText::new(t!("Created by")).small().color(p.text_dim));
                         ui.label(RichText::new(c).color(p.text));
                         ui.end_row();
                     }
                     if let Some(c) = &t.comment {
-                        ui.label(RichText::new("Comment").small().color(p.text_dim));
+                        ui.label(RichText::new(t!("Comment")).small().color(p.text_dim));
                         ui.add(egui::Label::new(RichText::new(c).color(p.text)).wrap());
                         ui.end_row();
                     }
                     if let Some(e) = &t.error {
-                        ui.label(RichText::new("Error").small().color(p.error));
+                        ui.label(RichText::new(t!("Error")).small().color(p.error));
                         ui.add(egui::Label::new(RichText::new(e).color(p.error)).wrap());
                         ui.end_row();
                     }
@@ -251,7 +251,7 @@ impl CorrentApp {
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.file_filter)
-                    .hint_text(format!("{}  Filter files", icons::FUNNEL))
+                    .hint_text(format!("{}  {}", icons::FUNNEL, t!("Filter files")))
                     .desired_width(220.0),
             );
             let n_sel = d.files.iter().filter(|f| f.included).count();
@@ -260,13 +260,16 @@ impl CorrentApp {
                 let media = self.media_files(t.hash);
                 if let Some((idx, name, _)) = media.first().cloned()
                     && ui
-                        .small_button(format!("{}  Play", icons::PLAY_CIRCLE))
-                        .on_hover_text(format!("Stream “{name}” in your media player (works while downloading)"))
+                        .small_button(format!("{}  {}", icons::PLAY_CIRCLE, t!("Play")))
+                        .on_hover_text(t!(
+                            "Stream “{name}” in your media player (works while downloading)",
+                            name = name
+                        ))
                         .clicked()
                 {
                     self.play(t.hash, idx, &name);
                 }
-                if ui.small_button("Select all").clicked() {
+                if ui.small_button(t!("Select all")).clicked() {
                     self.engine.send(EngineCommand::SetFiles {
                         hash: t.hash,
                         included: d.files.iter().map(|f| f.index).collect(),
@@ -336,15 +339,15 @@ impl CorrentApp {
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} peers", peers.len())).small().color(p.text_dim));
-            ui.checkbox(&mut self.show_all_peers, RichText::new("Show connecting and dead peers").small());
+            ui.checkbox(&mut self.show_all_peers, RichText::new(t!("Show connecting and dead peers")).small());
         });
         if peers.is_empty() {
             let hint = if self.selected_views().first().is_some_and(|t| t.state.is_paused_like()) {
-                "Resume the torrent to connect to peers."
+                t!("Resume the torrent to connect to peers.")
             } else {
-                "Peers are found through trackers, DHT and peer exchange; this can take a minute."
+                t!("Peers are found through trackers, DHT and peer exchange; this can take a minute.")
             };
-            widgets::empty_compact(ui, p, icons::USERS_THREE, "No connected peers", hint);
+            widgets::empty_compact(ui, p, icons::USERS_THREE, t!("No connected peers"), hint);
             return;
         }
         TableBuilder::new(ui)
@@ -359,7 +362,16 @@ impl CorrentApp {
             .column(Column::initial(80.0))
             .columns(Column::initial(90.0), 4)
             .header(22.0, |mut h| {
-                for title in ["Address", "Client", "Type", "State", "Down", "Up", "Downloaded", "Uploaded"] {
+                for title in [
+                    t!("Address"),
+                    t!("Client"),
+                    t!("Type"),
+                    t!("State"),
+                    t!("Down"),
+                    t!("Up"),
+                    t!("Downloaded"),
+                    t!("Uploaded"),
+                ] {
                     h.col(|ui| {
                         ui.label(RichText::new(title).small().strong().color(p.text_dim));
                     });
@@ -409,25 +421,32 @@ impl CorrentApp {
     fn tab_trackers(&mut self, ui: &mut Ui, p: &Palette, t: &TorrentView) {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             // ---- where peers come from
-            ui.label(RichText::new("PEER SOURCES").size(10.5).strong().color(p.text_mute));
+            ui.label(RichText::new(t!("PEER SOURCES")).size(10.5).strong().color(p.text_mute));
             ui.add_space(4.0);
             let s = &self.snap.session;
             let dht = match (self.settings.bittorrent.dht, s.dht_nodes) {
-                (false, _) => ("Off".to_string(), p.text_mute),
-                (true, Some(n)) if n > 0 => (format!("{n} nodes"), p.success),
-                (true, _) => ("Connecting…".to_string(), p.warn),
+                (false, _) => (t!("Off").to_string(), p.text_mute),
+                (true, Some(n)) if n > 0 => (t!("{n} nodes", n = n), p.success),
+                (true, _) => (t!("Connecting…").to_string(), p.warn),
             };
-            let lsd = if self.settings.bittorrent.lsd { ("On".to_string(), p.success) } else { ("Off".to_string(), p.text_mute) };
-            let trk = if !self.settings.bittorrent.trackers_enabled {
-                ("Disabled".to_string(), p.text_mute)
+            let lsd = if self.settings.bittorrent.lsd {
+                (t!("On").to_string(), p.success)
             } else {
-                (format!("{} tracker(s)", t.trackers.len()), if t.trackers.is_empty() { p.text_mute } else { p.success })
+                (t!("Off").to_string(), p.text_mute)
+            };
+            let trk = if !self.settings.bittorrent.trackers_enabled {
+                (t!("Disabled").to_string(), p.text_mute)
+            } else {
+                (
+                    format!("{} tracker(s)", t.trackers.len()),
+                    if t.trackers.is_empty() { p.text_mute } else { p.success },
+                )
             };
             let sources = [
-                (icons::GRAPH, "DHT", "Decentralized network", dht),
-                (icons::ARROWS_LEFT_RIGHT, "PEX", "Peers share peers", ("On".to_string(), p.success)),
-                (icons::WIFI_HIGH, "Local", "Same-network peers", lsd),
-                (icons::BROADCAST, "Trackers", "Announce servers", trk),
+                (icons::GRAPH, "DHT", t!("Decentralized network"), dht),
+                (icons::ARROWS_LEFT_RIGHT, "PEX", t!("Peers share peers"), (t!("On").to_string(), p.success)),
+                (icons::WIFI_HIGH, t!("Local"), t!("Same-network peers"), lsd),
+                (icons::BROADCAST, t!("Trackers"), t!("Announce servers"), trk),
             ];
             let w = ((ui.available_width() - 3.0 * 10.0) / 4.0).max(140.0);
             ui.horizontal_wrapped(|ui| {
@@ -462,19 +481,24 @@ impl CorrentApp {
             // ---- trackers
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("TRACKERS  ·  {}", t.trackers.len())).size(10.5).strong().color(p.text_mute));
+                ui.label(
+                    RichText::new(format!("TRACKERS  ·  {}", t.trackers.len())).size(10.5).strong().color(p.text_mute),
+                );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button(format!("{}  Add trackers…", icons::PLUS)).clicked() {
+                    if ui.button(format!("{}  {}", icons::PLUS, t!("Add trackers…"))).clicked() {
                         self.open_trackers_dialog(t.hash);
                     }
-                    if !t.trackers.is_empty() && ui.button(format!("{}  Copy all", icons::COPY)).clicked() {
+                    if !t.trackers.is_empty() && ui.button(format!("{}  {}", icons::COPY, t!("Copy all"))).clicked() {
                         self.copy(t.trackers.join("\n"));
                     }
                 });
             });
             ui.add_space(4.0);
             if t.trackers.is_empty() {
-                ui.label(RichText::new("No trackers — peers are found through DHT and peer exchange.").color(p.text_mute));
+                ui.label(
+                    RichText::new(t!("No trackers — peers are found through DHT and peer exchange."))
+                        .color(p.text_mute),
+                );
             }
             let mut trackers = t.trackers.clone();
             trackers.sort_by_key(|u| super::table::tracker_host(u));
@@ -482,7 +506,11 @@ impl CorrentApp {
                 let parsed = url::Url::parse(url).ok();
                 let scheme = parsed.as_ref().map(|u| u.scheme().to_ascii_uppercase()).unwrap_or_else(|| "?".into());
                 let host = super::table::tracker_host(url);
-                let port = parsed.as_ref().and_then(|u| u.port_or_known_default()).map(|p| format!(":{p}")).unwrap_or_default();
+                let port = parsed
+                    .as_ref()
+                    .and_then(|u| u.port_or_known_default())
+                    .map(|p| format!(":{p}"))
+                    .unwrap_or_default();
                 let path = parsed.as_ref().map(|u| u.path().to_string()).unwrap_or_default();
                 let color = match scheme.as_str() {
                     "UDP" => p.accent,
@@ -506,7 +534,7 @@ impl CorrentApp {
                             ui.label(RichText::new(&host).strong().color(p.text));
                             ui.label(RichText::new(format!("{port}{path}")).monospace().small().color(p.text_dim));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.small_button(icons::COPY).labeled("Copy URL").clicked() {
+                                if ui.small_button(icons::COPY).labeled(t!("Copy URL")).clicked() {
                                     self.copy(url.clone());
                                 }
                             });
@@ -518,9 +546,11 @@ impl CorrentApp {
             }
             ui.add_space(4.0);
             ui.label(
-                RichText::new("The engine doesn't report per-tracker announce results; connected peers above reflect all sources.")
-                    .small()
-                    .color(p.text_mute),
+                RichText::new(t!(
+                    "The engine doesn't report per-tracker announce results; connected peers above reflect all sources."
+                ))
+                .small()
+                .color(p.text_mute),
             );
         });
     }
@@ -576,12 +606,12 @@ impl CorrentApp {
         let units = self.settings.appearance.speed_units;
         let interval = self.settings.advanced.refresh_interval_ms.max(200) as f64 / 1000.0;
         let (hist, title) = match detail {
-            Some(d) if self.speed_scope_torrent => (d.history.clone(), "This torrent"),
-            _ => (self.snap.history.clone(), "All torrents"),
+            Some(d) if self.speed_scope_torrent => (d.history.clone(), t!("This torrent")),
+            _ => (self.snap.history.clone(), t!("All torrents")),
         };
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.speed_scope_torrent, true, "This torrent");
-            ui.selectable_value(&mut self.speed_scope_torrent, false, "All torrents");
+            ui.selectable_value(&mut self.speed_scope_torrent, true, t!("This torrent"));
+            ui.selectable_value(&mut self.speed_scope_torrent, false, t!("All torrents"));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if let Some((d, u)) = hist.back() {
                     ui.label(RichText::new(format!("↑ {}", fmt_speed(*u, units))).monospace().color(p.success));
@@ -591,7 +621,7 @@ impl CorrentApp {
         });
         let n = hist.len();
         if n < 3 {
-            widgets::empty_compact(ui, p, icons::CHART_LINE, "Collecting speed data…", "");
+            widgets::empty_compact(ui, p, icons::CHART_LINE, t!("Collecting speed data…"), "");
             return;
         }
         let down: Vec<[f64; 2]> =
@@ -622,22 +652,24 @@ impl CorrentApp {
                 _ => None,
             })
             .show(ui, |pui| {
-                pui.line(egui_plot::Line::new("Download", down).color(p.accent).width(1.8).fill(0.0).fill_alpha(0.18));
-                pui.line(egui_plot::Line::new("Upload", up).color(p.success).width(1.8).fill(0.0).fill_alpha(0.12));
+                pui.line(
+                    egui_plot::Line::new(t!("Download"), down).color(p.accent).width(1.8).fill(0.0).fill_alpha(0.18),
+                );
+                pui.line(egui_plot::Line::new(t!("Upload"), up).color(p.success).width(1.8).fill(0.0).fill_alpha(0.12));
             });
     }
 }
 
 fn loading(ui: &mut Ui, p: &Palette, has_metadata: bool) {
     if has_metadata {
-        widgets::empty_compact(ui, p, icons::HOURGLASS_MEDIUM, "Loading…", "");
+        widgets::empty_compact(ui, p, icons::HOURGLASS_MEDIUM, t!("Loading…"), "");
     } else {
         widgets::empty_compact(
             ui,
             p,
             icons::MAGNET,
-            "Waiting for metadata",
-            "File and piece information appears once peers send the torrent's metadata.",
+            t!("Waiting for metadata"),
+            t!("File and piece information appears once peers send the torrent's metadata."),
         );
     }
 }

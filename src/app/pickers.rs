@@ -83,41 +83,41 @@ impl CorrentApp {
                     dialog.pick_folder().await.map(|h| vec![h.path().to_path_buf()]).unwrap_or_default()
                 }
                 PickKind::TorrentFiles => dialog
-                    .add_filter("Torrent files", &["torrent"])
+                    .add_filter(t!("Torrent files"), &["torrent"])
                     .pick_files()
                     .await
                     .map(|v| v.iter().map(|h| h.path().to_path_buf()).collect())
                     .unwrap_or_default(),
                 PickKind::AnyFile => dialog.pick_file().await.map(|h| vec![h.path().to_path_buf()]).unwrap_or_default(),
                 PickKind::SaveTorrent(name) => dialog
-                    .add_filter("Torrent file", &["torrent"])
+                    .add_filter(t!("Torrent file"), &["torrent"])
                     .set_file_name(name)
                     .save_file()
                     .await
                     .map(|h| vec![h.path().to_path_buf()])
                     .unwrap_or_default(),
                 PickKind::SaveZip(name) => dialog
-                    .add_filter("Corrent backup", &["zip"])
+                    .add_filter(t!("Corrent backup"), &["zip"])
                     .set_file_name(name)
                     .save_file()
                     .await
                     .map(|h| vec![h.path().to_path_buf()])
                     .unwrap_or_default(),
                 PickKind::SaveTheme(name) => dialog
-                    .add_filter("Corrent theme", &["toml"])
+                    .add_filter(t!("Corrent theme"), &["toml"])
                     .set_file_name(name)
                     .save_file()
                     .await
                     .map(|h| vec![h.path().to_path_buf()])
                     .unwrap_or_default(),
                 PickKind::OpenTheme => dialog
-                    .add_filter("Corrent theme", &["toml"])
+                    .add_filter(t!("Corrent theme"), &["toml"])
                     .pick_file()
                     .await
                     .map(|h| vec![h.path().to_path_buf()])
                     .unwrap_or_default(),
                 PickKind::OpenZip => dialog
-                    .add_filter("Corrent backup", &["zip"])
+                    .add_filter(t!("Corrent backup"), &["zip"])
                     .pick_file()
                     .await
                     .map(|h| vec![h.path().to_path_buf()])
@@ -210,9 +210,9 @@ impl CorrentApp {
                             d.settings.appearance.preset = crate::config::PalettePreset::Custom;
                         }
                         (Ok(_), None) => {}
-                        (Err(e), _) => {
-                            self.toasts.push(crate::engine::ToastKind::Error, format!("Couldn't import the theme: {e}"))
-                        }
+                        (Err(e), _) => self
+                            .toasts
+                            .push(crate::engine::ToastKind::Error, t!("Couldn't import the theme: {e}", e = e)),
                     }
                 }
                 PickTarget::ThemeExport => {
@@ -223,7 +223,7 @@ impl CorrentApp {
                         .or_else(|| self.settings.appearance.custom_palette.clone());
                     if let Some(def) = def {
                         match crate::util::write_atomic(&first, def.to_toml().as_bytes()) {
-                            Ok(()) => self.toasts.push(crate::engine::ToastKind::Success, "Theme exported"),
+                            Ok(()) => self.toasts.push(crate::engine::ToastKind::Success, t!("Theme exported")),
                             Err(e) => self.toasts.push(
                                 crate::engine::ToastKind::Error,
                                 format!("Couldn't save the theme: {}", crate::util::explain_io(&format!("{e:#}"))),

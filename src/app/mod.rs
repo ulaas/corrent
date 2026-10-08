@@ -499,10 +499,10 @@ impl CorrentApp {
                             ui.add(egui::Label::new(egui::RichText::new(note).color(p.text)).wrap());
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if crate::ui::widgets::secondary_button(ui, "Dismiss").clicked() {
+                            if crate::ui::widgets::secondary_button(ui, t!("Dismiss")).clicked() {
                                 dismiss = Some(i);
                             }
-                            if crate::ui::widgets::secondary_button(ui, "Open folder").clicked() {
+                            if crate::ui::widgets::secondary_button(ui, t!("Open folder")).clicked() {
                                 open_path(&self.paths.data_dir);
                             }
                         });
@@ -518,7 +518,7 @@ impl CorrentApp {
         let paths = self.paths.clone();
         let tx = self.ui_events_tx.clone();
         let ctx = self.ctx.clone();
-        self.toasts.push(ToastKind::Info, "Backing up…");
+        self.toasts.push(ToastKind::Info, t!("Backing up…"));
         self.rt.spawn_blocking(move || {
             let msg = match crate::backup::export(&paths, &dest) {
                 Ok(n) => (ToastKind::Success, format!("Backed up {n} files to {}", dest.display())),
@@ -559,7 +559,9 @@ impl CorrentApp {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(egui_phosphor::regular::WARNING_OCTAGON).size(20.0).color(p.error));
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("The torrent engine stopped unexpectedly").strong().color(p.text));
+                        ui.label(
+                            egui::RichText::new(t!("The torrent engine stopped unexpectedly")).strong().color(p.text),
+                        );
                         ui.label(
                             egui::RichText::new(
                                 "A crash report was saved. Restart the engine to continue; actions you take now are \
@@ -570,12 +572,12 @@ impl CorrentApp {
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if crate::ui::widgets::primary_button(ui, p, "Restart engine").clicked() {
+                        if crate::ui::widgets::primary_button(ui, p, t!("Restart engine")).clicked() {
                             self.engine.restart(self.settings.clone());
                             crate::crash::dismiss(&self.paths.log_dir());
                         }
                         if let Some(r) = crate::crash::reports(&self.paths.log_dir()).first().cloned()
-                            && crate::ui::widgets::secondary_button(ui, "View report").clicked()
+                            && crate::ui::widgets::secondary_button(ui, t!("View report")).clicked()
                         {
                             open_path(&r);
                         }
@@ -602,7 +604,9 @@ impl CorrentApp {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(egui_phosphor::regular::WARNING).size(20.0).color(p.warn));
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("Corrent closed unexpectedly last time").strong().color(p.text));
+                        ui.label(
+                            egui::RichText::new(t!("Corrent closed unexpectedly last time")).strong().color(p.text),
+                        );
                         let detail = if report.is_some() {
                             "A crash report was saved. Your torrents and settings were restored."
                         } else {
@@ -611,12 +615,12 @@ impl CorrentApp {
                         ui.label(egui::RichText::new(detail).small().color(p.text_dim));
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if crate::ui::widgets::secondary_button(ui, "Dismiss").clicked() {
+                        if crate::ui::widgets::secondary_button(ui, t!("Dismiss")).clicked() {
                             self.previous_run.unclean = false;
                             crate::crash::dismiss(&self.paths.log_dir());
                         }
                         if let Some(r) = &report
-                            && crate::ui::widgets::secondary_button(ui, "View report").clicked()
+                            && crate::ui::widgets::secondary_button(ui, t!("View report")).clicked()
                         {
                             open_path(r);
                         }
@@ -689,7 +693,7 @@ impl CorrentApp {
                 EngineEvent::Added { name, hash } => {
                     self.toasts.push_with(
                         ToastKind::Success,
-                        format!("Added “{name}”"),
+                        t!("Added “{name}”", name = name),
                         vec![("Show".into(), toasts::ToastAction::Show(hash))],
                     );
                     if self.settings.behavior.notify_on_add && self.window_hidden {
@@ -699,7 +703,7 @@ impl CorrentApp {
                 EngineEvent::Completed { name, size, content_path, save_path, .. } => {
                     self.toasts.push_with(
                         ToastKind::Success,
-                        format!("Download complete: “{name}”"),
+                        t!("Download complete: “{name}”", name = name),
                         vec![
                             ("Open".into(), toasts::ToastAction::OpenFile(content_path)),
                             ("Show in folder".into(), toasts::ToastAction::OpenFolder(save_path)),
@@ -730,9 +734,9 @@ impl CorrentApp {
                             if let Some(h) = seeding {
                                 actions.push(("Show".into(), toasts::ToastAction::Show(h)));
                             }
-                            self.toasts.push_with(ToastKind::Success, format!("Created “{name}”"), actions);
+                            self.toasts.push_with(ToastKind::Success, t!("Created “{name}”", name = name), actions);
                         }
-                        Err(e) => self.toasts.push(ToastKind::Error, format!("Couldn't create the torrent: {e}")),
+                        Err(e) => self.toasts.push(ToastKind::Error, t!("Couldn't create the torrent: {e}", e = e)),
                     }
                 }
                 EngineEvent::Removed { hash, name, undoable } => {
@@ -744,7 +748,7 @@ impl CorrentApp {
                 EngineEvent::Restored { hash, name } => {
                     self.toasts.push_with(
                         ToastKind::Success,
-                        format!("Restored “{name}”"),
+                        t!("Restored “{name}”", name = name),
                         vec![("Show".into(), toasts::ToastAction::Show(hash))],
                     );
                 }

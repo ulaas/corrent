@@ -59,7 +59,7 @@ impl CorrentApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icons::STACK_PLUS).size(20.0).color(p.accent));
                 let n = b.items.iter().filter(|(_, on)| *on).count();
-                ui.label(RichText::new(format!("Add {n} torrents")).font(theme::title()).color(p.text));
+                ui.label(RichText::new(t!("Add {n} torrents", n = n)).font(theme::title()).color(p.text));
             });
             ui.add_space(8.0);
             egui::Frame::new()
@@ -91,22 +91,22 @@ impl CorrentApp {
                 });
             ui.add_space(10.0);
             egui::Grid::new("batch_opts").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
-                ui.label("Save to");
+                ui.label(t!("Save to"));
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut b.save_path).desired_width(420.0));
                     if busy {
                         ui.add(egui::Spinner::new());
-                    } else if ui.button(icons::FOLDER_OPEN).labeled("Browse…").clicked() {
+                    } else if ui.button(icons::FOLDER_OPEN).labeled(t!("Browse…")).clicked() {
                         browse = true;
                     }
                 });
                 ui.end_row();
-                ui.label("Category");
+                ui.label(t!("Category"));
                 egui::ComboBox::from_id_salt("batch_cat")
-                    .selected_text(b.category.clone().unwrap_or_else(|| "None".into()))
+                    .selected_text(b.category.clone().unwrap_or_else(|| t!("None").into()))
                     .width(200.0)
                     .show_ui(ui, |ui| {
-                        if ui.selectable_label(b.category.is_none(), "None").clicked() {
+                        if ui.selectable_label(b.category.is_none(), t!("None")).clicked() {
                             b.category = None;
                         }
                         for (c, info) in &categories {
@@ -119,28 +119,32 @@ impl CorrentApp {
                         }
                     });
                 ui.end_row();
-                ui.label("Tags");
-                ui.add(egui::TextEdit::singleline(&mut b.tags).hint_text("comma-separated").desired_width(300.0));
+                ui.label(t!("Tags"));
+                ui.add(egui::TextEdit::singleline(&mut b.tags).hint_text(t!("comma-separated")).desired_width(300.0));
                 ui.end_row();
             });
-            ui.checkbox(&mut b.start_paused, "Add paused");
-            ui.checkbox(&mut b.create_subfolder, "Create subfolder for multi-file torrents");
+            ui.checkbox(&mut b.start_paused, t!("Add paused"));
+            ui.checkbox(&mut b.create_subfolder, t!("Create subfolder for multi-file torrents"));
             ui.label(
-                RichText::new("All files of each torrent are selected; magnet links are resolved in the background.")
-                    .small()
-                    .color(p.text_dim),
+                RichText::new(t!(
+                    "All files of each torrent are selected; magnet links are resolved in the background."
+                ))
+                .small()
+                .color(p.text_dim),
             );
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let any = b.items.iter().any(|(_, on)| *on) && !b.save_path.trim().is_empty();
                 if ui
-                    .add_enabled_ui(any, |ui| primary_button(ui, p, &format!("{}  Add all", icons::DOWNLOAD_SIMPLE)))
+                    .add_enabled_ui(any, |ui| {
+                        primary_button(ui, p, &format!("{}  {}", icons::DOWNLOAD_SIMPLE, t!("Add all")))
+                    })
                     .inner
                     .clicked()
                 {
                     add = true;
                 }
-                if secondary_button(ui, "Cancel").clicked() {
+                if secondary_button(ui, t!("Cancel")).clicked() {
                     close = true;
                 }
             });

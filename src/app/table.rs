@@ -173,7 +173,7 @@ pub fn status_text(t: &TorrentView) -> String {
     }
     match t.state {
         TorrentState::Checking => format!("Checking {:.0}%", t.progress * 100.0),
-        TorrentState::Error => "Error".into(),
+        TorrentState::Error => t!("Error").into(),
         s => s.label().into(),
     }
 }
@@ -322,7 +322,7 @@ impl CorrentApp {
                     }
                     resp.context_menu(|ui| {
                         if t.pending {
-                            if ui.button(format!("{}  Cancel", icons::X_CIRCLE)).clicked() {
+                            if ui.button(format!("{}  {}", icons::X_CIRCLE, t!("Cancel"))).clicked() {
                                 self.engine.send(crate::engine::EngineCommand::CancelAdd(t.hash));
                             }
                         } else {
@@ -585,7 +585,7 @@ impl CorrentApp {
                 num(t
                     .eta
                     .map(fmt_duration)
-                    .unwrap_or_else(|| if t.progress >= 1.0 { "Done".into() } else { "∞".into() })),
+                    .unwrap_or_else(|| if t.progress >= 1.0 { t!("Done").into() } else { "∞".into() })),
             ),
             Col::Ratio => right(ui, num(fmt_ratio(t.ratio))),
             Col::Category => {
@@ -628,7 +628,7 @@ impl CorrentApp {
     fn meta_line(&self, t: &TorrentView) -> String {
         let units = self.settings.appearance.speed_units;
         if t.pending {
-            return "Fetching metadata from peers…".into();
+            return t!("Fetching metadata from peers…").into();
         }
         if let Some(e) = &t.error {
             return e.lines().next().unwrap_or("").to_string();
@@ -669,17 +669,20 @@ impl CorrentApp {
                 ui,
                 p,
                 icons::DOWNLOAD_SIMPLE,
-                "No torrents yet",
-                "Drop a .torrent file here, paste a magnet link, or use the buttons below.",
+                t!("No torrents yet"),
+                t!("Drop a .torrent file here, paste a magnet link, or use the buttons below."),
             );
             ui.vertical_centered(|ui| {
                 ui.horizontal(|ui| {
                     let w = 96.0 * 2.0 + 120.0;
                     ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
-                    if widgets::primary_button(ui, p, &format!("{}  Add torrent file", icons::FILE_PLUS)).clicked() {
+                    if widgets::primary_button(ui, p, &format!("{}  {}", icons::FILE_PLUS, t!("Add torrent file")))
+                        .clicked()
+                    {
                         self.pick_torrent_files();
                     }
-                    if widgets::secondary_button(ui, &format!("{}  Add magnet link", icons::MAGNET)).clicked() {
+                    if widgets::secondary_button(ui, &format!("{}  {}", icons::MAGNET, t!("Add magnet link"))).clicked()
+                    {
                         self.open_magnet_dialog();
                     }
                 });
@@ -689,11 +692,11 @@ impl CorrentApp {
                 ui,
                 p,
                 icons::MAGNIFYING_GLASS,
-                "No matches",
+                t!("No matches"),
                 &format!("No torrents match “{}”.", self.search.trim()),
             );
             ui.vertical_centered(|ui| {
-                if widgets::secondary_button(ui, "Clear search").clicked() {
+                if widgets::secondary_button(ui, t!("Clear search")).clicked() {
                     self.search.clear();
                 }
             });
@@ -703,10 +706,10 @@ impl CorrentApp {
                 p,
                 icons::FUNNEL,
                 &format!("Nothing in “{}”", self.prefs.status_filter.label()),
-                "No torrents match the current filters.",
+                t!("No torrents match the current filters."),
             );
             ui.vertical_centered(|ui| {
-                if widgets::secondary_button(ui, "Show all torrents").clicked() {
+                if widgets::secondary_button(ui, t!("Show all torrents")).clicked() {
                     self.prefs.status_filter = super::StatusFilter::All;
                     self.prefs.category_filter = GroupFilter::All;
                     self.prefs.tag_filter = GroupFilter::All;
@@ -722,7 +725,7 @@ impl CorrentApp {
         let mut close = false;
         egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.label(RichText::new("Columns").strong().color(p.text));
+                ui.label(RichText::new(t!("Columns")).strong().color(p.text));
                 ui.separator();
                 for c in Col::ALL {
                     if c == Col::Name {
@@ -741,10 +744,10 @@ impl CorrentApp {
                     }
                 }
                 ui.separator();
-                if ui.button("Reset to defaults").clicked() {
+                if ui.button(t!("Reset to defaults")).clicked() {
                     self.prefs.columns = super::UiPrefs::default().columns;
                 }
-                if ui.button("Close").clicked() {
+                if ui.button(t!("Close")).clicked() {
                     close = true;
                 }
             });

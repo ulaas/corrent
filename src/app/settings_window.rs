@@ -48,18 +48,18 @@ impl Page {
 
     fn label(self) -> &'static str {
         match self {
-            Page::Behavior => "General",
-            Page::Downloads => "Downloads",
-            Page::Connection => "Connection",
-            Page::Speed => "Speed",
-            Page::BitTorrent => "BitTorrent",
-            Page::Queue => "Queue",
-            Page::Seeding => "Seeding",
-            Page::Feeds => "Feeds",
-            Page::Search => "Search",
-            Page::Remote => "Remote control",
-            Page::Appearance => "Appearance",
-            Page::Advanced => "Advanced",
+            Page::Behavior => t!("General"),
+            Page::Downloads => t!("Downloads"),
+            Page::Connection => t!("Connection"),
+            Page::Speed => t!("Speed"),
+            Page::BitTorrent => t!("BitTorrent"),
+            Page::Queue => t!("Queue"),
+            Page::Seeding => t!("Seeding"),
+            Page::Feeds => t!("Feeds"),
+            Page::Search => t!("Search"),
+            Page::Remote => t!("Remote control"),
+            Page::Appearance => t!("Appearance"),
+            Page::Advanced => t!("Advanced"),
         }
     }
 
@@ -105,27 +105,35 @@ impl Page {
     fn keywords(self) -> &'static str {
         match self {
             Page::Behavior => {
-                "confirm exit tray close minimize start minimized notifications notify delete dialog skip run program command complete default handler magnet torrent association register updates version"
+                t!(
+                    "confirm exit tray close minimize start minimized notifications notify delete dialog skip run program command complete default handler magnet torrent association register updates version"
+                )
             }
             Page::Downloads => {
-                "save path folder default subfolder paused recent remember delete torrent file watch folders automatic"
+                t!(
+                    "save path folder default subfolder paused recent remember delete torrent file watch folders automatic"
+                )
             }
             Page::Connection => {
-                "port listen upnp nat random tcp utp ipv4 ipv6 interface bind device vpn proxy socks5 peers connections limit blocklist ip filter timeout"
+                t!(
+                    "port listen upnp nat random tcp utp ipv4 ipv6 interface bind device vpn proxy socks5 peers connections limit blocklist ip filter timeout"
+                )
             }
-            Page::Speed => "download upload rate limit alternative alt schedule scheduler bandwidth",
-            Page::BitTorrent => "dht lsd local peer discovery pex trackers default trackers fastresume resume",
-            Page::Queue => "queue active downloads uploads total slow torrents",
-            Page::Seeding => "ratio seeding time inactive limit pause remove share",
+            Page::Speed => t!("download upload rate limit alternative alt schedule scheduler bandwidth"),
+            Page::BitTorrent => t!("dht lsd local peer discovery pex trackers default trackers fastresume resume"),
+            Page::Queue => t!("queue active downloads uploads total slow torrents"),
+            Page::Seeding => t!("ratio seeding time inactive limit pause remove share"),
             Page::Remote => {
-                "remote control web api qbittorrent sonarr radarr lidarr prowlarr port password username lan"
+                t!("remote control web api qbittorrent sonarr radarr lidarr prowlarr port password username lan")
             }
-            Page::Search => "search torznab jackett prowlarr indexer provider api key",
-            Page::Feeds => "rss atom feeds refresh interval articles auto download rules automatic episodes",
+            Page::Search => t!("search torznab jackett prowlarr indexer provider api key"),
+            Page::Feeds => t!("rss atom feeds refresh interval articles auto download rules automatic episodes"),
             Page::Appearance => {
-                "theme dark light system accent color colour palette preset nord solarized high contrast custom import export compact rows zoom scale units animations sparklines progress"
+                t!(
+                    "theme dark light system accent color colour palette preset nord solarized high contrast custom import export compact rows zoom scale units animations sparklines progress"
+                )
             }
-            Page::Advanced => "log level refresh interval checking concurrent data folder reset defaults",
+            Page::Advanced => t!("log level refresh interval checking concurrent data folder reset defaults"),
         }
     }
 }
@@ -192,9 +200,9 @@ fn kib(ui: &mut Ui, v: &mut u32) {
         egui::DragValue::new(v)
             .range(0..=10_000_000)
             .speed(16.0)
-            .custom_formatter(|n, _| if n <= 0.0 { "∞ Unlimited".into() } else { format!("{n:.0} KiB/s") })
+            .custom_formatter(|n, _| if n <= 0.0 { t!("∞ Unlimited").into() } else { format!("{n:.0} KiB/s") })
             .custom_parser(|s| {
-                let t = s.trim().trim_end_matches("KiB/s").trim();
+                let t = s.trim().trim_end_matches(t!("KiB/s")).trim();
                 if t.is_empty() || t == "∞" || t.eq_ignore_ascii_case("unlimited") {
                     Some(0.0)
                 } else {
@@ -206,7 +214,7 @@ fn kib(ui: &mut Ui, v: &mut u32) {
 
 /// Path field with a Browse button; returns true when Browse was clicked (right-to-left layout).
 fn path_input(ui: &mut Ui, path: &mut PathBuf) -> bool {
-    let browse = ui.button(icons::FOLDER_OPEN).labeled("Browse…").clicked();
+    let browse = ui.button(icons::FOLDER_OPEN).labeled(t!("Browse…")).clicked();
     let mut s = path.display().to_string();
     if ui.add(egui::TextEdit::singleline(&mut s).desired_width(220.0)).changed() {
         *path = PathBuf::from(s);
@@ -275,9 +283,9 @@ impl CorrentApp {
             self.engine.send(EngineCommand::SetAltSpeed(self.snap.session.alt_speed));
         }
         if restart {
-            self.toasts.push(ToastKind::Info, "Reconnecting with the new network settings…");
+            self.toasts.push(ToastKind::Info, t!("Reconnecting with the new network settings…"));
         } else {
-            self.toasts.push(ToastKind::Success, "Settings saved");
+            self.toasts.push(ToastKind::Success, t!("Settings saved"));
         }
     }
 
@@ -312,11 +320,11 @@ impl CorrentApp {
                                 ui.set_width(196.0);
                                 ui.set_min_height(size.y - 24.0);
                                 ui.spacing_mut().item_spacing.y = 4.0;
-                                ui.label(RichText::new("Settings").font(theme::title()).color(p.text));
+                                ui.label(RichText::new(t!("Settings")).font(theme::title()).color(p.text));
                                 ui.add_space(6.0);
                                 ui.add(
                                     egui::TextEdit::singleline(&mut draft.search)
-                                        .hint_text(format!("{}  Search settings", icons::MAGNIFYING_GLASS))
+                                        .hint_text(format!("{}  {}", icons::MAGNIFYING_GLASS, t!("Search settings")))
                                         .desired_width(f32::INFINITY),
                                 );
                                 ui.add_space(8.0);
@@ -336,7 +344,7 @@ impl CorrentApp {
                                     if page.changed(&self.settings, &draft.settings) {
                                         let c = egui::pos2(r.rect.right() - 12.0, r.rect.center().y);
                                         ui.painter().circle_filled(c, 3.5, p.accent);
-                                        r.clone().on_hover_text("Unsaved changes");
+                                        r.clone().on_hover_text(t!("Unsaved changes"));
                                     }
                                     if r.clicked() {
                                         draft.page = page;
@@ -354,7 +362,7 @@ impl CorrentApp {
                                     draft.page = page;
                                 }
                                 if first_match.is_none() {
-                                    ui.label(RichText::new("No matching settings").small().color(p.text_mute));
+                                    ui.label(RichText::new(t!("No matching settings")).small().color(p.text_mute));
                                 }
                             });
                         });
@@ -410,21 +418,21 @@ impl CorrentApp {
                                         );
                                     }
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if primary_button(ui, p, "OK").clicked() {
+                                        if primary_button(ui, p, t!("OK")).clicked() {
                                             apply = true;
                                             close = true;
                                         }
                                         if ui
                                             .add_enabled_ui(
                                                 pending != self.settings || !draft.new_password.is_empty(),
-                                                |ui| secondary_button(ui, "Apply"),
+                                                |ui| secondary_button(ui, t!("Apply")),
                                             )
                                             .inner
                                             .clicked()
                                         {
                                             apply = true;
                                         }
-                                        if secondary_button(ui, "Cancel").clicked() {
+                                        if secondary_button(ui, t!("Cancel")).clicked() {
                                             close = true;
                                         }
                                     });
@@ -499,42 +507,42 @@ impl CorrentApp {
             Page::Behavior => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Open with Corrent");
+                    heading(ui, p, t!("Open with Corrent"));
                     self.handler_card(ui, p);
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Updates");
+                    heading(ui, p, t!("Updates"));
                     toggle(
                         ui,
                         p,
-                        "Check for new versions automatically",
-                        "Once a day, asks GitHub for the latest release. Nothing is downloaded or installed.",
+                        t!("Check for new versions automatically"),
+                        t!("Once a day, asks GitHub for the latest release. Nothing is downloaded or installed."),
                         &mut s.updates.check_automatically,
                     );
-                    if ui.button(format!("{}  Check now", icons::ARROW_CIRCLE_UP)).clicked() {
+                    if ui.button(format!("{}  {}", icons::ARROW_CIRCLE_UP, t!("Check now"))).clicked() {
                         self.check_for_updates(true);
                     }
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Window");
-                    toggle(ui, p, "Show icon in system tray", "", &mut s.behavior.show_tray_icon);
+                    heading(ui, p, t!("Window"));
+                    toggle(ui, p, t!("Show icon in system tray"), "", &mut s.behavior.show_tray_icon);
                     toggle(
                         ui,
                         p,
-                        "Close to tray",
-                        "Closing the window keeps Corrent running in the tray.",
+                        t!("Close to tray"),
+                        t!("Closing the window keeps Corrent running in the tray."),
                         &mut s.behavior.close_to_tray,
                     );
-                    toggle(ui, p, "Minimize to tray", "", &mut s.behavior.minimize_to_tray);
-                    toggle(ui, p, "Start minimized", "", &mut s.behavior.start_minimized);
+                    toggle(ui, p, t!("Minimize to tray"), "", &mut s.behavior.minimize_to_tray);
+                    toggle(ui, p, t!("Start minimized"), "", &mut s.behavior.start_minimized);
                     toggle(
                         ui,
                         p,
-                        "Confirm exit while torrents are active",
+                        t!("Confirm exit while torrents are active"),
                         "",
                         &mut s.behavior.confirm_exit_while_active,
                     );
@@ -542,24 +550,30 @@ impl CorrentApp {
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Adding & removing");
+                    heading(ui, p, t!("Adding & removing"));
                     let mut show = !s.behavior.skip_add_dialog;
-                    toggle(ui, p, "Show the add dialog", "Preview files and choose a folder before adding.", &mut show);
+                    toggle(
+                        ui,
+                        p,
+                        t!("Show the add dialog"),
+                        t!("Preview files and choose a folder before adding."),
+                        &mut show,
+                    );
                     s.behavior.skip_add_dialog = !show;
-                    toggle(ui, p, "Confirm before removing torrents", "", &mut s.behavior.confirm_delete);
+                    toggle(ui, p, t!("Confirm before removing torrents"), "", &mut s.behavior.confirm_delete);
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Notifications");
-                    toggle(ui, p, "Notify when a download completes", "", &mut s.behavior.notify_on_complete);
-                    toggle(ui, p, "Notify when a torrent is added", "", &mut s.behavior.notify_on_add);
+                    heading(ui, p, t!("Notifications"));
+                    toggle(ui, p, t!("Notify when a download completes"), "", &mut s.behavior.notify_on_complete);
+                    toggle(ui, p, t!("Notify when a torrent is added"), "", &mut s.behavior.notify_on_add);
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Run a program on completion");
-                    toggle(ui, p, "Enabled", "", &mut s.behavior.run_on_complete_enabled);
+                    heading(ui, p, t!("Run a program on completion"));
+                    toggle(ui, p, t!("Enabled"), "", &mut s.behavior.run_on_complete_enabled);
                     ui.add_enabled(
                         s.behavior.run_on_complete_enabled,
                         egui::TextEdit::singleline(&mut s.behavior.run_on_complete)
@@ -568,7 +582,7 @@ impl CorrentApp {
                             .font(egui::TextStyle::Monospace),
                     );
                     ui.label(
-                        RichText::new("Runs the program directly (no shell). %N name · %F content path · %D save folder · %C category · %T tags · %Z size (bytes) · %I info hash")
+                        RichText::new(t!("Runs the program directly (no shell). %N name · %F content path · %D save folder · %C category · %T tags · %Z size (bytes) · %I info hash"))
                             .small()
                             .color(p.text_dim),
                     );
@@ -577,19 +591,25 @@ impl CorrentApp {
             Page::Downloads => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Saving");
-                    row(ui, p, "Default save folder", "", |ui| {
+                    heading(ui, p, t!("Saving"));
+                    row(ui, p, t!("Default save folder"), "", |ui| {
                         if path_input(ui, &mut s.downloads.save_path) {
                             *browse = Some((PickTarget::SettingsSaveFolder, s.downloads.save_path.clone()));
                         }
                     });
-                    toggle(ui, p, "Create a subfolder for multi-file torrents", "", &mut s.downloads.create_subfolder);
-                    toggle(ui, p, "Add torrents paused", "", &mut s.downloads.start_paused);
-                    toggle(ui, p, "Remember recently used folders", "", &mut s.downloads.remember_last_path);
                     toggle(
                         ui,
                         p,
-                        "Delete .torrent files after adding",
+                        t!("Create a subfolder for multi-file torrents"),
+                        "",
+                        &mut s.downloads.create_subfolder,
+                    );
+                    toggle(ui, p, t!("Add torrents paused"), "", &mut s.downloads.start_paused);
+                    toggle(ui, p, t!("Remember recently used folders"), "", &mut s.downloads.remember_last_path);
+                    toggle(
+                        ui,
+                        p,
+                        t!("Delete .torrent files after adding"),
                         "",
                         &mut s.downloads.delete_torrent_file_after_add,
                     );
@@ -598,15 +618,15 @@ impl CorrentApp {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        heading(ui, p, "Watch folders");
+                        heading(ui, p, t!("Watch folders"));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button(format!("{}  Add folder", icons::PLUS)).clicked() {
+                            if ui.button(format!("{}  {}", icons::PLUS, t!("Add folder"))).clicked() {
                                 *browse = Some((PickTarget::WatchFolderAdd, s.downloads.save_path.clone()));
                             }
                         });
                     });
                     ui.label(
-                        RichText::new(".torrent files that appear in these folders are added automatically.")
+                        RichText::new(t!(".torrent files that appear in these folders are added automatically."))
                             .small()
                             .color(p.text_dim),
                     );
@@ -625,17 +645,17 @@ impl CorrentApp {
                                     ui.label(RichText::new(icons::FOLDER_SIMPLE).color(p.warn));
                                     ui.label(RichText::new(w.path.display().to_string()).strong().color(p.text));
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if ui.button(icons::TRASH).labeled("Remove").clicked() {
+                                        if ui.button(icons::TRASH).labeled(t!("Remove")).clicked() {
                                             remove = Some(i);
                                         }
                                     });
                                 });
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new("Category").small().color(p.text_dim));
+                                    ui.label(RichText::new(t!("Category")).small().color(p.text_dim));
                                     egui::ComboBox::from_id_salt(("wcat", i))
-                                        .selected_text(w.category.clone().unwrap_or_else(|| "None".into()))
+                                        .selected_text(w.category.clone().unwrap_or_else(|| t!("None").into()))
                                         .show_ui(ui, |ui| {
-                                            if ui.selectable_label(w.category.is_none(), "None").clicked() {
+                                            if ui.selectable_label(w.category.is_none(), t!("None")).clicked() {
                                                 w.category = None;
                                             }
                                             for c in &cats {
@@ -644,21 +664,25 @@ impl CorrentApp {
                                                 }
                                             }
                                         });
-                                    ui.checkbox(&mut w.start_paused, "Add paused");
-                                    ui.label(RichText::new("Afterwards").small().color(p.text_dim));
+                                    ui.checkbox(&mut w.start_paused, t!("Add paused"));
+                                    ui.label(RichText::new(t!("Afterwards")).small().color(p.text_dim));
                                     egui::ComboBox::from_id_salt(("wafter", i))
                                         .selected_text(match w.after_add {
-                                            AfterAdd::Delete => "Delete file",
-                                            _ => "Rename to .added",
+                                            AfterAdd::Delete => t!("Delete file"),
+                                            _ => t!("Rename to .added"),
                                         })
                                         .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut w.after_add, AfterAdd::Rename, "Rename to .added");
-                                            ui.selectable_value(&mut w.after_add, AfterAdd::Delete, "Delete file");
+                                            ui.selectable_value(
+                                                &mut w.after_add,
+                                                AfterAdd::Rename,
+                                                t!("Rename to .added"),
+                                            );
+                                            ui.selectable_value(&mut w.after_add, AfterAdd::Delete, t!("Delete file"));
                                         });
                                 });
                                 ui.horizontal(|ui| {
                                     let mut custom = w.save_path.is_some();
-                                    ui.checkbox(&mut custom, "Save to a different folder");
+                                    ui.checkbox(&mut custom, t!("Save to a different folder"));
                                     if custom {
                                         let mut path =
                                             w.save_path.clone().unwrap_or_else(|| s.downloads.save_path.clone());
@@ -677,16 +701,16 @@ impl CorrentApp {
                         s.watch.remove(i);
                     }
                     if s.watch.is_empty() {
-                        ui.label(RichText::new("No watch folders.").color(p.text_mute));
+                        ui.label(RichText::new(t!("No watch folders.")).color(p.text_mute));
                     }
                 });
             }
             Page::Connection => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Listening");
-                    row(ui, p, "Incoming port", "Forward this port in your router if UPnP is off.", |ui| {
-                        if ui.button(icons::SHUFFLE).labeled("Pick a random port").clicked() {
+                    heading(ui, p, t!("Listening"));
+                    row(ui, p, t!("Incoming port"), t!("Forward this port in your router if UPnP is off."), |ui| {
+                        if ui.button(icons::SHUFFLE).labeled(t!("Pick a random port")).clicked() {
                             s.connection.listen_port = 20000 + (crate::util::now_unix() % 40000) as u16;
                         }
                         ui.add_enabled(
@@ -694,56 +718,58 @@ impl CorrentApp {
                             egui::DragValue::new(&mut s.connection.listen_port).range(1024..=65535),
                         );
                     });
-                    toggle(ui, p, "Use a random port on each start", "", &mut s.connection.random_port);
+                    toggle(ui, p, t!("Use a random port on each start"), "", &mut s.connection.random_port);
                     toggle(
                         ui,
                         p,
-                        "UPnP / NAT-PMP port forwarding",
-                        "Ask your router to forward the port automatically.",
+                        t!("UPnP / NAT-PMP port forwarding"),
+                        t!("Ask your router to forward the port automatically."),
                         &mut s.connection.upnp,
                     );
-                    row(ui, p, "Protocol", "uTP is experimental in the engine.", |ui| {
+                    row(ui, p, t!("Protocol"), t!("uTP is experimental in the engine."), |ui| {
                         egui::ComboBox::from_id_salt("listen_mode")
                             .selected_text(match s.connection.listen_mode {
                                 ListenMode::Tcp => "TCP",
                                 ListenMode::Utp => "uTP",
-                                ListenMode::TcpAndUtp => "TCP and uTP",
+                                ListenMode::TcpAndUtp => t!("TCP and uTP"),
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut s.connection.listen_mode, ListenMode::Tcp, "TCP");
                                 ui.selectable_value(
                                     &mut s.connection.listen_mode,
                                     ListenMode::TcpAndUtp,
-                                    "TCP and uTP",
+                                    t!("TCP and uTP"),
                                 );
                                 ui.selectable_value(&mut s.connection.listen_mode, ListenMode::Utp, "uTP");
                             });
                     });
-                    toggle(ui, p, "IPv4 only", "Disable IPv6.", &mut s.connection.ipv4_only);
+                    toggle(ui, p, t!("IPv4 only"), t!("Disable IPv6."), &mut s.connection.ipv4_only);
                     row(
                         ui,
                         p,
-                        "Listen on address",
-                        "A specific local IP to accept connections on. Leave empty for all.",
+                        t!("Listen on address"),
+                        t!("A specific local IP to accept connections on. Leave empty for all."),
                         |ui| {
                             ui.add(
                                 egui::TextEdit::singleline(&mut s.connection.listen_address)
                                     .desired_width(200.0)
-                                    .hint_text("All addresses"),
+                                    .hint_text(t!("All addresses")),
                             );
                             let addr = s.connection.listen_address.trim();
                             if !addr.is_empty() {
                                 match addr.parse::<std::net::IpAddr>() {
                                     Err(_) => {
                                         ui.label(
-                                            RichText::new("Not an IP address; all addresses are used")
+                                            RichText::new(t!("Not an IP address; all addresses are used"))
                                                 .small()
                                                 .color(p.warn),
                                         );
                                     }
                                     Ok(ip) if ip.is_ipv6() && s.connection.ipv4_only => {
                                         ui.label(
-                                            RichText::new("IPv6 address, but “IPv4 only” is on").small().color(p.warn),
+                                            RichText::new(t!("IPv6 address, but “IPv4 only” is on"))
+                                                .small()
+                                                .color(p.warn),
                                         );
                                     }
                                     Ok(_) => {}
@@ -751,31 +777,37 @@ impl CorrentApp {
                             }
                         },
                     );
-                    row(ui, p, "Bind to network interface", "e.g. a VPN adapter name. Leave empty for any.", |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut s.connection.bind_device)
-                                .desired_width(200.0)
-                                .hint_text("Any interface"),
-                        );
-                    });
+                    row(
+                        ui,
+                        p,
+                        t!("Bind to network interface"),
+                        t!("e.g. a VPN adapter name. Leave empty for any."),
+                        |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut s.connection.bind_device)
+                                    .desired_width(200.0)
+                                    .hint_text(t!("Any interface")),
+                            );
+                        },
+                    );
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Connections");
-                    row(ui, p, "Maximum connections (global)", "0 = unlimited", |ui| {
+                    heading(ui, p, t!("Connections"));
+                    row(ui, p, t!("Maximum connections (global)"), t!("0 = unlimited"), |ui| {
                         ui.add(egui::DragValue::new(&mut s.connection.max_peers_global).range(0..=10000));
                     });
                     row(
                         ui,
                         p,
-                        "Maximum connections per torrent",
-                        "Applies to newly added torrents. 0 = unlimited",
+                        t!("Maximum connections per torrent"),
+                        t!("Applies to newly added torrents. 0 = unlimited"),
                         |ui| {
                             ui.add(egui::DragValue::new(&mut s.connection.max_peers_per_torrent).range(0..=2000));
                         },
                     );
-                    row(ui, p, "Connection timeout", "", |ui| {
+                    row(ui, p, t!("Connection timeout"), "", |ui| {
                         ui.add(
                             egui::DragValue::new(&mut s.connection.connect_timeout_secs).range(2..=120).suffix(" s"),
                         );
@@ -784,10 +816,10 @@ impl CorrentApp {
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Proxy");
-                    toggle(ui, p, "Use a SOCKS5 proxy for peer connections", "", &mut s.connection.proxy_enabled);
+                    heading(ui, p, t!("Proxy"));
+                    toggle(ui, p, t!("Use a SOCKS5 proxy for peer connections"), "", &mut s.connection.proxy_enabled);
                     ui.add_enabled_ui(s.connection.proxy_enabled, |ui| {
-                        row(ui, p, "Host and port", "", |ui| {
+                        row(ui, p, t!("Host and port"), "", |ui| {
                             ui.add(egui::DragValue::new(&mut s.connection.proxy_port).range(1..=65535));
                             ui.add(
                                 egui::TextEdit::singleline(&mut s.connection.proxy_host)
@@ -795,10 +827,10 @@ impl CorrentApp {
                                     .hint_text("127.0.0.1"),
                             );
                         });
-                        row(ui, p, "Username", "Optional", |ui| {
+                        row(ui, p, t!("Username"), t!("Optional"), |ui| {
                             ui.add(egui::TextEdit::singleline(&mut s.connection.proxy_username).desired_width(200.0));
                         });
-                        row(ui, p, "Password", "Stored in the settings file.", |ui| {
+                        row(ui, p, t!("Password"), t!("Stored in the settings file."), |ui| {
                             ui.add(
                                 egui::TextEdit::singleline(&mut s.connection.proxy_password)
                                     .password(true)
@@ -810,33 +842,41 @@ impl CorrentApp {
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "IP filtering");
+                    heading(ui, p, t!("IP filtering"));
                     row(
                         ui,
                         p,
-                        "Blocklist",
+                        t!("Blocklist"),
                         "P2P-format list (plain or .gz): a web address or a file on this computer. Loaded when the \
                          engine starts; the last download is reused if the server is unreachable.",
                         |ui| {
                             ui.add(
                                 egui::TextEdit::singleline(&mut s.connection.blocklist_url)
                                     .desired_width(250.0)
-                                    .hint_text("https://… or C:\\lists\\level1.gz"),
+                                    .hint_text(t!("https://… or C:\\lists\\level1.gz")),
                             );
                         },
                     );
-                    row(ui, p, "Allowlist", "If set, only peers in this list are used. Leave empty normally.", |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut s.connection.allowlist_url)
-                                .desired_width(250.0)
-                                .hint_text("Not used"),
-                        );
-                    });
-                    ui.label(RichText::new("Your own blocked addresses").color(p.text));
+                    row(
+                        ui,
+                        p,
+                        t!("Allowlist"),
+                        t!("If set, only peers in this list are used. Leave empty normally."),
+                        |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut s.connection.allowlist_url)
+                                    .desired_width(250.0)
+                                    .hint_text(t!("Not used")),
+                            );
+                        },
+                    );
+                    ui.label(RichText::new(t!("Your own blocked addresses")).color(p.text));
                     ui.label(
-                        RichText::new("One per line: an IP, a CIDR block (10.0.0.0/8) or a range (1.2.3.4-1.2.3.9).")
-                            .small()
-                            .color(p.text_dim),
+                        RichText::new(t!(
+                            "One per line: an IP, a CIDR block (10.0.0.0/8) or a range (1.2.3.4-1.2.3.9)."
+                        ))
+                        .small()
+                        .color(p.text_dim),
                     );
                     ui.add(
                         egui::TextEdit::multiline(&mut s.connection.custom_blocklist)
@@ -852,12 +892,12 @@ impl CorrentApp {
                     ui.horizontal(|ui| {
                         let mut text = format!("{} blocked ranges loaded", sv.blocked_ranges);
                         if let Some(a) = sv.allowed_ranges {
-                            text.push_str(&format!(" · {a} allowed"));
+                            text.push_str(&t!(" · {a} allowed", a = a));
                         }
                         ui.label(RichText::new(text).small().color(p.text_dim));
                         if ui
-                            .button(format!("{}  Reload lists", icons::ARROWS_CLOCKWISE))
-                            .on_hover_text("Download the lists again (reconnects all torrents)")
+                            .button(format!("{}  {}", icons::ARROWS_CLOCKWISE, t!("Reload lists")))
+                            .on_hover_text(t!("Download the lists again (reconnects all torrents)"))
                             .clicked()
                         {
                             self.engine.send(EngineCommand::ReloadIpFilter);
@@ -868,36 +908,40 @@ impl CorrentApp {
             Page::Speed => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Global limits");
-                    row(ui, p, "Download limit", "Drag or type a value; 0 = unlimited.", |ui| {
+                    heading(ui, p, t!("Global limits"));
+                    row(ui, p, t!("Download limit"), t!("Drag or type a value; 0 = unlimited."), |ui| {
                         kib(ui, &mut s.speed.download_limit)
                     });
-                    row(ui, p, "Upload limit", "", |ui| kib(ui, &mut s.speed.upload_limit));
+                    row(ui, p, t!("Upload limit"), "", |ui| kib(ui, &mut s.speed.upload_limit));
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Alternative limits");
+                    heading(ui, p, t!("Alternative limits"));
                     ui.label(
-                        RichText::new("Toggle with the gauge button in the toolbar or Ctrl+Shift+S.")
+                        RichText::new(t!("Toggle with the gauge button in the toolbar or Ctrl+Shift+S."))
                             .small()
                             .color(p.text_dim),
                     );
                     ui.add_space(6.0);
-                    row(ui, p, "Download limit", "", |ui| kib(ui, &mut s.speed.alt_download_limit));
-                    row(ui, p, "Upload limit", "", |ui| kib(ui, &mut s.speed.alt_upload_limit));
-                    toggle(ui, p, "Use alternative limits at startup", "", &mut s.speed.alt_enabled);
+                    row(ui, p, t!("Download limit"), "", |ui| kib(ui, &mut s.speed.alt_download_limit));
+                    row(ui, p, t!("Upload limit"), "", |ui| kib(ui, &mut s.speed.alt_upload_limit));
+                    toggle(ui, p, t!("Use alternative limits at startup"), "", &mut s.speed.alt_enabled);
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Schedule");
-                    toggle(ui, p, "Switch to alternative limits on a schedule", "", &mut s.speed.schedule.enabled);
+                    heading(ui, p, t!("Schedule"));
+                    toggle(ui, p, t!("Switch to alternative limits on a schedule"), "", &mut s.speed.schedule.enabled);
                     ui.add_enabled_ui(s.speed.schedule.enabled, |ui| {
-                        row(ui, p, "From", "", |ui| minutes_input(ui, &mut s.speed.schedule.from_minutes));
-                        row(ui, p, "To", "", |ui| minutes_input(ui, &mut s.speed.schedule.to_minutes));
+                        row(ui, p, t!("From"), "", |ui| minutes_input(ui, &mut s.speed.schedule.from_minutes));
+                        row(ui, p, t!("To"), "", |ui| minutes_input(ui, &mut s.speed.schedule.to_minutes));
                         ui.horizontal(|ui| {
-                            for (i, day) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].iter().enumerate() {
+                            for (i, day) in
+                                [t!("Mon"), t!("Tue"), t!("Wed"), t!("Thu"), t!("Fri"), t!("Sat"), t!("Sun")]
+                                    .iter()
+                                    .enumerate()
+                            {
                                 let mut on = s.speed.schedule.days & (1 << i) != 0;
                                 if ui.toggle_value(&mut on, *day).changed() {
                                     if on {
@@ -914,23 +958,29 @@ impl CorrentApp {
             Page::BitTorrent => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Peer discovery");
+                    heading(ui, p, t!("Peer discovery"));
                     toggle(
                         ui,
                         p,
-                        "DHT (decentralized network)",
-                        "Needed for magnet links without trackers.",
+                        t!("DHT (decentralized network)"),
+                        t!("Needed for magnet links without trackers."),
                         &mut s.bittorrent.dht,
                     );
-                    toggle(ui, p, "Local peer discovery", "Find peers on your local network.", &mut s.bittorrent.lsd);
-                    toggle(ui, p, "Use trackers", "", &mut s.bittorrent.trackers_enabled);
-                    ui.label(RichText::new("Peer exchange (PEX) is always on.").small().color(p.text_dim));
+                    toggle(
+                        ui,
+                        p,
+                        t!("Local peer discovery"),
+                        t!("Find peers on your local network."),
+                        &mut s.bittorrent.lsd,
+                    );
+                    toggle(ui, p, t!("Use trackers"), "", &mut s.bittorrent.trackers_enabled);
+                    ui.label(RichText::new(t!("Peer exchange (PEX) is always on.")).small().color(p.text_dim));
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Default trackers");
-                    ui.label(RichText::new("Added to every torrent. One URL per line.").small().color(p.text_dim));
+                    heading(ui, p, t!("Default trackers"));
+                    ui.label(RichText::new(t!("Added to every torrent. One URL per line.")).small().color(p.text_dim));
                     ui.add(
                         egui::TextEdit::multiline(&mut d.trackers_text)
                             .desired_rows(5)
@@ -941,12 +991,11 @@ impl CorrentApp {
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Resume data");
+                    heading(ui, p, t!("Resume data"));
                     toggle(
                         ui,
                         p,
-                        "Fast resume",
-                        "Skip full re-verification of data on startup. Turning this off makes every start re-check all torrents.",
+                        t!("Fast resume"), t!("Skip full re-verification of data on startup. Turning this off makes every start re-check all torrents."),
                         &mut s.bittorrent.fastresume,
                     );
                 });
@@ -954,38 +1003,38 @@ impl CorrentApp {
             Page::Queue => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Torrent queue");
+                    heading(ui, p, t!("Torrent queue"));
                     toggle(
                         ui,
                         p,
-                        "Enable queueing",
-                        "Limit how many torrents run at once; the rest wait as “Queued”.",
+                        t!("Enable queueing"),
+                        t!("Limit how many torrents run at once; the rest wait as “Queued”."),
                         &mut s.queue.enabled,
                     );
                     ui.add_enabled_ui(s.queue.enabled, |ui| {
-                        row(ui, p, "Maximum active downloads", "", |ui| {
+                        row(ui, p, t!("Maximum active downloads"), "", |ui| {
                             ui.add(egui::DragValue::new(&mut s.queue.max_active_downloads).range(1..=1000));
                         });
-                        row(ui, p, "Maximum active uploads", "", |ui| {
+                        row(ui, p, t!("Maximum active uploads"), "", |ui| {
                             ui.add(egui::DragValue::new(&mut s.queue.max_active_uploads).range(1..=1000));
                         });
-                        row(ui, p, "Maximum active torrents", "", |ui| {
+                        row(ui, p, t!("Maximum active torrents"), "", |ui| {
                             ui.add(egui::DragValue::new(&mut s.queue.max_active_total).range(1..=2000));
                         });
                         toggle(
                             ui,
                             p,
-                            "Don't count slow torrents",
-                            "Torrents below these rates don't take a slot.",
+                            t!("Don't count slow torrents"),
+                            t!("Torrents below these rates don't take a slot."),
                             &mut s.queue.ignore_slow,
                         );
                         ui.add_enabled_ui(s.queue.ignore_slow, |ui| {
-                            row(ui, p, "Download rate threshold", "", |ui| {
+                            row(ui, p, t!("Download rate threshold"), "", |ui| {
                                 ui.add(
                                     egui::DragValue::new(&mut s.queue.slow_down_kib).range(0..=100000).suffix(" KiB/s"),
                                 );
                             });
-                            row(ui, p, "Upload rate threshold", "", |ui| {
+                            row(ui, p, t!("Upload rate threshold"), "", |ui| {
                                 ui.add(
                                     egui::DragValue::new(&mut s.queue.slow_up_kib).range(0..=100000).suffix(" KiB/s"),
                                 );
@@ -997,48 +1046,52 @@ impl CorrentApp {
             Page::Seeding => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "When to stop seeding");
+                    heading(ui, p, t!("When to stop seeding"));
                     ui.label(
-                        RichText::new("Per-torrent overrides are available from the context menu.")
+                        RichText::new(t!("Per-torrent overrides are available from the context menu."))
                             .small()
                             .color(p.text_dim),
                     );
                     ui.add_space(6.0);
-                    row(ui, p, "Share ratio reaches", "", |ui| {
+                    row(ui, p, t!("Share ratio reaches"), "", |ui| {
                         ui.add_enabled(
                             s.seeding.ratio_enabled,
                             egui::DragValue::new(&mut s.seeding.ratio).range(0.1..=100.0).speed(0.05).fixed_decimals(2),
                         );
                         toggle_switch(ui, p, &mut s.seeding.ratio_enabled);
                     });
-                    row(ui, p, "Seeding time reaches", "", |ui| {
+                    row(ui, p, t!("Seeding time reaches"), "", |ui| {
                         ui.add_enabled(
                             s.seeding.time_enabled,
                             egui::DragValue::new(&mut s.seeding.time_minutes).range(1..=525600).suffix(" min"),
                         );
                         toggle_switch(ui, p, &mut s.seeding.time_enabled);
                     });
-                    row(ui, p, "No uploads for", "", |ui| {
+                    row(ui, p, t!("No uploads for"), "", |ui| {
                         ui.add_enabled(
                             s.seeding.inactive_enabled,
                             egui::DragValue::new(&mut s.seeding.inactive_minutes).range(1..=525600).suffix(" min"),
                         );
                         toggle_switch(ui, p, &mut s.seeding.inactive_enabled);
                     });
-                    row(ui, p, "Then", "", |ui| {
+                    row(ui, p, t!("Then"), "", |ui| {
                         egui::ComboBox::from_id_salt("seed_action")
                             .selected_text(match s.seeding.action {
-                                SeedAction::Pause => "Pause the torrent",
-                                SeedAction::Remove => "Remove the torrent",
-                                SeedAction::RemoveWithData => "Remove torrent and files",
+                                SeedAction::Pause => t!("Pause the torrent"),
+                                SeedAction::Remove => t!("Remove the torrent"),
+                                SeedAction::RemoveWithData => t!("Remove torrent and files"),
                             })
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut s.seeding.action, SeedAction::Pause, "Pause the torrent");
-                                ui.selectable_value(&mut s.seeding.action, SeedAction::Remove, "Remove the torrent");
+                                ui.selectable_value(&mut s.seeding.action, SeedAction::Pause, t!("Pause the torrent"));
+                                ui.selectable_value(
+                                    &mut s.seeding.action,
+                                    SeedAction::Remove,
+                                    t!("Remove the torrent"),
+                                );
                                 ui.selectable_value(
                                     &mut s.seeding.action,
                                     SeedAction::RemoveWithData,
-                                    "Remove torrent and files",
+                                    t!("Remove torrent and files"),
                                 );
                             });
                     });
@@ -1047,12 +1100,12 @@ impl CorrentApp {
             Page::Appearance => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Theme");
+                    heading(ui, p, t!("Theme"));
                     ui.horizontal(|ui| {
                         for (mode, icon, label) in [
-                            (ThemeMode::System, icons::DESKTOP, "System"),
-                            (ThemeMode::Dark, icons::MOON, "Dark"),
-                            (ThemeMode::Light, icons::SUN, "Light"),
+                            (ThemeMode::System, icons::DESKTOP, t!("System")),
+                            (ThemeMode::Dark, icons::MOON, t!("Dark")),
+                            (ThemeMode::Light, icons::SUN, t!("Light")),
                         ] {
                             let sel = s.appearance.theme == mode;
                             let r = ui.add_sized(
@@ -1072,7 +1125,7 @@ impl CorrentApp {
                         }
                     });
                     ui.add_space(12.0);
-                    heading(ui, p, "Accent color");
+                    heading(ui, p, t!("Accent color"));
                     ui.horizontal(|ui| {
                         for a in Accent::ALL {
                             let c = accent_color(a, s.appearance.custom_accent, p.dark);
@@ -1087,7 +1140,7 @@ impl CorrentApp {
                         }
                         ui.add_space(8.0);
                         let mut rgb = s.appearance.custom_accent;
-                        if ui.color_edit_button_srgb(&mut rgb).on_hover_text("Custom color").changed() {
+                        if ui.color_edit_button_srgb(&mut rgb).on_hover_text(t!("Custom color")).changed() {
                             s.appearance.custom_accent = rgb;
                             s.appearance.accent = Accent::Custom;
                         }
@@ -1096,7 +1149,7 @@ impl CorrentApp {
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Palette");
+                    heading(ui, p, t!("Palette"));
                     let a = &mut s.appearance;
                     ui.horizontal_wrapped(|ui| {
                         for preset in PalettePreset::ALL {
@@ -1117,14 +1170,14 @@ impl CorrentApp {
                             );
                             let r = r.on_hover_text(match preset {
                                 PalettePreset::HighContrast => {
-                                    "Maximum legibility: 7:1 text contrast and strong focus rings"
+                                    t!("Maximum legibility: 7:1 text contrast and strong focus rings")
                                 }
-                                PalettePreset::Custom => "Your own colors; edit them below or import a theme file",
-                                _ => "Follows the Dark/Light choice above",
+                                PalettePreset::Custom => t!("Your own colors; edit them below or import a theme file"),
+                                _ => t!("Follows the Dark/Light choice above"),
                             });
                             if r.clicked() {
                                 if preset == PalettePreset::Custom && a.custom_palette.is_none() {
-                                    a.custom_palette = Some(theme::PaletteDef::from_palette("Custom", p));
+                                    a.custom_palette = Some(theme::PaletteDef::from_palette(t!("Custom"), p));
                                 }
                                 a.preset = preset;
                             }
@@ -1135,8 +1188,8 @@ impl CorrentApp {
                         toggle(
                             ui,
                             p,
-                            "Follow Windows contrast themes",
-                            "Use the high-contrast palette while a Windows contrast theme is on.",
+                            t!("Follow Windows contrast themes"),
+                            t!("Use the high-contrast palette while a Windows contrast theme is on."),
                             &mut a.follow_os_high_contrast,
                         );
                     }
@@ -1145,9 +1198,9 @@ impl CorrentApp {
                     {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            ui.label("Name");
+                            ui.label(t!("Name"));
                             ui.add(egui::TextEdit::singleline(&mut def.name).desired_width(180.0));
-                            ui.checkbox(&mut def.dark, "Dark palette");
+                            ui.checkbox(&mut def.dark, t!("Dark palette"));
                         });
                         ui.add_space(6.0);
                         if let Ok(mut pal) = def.to_palette() {
@@ -1171,13 +1224,16 @@ impl CorrentApp {
                         }
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            if ui.button(format!("{}  Import…", icons::DOWNLOAD_SIMPLE)).clicked() {
+                            if ui.button(format!("{}  {}", icons::DOWNLOAD_SIMPLE, t!("Import…"))).clicked() {
                                 *pick_extra = Some(2);
                             }
-                            if ui.button(format!("{}  Export…", icons::UPLOAD_SIMPLE)).clicked() {
+                            if ui.button(format!("{}  {}", icons::UPLOAD_SIMPLE, t!("Export…"))).clicked() {
                                 *pick_extra = Some(3);
                             }
-                            if ui.button(format!("{}  Reset to Corrent", icons::ARROW_COUNTER_CLOCKWISE)).clicked() {
+                            if ui
+                                .button(format!("{}  {}", icons::ARROW_COUNTER_CLOCKWISE, t!("Reset to Corrent")))
+                                .clicked()
+                            {
                                 let base = theme::Palette::preset(PalettePreset::Corrent, p.dark, p.accent);
                                 *def = theme::PaletteDef::from_palette(&def.name, &base);
                             }
@@ -1187,42 +1243,54 @@ impl CorrentApp {
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Layout");
+                    heading(ui, p, t!("Layout"));
                     toggle(
                         ui,
                         p,
-                        "Compact rows",
-                        "Single-line rows to fit more torrents.",
+                        t!("Compact rows"),
+                        t!("Single-line rows to fit more torrents."),
                         &mut s.appearance.compact_rows,
                     );
-                    row(ui, p, "Interface scale", "", |ui| {
+                    row(ui, p, t!("Interface scale"), "", |ui| {
                         ui.add(
                             egui::Slider::new(&mut s.appearance.zoom, 0.75..=2.0)
                                 .step_by(0.05)
                                 .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
                         );
                     });
-                    toggle(ui, p, "Color progress bars by state", "", &mut s.appearance.state_colored_progress);
+                    toggle(ui, p, t!("Color progress bars by state"), "", &mut s.appearance.state_colored_progress);
                     toggle(
                         ui,
                         p,
-                        "Striped rows",
-                        "Alternate row shading in the torrent list.",
+                        t!("Striped rows"),
+                        t!("Alternate row shading in the torrent list."),
                         &mut s.appearance.striped_rows,
                     );
-                    toggle(ui, p, "Speed graphs in the status bar", "", &mut s.appearance.show_sparklines);
-                    toggle(ui, p, "Animations", "", &mut s.appearance.animations);
-                    row(ui, p, "Speed units", "", |ui| {
+                    toggle(ui, p, t!("Speed graphs in the status bar"), "", &mut s.appearance.show_sparklines);
+                    toggle(ui, p, t!("Animations"), "", &mut s.appearance.animations);
+                    row(ui, p, t!("Speed units"), "", |ui| {
                         egui::ComboBox::from_id_salt("units")
                             .selected_text(match s.appearance.speed_units {
-                                SpeedUnits::Binary => "KiB/s, MiB/s",
-                                SpeedUnits::Decimal => "kB/s, MB/s",
-                                SpeedUnits::Bits => "kbit/s, Mbit/s",
+                                SpeedUnits::Binary => t!("KiB/s, MiB/s"),
+                                SpeedUnits::Decimal => t!("kB/s, MB/s"),
+                                SpeedUnits::Bits => t!("kbit/s, Mbit/s"),
                             })
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut s.appearance.speed_units, SpeedUnits::Binary, "KiB/s, MiB/s");
-                                ui.selectable_value(&mut s.appearance.speed_units, SpeedUnits::Decimal, "kB/s, MB/s");
-                                ui.selectable_value(&mut s.appearance.speed_units, SpeedUnits::Bits, "kbit/s, Mbit/s");
+                                ui.selectable_value(
+                                    &mut s.appearance.speed_units,
+                                    SpeedUnits::Binary,
+                                    t!("KiB/s, MiB/s"),
+                                );
+                                ui.selectable_value(
+                                    &mut s.appearance.speed_units,
+                                    SpeedUnits::Decimal,
+                                    t!("kB/s, MB/s"),
+                                );
+                                ui.selectable_value(
+                                    &mut s.appearance.speed_units,
+                                    SpeedUnits::Bits,
+                                    t!("kbit/s, Mbit/s"),
+                                );
                             });
                     });
                 });
@@ -1231,11 +1299,11 @@ impl CorrentApp {
                 let status = self.remote.status.clone();
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "qBittorrent-compatible Web API");
+                    heading(ui, p, t!("qBittorrent-compatible Web API"));
                     ui.add(
                         egui::Label::new(
                             RichText::new(
-                                "Lets Sonarr, Radarr, Lidarr and similar tools use Corrent as their download client: add it there as a “qBittorrent” client with the address, port, username and password below.",
+                                t!("Lets Sonarr, Radarr, Lidarr and similar tools use Corrent as their download client: add it there as a “qBittorrent” client with the address, port, username and password below."),
                             )
                             .small()
                             .color(p.text_dim),
@@ -1243,40 +1311,39 @@ impl CorrentApp {
                         .wrap(),
                     );
                     ui.add_space(8.0);
-                    toggle(ui, p, "Enabled", "", &mut s.web_api.enabled);
-                    row(ui, p, "Port", "", |ui| {
+                    toggle(ui, p, t!("Enabled"), "", &mut s.web_api.enabled);
+                    row(ui, p, t!("Port"), "", |ui| {
                         ui.add(egui::DragValue::new(&mut s.web_api.port).range(1024..=65535));
                     });
                     toggle(
                         ui,
                         p,
-                        "Allow other devices on the network",
-                        "Off: only programs on this computer can connect (recommended).",
+                        t!("Allow other devices on the network"), t!("Off: only programs on this computer can connect (recommended)."),
                         &mut s.web_api.allow_lan,
                     );
-                    row(ui, p, "Username", "", |ui| {
+                    row(ui, p, t!("Username"), "", |ui| {
                         ui.add(egui::TextEdit::singleline(&mut s.web_api.username).desired_width(200.0));
                     });
                     let has = !s.web_api.password_hash.is_empty();
-                    row(ui, p, "Password", if has { "Leave empty to keep the current password." } else { "Required." }, |ui| {
+                    row(ui, p, t!("Password"), if has { t!("Leave empty to keep the current password.") } else { t!("Required.") }, |ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut d.new_password)
                                 .password(true)
                                 .desired_width(200.0)
-                                .hint_text(if has { "••••••••" } else { "Choose a password" }),
+                                .hint_text(if has { "••••••••" } else { t!("Choose a password") }),
                         );
                     });
                     if s.web_api.allow_lan && !d.new_password.is_empty() && d.new_password.len() < 8 {
                         ui.label(
-                            RichText::new("Use at least 8 characters when other devices can connect.").small().color(p.warn),
+                            RichText::new(t!("Use at least 8 characters when other devices can connect.")).small().color(p.warn),
                         );
                     }
                     ui.add_space(4.0);
                     let (icon, color, text) = match &status {
-                        super::remote::RemoteStatus::Off => (icons::CIRCLE, p.text_mute, "Off".to_string()),
-                        super::remote::RemoteStatus::Starting => (icons::CIRCLE_NOTCH, p.accent, "Starting…".to_string()),
+                        super::remote::RemoteStatus::Off => (icons::CIRCLE, p.text_mute, t!("Off").to_string()),
+                        super::remote::RemoteStatus::Starting => (icons::CIRCLE_NOTCH, p.accent, t!("Starting…").to_string()),
                         super::remote::RemoteStatus::Running(a) => {
-                            let host = if a.ip().is_unspecified() { "this computer's address".to_string() } else { a.ip().to_string() };
+                            let host = if a.ip().is_unspecified() { t!("this computer's address").to_string() } else { a.ip().to_string() };
                             (icons::CHECK_CIRCLE, p.success, format!("Running — host {host}, port {}", a.port()))
                         }
                         super::remote::RemoteStatus::Failed(e) => (icons::WARNING_CIRCLE, p.error, e.clone()),
@@ -1290,7 +1357,7 @@ impl CorrentApp {
             Page::Search => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Torznab providers");
+                    heading(ui, p, t!("Torznab providers"));
                     ui.add(
                         egui::Label::new(
                             RichText::new(
@@ -1314,31 +1381,31 @@ impl CorrentApp {
                                 egui::Grid::new(("provider", i)).num_columns(2).spacing(vec2(10.0, 6.0)).show(
                                     ui,
                                     |ui| {
-                                        ui.label("Name");
+                                        ui.label(t!("Name"));
                                         ui.horizontal(|ui| {
                                             ui.add(
                                                 egui::TextEdit::singleline(&mut pr.name)
                                                     .desired_width(220.0)
-                                                    .hint_text("e.g. Jackett"),
+                                                    .hint_text(t!("e.g. Jackett")),
                                             );
-                                            toggle_switch(ui, p, &mut pr.enabled).on_hover_text("Enabled");
+                                            toggle_switch(ui, p, &mut pr.enabled).on_hover_text(t!("Enabled"));
                                             if ui
                                                 .button(RichText::new(icons::TRASH).color(p.error))
-                                                .labeled("Remove")
+                                                .labeled(t!("Remove"))
                                                 .clicked()
                                             {
                                                 remove = Some(i);
                                             }
                                         });
                                         ui.end_row();
-                                        ui.label("Address");
+                                        ui.label(t!("Address"));
                                         ui.add(
                                             egui::TextEdit::singleline(&mut pr.url).desired_width(420.0).hint_text(
                                                 "http://127.0.0.1:9117/api/v2.0/indexers/all/results/torznab",
                                             ),
                                         );
                                         ui.end_row();
-                                        ui.label("API key");
+                                        ui.label(t!("API key"));
                                         ui.add(
                                             egui::TextEdit::singleline(&mut pr.api_key)
                                                 .desired_width(420.0)
@@ -1349,7 +1416,7 @@ impl CorrentApp {
                                 );
                                 if !pr.url.trim().is_empty() && crate::search::search_url(pr, "x").is_err() {
                                     ui.label(
-                                        RichText::new("The address must be an http:// or https:// URL")
+                                        RichText::new(t!("The address must be an http:// or https:// URL"))
                                             .small()
                                             .color(p.warn),
                                     );
@@ -1360,7 +1427,7 @@ impl CorrentApp {
                     if let Some(i) = remove {
                         s.search.providers.remove(i);
                     }
-                    if ui.button(format!("{}  Add provider", icons::PLUS)).clicked() {
+                    if ui.button(format!("{}  {}", icons::PLUS, t!("Add provider"))).clicked() {
                         s.search.providers.push(Default::default());
                     }
                 });
@@ -1368,9 +1435,9 @@ impl CorrentApp {
             Page::Feeds => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "RSS feeds");
+                    heading(ui, p, t!("RSS feeds"));
                     ui.label(
-                        RichText::new("Add feeds and download rules from “RSS feeds” in the sidebar.")
+                        RichText::new(t!("Add feeds and download rules from “RSS feeds” in the sidebar."))
                             .small()
                             .color(p.text_dim),
                     );
@@ -1378,18 +1445,18 @@ impl CorrentApp {
                     toggle(
                         ui,
                         p,
-                        "Download automatically",
-                        "Add new articles that match a download rule.",
+                        t!("Download automatically"),
+                        t!("Add new articles that match a download rule."),
                         &mut s.rss.auto_download,
                     );
-                    row(ui, p, "Refresh feeds every", "At least 5 minutes, to be kind to the servers.", |ui| {
+                    row(ui, p, t!("Refresh feeds every"), t!("At least 5 minutes, to be kind to the servers."), |ui| {
                         ui.add(egui::DragValue::new(&mut s.rss.refresh_minutes).range(5..=1440).suffix(" min"));
                     });
                     row(
                         ui,
                         p,
-                        "Articles kept per feed",
-                        "Older ones are forgotten (their download status is kept).",
+                        t!("Articles kept per feed"),
+                        t!("Older ones are forgotten (their download status is kept)."),
                         |ui| {
                             ui.add(egui::DragValue::new(&mut s.rss.max_articles).range(10..=5000));
                         },
@@ -1399,15 +1466,21 @@ impl CorrentApp {
             Page::Advanced => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Engine");
-                    row(ui, p, "Simultaneous data checks", "How many torrents verify data at the same time.", |ui| {
-                        ui.add(egui::DragValue::new(&mut s.advanced.concurrent_init_limit).range(1..=32));
-                    });
+                    heading(ui, p, t!("Engine"));
                     row(
                         ui,
                         p,
-                        "Refresh interval",
-                        "How often transfer statistics update (takes effect after restart).",
+                        t!("Simultaneous data checks"),
+                        t!("How many torrents verify data at the same time."),
+                        |ui| {
+                            ui.add(egui::DragValue::new(&mut s.advanced.concurrent_init_limit).range(1..=32));
+                        },
+                    );
+                    row(
+                        ui,
+                        p,
+                        t!("Refresh interval"),
+                        t!("How often transfer statistics update (takes effect after restart)."),
                         |ui| {
                             ui.add(
                                 egui::DragValue::new(&mut s.advanced.refresh_interval_ms)
@@ -1421,29 +1494,29 @@ impl CorrentApp {
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    heading(ui, p, "Data");
-                    let portable = if self.paths.portable { " (portable mode)" } else { "" };
+                    heading(ui, p, t!("Data"));
+                    let portable = if self.paths.portable { t!(" (portable mode)") } else { "" };
                     ui.label(RichText::new(format!("{}{portable}", self.paths.data_dir.display())).monospace().color(p.text_dim));
                     ui.horizontal(|ui| {
-                        if ui.button(format!("{}  Open data folder", icons::FOLDER_OPEN)).clicked() {
+                        if ui.button(format!("{}  {}", icons::FOLDER_OPEN, t!("Open data folder"))).clicked() {
                             super::open_path(&self.paths.data_dir);
                         }
-                        if ui.button(format!("{}  Open log folder", icons::SCROLL)).clicked() {
+                        if ui.button(format!("{}  {}", icons::SCROLL, t!("Open log folder"))).clicked() {
                             super::open_path(&self.paths.log_dir());
                         }
                     });
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button(format!("{}  Back up data…", icons::DOWNLOAD_SIMPLE)).clicked() {
+                        if ui.button(format!("{}  {}", icons::DOWNLOAD_SIMPLE, t!("Back up data…"))).clicked() {
                             *pick_extra = Some(0);
                         }
-                        if ui.button(format!("{}  Restore from backup…", icons::UPLOAD_SIMPLE)).clicked() {
+                        if ui.button(format!("{}  {}", icons::UPLOAD_SIMPLE, t!("Restore from backup…"))).clicked() {
                             *pick_extra = Some(1);
                         }
                     });
-                    ui.label(RichText::new("Backups contain settings, categories/tags and the list of torrents (not the downloaded files).").small().color(p.text_dim));
+                    ui.label(RichText::new(t!("Backups contain settings, categories/tags and the list of torrents (not the downloaded files).")).small().color(p.text_dim));
                     ui.add_space(8.0);
-                    if ui.button(RichText::new(format!("{}  Reset all settings to defaults", icons::ARROW_COUNTER_CLOCKWISE)).color(p.warn)).clicked() {
+                    if ui.button(RichText::new(format!("{}  {}", icons::ARROW_COUNTER_CLOCKWISE, t!("Reset all settings to defaults"))).color(p.warn)).clicked() {
                         let keep_behavior_handlers = (s.behavior.register_magnet_handler, s.behavior.register_torrent_handler);
                         *s = Settings::default();
                         s.behavior.register_magnet_handler = keep_behavior_handlers.0;
@@ -1464,42 +1537,42 @@ impl CorrentApp {
                 ui.label(RichText::new(label).color(p.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let (text, color) = match state {
-                        Some(HandlerState::Ours) => ("Corrent".to_string(), p.success),
+                        Some(HandlerState::Ours) => (t!("Corrent").to_string(), p.success),
                         Some(HandlerState::OtherDefault(a)) => (a.clone(), p.warn),
-                        Some(HandlerState::OtherPath) => ("Corrent (moved)".into(), p.warn),
-                        Some(HandlerState::NotRegistered) => ("Not set".into(), p.text_dim),
-                        Some(HandlerState::Managed) => ("Managed by package".into(), p.text_dim),
-                        Some(HandlerState::Unsupported) => ("Unsupported".into(), p.text_dim),
-                        None => ("Checking…".into(), p.text_dim),
+                        Some(HandlerState::OtherPath) => (t!("Corrent (moved)").into(), p.warn),
+                        Some(HandlerState::NotRegistered) => (t!("Not set").into(), p.text_dim),
+                        Some(HandlerState::Managed) => (t!("Managed by package").into(), p.text_dim),
+                        Some(HandlerState::Unsupported) => (t!("Unsupported").into(), p.text_dim),
+                        None => (t!("Checking…").into(), p.text_dim),
                     };
                     crate::ui::widgets::badge(ui, &text, color);
                 });
             });
         };
-        pill(ui, "magnet: links", st.as_ref().map(|s| &s.magnet));
-        pill(ui, ".torrent files", st.as_ref().map(|s| &s.torrent));
+        pill(ui, t!("magnet: links"), st.as_ref().map(|s| &s.magnet));
+        pill(ui, t!(".torrent files"), st.as_ref().map(|s| &s.torrent));
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             let ours = st.as_ref().is_some_and(|s| s.magnet == HandlerState::Ours && s.torrent == HandlerState::Ours);
-            if !ours && primary_button(ui, p, "Make Corrent the default").clicked() {
+            if !ours && primary_button(ui, p, t!("Make Corrent the default")).clicked() {
                 self.set_handlers(true, true);
             }
             if (self.settings.behavior.register_magnet_handler || self.settings.behavior.register_torrent_handler)
-                && secondary_button(ui, "Unregister").clicked()
+                && secondary_button(ui, t!("Unregister")).clicked()
             {
                 self.set_handlers(false, false);
             }
-            if cfg!(windows) && secondary_button(ui, "System settings…").clicked() {
+            if cfg!(windows) && secondary_button(ui, t!("System settings…")).clicked() {
                 os_handler::open_system_default_settings();
             }
-            if ui.button(icons::ARROWS_CLOCKWISE).labeled("Refresh").clicked() {
+            if ui.button(icons::ARROWS_CLOCKWISE).labeled(t!("Refresh")).clicked() {
                 self.refresh_handler_status(false);
             }
         });
         if ui
             .checkbox(
                 &mut self.settings.behavior.keep_handler_registration,
-                RichText::new("Keep the registration up to date if Corrent is moved").small(),
+                RichText::new(t!("Keep the registration up to date if Corrent is moved")).small(),
             )
             .changed()
         {
