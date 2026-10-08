@@ -570,7 +570,9 @@ impl Actor {
         if reason == PauseReason::User {
             m.force_started = false;
         }
-        if !h.is_paused()
+        // Don't trust `is_paused()`: librqbit sets it when a pause is requested during
+        // initialization even if the torrent then goes live anyway.
+        if !matches!(h.stats().state, TorrentStatsState::Paused)
             && let Err(e) = sess.pause(&h).await
         {
             tracing::debug!("pause failed: {e:#}");
@@ -587,7 +589,7 @@ impl Actor {
         m.force_started = force;
         m.inactive_seeding_secs = 0;
         self.resumed_at.insert(hash, Instant::now());
-        if h.is_paused()
+        if matches!(h.stats().state, TorrentStatsState::Paused)
             && let Err(e) = sess.unpause(&h).await
         {
             self.toast(ToastKind::Error, format!("Could not resume: {e:#}"));
@@ -606,7 +608,7 @@ impl Actor {
                     bytes,
                     output: h.output_folder().to_path_buf(),
                     only_files: h.only_files(),
-                    paused: h.is_paused(),
+                    paused: matches!(h.stats().state, TorrentStatsState::Paused),
                     trackers: h.shared().trackers.iter().map(|u| u.to_string()).collect(),
                     meta: self.store.get(&hash).cloned().unwrap_or_default(),
                     at: Instant::now(),
@@ -752,6 +754,35 @@ impl Actor {
         tokio::spawn(async move {
             let result = super::restore::retry(&sess, &dir, &f).await;
             let _ = tx.send(Internal::RestoreRetried { hash, result, quiet });
+        });
+    }
+
+    /// Keep the engine in line with Corrent's records: a torrent that should be paused (by the
+    /// user, the queue or a seeding limit) but is running gets paused again. librqbit ignores a
+    /// pause sent while a torrent is still initializing, so this makes pauses stick.
+    fn enforce_pauses(&mut self, views: &[TorrentView], handles: &[(usize, Arc<ManagedTorrent>)]) {
+        let Some(sess) = self.session.clone() else { return };
+        let running = |s: TorrentState| {
+            matches!(
+                s,
+                TorrentState::Downloading | TorrentState::Stalled | TorrentState::Seeding | TorrentState::Metadata
+            )
+        };
+        let to_pause: Vec<Arc<ManagedTorrent>> = views
+            .iter()
+            .filter(|v| running(v.state) && v.busy.is_none())
+            .filter(|v| self.store.get(&v.hash).is_some_and(|m| m.pause_reason.is_some() && !m.force_started))
+            .filter_map(|v| handles.iter().find(|(_, h)| h.info_hash().0 == v.hash.0).map(|(_, h)| h.clone()))
+            .collect();
+        if to_pause.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            for h in to_pause {
+                if matches!(h.stats().state, TorrentStatsState::Live) {
+                    let _ = sess.pause(&h).await;
+                }
+            }
         });
     }
 
@@ -1045,6 +1076,9 @@ impl Actor {
         self.session_down_total += total_dd;
         self.session_up_total += total_du;
 
+        if self.tick_count.is_multiple_of(2) {
+            self.enforce_pauses(&views, &handles);
+        }
         if self.settings.queue.enabled && self.tick_count.is_multiple_of(4) {
             self.run_queue(&views, &handles);
         }
@@ -1743,7 +1777,7 @@ async fn readd(
     let hash = InfoHash(h.info_hash().0);
     let bytes = h.with_metadata(|m| m.torrent_bytes.to_vec())?;
     let only_files = h.only_files();
-    let paused = h.is_paused();
+    let paused = matches!(h.stats().state, TorrentStatsState::Paused);
     let old_output = h.output_folder().to_path_buf();
     let mut trackers: Vec<String> = h.shared().trackers.iter().map(|u| u.to_string()).collect();
     if let Some(extra) = extra_trackers {

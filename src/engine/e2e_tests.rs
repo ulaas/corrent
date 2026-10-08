@@ -141,7 +141,14 @@ async fn wait_for(l: &Leecher, what: &str, secs: u64, pred: impl Fn(&Snapshot) -
         if pred(&snap) {
             return snap;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for: {what}");
+        if Instant::now() >= deadline {
+            let rows: Vec<String> = snap
+                .torrents
+                .iter()
+                .map(|t| format!("{} {:?} busy={:?} err={:?} pending={}", t.name, t.state, t.busy, t.error, t.pending))
+                .collect();
+            panic!("timed out waiting for: {what}; engine={:?}; torrents={rows:?}", snap.engine_state);
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
@@ -303,6 +310,30 @@ async fn locked_file_shows_as_failed_restore_and_recovers() {
     drop(lock);
     l.engine.send(EngineCommand::Resume(vec![s.hash]));
     wait_for(&l, "recovered after unlock", 30, |sn| complete(sn, s.hash)).await;
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn engine_restart_after_panic_replays_commands() {
+    let dir = temp_dir("panic");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    download(&l, &s, &dir).await;
+    l.engine.send(EngineCommand::DevPanic);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while l.engine.is_alive() {
+        assert!(Instant::now() < deadline, "engine should have died");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Sent while the engine is down: queued and replayed.
+    l.engine.send(EngineCommand::Pause(vec![s.hash]));
+    l.engine.restart(settings(&dir));
+    assert!(l.engine.is_alive());
+    wait_for(&l, "restored and paused after restart", 30, |sn| {
+        find(sn, s.hash).is_some_and(|t| t.state == TorrentState::Completed)
+    })
+    .await;
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }

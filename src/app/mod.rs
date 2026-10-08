@@ -468,6 +468,48 @@ impl CorrentApp {
         self
     }
 
+    /// Shown when the engine task stopped unexpectedly; offers a restart.
+    fn engine_banner(&mut self, ui: &mut Ui, p: &Palette) {
+        if self.engine.is_alive() || self.quitting {
+            return;
+        }
+        egui::Frame::new()
+            .fill(p.error.gamma_multiply(0.12))
+            .stroke(egui::Stroke::new(1.0, p.error.gamma_multiply(0.5)))
+            .corner_radius(egui::CornerRadius::same(10))
+            .inner_margin(egui::Margin::symmetric(14, 10))
+            .outer_margin(egui::Margin { left: 10, right: 10, top: 8, bottom: 2 })
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(egui_phosphor::regular::WARNING_OCTAGON).size(20.0).color(p.error));
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("The torrent engine stopped unexpectedly").strong().color(p.text));
+                        ui.label(
+                            egui::RichText::new(
+                                "A crash report was saved. Restart the engine to continue; actions you take now are \
+                                 applied after the restart.",
+                            )
+                            .small()
+                            .color(p.text_dim),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if crate::ui::widgets::primary_button(ui, p, "Restart engine").clicked() {
+                            self.engine.restart(self.settings.clone());
+                            crate::crash::dismiss(&self.paths.log_dir());
+                        }
+                        if let Some(r) = crate::crash::reports(&self.paths.log_dir()).first().cloned()
+                            && crate::ui::widgets::secondary_button(ui, "View report").clicked()
+                        {
+                            open_path(&r);
+                        }
+                    });
+                });
+            });
+        // Keep checking even when nothing else repaints.
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+    }
+
     /// "Closed unexpectedly" banner shown after an unclean exit.
     fn crash_banner(&mut self, ui: &mut Ui, p: &Palette) {
         if !self.previous_run.unclean {
@@ -694,6 +736,7 @@ impl eframe::App for CorrentApp {
         self.drain_pickers();
         self.drain_events(ctx);
         self.window_logic(ctx);
+        ctx.request_repaint_after(std::time::Duration::from_secs(2));
         self.process_launch_queue();
     }
 
@@ -744,6 +787,7 @@ impl eframe::App for CorrentApp {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg0).inner_margin(egui::Margin::same(0))).show(
             ui,
             |ui| {
+                self.engine_banner(ui, &p);
                 self.crash_banner(ui, &p);
                 self.data_banner(ui, &p);
                 self.handler_banner(ui, &p);

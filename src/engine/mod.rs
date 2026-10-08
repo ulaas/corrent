@@ -172,11 +172,25 @@ pub fn free_space_for(path: &std::path::Path) -> Option<u64> {
     actor::free_space(path)
 }
 
-/// Cheap, cloneable handle used by the UI.
+/// Commands queued while the engine is down, replayed after a restart.
+const BACKLOG_CAP: usize = 256;
+
+struct Inner {
+    tx: mpsc::UnboundedSender<EngineCommand>,
+    task: tokio::task::JoinHandle<()>,
+    backlog: std::collections::VecDeque<EngineCommand>,
+    stopping: bool,
+}
+
+/// Cheap, cloneable handle used by the UI. Survives engine restarts.
 #[derive(Clone)]
 pub struct EngineHandle {
-    tx: mpsc::UnboundedSender<EngineCommand>,
+    inner: Arc<std::sync::Mutex<Inner>>,
     snapshot: Arc<ArcSwap<Snapshot>>,
+    rt: tokio::runtime::Handle,
+    paths: Paths,
+    ctx: egui::Context,
+    events: std::sync::mpsc::Sender<EngineEvent>,
 }
 
 impl EngineHandle {
@@ -187,17 +201,75 @@ impl EngineHandle {
         ctx: egui::Context,
         events: std::sync::mpsc::Sender<EngineEvent>,
     ) -> EngineHandle {
-        let (tx, rx) = mpsc::unbounded_channel();
         let snapshot = Arc::new(ArcSwap::from_pointee(Snapshot::default()));
-        let actor = actor::Actor::new(paths, settings, ctx, events, snapshot.clone(), tx.clone());
-        rt.spawn(actor.run(rx));
-        EngineHandle { tx, snapshot }
+        let (tx, task) = Self::spawn(rt, &paths, settings, &ctx, &events, &snapshot);
+        EngineHandle {
+            inner: Arc::new(std::sync::Mutex::new(Inner { tx, task, backlog: Default::default(), stopping: false })),
+            snapshot,
+            rt: rt.clone(),
+            paths,
+            ctx,
+            events,
+        }
+    }
+
+    fn spawn(
+        rt: &tokio::runtime::Handle,
+        paths: &Paths,
+        settings: Settings,
+        ctx: &egui::Context,
+        events: &std::sync::mpsc::Sender<EngineEvent>,
+        snapshot: &Arc<ArcSwap<Snapshot>>,
+    ) -> (mpsc::UnboundedSender<EngineCommand>, tokio::task::JoinHandle<()>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let actor =
+            actor::Actor::new(paths.clone(), settings, ctx.clone(), events.clone(), snapshot.clone(), tx.clone());
+        let task = rt.spawn(actor.run(rx));
+        (tx, task)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// False if the engine task ended unexpectedly (e.g. a panic).
+    pub fn is_alive(&self) -> bool {
+        let inner = self.lock();
+        inner.stopping || !inner.task.is_finished()
     }
 
     pub fn send(&self, cmd: EngineCommand) {
-        if self.tx.send(cmd).is_err() {
-            tracing::warn!("engine is not running; command dropped");
+        let mut inner = self.lock();
+        if matches!(cmd, EngineCommand::Shutdown(_)) {
+            inner.stopping = true;
         }
+        let dead = inner.task.is_finished();
+        let cmd = if dead { Err(cmd) } else { inner.tx.send(cmd).map_err(|e| e.0) };
+        if let Err(cmd) = cmd {
+            if matches!(cmd, EngineCommand::Shutdown(_)) {
+                return; // nothing to stop; dropping the reply sender ends the wait
+            }
+            if inner.backlog.len() < BACKLOG_CAP {
+                inner.backlog.push_back(cmd);
+            } else {
+                tracing::warn!("engine is down and its command backlog is full; command dropped");
+            }
+        }
+    }
+
+    /// Start a fresh engine (after a crash) and replay commands queued meanwhile.
+    pub fn restart(&self, settings: Settings) {
+        let mut inner = self.lock();
+        if !inner.task.is_finished() {
+            return;
+        }
+        let (tx, task) = Self::spawn(&self.rt, &self.paths, settings, &self.ctx, &self.events, &self.snapshot);
+        for cmd in inner.backlog.drain(..) {
+            let _ = tx.send(cmd);
+        }
+        inner.tx = tx;
+        inner.task = task;
+        tracing::info!("engine restarted");
     }
 
     pub fn snapshot(&self) -> Arc<Snapshot> {
