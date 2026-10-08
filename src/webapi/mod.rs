@@ -135,23 +135,37 @@ fn host_of(v: &str) -> &str {
 /// Reject cross-site requests and (when local-only) foreign Host names (DNS rebinding).
 async fn check_origin(State(st): State<Arc<ApiState>>, headers: HeaderMap, req: Request, next: Next) -> Response {
     let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
-    if !st.cfg.allow_lan && !matches!(host_of(host).to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "::1") {
+    if !host_allowed(host, st.cfg.allow_lan) {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
     for h in [header::ORIGIN, header::REFERER] {
-        if let Some(v) = headers.get(&h).and_then(|v| v.to_str().ok())
-            && let Ok(u) = url::Url::parse(v)
-        {
+        let Some(v) = headers.get(&h) else { continue };
+        // A present but opaque/garbled origin ("null" from sandboxed frames) is not ours.
+        let same = v.to_str().ok().and_then(|v| url::Url::parse(v).ok()).is_some_and(|u| {
             let origin_host = match u.port() {
                 Some(p) => format!("{}:{p}", u.host_str().unwrap_or("")),
                 None => u.host_str().unwrap_or("").to_string(),
             };
-            if !origin_host.eq_ignore_ascii_case(host) {
-                return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
-            }
+            origin_host.eq_ignore_ascii_case(host)
+        });
+        if !same {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
         }
     }
     next.run(req).await
+}
+
+/// Host header check against DNS rebinding: names other than `localhost` could point anywhere,
+/// so only `localhost` and IP literals are accepted (loopback ones unless LAN access is on).
+fn host_allowed(host: &str, allow_lan: bool) -> bool {
+    let h = host_of(host).to_ascii_lowercase();
+    if h == "localhost" {
+        return true;
+    }
+    match h.parse::<IpAddr>() {
+        Ok(ip) => allow_lan || ip.is_loopback(),
+        Err(_) => false,
+    }
 }
 
 fn sid_from(headers: &HeaderMap) -> Option<String> {
@@ -207,6 +221,12 @@ mod tests {
         assert_eq!(host_of("localhost:8080"), "localhost");
         assert_eq!(host_of("[::1]:8080"), "::1");
         assert_eq!(host_of("127.0.0.1"), "127.0.0.1");
+        assert!(host_allowed("localhost:8080", false));
+        assert!(host_allowed("[::1]:8080", false));
+        assert!(!host_allowed("192.168.1.5:8080", false));
+        assert!(host_allowed("192.168.1.5:8080", true));
+        assert!(!host_allowed("evil.example:8080", true), "names can be rebound");
+        assert!(!host_allowed("", true));
         let mut h = HeaderMap::new();
         h.insert(header::COOKIE, "a=b; SID=abc; c=d".parse().unwrap());
         assert_eq!(sid_from(&h).as_deref(), Some("abc"));

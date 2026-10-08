@@ -538,6 +538,10 @@ impl Actor {
                 self.store.meta_mut(hash).display_name = name.filter(|n| !n.trim().is_empty());
             }
             EngineCommand::QueuePlace { hashes, before } => self.store.queue_place(&hashes, before),
+            EngineCommand::FileList { hash, reply } => {
+                let files = self.handle_for(&hash).map(|h| self.file_views(&h, hash));
+                let _ = reply.send(files);
+            }
             EngineCommand::SetFilePriority { hash, files, priority } => {
                 let m = self.store.meta_mut(hash);
                 for f in files {
@@ -1645,34 +1649,37 @@ impl Actor {
         view
     }
 
-    fn build_detail(&mut self, id: usize, h: &Arc<ManagedTorrent>, hash: InfoHash) -> TorrentDetail {
+    fn file_views(&self, h: &Arc<ManagedTorrent>, hash: InfoHash) -> Vec<FileView> {
         let stats = h.stats();
         let only: Option<HashSet<usize>> = h.only_files().map(|v| v.into_iter().collect());
         let file_priority = self.store.get(&hash).map(|m| m.file_priority.clone()).unwrap_or_default();
-        let files = h
-            .with_metadata(|md| {
-                md.file_infos
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, f)| !f.attrs.padding)
-                    .map(|(i, f)| {
-                        let components: Vec<String> = f
-                            .relative_filename
-                            .components()
-                            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                            .collect();
-                        FileView {
-                            index: i,
-                            components,
-                            len: f.len,
-                            done: stats.file_progress.get(i).copied().unwrap_or(0),
-                            included: only.as_ref().map(|s| s.contains(&i)).unwrap_or(true),
-                            priority: file_priority.get(&i).copied().unwrap_or(0),
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        h.with_metadata(|md| {
+            md.file_infos
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| !f.attrs.padding)
+                .map(|(i, f)| {
+                    let components: Vec<String> = f
+                        .relative_filename
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect();
+                    FileView {
+                        index: i,
+                        components,
+                        len: f.len,
+                        done: stats.file_progress.get(i).copied().unwrap_or(0),
+                        included: only.as_ref().map(|s| s.contains(&i)).unwrap_or(true),
+                        priority: file_priority.get(&i).copied().unwrap_or(0),
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+    }
+
+    fn build_detail(&mut self, id: usize, h: &Arc<ManagedTorrent>, hash: InfoHash) -> TorrentDetail {
+        let files = self.file_views(h, hash);
 
         let interval = self.settings.advanced.refresh_interval_ms.max(200) as f64 / 1000.0;
         let mut peers = Vec::new();

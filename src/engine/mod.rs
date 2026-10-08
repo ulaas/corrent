@@ -161,6 +161,11 @@ pub enum EngineCommand {
         down_kib: u32,
         up_kib: u32,
     },
+    /// A torrent's files, answered directly (Web API), without changing the details target.
+    FileList {
+        hash: InfoHash,
+        reply: tokio::sync::oneshot::Sender<Option<Vec<types::FileView>>>,
+    },
     /// Download priority for files of a torrent (1 high, 0 normal, -1 low).
     SetFilePriority {
         hash: InfoHash,

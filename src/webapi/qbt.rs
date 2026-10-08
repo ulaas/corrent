@@ -409,22 +409,11 @@ async fn properties(State(st): St, req: Request) -> Response {
 async fn files(State(st): St, req: Request) -> Response {
     let f = read_form(req).await;
     let Some(t) = find(&st, &f) else { return (StatusCode::NOT_FOUND, "Torrent hash was not found").into_response() };
-    // File details are only computed for the torrent shown in the UI; ask the engine for this one.
-    st.engine.send(EngineCommand::SetDetailTarget(Some(t.hash)));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    let detail = loop {
-        let snap = st.engine.snapshot();
-        if let Some(d) = snap.detail.as_ref().filter(|d| d.hash == t.hash) {
-            break Some(d.clone());
-        }
-        if std::time::Instant::now() >= deadline {
-            break None;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    };
-    let Some(d) = detail else { return axum::Json(Vec::<Value>::new()).into_response() };
-    let out: Vec<Value> = d
-        .files
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    st.engine.send(EngineCommand::FileList { hash: t.hash, reply: tx });
+    let files = tokio::time::timeout(std::time::Duration::from_secs(5), rx).await.ok().and_then(Result::ok).flatten();
+    let Some(files) = files else { return axum::Json(Vec::<Value>::new()).into_response() };
+    let out: Vec<Value> = files
         .iter()
         .map(|file| {
             json!({
@@ -588,8 +577,13 @@ async fn create_category(State(st): St, req: Request) -> Response {
     // Keep the category's speed limits when its path is edited.
     let mut info = cats.get(&name).cloned().unwrap_or_default();
     info.save_path = path;
-    cats.insert(name, info);
+    cats.insert(name.clone(), info);
     st.engine.send(EngineCommand::SetCategories(cats));
+    // Sonarr calls setCategory right after: answer once the category exists.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !st.engine.snapshot().categories.contains_key(&name) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     ok()
 }
 
@@ -653,7 +647,7 @@ async fn set_limit(State(st): St, req: Request, download: bool) -> Response {
         .get("limit")
         .and_then(|l| l.trim().parse::<i64>().ok())
         .filter(|l| *l > 0)
-        .map(|l| ((l + 1023) / 1024) as u32);
+        .map(|l| (l.saturating_add(1023) / 1024).min(u32::MAX as i64) as u32);
     let snap = st.engine.snapshot();
     for h in hashes(&st, &f) {
         let Some(t) = snap.torrents.iter().find(|t| t.hash == h) else { continue };

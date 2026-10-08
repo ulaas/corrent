@@ -1,7 +1,20 @@
 diff -ru --strip-trailing-cr a/src/limits.rs src/limits.rs
 --- a/src/limits.rs	2006-07-24 04:21:28.000000000 +0300
-+++ b/src/limits.rs	2026-10-08 05:17:42.028755000 +0300
-@@ -56,6 +56,8 @@
++++ b/src/limits.rs	2026-10-08 05:36:14.440103800 +0300
+@@ -20,7 +20,11 @@
+ impl Limit {
+     fn new_inner(bps: Option<NonZeroU32>) -> Option<Arc<RateLimiter>> {
+         let bps = bps?;
+-        Some(Arc::new(RateLimiter::direct(Quota::per_second(bps))))
++        // CORRENT PATCH: chunks are 16 KiB; governor rejects requests larger than the burst
++        // (InsufficientCapacity), which killed transfers for limits under 16 KiB/s. The average
++        // rate is unchanged; only the burst is at least one chunk.
++        let burst = NonZeroU32::new(bps.get().max(16 * 1024)).unwrap_or(bps);
++        Some(Arc::new(RateLimiter::direct(Quota::per_second(bps).allow_burst(burst))))
+     }
+ 
+     fn new(bps: Option<NonZeroU32>) -> Self {
+@@ -56,6 +60,8 @@
  pub struct Limits {
      down: Limit,
      up: Limit,
@@ -10,7 +23,7 @@ diff -ru --strip-trailing-cr a/src/limits.rs src/limits.rs
  }
  
  impl Limits {
-@@ -63,15 +65,35 @@
+@@ -63,15 +69,35 @@
          Self {
              down: Limit::new(config.download_bps),
              up: Limit::new(config.upload_bps),

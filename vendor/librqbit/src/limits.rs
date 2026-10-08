@@ -20,7 +20,11 @@ struct Limit {
 impl Limit {
     fn new_inner(bps: Option<NonZeroU32>) -> Option<Arc<RateLimiter>> {
         let bps = bps?;
-        Some(Arc::new(RateLimiter::direct(Quota::per_second(bps))))
+        // CORRENT PATCH: chunks are 16 KiB; governor rejects requests larger than the burst
+        // (InsufficientCapacity), which killed transfers for limits under 16 KiB/s. The average
+        // rate is unchanged; only the burst is at least one chunk.
+        let burst = NonZeroU32::new(bps.get().max(16 * 1024)).unwrap_or(bps);
+        Some(Arc::new(RateLimiter::direct(Quota::per_second(bps).allow_burst(burst))))
     }
 
     fn new(bps: Option<NonZeroU32>) -> Self {

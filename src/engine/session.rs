@@ -117,3 +117,17 @@ pub async fn create(paths: &Paths, s: &Settings, alt: bool) -> anyhow::Result<(A
         Err(e) => Err(e),
     }
 }
+
+#[cfg(test)]
+mod limit_tests {
+    /// Limits below one 16 KiB chunk used to make every transfer fail (governor rejects requests
+    /// larger than the burst); the vendored limiter allows a one-chunk burst.
+    #[tokio::test]
+    async fn tiny_limits_still_transfer() {
+        let l = librqbit::limits::Limits::new(super::limits(1, 1));
+        let chunk = std::num::NonZeroU32::new(16 * 1024).unwrap();
+        let r = tokio::time::timeout(std::time::Duration::from_secs(2), l.prepare_for_download(chunk)).await;
+        assert!(matches!(r, Ok(Ok(()))), "a full chunk passes a 1 KiB/s limit");
+        assert!(l.prepare_for_upload(chunk).await.is_ok());
+    }
+}

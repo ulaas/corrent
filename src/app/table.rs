@@ -290,13 +290,18 @@ impl CorrentApp {
                         drag_start = Some(t.hash);
                     }
                     if let (Some(drag), Some(pos)) = (&self.queue_drag, pointer)
+                        && !t.pending
                         && resp.rect.y_range().contains(pos.y)
                     {
                         let upper = pos.y < resp.rect.center().y;
                         let before = if upper {
                             Some(t.hash)
                         } else {
-                            rows.get(row.index() + 1).map(|&i| snap.torrents[i].hash)
+                            rows[row.index() + 1..]
+                                .iter()
+                                .map(|&i| &snap.torrents[i])
+                                .find(|n| !n.pending)
+                                .map(|n| n.hash)
                         };
                         if before.is_none_or(|b| !drag.contains(&b)) || drag.contains(&t.hash) {
                             drop_before = Some(before);

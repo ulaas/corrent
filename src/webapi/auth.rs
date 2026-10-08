@@ -69,6 +69,7 @@ impl Sessions {
     }
 
     pub fn failed(&mut self, ip: IpAddr) {
+        self.fails.retain(|_, (_, at)| at.elapsed() < BAN);
         let e = self.fails.entry(ip).or_insert((0, Instant::now()));
         e.0 += 1;
         e.1 = Instant::now();

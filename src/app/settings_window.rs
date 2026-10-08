@@ -415,9 +415,10 @@ impl CorrentApp {
                                             close = true;
                                         }
                                         if ui
-                                            .add_enabled_ui(pending != self.settings, |ui| {
-                                                secondary_button(ui, "Apply")
-                                            })
+                                            .add_enabled_ui(
+                                                pending != self.settings || !draft.new_password.is_empty(),
+                                                |ui| secondary_button(ui, "Apply"),
+                                            )
                                             .inner
                                             .clicked()
                                         {
