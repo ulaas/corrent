@@ -47,6 +47,8 @@ fn main() -> eframe::Result {
         println!("  --register     register as handler for magnet links and .torrent files");
         println!("  --unregister   remove the handler registration");
         println!("  --status       print handler registration status");
+        println!("  --write-icons <dir>  write the app icon set to a folder");
+        println!("  -h, --help     show this help");
         return Ok(());
     }
     if let Some(i) = args.iter().position(|a| a == "--write-icons") {

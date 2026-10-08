@@ -964,9 +964,10 @@ impl eframe::App for CorrentApp {
 
 #[cfg(debug_assertions)]
 impl CorrentApp {
-    /// Debug-only hooks for screenshot testing: CORRENT_DEV_SELECT=<n> selects the n-th row,
-    /// CORRENT_DEV_TAB=<files|peers|trackers|pieces|speed> picks the details tab,
-    /// CORRENT_DEV_OPEN=<settings|magnet|about|log> opens a window.
+    /// Debug-only hooks for screenshot testing (see CLAUDE.md for the full list):
+    /// CORRENT_DEV_SELECT=<n> selects the n-th row, CORRENT_DEV_TAB picks the details tab,
+    /// CORRENT_DEV_OPEN opens a window or view, CORRENT_DEV_SEARCH runs a search,
+    /// CORRENT_DEV_PANIC/LIGHT/MICA. They run once, on the first frame with at least one torrent.
     fn dev_hooks(&mut self, ctx: &Context) {
         if self.dev_done || self.snap.torrents.is_empty() {
             return;

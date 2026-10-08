@@ -67,7 +67,8 @@ A beautiful, stable, cross-platform BitTorrent client written in Rust with an
   blocks on disk or network I/O
 - Fast resume is on by default: restarting never re-downloads and normally skips re-verification
 - Settings and app data are written atomically with a backup copy; transfer totals survive restarts
-- Graceful shutdown flushes everything before exit
+- Graceful shutdown flushes everything before exit; a move or recheck cut off by a quit or crash
+  is finished at the next start
 - Crash reports and an "engine stopped" banner with a restart that replays queued actions
 - Damaged settings/data files are recovered from backups; backup and restore of all app data
 - Opt-in update check (GitHub releases; nothing is installed automatically)
@@ -87,6 +88,8 @@ A beautiful, stable, cross-platform BitTorrent client written in Rust with an
 | Ctrl+F | Search |
 | Ctrl+I / Ctrl+B | Toggle details panel / sidebar |
 | Ctrl+Shift+S | Toggle alternative speed limits |
+| Ctrl+N | Create a torrent |
+| Esc | Clear the selection / close a dialog |
 | Ctrl+, | Settings |
 
 ## Building

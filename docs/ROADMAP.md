@@ -5,21 +5,18 @@ review that verified the API claims against librqbit 9.0.1, egui/eframe 0.36.2 a
 
 ## Where we are
 
-Corrent is a working v1: a ~10.5k-line Rust 2024 crate (eframe/egui 0.36.2, librqbit 9.0.1 with a
-vendored DHT patch). The engine actor (`src/engine/actor.rs`) owns the librqbit `Session`, publishes
-`ArcSwap<Snapshot>` every 500 ms and never lets the UI thread touch I/O. App-side state lives in
-`src/store.rs`; settings in `src/config.rs`. Add flow, OS magnet/.torrent integration, single
-instance, list/sidebar/details/settings, queue, seeding limits, scheduler, watch folders, tray,
-toasts, custom title bar and failed-restore recovery are done.
+*Updated at completion:* every milestone below is implemented, reviewed by Fable agents and
+covered by tests (161 unit, UI and loopback end-to-end tests; fmt/clippy/deny gates; a Linux
+cross-build with clippy). See the Status column and "Deviations from this plan". What remains
+needs the owner: running on real Linux and macOS (`docs/PLATFORM-TESTING.md`), pushing so CI
+runs, signing and submitting packages, and proposing the librqbit patches upstream.
 
-What is thin: 19 unit tests and nothing else (no engine integration tests, no UI tests, no CI, no
-clippy/fmt gate), no panic hook or crash log, no schema version in `settings.toml`/`store.json`,
-blocking `rfd::FileDialog` calls, disk-full/permission errors collapse into generic strings,
-macOS/Linux never run, and the DHT fix still lives in `vendor/`. Engine features that are missing
-upstream (encryption, sequential, per-file priority, runtime per-torrent limits) are blocked;
-several librqbit capabilities we already link are unused: `create_torrent`, `FileStream`
-streaming, `http-api`, `upnp-serve-adapter` (DLNA, which also requires `http-api`), `allowlist_url`,
-`AddTorrentOptions.ratelimits`, `initial_peers`.
+The text below is the starting point the plan was written from (2026-10-08).
+
+Corrent was a working v1: a ~10.5k-line Rust 2024 crate (eframe/egui 0.36.2, librqbit 9.0.1 with a
+vendored DHT patch), with thin tests, no CI, no crash logs or schema versions, blocking file
+dialogs, generic I/O errors, and engine features missing upstream (sequential, per-file priority,
+runtime per-torrent limits, encryption).
 
 Legend: **[U]** = needs an upstream librqbit change (PR or fork); **[u]** = uses an existing
 upstream feature we don't enable yet.
@@ -234,6 +231,14 @@ owner pushes the repo, so nothing local is gated on it.
   unit test (`i18n::tests::no_hard_coded_ui_strings`).
 - **B11:** columns are shown, hidden and moved left/right in the column chooser (right-click the
   header), not by dragging headers (egui_extras tables don't support header drag).
+- **A6:** engine health is the snapshot generation: a running engine that publishes nothing for 30 s
+  gets an "engine isn't responding" warning (no automatic restart while the task is alive).
+- **A8:** I/O errors are classified from their messages (`util::classify_io`) rather than carried as
+  a typed error; the plain-language hints are the same.
+- **A12:** the license allow-list also contains MPL-2.0, BSL-1.0, OpenSSL, Unicode, CC0 and
+  similar permissive licenses that dependencies actually use (`deny.toml`, `docs/DEPENDENCIES.md`).
+- **Watch folders:** with "delete after adding", the .torrent file is removed once it was read, even
+  if the add then fails (the default, "rename", keeps it).
 - **C6:** "sequential download" is not offered because librqbit already downloads each file in
   piece order; per-file priorities control the file order instead.
 
@@ -244,8 +249,9 @@ owner pushes the repo, so nothing local is gated on it.
    keep behind a setting with an opaque fallback.
 3. **Upstream velocity** — single-maintainer project; keep minimal `[patch.crates-io]` branches
    with PRs open, documented like the DHT patch.
-4. **Re-add semantics** — limits/trackers/move via re-add re-verify data; always keep the metainfo
-   backup and warn about the size; Undo (B12) relies on the same backup.
+4. **Re-add semantics** — trackers/move/recheck via re-add re-verify data; the metainfo backup
+   (plus a note, so an interrupted re-add is recovered at the next start) is kept until it succeeds.
+   Undo (B12) keeps the metainfo in memory for two minutes. Limits no longer need a re-add.
 5. **Schema migrations** — a bug loses user data; dated backups and release fixtures (M5 before any
    store-shape change).
 6. **Scale refactor** — touches every panel; land behind benchmarks and snapshot tests.

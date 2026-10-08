@@ -40,7 +40,8 @@ Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_OPEN=settings|remote|magnet|about|log|stats|creator|import|feeds|rules|remove|remove-undo`,
 `CORRENT_DEV_PANIC=ui|engine`, `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
 To pre-configure the test profile, write `target/debug/corrent-data/settings.toml`
-(e.g. `skip_add_dialog = true`, a scratch `save_path`).
+(e.g. `skip_add_dialog = true`, a scratch `save_path`). The hooks run once, on the first frame
+that has at least one torrent in the list.
 
 Linux: the whole crate cross-checks and cross-builds from Windows with Zig as C compiler/linker —
 `powershell -File scripts/cross/build-linux.ps1 [-CheckOnly | -Clippy] [-Release] [-Python <python with ziglang>]`
