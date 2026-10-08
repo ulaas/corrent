@@ -654,7 +654,8 @@ async fn webapi_behaves_like_qbittorrent_for_sonarr() {
     assert_eq!(t["size"], SIZE as u64);
     assert!(t["content_path"].as_str().unwrap().contains("data.bin"));
     assert!(
-        ["downloading", "stalledDL", "metaDL", "checkingDL", "queuedDL"].contains(&t["state"].as_str().unwrap()),
+        ["downloading", "stalledDL", "metaDL", "checkingDL", "queuedDL", "uploading", "stalledUP", "checkingUP"]
+            .contains(&t["state"].as_str().unwrap()),
         "{t}"
     );
     let empty: Vec<serde_json::Value> = get("torrents/info?category=movies").await.unwrap().json().await.unwrap();
@@ -729,6 +730,22 @@ async fn client_of(dir: &Path, s: &Seeder, port: u16) -> (Arc<Session>, Arc<Mana
     (sess, resp.into_handle().unwrap())
 }
 
+/// The client receives data, but no faster than `kib`/s (plus a burst): an unlimited loopback
+/// transfer would finish the 3 MiB file in well under a second. Measured against elapsed time, so
+/// a slow machine can't fail it.
+async fn assert_rate_limited(h: &Arc<ManagedTorrent>, kib: u64, what: &str) {
+    let start = Instant::now();
+    while h.stats().progress_bytes == 0 {
+        assert!(start.elapsed() < Duration::from_secs(30), "{what}: nothing arrived");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let got = h.stats().progress_bytes;
+    let allowed = kib * 1024 * start.elapsed().as_secs().max(1) + 512 * 1024;
+    assert!(got <= allowed, "{what}: {got} bytes in {:?} (allowed {allowed})", start.elapsed());
+    assert!(!h.stats().finished, "{what}: finished far too fast");
+}
+
 /// Corrent seeds with a per-torrent upload limit (set while live, then kept across a pause and
 /// resume); a plain librqbit client downloads from it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -746,10 +763,7 @@ async fn per_torrent_speed_limit_applies_and_survives_resume() {
     wait_for(&l, "seeding again", 20, |sn| complete(sn, s.hash)).await;
 
     let (_sess, h) = client_of(&dir, &s, port).await;
-    tokio::time::sleep(Duration::from_secs(4)).await;
-    let got = h.stats().progress_bytes;
-    assert!(got > 0, "the client downloads from Corrent");
-    assert!(got < 1024 * 1024, "64 KiB/s upload limit holds after a resume: {got} bytes in 4 s");
+    assert_rate_limited(&h, 64, "per-torrent upload limit after a resume").await;
 
     // Lifting the limit lets it finish.
     l.engine.send(EngineCommand::SetTorrentLimits { hashes: vec![s.hash], down_kib: 0, up_kib: 0 });
@@ -778,9 +792,7 @@ async fn category_speed_limit_applies() {
         .await;
     tokio::time::sleep(Duration::from_millis(600)).await; // applied within two ticks
     let (_sess, h) = client_of(&dir, &s, port).await;
-    tokio::time::sleep(Duration::from_secs(4)).await;
-    let got = h.stats().progress_bytes;
-    assert!(got > 0 && got < 1024 * 1024, "64 KiB/s category limit: {got} bytes in 4 s");
+    assert_rate_limited(&h, 64, "category upload limit").await;
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -149,11 +149,14 @@ pub fn apply_pending(paths: &Paths) -> Option<String> {
         }
         std::fs::remove_dir_all(&stage)
     })();
-    let kept =
-        if keep.exists() { format!(" The previous data was kept in {}.", keep.display()) } else { String::new() };
+    let kept = if keep.exists() {
+        format!(" {}", t!("The previous data was kept in {path}.", path = keep.display()))
+    } else {
+        String::new()
+    };
     Some(match result {
-        Ok(()) => format!("Restored {applied} part(s) of your data from a backup.{kept}"),
-        Err(e) => format!("Restoring from the backup was interrupted ({e}); it will continue next start.{kept}"),
+        Ok(()) => t!("Restored {n} parts of your data from a backup.", n = applied) + &kept,
+        Err(e) => t!("Restoring from the backup was interrupted ({e}); it will continue next start.", e = e) + &kept,
     })
 }
 

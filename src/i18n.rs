@@ -161,6 +161,7 @@ mod tests {
         .unwrap();
         let icon_label = regex::Regex::new(r#"format!\("\{\}\s+(\{\}\s+)?[A-Za-z]{2,}"#).unwrap();
         let prose = regex::Regex::new(r#"format!\(\s*"[^"]*[A-Za-z]{3,} [A-Za-z]{2,}"#).unwrap();
+        let open_paren = regex::Regex::new(r#"\(\s*\n\s*""#).unwrap();
         let mut found = Vec::new();
         for dir in ["src/app", "src/ui"] {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
@@ -171,17 +172,19 @@ mod tests {
                 }
                 let text = std::fs::read_to_string(&p).unwrap();
                 // Skip inline test modules (`#[cfg(test)]` + `mod x {`), not `mod x;` declarations.
-                let code = match text.find(
-                    "#[cfg(test)]
-mod tests {",
-                ) {
+                let text = text.replace("\r\n", "\n");
+                let code = match text.find("#[cfg(test)]\nmod tests {") {
                     Some(i) => &text[..i],
                     None => text.as_str(),
                 };
-                for (n, line) in code.lines().enumerate() {
+                // `call(\n    "literal"` → `call("literal"`, so multi-line calls are checked too.
+                let joined = open_paren.replace_all(code, "(\"");
+                for (n, line) in joined.lines().enumerate() {
                     // Sentences built with format! (the file header comment of exported themes is fine).
                     let sentence = prose.is_match(line) && !line.contains("# Corrent theme");
-                    if calls.is_match(line) || icon_label.is_match(line) || sentence {
+                    // URLs given as examples aren't text to translate.
+                    let url_only = line.contains("(\"http://") || line.contains("(\"https://");
+                    if (calls.is_match(line) || icon_label.is_match(line) || sentence) && !url_only {
                         found.push(format!("{}:{}: {}", p.display(), n + 1, line.trim()));
                     }
                 }

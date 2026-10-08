@@ -344,6 +344,8 @@ pub struct CorrentApp {
     pub creator: Option<creator::CreatorState>,
     pub import: Option<import_dialog::ImportDialog>,
     pub when_done: when_done::WhenDoneState,
+    /// Newest crash report while the engine is down (looked up once).
+    engine_report: Option<Option<std::path::PathBuf>>,
     /// Mica spike (B5b, debug only): translucent backgrounds over the DWM backdrop.
     mica: bool,
     pub main_view: feeds::MainView,
@@ -463,6 +465,7 @@ impl CorrentApp {
             creator: None,
             import: None,
             when_done: Default::default(),
+            engine_report: None,
             mica: false,
             main_view: Default::default(),
             feeds: Default::default(),
@@ -534,13 +537,19 @@ impl CorrentApp {
     }
 
     pub fn import_backup(&mut self, src: std::path::PathBuf) {
-        match crate::backup::stage_import(&self.paths, &src) {
-            Ok(parts) => self.data_notes.push(t!(
-                "The backup ({parts}) will be restored the next time Corrent starts. Quit and reopen Corrent to finish.",
-                parts = parts.join(", ")
-            )),
-            Err(e) => self.toasts.push(ToastKind::Error, t!("Can't restore: {e}", e = format!("{e:#}"))),
-        }
+        // Unpacking a large backup takes a moment: off the UI thread.
+        let (paths, tx, ctx) = (self.paths.clone(), self.ui_events_tx.clone(), self.ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let ev = match crate::backup::stage_import(&paths, &src) {
+                Ok(parts) => EngineEvent::DataWarning(t!(
+                    "The backup ({parts}) will be restored the next time Corrent starts. Quit and reopen Corrent to finish.",
+                    parts = parts.join(", ")
+                )),
+                Err(e) => EngineEvent::Toast(ToastKind::Error, t!("Can't restore: {e}", e = format!("{e:#}"))),
+            };
+            let _ = tx.send(ev);
+            ctx.request_repaint();
+        });
     }
 
     pub fn with_previous_run(mut self, p: crate::crash::PreviousRun) -> Self {
@@ -551,6 +560,7 @@ impl CorrentApp {
     /// Shown when the engine task stopped unexpectedly; offers a restart.
     fn engine_banner(&mut self, ui: &mut Ui, p: &Palette) {
         if self.engine.is_alive() || self.quitting {
+            self.engine_report = None;
             return;
         }
         egui::Frame::new()
@@ -567,10 +577,10 @@ impl CorrentApp {
                             egui::RichText::new(t!("The torrent engine stopped unexpectedly")).strong().color(p.text),
                         );
                         ui.label(
-                            egui::RichText::new(
+                            egui::RichText::new(t!(
                                 "A crash report was saved. Restart the engine to continue; actions you take now are \
-                                 applied after the restart.",
-                            )
+                                 applied after the restart."
+                            ))
                             .small()
                             .color(p.text_dim),
                         );
@@ -580,7 +590,12 @@ impl CorrentApp {
                             self.engine.restart(self.settings.clone());
                             crate::crash::dismiss(&self.paths.log_dir());
                         }
-                        if let Some(r) = crate::crash::reports(&self.paths.log_dir()).first().cloned()
+                        // Look the report up once per outage, not every frame.
+                        let report = self
+                            .engine_report
+                            .get_or_insert_with(|| crate::crash::reports(&self.paths.log_dir()).first().cloned())
+                            .clone();
+                        if let Some(r) = report
                             && crate::ui::widgets::secondary_button(ui, t!("View report")).clicked()
                         {
                             open_path(&r);

@@ -65,7 +65,8 @@ pub fn reports(log_dir: &Path) -> Vec<PathBuf> {
         })
         .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
         .collect();
-    v.sort_by_key(|x| std::cmp::Reverse(x.0));
+    // Newest first; report names carry a timestamp, which breaks ties on coarse-mtime filesystems.
+    v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     v.into_iter().map(|(_, p)| p).collect()
 }
 
@@ -123,8 +124,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("corrent-crash-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!start(&dir).unclean);
-        // Simulated crash: marker left behind plus a report.
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        // Simulated crash: marker left behind plus a report (written after it, so mtime >= marker's).
         std::fs::write(dir.join("crash-1.txt"), "x").unwrap();
         let prev = start(&dir);
         assert!(prev.unclean);
@@ -145,7 +145,6 @@ mod more_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("crash-1.txt"), "a").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(30));
         std::fs::write(dir.join("crash-2.txt"), "b").unwrap();
         std::fs::write(dir.join("corrent.log"), "c").unwrap();
         let r = reports(&dir);

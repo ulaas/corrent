@@ -2140,8 +2140,8 @@ async fn readd(
     drop(h);
     // Keep a copy of the metainfo until the torrent is safely back in the session.
     let backup = backup_dir.join(format!("{}.torrent", hash.to_hex()));
-    let _ = std::fs::create_dir_all(&backup_dir);
-    let _ = std::fs::write(&backup, &bytes);
+    std::fs::create_dir_all(&backup_dir).with_context(|| format!("creating {}", backup_dir.display()))?;
+    crate::util::write_atomic(&backup, &bytes).context("saving a copy of the torrent before re-adding it")?;
     sess.delete(TorrentIdOrHash::Id(id), false).await?;
 
     let mut move_err = None;
