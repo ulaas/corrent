@@ -40,6 +40,9 @@ impl Paths {
     pub fn dht_file(&self) -> PathBuf {
         self.data_dir.join("dht.json")
     }
+    pub fn rss_file(&self) -> PathBuf {
+        self.data_dir.join("rss.json")
+    }
     pub fn log_dir(&self) -> PathBuf {
         self.data_dir.join("logs")
     }
@@ -71,6 +74,7 @@ pub struct Settings {
     pub queue: Queue,
     pub seeding: Seeding,
     pub watch: Vec<WatchFolder>,
+    pub rss: crate::rss::RssSettings,
     pub appearance: Appearance,
     pub advanced: Advanced,
 }
@@ -539,6 +543,7 @@ impl Settings {
         section!("queue", queue);
         section!("seeding", seeding);
         section!("watch", watch);
+        section!("rss", rss);
         section!("appearance", appearance);
         section!("advanced", advanced);
         (s, lost)

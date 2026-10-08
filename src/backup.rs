@@ -11,12 +11,12 @@ const RESTORE_DIR: &str = ".restore";
 const RESTORE_TMP: &str = ".restore.tmp";
 /// Written last when staging; a staged restore without it is ignored.
 const COMPLETE: &str = ".complete";
-const COMPONENTS: [&str; 4] = ["settings.toml", "store.json", "session", "torrents"];
+const COMPONENTS: [&str; 5] = ["settings.toml", "store.json", "rss.json", "session", "torrents"];
 
 /// Files and folders that make up a profile, relative to the data dir.
 fn entries(paths: &Paths) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for f in ["settings.toml", "store.json"] {
+    for f in ["settings.toml", "store.json", "rss.json"] {
         let p = paths.data_dir.join(f);
         if p.is_file() {
             out.push(PathBuf::from(f));
@@ -79,6 +79,7 @@ pub fn stage_import(paths: &Paths, src: &Path) -> anyhow::Result<Vec<&'static st
             let comps = rel.components().count();
             let allowed = rel == Path::new("settings.toml")
                 || rel == Path::new("store.json")
+                || rel == Path::new("rss.json")
                 || ((rel.starts_with("session") || rel.starts_with("torrents")) && comps == 2);
             if !allowed || f.is_dir() {
                 continue;

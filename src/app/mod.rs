@@ -7,6 +7,7 @@ mod details;
 mod dialogs;
 mod dnd;
 mod extras;
+mod feeds;
 pub mod icon;
 mod integration_ui;
 pub mod log;
@@ -331,6 +332,8 @@ pub struct CorrentApp {
     pub free_cache: Option<(String, std::time::Instant, Option<u64>)>,
     pub batch: Option<batch::BatchDialog>,
     pub creator: Option<creator::CreatorState>,
+    pub main_view: feeds::MainView,
+    pub feeds: feeds::FeedsUi,
     row_first_seen: std::collections::HashMap<InfoHash, std::time::Instant>,
     rows_seen_once: bool,
     /// Windows 11 draws a native rounded border, so ours is skipped.
@@ -437,6 +440,8 @@ impl CorrentApp {
             free_cache: None,
             batch: None,
             creator: None,
+            main_view: Default::default(),
+            feeds: Default::default(),
             row_first_seen: Default::default(),
             rows_seen_once: false,
             native_frame,
@@ -870,6 +875,11 @@ impl CorrentApp {
                 "magnet" => self.open_magnet_dialog(),
                 "about" => self.extras.about = true,
                 "creator" => self.open_creator(),
+                "feeds" => self.main_view = feeds::MainView::Feeds,
+                "rules" => {
+                    self.main_view = feeds::MainView::Feeds;
+                    self.feeds.rules = Some(feeds::RulesEditor { rules: self.settings.rss.rules.clone(), selected: 0 });
+                }
                 "log" => self.extras.log = true,
                 "stats" => self.extras.stats = true,
                 "remove" | "remove-undo" => {
@@ -924,14 +934,17 @@ impl CorrentApp {
         self.prefs.show_sidebar = show_sidebar;
 
         self.sync_detail_target();
-        let mut show_details = self.prefs.show_details;
+        let torrents_view = self.main_view == feeds::MainView::Torrents;
+        let mut show_details = self.prefs.show_details && torrents_view;
         egui::Panel::bottom("details")
             .resizable(true)
             .default_size(280.0)
             .size_range(160.0..=700.0)
             .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin { left: 14, right: 14, top: 6, bottom: 8 }))
             .show_collapsible(ui, &mut show_details, |ui| self.details_panel(ui, &p));
-        self.prefs.show_details = show_details;
+        if torrents_view {
+            self.prefs.show_details = show_details;
+        }
 
         egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg0).inner_margin(egui::Margin::same(0))).show(
             ui,
@@ -940,7 +953,10 @@ impl CorrentApp {
                 self.crash_banner(ui, &p);
                 self.data_banner(ui, &p);
                 self.handler_banner(ui, &p);
-                self.torrent_table(ui, &p);
+                match self.main_view {
+                    feeds::MainView::Torrents => self.torrent_table(ui, &p),
+                    feeds::MainView::Feeds => self.feeds_view(ui, &p),
+                }
             },
         );
 
@@ -949,6 +965,7 @@ impl CorrentApp {
         self.extra_windows(&ctx, &p);
         self.onboarding(&ctx, &p);
         self.creator_dialog(&ctx, &p);
+        self.rules_dialog(&ctx, &p);
         self.batch_dialog(&ctx, &p);
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);

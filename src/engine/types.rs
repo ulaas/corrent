@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// 20-byte BitTorrent v1 info hash, the stable identity of a torrent across restarts.
@@ -224,6 +225,7 @@ pub struct Snapshot {
     pub warning: Option<String>,
     /// Recently removed torrents that can still be restored (hash, name).
     pub undoable: Vec<(InfoHash, String)>,
+    pub rss: Arc<crate::rss::RssView>,
 }
 
 /// Where a torrent to be added comes from.

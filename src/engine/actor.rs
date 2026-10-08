@@ -29,6 +29,7 @@ enum Internal {
     RestoreReport(Vec<super::restore::FailedRestore>),
     UndoFinished { hash: InfoHash, meta: Box<crate::store::TorrentMeta>, result: Result<(), String> },
     RestoreRetried { hash: InfoHash, result: Result<(), String>, quiet: bool },
+    RssFetched { url: String, result: Result<crate::rss::ParsedFeed, String> },
 }
 
 /// What is needed to re-add a torrent that was just removed (Undo).
@@ -115,6 +116,8 @@ pub struct Actor {
     restore_checked: bool,
     low_space_warned: bool,
     stream: Option<Arc<super::stream::StreamServer>>,
+    rss: crate::rss::Rss,
+    rss_client: Option<(Option<String>, reqwest::Client)>,
 }
 
 impl Actor {
@@ -128,6 +131,7 @@ impl Actor {
     ) -> Self {
         let (internal_tx, internal_rx) = mpsc::unbounded_channel();
         let store = Store::load(paths.store_file());
+        let rss = crate::rss::Rss::load(paths.rss_file());
         let alt = settings.speed.alt_enabled;
         Actor {
             paths,
@@ -175,6 +179,8 @@ impl Actor {
             restore_checked: false,
             low_space_warned: false,
             stream: None,
+            rss,
+            rss_client: None,
         }
     }
 
@@ -567,6 +573,16 @@ impl Actor {
                 }
             }
             EngineCommand::ApplySettings(new) => {
+                if new.rss != self.settings.rss {
+                    self.rss.settings_changed(&new.rss);
+                    let rules_changed = new.rss.rules != self.settings.rss.rules
+                        || new.rss.auto_download != self.settings.rss.auto_download;
+                    if rules_changed {
+                        for d in self.rss.apply_rules(&new.rss) {
+                            self.rss_add(d, &new);
+                        }
+                    }
+                }
                 let restart = self.settings.requires_restart(&new);
                 if restart && !self.busy.is_empty() {
                     // Tasks hold the current session; restarting under them could corrupt its state.
@@ -599,6 +615,8 @@ impl Actor {
                     self.apply_rate_limits();
                 }
             }
+            EngineCommand::RssRefresh(url) => self.rss.refresh_now(url.as_deref()),
+            EngineCommand::RssMarkDownloaded(guid) => self.rss.mark_downloaded(guid, &self.settings.rss),
             EngineCommand::SetAltSpeed(on) => {
                 self.alt = on;
                 self.apply_rate_limits();
@@ -607,6 +625,60 @@ impl Actor {
             #[cfg(debug_assertions)]
             EngineCommand::DevPanic => panic!("CORRENT_DEV_PANIC=engine"),
         }
+    }
+
+    /// Start fetching feeds that are due.
+    fn poll_feeds(&mut self) {
+        if self.settings.rss.feeds.is_empty() {
+            return;
+        }
+        let due = self.rss.due(&self.settings.rss);
+        if due.is_empty() {
+            return;
+        }
+        let proxy = self.settings.connection.proxy_url();
+        if self.rss_client.as_ref().is_none_or(|(p, _)| *p != proxy) {
+            self.rss_client = Some((proxy.clone(), crate::rss::feed::client(proxy)));
+        }
+        let client = self.rss_client.as_ref().map(|(_, c)| c.clone()).expect("client was just set");
+        for url in due {
+            let (tx, client, ctx) = (self.internal_tx.clone(), client.clone(), self.ctx.clone());
+            tokio::spawn(async move {
+                let result = crate::rss::feed::fetch(&client, &url).await;
+                let _ = tx.send(Internal::RssFetched { url, result });
+                ctx.request_repaint();
+            });
+        }
+        self.publish();
+    }
+
+    /// Add an article chosen by a download rule.
+    fn rss_add(&mut self, d: crate::rss::Download, settings: &Settings) {
+        let source = if d.link.starts_with("magnet:") { AddSource::Magnet(d.link) } else { AddSource::Url(d.link) };
+        let category = d.rule.category.clone().filter(|c| !c.is_empty());
+        let save_path = d
+            .rule
+            .save_path
+            .clone()
+            .filter(|p| !p.as_os_str().is_empty())
+            .or_else(|| {
+                category.as_ref().and_then(|c| self.store.data.categories.get(c)).and_then(|c| c.save_path.clone())
+            })
+            .unwrap_or_else(|| settings.downloads.save_path.clone());
+        tracing::info!("rss rule {:?}: adding {:?}", d.rule.name, d.title);
+        self.toast(ToastKind::Info, format!("Feed rule “{}” added “{}”", d.rule.name, d.title));
+        self.start_add(Box::new(AddRequest {
+            source,
+            torrent_bytes: None,
+            save_path,
+            create_subfolder: settings.downloads.create_subfolder,
+            category,
+            tags: vec!["rss".into()],
+            paused: d.rule.start_paused,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+        }));
     }
 
     fn register_tags(&mut self, tags: &[String]) {
@@ -892,6 +964,12 @@ impl Actor {
 
     fn handle_internal(&mut self, msg: Internal) {
         match msg {
+            Internal::RssFetched { url, result } => {
+                let settings = self.settings.clone();
+                for d in self.rss.fetched(&url, result, &settings.rss) {
+                    self.rss_add(d, &settings);
+                }
+            }
             Internal::PreviewFinished { req } => {
                 self.previews.remove(&req);
             }
@@ -1038,6 +1116,7 @@ impl Actor {
         self.tick_count += 1;
 
         self.run_schedule();
+        self.poll_feeds();
         if self.tick_count % 20 == 5 {
             self.undo.retain(|_, e| e.at.elapsed() <= UNDO_WINDOW);
         }
@@ -1193,6 +1272,7 @@ impl Actor {
             all_time_uploaded: self.store.data.stats.all_time_uploaded,
             free_space: self.free_space,
             warning: self.warning.clone(),
+            rss: self.rss.view(),
             undoable: self
                 .undo
                 .iter()
@@ -1491,6 +1571,7 @@ impl Actor {
         snap.tags = self.store.data.tags.clone();
         snap.session.alt_speed = self.alt;
         snap.warning = self.warning.clone();
+        snap.rss = self.rss.view();
         for t in &mut snap.torrents {
             if let Some(m) = self.store.get(&t.hash) {
                 t.category = m.category.clone();

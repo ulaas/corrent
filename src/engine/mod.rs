@@ -111,6 +111,10 @@ pub enum EngineCommand {
     CancelPreview(u64),
     /// Create a .torrent from a file/folder (and optionally seed it).
     CreateTorrent(Box<creator::CreateRequest>),
+    /// Fetch one feed (or all) now.
+    RssRefresh(Option<String>),
+    /// An article was added by hand: rules skip it from now on.
+    RssMarkDownloaded(String),
     /// Re-add torrents removed (without data) in the last two minutes.
     UndoRemove(Vec<InfoHash>),
     /// Abort an add that is still resolving metadata (identified by its placeholder row hash).

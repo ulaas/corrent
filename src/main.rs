@@ -7,6 +7,7 @@ mod crash;
 mod engine;
 mod integration;
 mod migrate;
+mod rss;
 mod store;
 mod ui;
 mod util;

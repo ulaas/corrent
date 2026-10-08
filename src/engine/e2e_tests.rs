@@ -455,3 +455,99 @@ async fn restart_does_not_repeat_completion() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Serve an RSS feed and the .torrent it links to; counts feed requests.
+async fn feed_server(torrent: Vec<u8>) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (b, h) = (base.clone(), hits.clone());
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut c, _)) = listener.accept().await else { continue };
+            let (b, h, torrent) = (b.clone(), h.clone(), torrent.clone());
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let n = c.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let (ctype, body) = if req.starts_with("GET /feed") {
+                    h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let xml = format!(
+                        r#"<?xml version="1.0"?><rss version="2.0"><channel><title>Test feed</title>
+<item><title>Data S01E01 1080p</title><guid>data-1</guid><enclosure url="{b}/data.torrent" type="application/x-bittorrent"/></item>
+<item><title>Something else</title><guid>other</guid><enclosure url="{b}/other.torrent" type="application/x-bittorrent"/></item>
+</channel></rss>"#
+                    );
+                    ("application/rss+xml", xml.into_bytes())
+                } else {
+                    ("application/x-bittorrent", torrent)
+                };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = c.write_all(head.as_bytes()).await;
+                let _ = c.write_all(&body).await;
+            });
+        }
+    });
+    (base, hits)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rss_rule_adds_matching_item_exactly_once() {
+    use std::sync::atomic::Ordering;
+    let dir = temp_dir("rss");
+    let s = seeder(&dir).await;
+    let (base, hits) = feed_server(s.bytes.clone()).await;
+    let mut cfg = settings(&dir);
+    cfg.rss.feeds.push(crate::rss::FeedConfig { url: format!("{base}/feed"), ..Default::default() });
+    cfg.rss.rules.push(crate::rss::RssRule {
+        name: "Data".into(),
+        must_contain: "data 1080p".into(),
+        category: Some("Shows".into()),
+        ..Default::default()
+    });
+    let l = start(&dir);
+    l.engine.send(EngineCommand::ApplySettings(Box::new(cfg.clone())));
+    let snap = wait_for(&l, "rule to add the torrent", 30, |sn| find(sn, s.hash).is_some()).await;
+    let t = find(&snap, s.hash).unwrap();
+    assert_eq!(t.category.as_deref(), Some("Shows"));
+    assert!(t.tags.contains(&"rss".to_string()));
+    assert_eq!(snap.torrents.iter().filter(|t| !t.pending).count(), 1, "only the matching item");
+    let feed = &snap.rss.feeds[0];
+    assert_eq!(feed.title, "Test feed");
+    assert!(feed.articles.iter().any(|a| a.downloaded && a.article.guid == "data-1"));
+
+    // Removed and refreshed: not added again.
+    l.engine.send(EngineCommand::Delete { hashes: vec![s.hash], with_data: false });
+    wait_for(&l, "removed", 20, |sn| find(sn, s.hash).is_none()).await;
+    let before = hits.load(Ordering::SeqCst);
+    l.engine.send(EngineCommand::RssRefresh(None));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while hits.load(Ordering::SeqCst) == before {
+        assert!(Instant::now() < deadline, "refresh did not fetch");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(find(&l.engine.snapshot(), s.hash).is_none(), "not re-added after a refresh");
+    stop(l).await;
+
+    // Restarted with the same settings: fetched again, still not re-added.
+    let (tx, events) = std::sync::mpsc::channel();
+    let paths = Paths { data_dir: dir.join("data"), portable: true };
+    let engine =
+        EngineHandle::start(&tokio::runtime::Handle::current(), paths.clone(), cfg, egui::Context::default(), tx);
+    let l = Leecher { engine, events, paths };
+    let before = hits.load(Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while hits.load(Ordering::SeqCst) == before {
+        assert!(Instant::now() < deadline, "feed not fetched after restart");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(find(&l.engine.snapshot(), s.hash).is_none(), "not re-added after a restart");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

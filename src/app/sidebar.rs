@@ -171,6 +171,7 @@ fn section(ui: &mut Ui, p: &Palette, title: &str, add: Option<&str>, collapsed: 
 impl CorrentApp {
     pub(super) fn sidebar(&mut self, ui: &mut Ui, p: &Palette) {
         self.counts.update(&self.snap);
+        let tv = self.main_view == super::feeds::MainView::Torrents;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             let total = self.snap.torrents.len();
@@ -194,8 +195,11 @@ impl CorrentApp {
                         StatusFilter::Downloading => p.accent,
                         _ => p.text_dim,
                     };
-                    if row(ui, p, f.icon(), color, f.label(), Some(count), self.prefs.status_filter == *f).clicked() {
+                    if row(ui, p, f.icon(), color, f.label(), Some(count), tv && self.prefs.status_filter == *f)
+                        .clicked()
+                    {
                         self.prefs.status_filter = *f;
+                        self.main_view = super::feeds::MainView::Torrents;
                     }
                 }
             }
@@ -213,11 +217,12 @@ impl CorrentApp {
                     p.text_dim,
                     "All",
                     Some(total),
-                    self.prefs.category_filter == GroupFilter::All,
+                    tv && self.prefs.category_filter == GroupFilter::All,
                 )
                 .clicked()
                 {
                     self.prefs.category_filter = GroupFilter::All;
+                    self.main_view = super::feeds::MainView::Torrents;
                 }
                 if row(
                     ui,
@@ -226,11 +231,12 @@ impl CorrentApp {
                     p.text_dim,
                     "Uncategorized",
                     Some(self.counts.uncategorized),
-                    self.prefs.category_filter == GroupFilter::None,
+                    tv && self.prefs.category_filter == GroupFilter::None,
                 )
                 .clicked()
                 {
                     self.prefs.category_filter = GroupFilter::None;
+                    self.main_view = super::feeds::MainView::Torrents;
                 }
                 let cats: Vec<(String, usize)> = self.counts.categories.iter().map(|(k, v)| (k.clone(), *v)).collect();
                 if cats.is_empty() {
@@ -242,9 +248,10 @@ impl CorrentApp {
                     ui.horizontal(|ui| {
                         ui.add_space(depth as f32 * 14.0);
                         let sel = self.prefs.category_filter == GroupFilter::Named(c.clone());
-                        let r = row(ui, p, icons::FOLDER_SIMPLE, p.warn, &label, Some(n), sel);
+                        let r = row(ui, p, icons::FOLDER_SIMPLE, p.warn, &label, Some(n), tv && sel);
                         if r.clicked() {
                             self.prefs.category_filter = GroupFilter::Named(c.clone());
+                            self.main_view = super::feeds::MainView::Torrents;
                         }
                         r.context_menu(|ui| {
                             if ui.button(format!("{}  Edit…", icons::PENCIL_SIMPLE)).clicked() {
@@ -275,10 +282,19 @@ impl CorrentApp {
             }
             set_collapsed(&mut self.prefs.collapsed, "tags", c);
             if !c {
-                if row(ui, p, icons::TAG, p.text_dim, "All", Some(total), self.prefs.tag_filter == GroupFilter::All)
-                    .clicked()
+                if row(
+                    ui,
+                    p,
+                    icons::TAG,
+                    p.text_dim,
+                    "All",
+                    Some(total),
+                    tv && self.prefs.tag_filter == GroupFilter::All,
+                )
+                .clicked()
                 {
                     self.prefs.tag_filter = GroupFilter::All;
+                    self.main_view = super::feeds::MainView::Torrents;
                 }
                 if row(
                     ui,
@@ -287,11 +303,12 @@ impl CorrentApp {
                     p.text_dim,
                     "Untagged",
                     Some(self.counts.untagged),
-                    self.prefs.tag_filter == GroupFilter::None,
+                    tv && self.prefs.tag_filter == GroupFilter::None,
                 )
                 .clicked()
                 {
                     self.prefs.tag_filter = GroupFilter::None;
+                    self.main_view = super::feeds::MainView::Torrents;
                 }
                 let tags: Vec<(String, usize)> = self.counts.tags.iter().map(|(k, v)| (k.clone(), *v)).collect();
                 if tags.is_empty() {
@@ -299,9 +316,10 @@ impl CorrentApp {
                 }
                 for (tag, n) in tags {
                     let sel = self.prefs.tag_filter == GroupFilter::Named(tag.clone());
-                    let r = row(ui, p, icons::HASH, p.queued, &tag, Some(n), sel);
+                    let r = row(ui, p, icons::HASH, p.queued, &tag, Some(n), tv && sel);
                     if r.clicked() {
                         self.prefs.tag_filter = GroupFilter::Named(tag.clone());
+                        self.main_view = super::feeds::MainView::Torrents;
                     }
                     r.context_menu(|ui| {
                         if ui.button(format!("{}  Remove tag", icons::TRASH)).clicked() {
@@ -312,6 +330,27 @@ impl CorrentApp {
                             }
                         }
                     });
+                }
+            }
+            ui.add_space(10.0);
+            let mut c = self.prefs.collapsed.contains(&"feeds".to_string());
+            section(ui, p, "Feeds", None, &mut c);
+            set_collapsed(&mut self.prefs.collapsed, "feeds", c);
+            if !c {
+                let rss = self.snap.rss.clone();
+                let errors = rss.feeds.iter().filter(|f| f.error.is_some()).count();
+                let (icon, color) = if errors > 0 { (icons::WARNING_CIRCLE, p.error) } else { (icons::RSS, p.accent) };
+                let r = row(ui, p, icon, color, "RSS feeds", Some(rss.feeds.len()), !tv);
+                let r = if errors > 0 {
+                    r.on_hover_text(format!(
+                        "{errors} feed{} couldn't be refreshed",
+                        if errors == 1 { "" } else { "s" }
+                    ))
+                } else {
+                    r.on_hover_text("Follow feeds and download new items automatically")
+                };
+                if r.clicked() {
+                    self.main_view = super::feeds::MainView::Feeds;
                 }
             }
             ui.add_space(12.0);

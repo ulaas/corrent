@@ -22,12 +22,13 @@ pub enum Page {
     BitTorrent,
     Queue,
     Seeding,
+    Feeds,
     Appearance,
     Advanced,
 }
 
 impl Page {
-    const ALL: [Page; 9] = [
+    const ALL: [Page; 10] = [
         Page::Behavior,
         Page::Downloads,
         Page::Connection,
@@ -35,6 +36,7 @@ impl Page {
         Page::BitTorrent,
         Page::Queue,
         Page::Seeding,
+        Page::Feeds,
         Page::Appearance,
         Page::Advanced,
     ];
@@ -48,6 +50,7 @@ impl Page {
             Page::BitTorrent => "BitTorrent",
             Page::Queue => "Queue",
             Page::Seeding => "Seeding",
+            Page::Feeds => "Feeds",
             Page::Appearance => "Appearance",
             Page::Advanced => "Advanced",
         }
@@ -62,6 +65,7 @@ impl Page {
             Page::BitTorrent => icons::SHARE_NETWORK,
             Page::Queue => icons::LIST_NUMBERS,
             Page::Seeding => icons::PLANT,
+            Page::Feeds => icons::RSS,
             Page::Appearance => icons::PALETTE,
             Page::Advanced => icons::WRENCH,
         }
@@ -77,6 +81,10 @@ impl Page {
             Page::BitTorrent => a.bittorrent != b.bittorrent,
             Page::Queue => a.queue != b.queue,
             Page::Seeding => a.seeding != b.seeding,
+            Page::Feeds => {
+                (a.rss.auto_download, a.rss.refresh_minutes, a.rss.max_articles)
+                    != (b.rss.auto_download, b.rss.refresh_minutes, b.rss.max_articles)
+            }
             Page::Appearance => a.appearance != b.appearance,
             Page::Advanced => a.advanced != b.advanced,
         }
@@ -98,6 +106,7 @@ impl Page {
             Page::BitTorrent => "dht lsd local peer discovery pex trackers default trackers fastresume resume",
             Page::Queue => "queue active downloads uploads total slow torrents",
             Page::Seeding => "ratio seeding time inactive limit pause remove share",
+            Page::Feeds => "rss atom feeds refresh interval articles auto download rules automatic episodes",
             Page::Appearance => {
                 "theme dark light system accent color colour compact rows zoom scale units animations sparklines progress"
             }
@@ -217,6 +226,9 @@ impl CorrentApp {
         new.behavior.register_torrent_handler = b.register_torrent_handler;
         new.behavior.keep_handler_registration = b.keep_handler_registration;
         new.behavior.handler_prompt_dismissed = b.handler_prompt_dismissed;
+        // Feeds and rules are edited in the Feeds view, possibly while this window is open.
+        new.rss.feeds = self.settings.rss.feeds.clone();
+        new.rss.rules = self.settings.rss.rules.clone();
         if new == self.settings {
             return;
         }
@@ -1008,6 +1020,37 @@ impl CorrentApp {
                                 ui.selectable_value(&mut s.appearance.speed_units, SpeedUnits::Bits, "kbit/s, Mbit/s");
                             });
                     });
+                });
+            }
+            Page::Feeds => {
+                card(p).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    heading(ui, p, "RSS feeds");
+                    ui.label(
+                        RichText::new("Add feeds and download rules from “RSS feeds” in the sidebar.")
+                            .small()
+                            .color(p.text_dim),
+                    );
+                    ui.add_space(6.0);
+                    toggle(
+                        ui,
+                        p,
+                        "Download automatically",
+                        "Add new articles that match a download rule.",
+                        &mut s.rss.auto_download,
+                    );
+                    row(ui, p, "Refresh feeds every", "At least 5 minutes, to be kind to the servers.", |ui| {
+                        ui.add(egui::DragValue::new(&mut s.rss.refresh_minutes).range(5..=1440).suffix(" min"));
+                    });
+                    row(
+                        ui,
+                        p,
+                        "Articles kept per feed",
+                        "Older ones are forgotten (their download status is kept).",
+                        |ui| {
+                            ui.add(egui::DragValue::new(&mut s.rss.max_articles).range(10..=5000));
+                        },
+                    );
                 });
             }
             Page::Advanced => {

@@ -28,6 +28,7 @@ pub enum PickTarget {
     OnboardingFolder,
     CreatorSource,
     CreatorOutput,
+    RssRuleFolder,
 }
 
 type PickResult = (u64, PickTarget, Vec<PathBuf>);
@@ -162,6 +163,13 @@ impl CorrentApp {
                 PickTarget::CreatorSource => {
                     if let Some(c) = &mut self.creator {
                         c.set_source(first);
+                    }
+                }
+                PickTarget::RssRuleFolder => {
+                    if let Some(ed) = &mut self.feeds.rules
+                        && let Some(r) = ed.rules.get_mut(ed.selected)
+                    {
+                        r.save_path = Some(first);
                     }
                 }
                 PickTarget::CreatorOutput => {
