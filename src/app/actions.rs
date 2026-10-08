@@ -199,6 +199,9 @@ impl CorrentApp {
             self.toasts.push(crate::engine::ToastKind::Error, t!("Streaming isn't available right now."));
             return;
         };
+        // A player stopped from the Streaming window is refused for a few seconds; this is the
+        // user asking for it again.
+        self.engine.send(crate::engine::EngineCommand::AllowStream { hash, file: idx });
         let title = name.rsplit(['/', '\\']).next().unwrap_or(name).to_string();
         if let Err(e) = crate::engine::stream::open_in_player(&self.paths.data_dir, &title, &url) {
             self.toasts.push(crate::engine::ToastKind::Error, t!("Couldn't open a media player: {e}", e = e));

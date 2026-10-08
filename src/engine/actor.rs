@@ -621,6 +621,11 @@ impl Actor {
                     tracing::info!("stream {id} stopped by the user");
                 }
             }
+            EngineCommand::AllowStream { hash, file } => {
+                if let Some(st) = &self.stream {
+                    st.unblock(hash, file);
+                }
+            }
             EngineCommand::ReloadIpFilter => {
                 if self.busy.is_empty() {
                     self.stop_session().await;

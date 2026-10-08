@@ -55,10 +55,18 @@ struct Key {
 
 /// One open HTTP connection that is sending a body.
 struct Conn {
+    start: u64,
     position: AtomicU64,
     phase: AtomicU8,
-    /// Milliseconds since the server epoch when `phase` last changed.
+    /// Milliseconds since the server epoch when `phase` last changed or, while writing, when
+    /// the player last took data.
     phase_since: AtomicU64,
+}
+
+impl Conn {
+    fn sent(&self) -> u64 {
+        self.position.load(Ordering::Relaxed).saturating_sub(self.start)
+    }
 }
 
 struct StreamSession {
@@ -71,6 +79,8 @@ struct StreamSession {
     served: Arc<AtomicU64>,
     conns: Vec<Arc<Conn>>,
     last_position: u64,
+    /// Bytes sent by the connection `last_position` came from.
+    last_sent: u64,
     requests: u32,
     refused: u32,
     stopped_at: Option<Instant>,
@@ -122,9 +132,10 @@ fn derive_state(stopped: bool, conns: &[(u8, Duration)]) -> StreamState {
 impl Registry {
     fn prune(&mut self, now: Instant) {
         self.sessions.retain(|s| !s.conns.is_empty() || now.duration_since(s.last_seen) < LINGER);
-        // Many different clients: forget the oldest ended ones first.
+        // Many different clients: forget the oldest ended ones first (but keep Stop blocks).
         while self.sessions.len() > MAX_SESSIONS {
-            let Some(i) = self.sessions.iter().position(|s| s.conns.is_empty()) else { break };
+            let blocked = |s: &StreamSession| s.stopped_at.is_some_and(|at| now.duration_since(at) < STOP_BLOCK);
+            let Some(i) = self.sessions.iter().position(|s| s.conns.is_empty() && !blocked(s)) else { break };
             self.sessions.remove(i);
         }
     }
@@ -164,12 +175,18 @@ impl Registry {
             served: Arc::new(AtomicU64::new(0)),
             conns: Vec::new(),
             last_position: 0,
+            last_sent: 0,
             requests: 0,
             refused: 0,
             stopped_at: None,
             cancel: tokio::sync::watch::channel(false).0,
         });
         self.sessions.len() - 1
+    }
+
+    /// Lift a Stop block for a file (the user asked to play it again).
+    fn unblock(&mut self, hash: InfoHash, file: usize) {
+        self.sessions.retain(|s| !(s.stopped_at.is_some() && s.key.hash == hash && s.key.file == file));
     }
 
     fn stop(&mut self, id: u64, now: Instant) -> bool {
@@ -194,9 +211,15 @@ impl Registry {
                         (c.phase.load(Ordering::Relaxed), Duration::from_millis(now_ms.saturating_sub(since)))
                     })
                     .collect();
-                // The furthest-along open connection is what's playing (others are probes).
-                let position =
-                    s.conns.iter().map(|c| c.position.load(Ordering::Relaxed)).max().unwrap_or(s.last_position);
+                // The connection that has sent the most is what's playing; others are probes
+                // (players read the end of a file for its index, for example).
+                let position = s
+                    .conns
+                    .iter()
+                    .max_by_key(|c| c.sent())
+                    .filter(|c| c.sent() >= s.last_sent)
+                    .map(|c| c.position.load(Ordering::Relaxed))
+                    .unwrap_or(s.last_position);
                 StreamInfo {
                     id: s.id,
                     hash: s.key.hash,
@@ -231,7 +254,11 @@ impl Drop for ConnGuard<'_> {
         let now = Instant::now();
         if let Some(s) = reg.sessions.iter_mut().find(|s| s.id == self.id) {
             s.conns.retain(|c| !Arc::ptr_eq(c, &self.conn));
-            s.last_position = self.conn.position.load(Ordering::Relaxed);
+            let sent = self.conn.sent();
+            if sent >= s.last_sent {
+                s.last_sent = sent;
+                s.last_position = self.conn.position.load(Ordering::Relaxed);
+            }
             s.last_seen = now;
         }
     }
@@ -284,8 +311,7 @@ pub fn player_name(ua: &str) -> String {
         }
     }
     // Unknown: the first product token, e.g. "MyPlayer/1.2 (…)" → "MyPlayer/1.2".
-    let first: String =
-        ua.split_whitespace().next().unwrap_or("").chars().filter(|c| !c.is_control()).take(40).collect();
+    let first: String = ua.split_whitespace().next().unwrap_or("").chars().filter(|&c| printable(c)).take(40).collect();
     first
 }
 
@@ -384,6 +410,10 @@ impl StreamServer {
 
     /// Close a session's connections; the player is refused for a few seconds so it doesn't
     /// just reconnect.
+    pub fn unblock(&self, hash: InfoHash, file: usize) {
+        self.registry.lock().unwrap_or_else(|e| e.into_inner()).unblock(hash, file);
+    }
+
     pub fn stop(&self, id: u64) -> bool {
         self.registry.lock().unwrap_or_else(|e| e.into_inner()).stop(id, Instant::now())
     }
@@ -431,7 +461,7 @@ impl StreamServer {
         let body_len = if len == 0 { 0 } else { end - start + 1 };
         let key = Key { ip, user_agent: req.user_agent.clone().unwrap_or_default(), hash, file };
         let sending = !req.head && body_len > 0;
-        let permit = if sending { self.streams.clone().try_acquire_owned().ok() } else { None };
+        let mut permit = None;
         // Register the request with its session (and the connection, if it sends a body).
         let registered = {
             let mut reg = self.registry.lock().unwrap_or_else(|e| e.into_inner());
@@ -439,11 +469,16 @@ impl StreamServer {
                 None => None,
                 Some(s) => {
                     s.requests = s.requests.saturating_add(1);
+                    // Only after the Stop check, so a refused player doesn't hold a slot.
+                    if sending {
+                        permit = self.streams.clone().try_acquire_owned().ok();
+                    }
                     if sending && permit.is_none() {
                         s.refused = s.refused.saturating_add(1);
                         Some(None)
                     } else if sending {
                         let c = Arc::new(Conn {
+                            start,
                             position: AtomicU64::new(start),
                             phase: AtomicU8::new(PHASE_IDLE),
                             phase_since: AtomicU64::new(self.now_ms()),
@@ -472,22 +507,35 @@ impl StreamServer {
             headers.push_str(&format!("Content-Range: bytes {start}-{end}/{len}\r\n"));
         }
         headers.push_str("\r\n");
-        conn.write_all(headers.as_bytes()).await?;
         let Some((guard, served, mut cancel)) = guard else {
+            conn.write_all(headers.as_bytes()).await?;
             return Ok(());
         };
         let _permit = permit;
-        let mut stream = handle.stream(file).await?;
-        stream.seek(std::io::SeekFrom::Start(start)).await?;
-        let mut limited = stream.take(body_len);
         let c = &guard.conn;
         let set_phase = |ph: u8| {
             c.phase.store(ph, Ordering::Relaxed);
             c.phase_since.store(self.now_ms(), Ordering::Relaxed);
         };
-        // Copy by hand to track position and what the connection is waiting on.
+        // Opening the stream can wait for an I/O permit (e.g. during a recheck): that's buffering,
+        // and Stop must work there too.
+        set_phase(PHASE_READ);
+        let setup = async {
+            conn.write_all(headers.as_bytes()).await?;
+            let mut stream = handle.stream(file).await?;
+            stream.seek(std::io::SeekFrom::Start(start)).await?;
+            anyhow::Ok(stream)
+        };
+        let stream = tokio::select! {
+            r = setup => r?,
+            _ = cancel.wait_for(|stop| *stop) => return Ok(()),
+        };
+        let mut limited = stream.take(body_len);
+        // Copy by hand to track position and what the connection is waiting on. Writes go in
+        // small pieces so a slow (low-bitrate) player still shows progress, not "paused".
+        const PIECE: usize = 16 * 1024;
         let mut buf = vec![0u8; 64 * 1024];
-        loop {
+        'copy: loop {
             set_phase(PHASE_READ);
             let n = tokio::select! {
                 r = limited.read(&mut buf) => r?,
@@ -497,12 +545,15 @@ impl StreamServer {
                 break;
             }
             set_phase(PHASE_WRITE);
-            tokio::select! {
-                r = conn.write_all(&buf[..n]) => r?,
-                _ = cancel.wait_for(|stop| *stop) => break,
+            for piece in buf[..n].chunks(PIECE) {
+                tokio::select! {
+                    r = conn.write_all(piece) => r?,
+                    _ = cancel.wait_for(|stop| *stop) => break 'copy,
+                }
+                c.phase_since.store(self.now_ms(), Ordering::Relaxed);
+                c.position.fetch_add(piece.len() as u64, Ordering::Relaxed);
+                served.fetch_add(piece.len() as u64, Ordering::Relaxed);
             }
-            c.position.fetch_add(n as u64, Ordering::Relaxed);
-            served.fetch_add(n as u64, Ordering::Relaxed);
         }
         set_phase(PHASE_IDLE);
         conn.flush().await?;
@@ -556,11 +607,20 @@ fn parse_request(head: &str) -> Option<Request> {
             if k.eq_ignore_ascii_case("range") {
                 range = parse_range(v.trim());
             } else if k.eq_ignore_ascii_case("user-agent") {
-                user_agent = Some(v.trim().chars().filter(|c| !c.is_control()).take(200).collect());
+                user_agent = Some(v.trim().chars().filter(|&c| printable(c)).take(200).collect());
             }
         }
     }
     Some(Request { path, head: head_only, range, user_agent })
+}
+
+/// Not a control or invisible formatting character (bidi overrides could disguise a name).
+fn printable(c: char) -> bool {
+    !c.is_control()
+        && !matches!(
+            c,
+            '\u{00AD}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}'
+        )
 }
 
 /// `bytes=START-[END]` (single range only).
@@ -713,6 +773,56 @@ mod tests {
         let again = reg.session_for(&key, "a.mkv", 100, t0 + STOP_BLOCK + Duration::from_secs(1)).unwrap().id;
         assert_ne!(again, id, "a new session once the block expires");
         assert!(!reg.stop(9999, t0));
+
+        // Playing again from Corrent lifts the block at once.
+        let id = reg.session_for(&key, "a.mkv", 100, t0).unwrap().id;
+        reg.stop(id, t0);
+        reg.unblock(key.hash, key.file);
+        assert!(reg.session_for(&key, "a.mkv", 100, t0).is_some());
+    }
+
+    #[test]
+    fn position_follows_the_playing_connection_not_probes() {
+        let mut reg = Registry::default();
+        let t0 = Instant::now();
+        let key = Key { ip: "127.0.0.1".parse().unwrap(), user_agent: String::new(), hash: InfoHash([2; 20]), file: 0 };
+        let conn = |start: u64, sent: u64| {
+            Arc::new(Conn {
+                start,
+                position: AtomicU64::new(start + sent),
+                phase: AtomicU8::new(PHASE_READ),
+                phase_since: AtomicU64::new(0),
+            })
+        };
+        let s = reg.session_for(&key, "a.mkv", 1000, t0).unwrap();
+        s.conns.push(conn(100, 500)); // playing
+        s.conns.push(conn(990, 5)); // index probe at the end
+        assert_eq!(reg.infos(t0, t0)[0].position, 600);
+    }
+
+    #[test]
+    fn eviction_keeps_stop_blocks() {
+        let mut reg = Registry::default();
+        let t0 = Instant::now();
+        let key = |n: u8| Key {
+            ip: "127.0.0.1".parse().unwrap(),
+            user_agent: n.to_string(),
+            hash: InfoHash([3; 20]),
+            file: 0,
+        };
+        let id = reg.session_for(&key(0), "a", 1, t0).unwrap().id;
+        reg.stop(id, t0);
+        for n in 1..=40 {
+            reg.session_for(&key(n), "a", 1, t0);
+        }
+        assert!(reg.infos(t0, t0).len() <= MAX_SESSIONS);
+        assert!(reg.session_for(&key(0), "a", 1, t0).is_none(), "still blocked");
+    }
+
+    #[test]
+    fn invisible_characters_are_dropped_from_user_agents() {
+        let r = parse_request("GET / HTTP/1.1\r\nUser-Agent: VLC\u{202E}evil\u{200B}/1\r\n\r\n").unwrap();
+        assert_eq!(r.user_agent.as_deref(), Some("VLCevil/1"));
     }
 
     #[test]

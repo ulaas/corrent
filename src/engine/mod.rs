@@ -176,6 +176,11 @@ pub enum EngineCommand {
     ReloadIpFilter,
     /// Close a streaming session (its player gets an error).
     StopStream(u64),
+    /// The user plays this file again: lift a Stop block.
+    AllowStream {
+        hash: InfoHash,
+        file: usize,
+    },
     /// Drag & drop in the queue: put these before `before` (None = at the end).
     QueuePlace {
         hashes: Vec<InfoHash>,

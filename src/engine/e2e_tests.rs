@@ -163,7 +163,11 @@ fn complete(snap: &Snapshot, h: InfoHash) -> bool {
 
 async fn download(l: &Leecher, s: &Seeder, dir: &Path) -> TorrentView {
     add(l, s, dir);
-    let snap = wait_for(l, "download to complete", 60, |sn| complete(sn, s.hash)).await;
+    // A small loopback download can finish before the add is recorded (category, tags).
+    let snap = wait_for(l, "download to complete", 60, |sn| {
+        complete(sn, s.hash) && find(sn, s.hash).is_some_and(|t| t.category.is_some())
+    })
+    .await;
     find(&snap, s.hash).unwrap().clone()
 }
 
