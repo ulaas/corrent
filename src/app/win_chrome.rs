@@ -27,6 +27,48 @@ pub fn round_corners(cc: &eframe::CreationContext<'_>) -> bool {
     hr >= 0
 }
 
+/// Mica spike (roadmap B5b, debug builds only, `CORRENT_DEV_MICA=1`): ask DWM for the Mica
+/// backdrop and extend it into the client area. Needs a transparent window and clear color.
+#[cfg(all(windows, debug_assertions))]
+pub fn mica(cc: &eframe::CreationContext<'_>) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[repr(C)]
+    struct Margins {
+        left: i32,
+        right: i32,
+        top: i32,
+        bottom: i32,
+    }
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmSetWindowAttribute(
+            hwnd: *mut core::ffi::c_void,
+            attr: u32,
+            value: *const core::ffi::c_void,
+            size: u32,
+        ) -> i32;
+        fn DwmExtendFrameIntoClientArea(hwnd: *mut core::ffi::c_void, margins: *const Margins) -> i32;
+    }
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    const DWMWA_SYSTEMBACKDROP_TYPE: u32 = 38;
+    const DWMSBT_MAINWINDOW: u32 = 2; // Mica
+
+    let Ok(handle) = cc.window_handle() else { return false };
+    let RawWindowHandle::Win32(win) = handle.as_raw() else { return false };
+    let hwnd = win.hwnd.get() as *mut core::ffi::c_void;
+    let dark: u32 = 1;
+    let margins = Margins { left: -1, right: -1, top: -1, bottom: -1 };
+    // SAFETY: valid HWND owned by this process; values match the documented DWM types.
+    unsafe {
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&dark as *const u32).cast(), 4);
+        let a = DwmExtendFrameIntoClientArea(hwnd, &margins);
+        let b = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, (&DWMSBT_MAINWINDOW as *const u32).cast(), 4);
+        tracing::info!("mica spike: extend frame hr={a:#x}, backdrop hr={b:#x}");
+        a >= 0 && b >= 0
+    }
+}
+
 #[cfg(not(windows))]
 pub fn round_corners(_cc: &eframe::CreationContext<'_>) -> bool {
     false

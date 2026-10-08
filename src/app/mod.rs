@@ -344,6 +344,8 @@ pub struct CorrentApp {
     pub creator: Option<creator::CreatorState>,
     pub import: Option<import_dialog::ImportDialog>,
     pub when_done: when_done::WhenDoneState,
+    /// Mica spike (B5b, debug only): translucent backgrounds over the DWM backdrop.
+    mica: bool,
     pub main_view: feeds::MainView,
     pub feeds: feeds::FeedsUi,
     pub torznab: search_view::SearchUi,
@@ -385,6 +387,7 @@ impl CorrentApp {
             start_hidden,
             win_chrome::round_corners(cc),
         )
+        .with_mica_spike(cc)
         .init_integration()
         .with_tray(&cc.egui_ctx)
     }
@@ -460,6 +463,7 @@ impl CorrentApp {
             creator: None,
             import: None,
             when_done: Default::default(),
+            mica: false,
             main_view: Default::default(),
             feeds: Default::default(),
             torznab: Default::default(),
@@ -635,7 +639,21 @@ impl CorrentApp {
     }
 
     pub fn palette(&self, ctx: &Context) -> Palette {
-        theme::palette(ctx, self.appearance_preview.as_ref().unwrap_or(&self.settings.appearance))
+        let mut p = theme::palette(ctx, self.appearance_preview.as_ref().unwrap_or(&self.settings.appearance));
+        if self.mica {
+            p.bg0 = p.bg0.gamma_multiply(0.35);
+            p.bg1 = p.bg1.gamma_multiply(0.55);
+        }
+        p
+    }
+
+    #[allow(unused_variables)]
+    fn with_mica_spike(mut self, cc: &eframe::CreationContext<'_>) -> Self {
+        #[cfg(all(windows, debug_assertions))]
+        if std::env::var_os("CORRENT_DEV_MICA").is_some() {
+            self.mica = win_chrome::mica(cc);
+        }
+        self
     }
 
     pub fn save_settings(&mut self) {
@@ -857,6 +875,10 @@ impl CorrentApp {
 }
 
 impl eframe::App for CorrentApp {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        if self.mica { [0.0; 4] } else { visuals.panel_fill.to_normalized_gamma_f32() }
+    }
+
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
         if !self.frame_seen {

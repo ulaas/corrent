@@ -37,7 +37,7 @@ corrent --status | --register | --unregister | --write-icons <dir> | --help
 
 Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_TAB=general|files|peers|trackers|pieces|speed`,
-`CORRENT_DEV_OPEN=settings|remote|magnet|about|log|stats|creator|import|feeds|rules`, `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`.
+`CORRENT_DEV_OPEN=settings|remote|magnet|about|log|stats|creator|import|feeds|rules`, `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
 To pre-configure the test profile, write `target/debug/corrent-data/settings.toml`
 (e.g. `skip_add_dialog = true`, a scratch `save_path`).
 
@@ -100,9 +100,11 @@ search (M19), qBittorrent-compatible API (M20), 5k-torrent perf check + Activity
 drag-to-reorder queue (M21), palettes/high contrast/theme editor/accessibility (M22),
 per-torrent speed limits + IP filter (M23), per-file priorities + category limits (M24), import from
 qBittorrent/Transmission/Deluge, when-done actions, opt-in update checks (M25), packaging (M26:
-MSI/portable zip/winget, AppImage/Flatpak, dmg; release workflow — see docs/PACKAGING.md).
+MSI/portable zip/winget, AppImage/Flatpak, dmg; release workflow — see docs/PACKAGING.md), Turkish
+translation + language setting, web interface, Mica spike (no-go) (M27).
 Fable reviews of M1–M15 were addressed. Default save folder: `Downloads/Corrent`.
 
-Next steps: M27 in `docs/ROADMAP.md`.
+Next steps: the roadmap is implemented; next are real Linux/macOS runs (docs/PLATFORM-TESTING.md),
+upstreaming the librqbit patches (docs/upstream/) and a first tagged release. in `docs/ROADMAP.md`.
 
 Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.
