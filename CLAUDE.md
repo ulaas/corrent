@@ -43,7 +43,7 @@ To pre-configure the test profile, write `target/debug/corrent-data/settings.tom
 (e.g. `skip_add_dialog = true`, a scratch `save_path`).
 
 Linux: the whole crate cross-checks and cross-builds from Windows with Zig as C compiler/linker —
-`powershell -File scripts/cross/build-linux.ps1 [-CheckOnly] [-Release] [-Python <python with ziglang>]`
+`powershell -File scripts/cross/build-linux.ps1 [-CheckOnly | -Clippy] [-Release] [-Python <python with ziglang>]`
 (see the script header for the one-time setup). macOS: type-check macOS-only modules by including them
 via `#[path]` in a small scratch crate and running `cargo check --target aarch64-apple-darwin`.
 Nothing has run on real Linux/macOS yet — `docs/PLATFORM-TESTING.md` is the checklist for that.

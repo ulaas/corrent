@@ -662,7 +662,7 @@ impl CorrentApp {
         p
     }
 
-    #[allow(unused_variables)]
+    #[allow(unused_variables, unused_mut)]
     fn with_mica_spike(mut self, cc: &eframe::CreationContext<'_>) -> Self {
         #[cfg(all(windows, debug_assertions))]
         if std::env::var_os("CORRENT_DEV_MICA").is_some() {

@@ -5,9 +5,10 @@
 #   .zigvenv\Scripts\python -m pip install ziglang
 #   rustup target add x86_64-unknown-linux-gnu
 #
-# Usage:  powershell -File scripts/cross/build-linux.ps1 [-Release] [-CheckOnly]
+# Usage:  powershell -File scripts/cross/build-linux.ps1 [-Release] [-CheckOnly] [-Clippy]
+#         -Clippy runs clippy on all targets with warnings denied, like the Linux CI job.
 # Output: target/linux-check/x86_64-unknown-linux-gnu/<profile>/corrent
-param([switch]$Release, [switch]$CheckOnly, [string]$Python = "")
+param([switch]$Release, [switch]$CheckOnly, [switch]$Clippy, [string]$Python = "")
 
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -25,8 +26,9 @@ $env:AR_x86_64_unknown_linux_gnu = Join-Path $wrappers "zar.bat"
 $env:CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = Join-Path $wrappers "zcc.bat"
 $env:CARGO_TARGET_DIR = Join-Path $root "target\linux-check"
 
-$cmd = if ($CheckOnly) { "check" } else { "build" }
+$cmd = if ($Clippy) { "clippy" } elseif ($CheckOnly) { "check" } else { "build" }
 $cargoArgs = @($cmd, "--target", "x86_64-unknown-linux-gnu")
 if ($Release) { $cargoArgs += "--release" }
+if ($Clippy) { $cargoArgs += @("--all-targets", "--", "-D", "warnings") }
 Push-Location $root
 try { cargo @cargoArgs; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }

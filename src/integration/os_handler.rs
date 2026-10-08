@@ -3,7 +3,7 @@
 //! Everything is per-user and needs no administrator rights.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(windows, allow(dead_code))] // Managed/Unsupported only occur on Linux/macOS
+#[allow(dead_code)] // each platform constructs only some of these
 pub enum HandlerState {
     /// Corrent is the effective handler.
     Ours,

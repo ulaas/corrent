@@ -1,6 +1,7 @@
 //! Windows notification identity: an AppUserModelID registered per user so toasts show
 //! "Corrent" with its icon instead of "Windows PowerShell". No admin rights or shortcut needed.
 
+#[cfg(windows)]
 pub const APP_ID: &str = "Corrent.Corrent";
 
 /// Register (idempotently) and return the app id to use for notifications, if available.
@@ -34,11 +35,6 @@ pub fn ensure(paths: &crate::config::Paths) -> Option<&'static str> {
 #[cfg(windows)]
 pub fn remove() {
     let _ = windows_registry::CURRENT_USER.remove_tree(format!(r"Software\Classes\AppUserModelId\{APP_ID}"));
-}
-
-#[cfg(not(windows))]
-pub fn ensure(_paths: &crate::config::Paths) -> Option<&'static str> {
-    None
 }
 
 #[cfg(not(windows))]
