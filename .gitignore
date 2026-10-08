@@ -1,3 +1,4 @@
 /target
 *.log
 /.corrent-portable
+/.zigvenv

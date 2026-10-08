@@ -7,7 +7,7 @@ use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
 use super::pickers::{PickKind, PickTarget};
-use crate::config::{Accent, AfterAdd, ListenMode, SeedAction, Settings, SpeedUnits, ThemeMode, WatchFolder};
+use crate::config::{Accent, AfterAdd, ListenMode, SeedAction, Settings, SpeedUnits, ThemeMode};
 use crate::engine::{EngineCommand, ToastKind};
 use crate::integration::os_handler::{self, HandlerState};
 use crate::ui::theme::{self, Palette, accent_color};
