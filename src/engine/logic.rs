@@ -165,7 +165,8 @@ pub fn downloads_active(torrents: &[TorrentView]) -> bool {
         !t.pending
             && match t.state {
                 TorrentState::Downloading | TorrentState::Stalled | TorrentState::Metadata => true,
-                TorrentState::Checking | TorrentState::Queued => t.progress < 1.0,
+                // An errored download isn't finished either.
+                TorrentState::Checking | TorrentState::Queued | TorrentState::Error => t.progress < 1.0,
                 _ => false,
             }
     })
@@ -381,5 +382,6 @@ pub mod tests {
         assert!(downloads_active(&[v(TorrentState::Queued, 0.0)]));
         assert!(!downloads_active(&[v(TorrentState::Queued, 1.0)]), "queued for seeding");
         assert!(!downloads_active(&[]));
+        assert!(downloads_active(&[v(TorrentState::Error, 0.4)]), "an errored download isn't finished");
     }
 }

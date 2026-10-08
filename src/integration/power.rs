@@ -13,6 +13,11 @@ pub enum WhenDone {
 impl WhenDone {
     pub const ALL: [WhenDone; 4] = [WhenDone::Nothing, WhenDone::Quit, WhenDone::Sleep, WhenDone::Shutdown];
 
+    /// Sleep/shutdown can't be reached from inside the Flatpak sandbox (no systemctl/logind access).
+    pub fn available(self) -> bool {
+        !matches!(self, WhenDone::Sleep | WhenDone::Shutdown) || std::env::var_os("FLATPAK_ID").is_none()
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             WhenDone::Nothing => t!("Do nothing"),

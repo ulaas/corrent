@@ -14,7 +14,7 @@ async function api(path, { method = "GET", form = null, body = null } = {}) {
     opts.body = body;
   }
   const r = await fetch(API + path, opts);
-  if (r.status === 403) {
+  if (r.status === 403 && path !== "/auth/login") {
     showLogin();
     throw new Error("signed out");
   }
@@ -120,7 +120,8 @@ function renderCategories(cats) {
   const sel = $("add-category");
   const current = sel.value;
   const names = Object.keys(cats || {}).sort();
-  if (sel.options.length - 1 === names.length) return;
+  const shown = [...sel.options].slice(1).map((o) => o.value);
+  if (shown.join("\n") === names.join("\n")) return;
   sel.replaceChildren(el("option", "", "No category"));
   sel.options[0].value = "";
   for (const n of names) {

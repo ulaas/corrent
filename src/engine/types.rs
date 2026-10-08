@@ -232,6 +232,8 @@ pub struct Snapshot {
     pub warning: Option<String>,
     /// Recently removed torrents that can still be restored (hash, name).
     pub undoable: Vec<(InfoHash, String)>,
+    /// Torrents in the middle of a move/recheck/re-add (briefly not in the list).
+    pub busy_ops: usize,
     pub rss: Arc<crate::rss::RssView>,
     /// Recent (down, up) KiB/s per torrent, oldest first, for the Activity column.
     pub row_history: Arc<std::collections::HashMap<InfoHash, Vec<(u32, u32)>>>,

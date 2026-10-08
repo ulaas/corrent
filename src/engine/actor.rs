@@ -1437,6 +1437,7 @@ impl Actor {
             free_space: self.free_space,
             warning: self.warning.clone(),
             rss: self.rss.view(),
+            busy_ops: self.busy.len(),
             undoable: self
                 .undo
                 .iter()
@@ -1743,6 +1744,7 @@ impl Actor {
         snap.session.alt_speed = self.alt;
         snap.warning = self.warning.clone();
         snap.rss = self.rss.view();
+        snap.busy_ops = self.busy.len();
         for t in &mut snap.torrents {
             if let Some(m) = self.store.get(&t.hash) {
                 t.category = m.category.clone();

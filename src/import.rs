@@ -58,6 +58,10 @@ pub struct ImportItem {
     pub category: Option<String>,
     pub tags: Vec<String>,
     pub paused: bool,
+    /// Multi-file content sits in a folder named after the torrent inside `save_path`.
+    pub create_subfolder: bool,
+    /// The data was found where the other client left it (otherwise adding it downloads again).
+    pub data_found: bool,
 }
 
 type Dict = HashMap<ByteBufOwned, BencodeValue<ByteBufOwned>>;
@@ -101,11 +105,44 @@ fn get_str_list(d: &Dict, key: &str) -> Vec<String> {
     }
 }
 
-fn parse_torrent(bytes: Vec<u8>) -> Option<(InfoHash, String, Vec<u8>)> {
+/// What the importer needs from a .torrent.
+struct Parsed {
+    hash: InfoHash,
+    name: String,
+    bytes: Vec<u8>,
+    /// First file's path inside the torrent (None for single-file torrents).
+    first_file: Option<PathBuf>,
+}
+
+fn parse_torrent(bytes: Vec<u8>) -> Option<Parsed> {
     let t = librqbit::torrent_from_bytes(&bytes).ok()?;
     let hash = InfoHash(t.info_hash.0);
     let name = t.info.data.name.as_ref().map(|n| String::from_utf8_lossy(n.as_ref()).into_owned());
-    Some((hash, name.unwrap_or_else(|| hash.to_hex()), bytes))
+    let first_file = t
+        .info
+        .data
+        .files
+        .as_ref()
+        .and_then(|f| f.first())
+        .map(|f| f.path.iter().map(|c| String::from_utf8_lossy(c.as_ref()).into_owned()).collect::<PathBuf>());
+    Some(Parsed { hash, name: name.unwrap_or_else(|| hash.to_hex()), bytes, first_file })
+}
+
+/// Whether the content is where `base` + layout say it is.
+fn data_at(t: &Parsed, base: &Path, subfolder: bool) -> bool {
+    match &t.first_file {
+        None => base.join(&t.name).is_file(),
+        Some(first) if subfolder => base.join(&t.name).join(first).exists(),
+        Some(first) => base.join(first).exists(),
+    }
+}
+
+/// The first candidate folder that holds the data, else the first candidate.
+fn locate(t: &Parsed, candidates: &[PathBuf], subfolder: bool) -> (Option<PathBuf>, bool) {
+    match candidates.iter().find(|c| data_at(t, c, subfolder)) {
+        Some(c) => (Some(c.clone()), true),
+        None => (candidates.first().cloned(), false),
+    }
 }
 
 fn torrent_files(dir: &Path) -> Vec<PathBuf> {
@@ -124,56 +161,99 @@ fn torrent_files(dir: &Path) -> Vec<PathBuf> {
 /// Scan a client's folder. Blocking (file I/O); call off the UI thread.
 pub fn scan(client: Client, dir: &Path) -> Result<Vec<ImportItem>, String> {
     if !dir.is_dir() {
-        return Err(format!("{} doesn't exist", dir.display()));
+        return Err(t!("{path} doesn't exist", path = dir.display()));
     }
     let mut out = Vec::new();
     match client {
         Client::QBittorrent => {
             for f in torrent_files(dir) {
                 let Ok(bytes) = std::fs::read(&f) else { continue };
-                let Some((hash, name, bytes)) = parse_torrent(bytes) else { continue };
+                let Some(t) = parse_torrent(bytes) else { continue };
                 let resume = std::fs::read(f.with_extension("fastresume")).ok().and_then(|b| dict(&b));
                 let r = resume.as_ref();
-                // qBittorrent 4.x keeps its own save path; libtorrent's is the fallback.
-                let save_path =
-                    r.and_then(|d| get_str(d, "qBt-savePath").or_else(|| get_str(d, "save_path"))).map(PathBuf::from);
-                let category = r.and_then(|d| get_str(d, "qBt-category"));
-                let tags = r.map(|d| get_str_list(d, "qBt-tags")).unwrap_or_default();
-                let paused = r.is_some_and(|d| get_int(d, "paused") == Some(1) || get_int(d, "stopped") == Some(1));
-                out.push(ImportItem { name, hash, bytes, save_path, category, tags, paused });
+                // qBittorrent keeps unfinished torrents in its "incomplete" folder when one is set.
+                let mut candidates: Vec<PathBuf> = Vec::new();
+                for key in ["qBt-savePath", "save_path", "qBt-downloadPath"] {
+                    if let Some(p) = r.and_then(|d| get_str(d, key)).map(PathBuf::from)
+                        && !candidates.contains(&p)
+                    {
+                        candidates.push(p);
+                    }
+                }
+                // Content layout: Original/Subfolder keep the torrent's folder, NoSubfolder drops it;
+                // "Subfolder" wraps a single file in a folder named after it (without extension).
+                let layout = r.and_then(|d| get_str(d, "qBt-contentLayout")).unwrap_or_default();
+                let mut subfolder = layout != "NoSubfolder";
+                if layout == "Subfolder" && t.first_file.is_none() {
+                    let stem = Path::new(&t.name).file_stem().map(|x| x.to_os_string()).unwrap_or_default();
+                    candidates = candidates.into_iter().map(|c| c.join(&stem)).collect();
+                    subfolder = false;
+                }
+                let (save_path, data_found) = locate(&t, &candidates, subfolder);
+                out.push(ImportItem {
+                    name: t.name,
+                    hash: t.hash,
+                    bytes: t.bytes,
+                    save_path,
+                    category: r.and_then(|d| get_str(d, "qBt-category")),
+                    tags: r.map(|d| get_str_list(d, "qBt-tags")).unwrap_or_default(),
+                    paused: r.is_some_and(|d| get_int(d, "paused") == Some(1) || get_int(d, "stopped") == Some(1)),
+                    create_subfolder: subfolder,
+                    data_found,
+                });
             }
         }
         Client::Transmission => {
             let tdir = ["torrents", "Torrents"].iter().map(|n| dir.join(n)).find(|p| p.is_dir());
             let rdir = ["resume", "Resume"].iter().map(|n| dir.join(n)).find(|p| p.is_dir());
-            let Some(tdir) = tdir else { return Err("no torrents folder found".into()) };
+            let Some(tdir) = tdir else { return Err(t!("no “torrents” folder found").into()) };
             for f in torrent_files(&tdir) {
                 let Ok(bytes) = std::fs::read(&f) else { continue };
-                let Some((hash, name, bytes)) = parse_torrent(bytes) else { continue };
+                let Some(t) = parse_torrent(bytes) else { continue };
                 let stem = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 let resume = rdir.as_ref().and_then(|r| {
-                    [format!("{stem}.resume"), format!("{}.resume", hash.to_hex())]
+                    [format!("{stem}.resume"), format!("{}.resume", t.hash.to_hex())]
                         .iter()
                         .find_map(|n| std::fs::read(r.join(n)).ok())
                         .and_then(|b| dict(&b))
                 });
-                let save_path = resume.as_ref().and_then(|d| get_str(d, "destination")).map(PathBuf::from);
-                let paused = resume.as_ref().is_some_and(|d| get_int(d, "paused") == Some(1));
-                out.push(ImportItem { name, hash, bytes, save_path, category: None, tags: Vec::new(), paused });
+                // Unfinished torrents may sit in the "incomplete" folder.
+                let candidates: Vec<PathBuf> = ["destination", "incomplete-dir"]
+                    .iter()
+                    .filter_map(|k| resume.as_ref().and_then(|d| get_str(d, k)))
+                    .map(PathBuf::from)
+                    .collect();
+                // Files Transmission is still downloading are named "*.part": not found → re-download.
+                let (save_path, data_found) = locate(&t, &candidates, true);
+                out.push(ImportItem {
+                    name: t.name,
+                    hash: t.hash,
+                    bytes: t.bytes,
+                    save_path,
+                    category: None,
+                    tags: Vec::new(),
+                    paused: resume.as_ref().is_some_and(|d| get_int(d, "paused") == Some(1)),
+                    create_subfolder: true,
+                    data_found,
+                });
             }
         }
         Client::Deluge => {
+            // Deluge keeps download folders in a Python pickle Corrent doesn't read: the data is
+            // looked for in Corrent's default folder.
             for f in torrent_files(dir) {
                 let Ok(bytes) = std::fs::read(&f) else { continue };
-                let Some((hash, name, bytes)) = parse_torrent(bytes) else { continue };
+                let Some(t) = parse_torrent(bytes) else { continue };
                 out.push(ImportItem {
-                    name,
-                    hash,
-                    bytes,
+                    name: t.name,
+                    hash: t.hash,
+                    bytes: t.bytes,
                     save_path: None,
                     category: None,
                     tags: Vec::new(),
                     paused: false,
+                    create_subfolder: true,
+                    data_found: false,
                 });
             }
         }
@@ -234,6 +314,22 @@ mod tests {
         assert_eq!(it.category.as_deref(), Some("Linux"));
         assert_eq!(it.tags, vec!["iso".to_string(), "debian".to_string()]);
         assert!(it.paused);
+        assert!(!it.data_found, "nothing at D:/Downloads/Linux");
+
+        // Data where the fastresume says (incomplete folder), and the single-file "Subfolder" layout.
+        let dl = base.join("incomplete");
+        std::fs::create_dir_all(dl.join("one")).unwrap();
+        std::fs::write(dl.join("one").join("one.iso"), b"12345").unwrap();
+        let resume = d(vec![
+            ("qBt-savePath", s(base.join("done").to_str().unwrap())),
+            ("qBt-downloadPath", s(dl.to_str().unwrap())),
+            ("qBt-contentLayout", s("Subfolder")),
+        ]);
+        std::fs::write(qbt.join("aaa.fastresume"), bencode(&resume)).unwrap();
+        let it = &scan(Client::QBittorrent, &qbt).unwrap()[0];
+        assert!(it.data_found, "found in the incomplete folder");
+        assert_eq!(it.save_path.as_deref(), Some(dl.join("one").as_path()));
+        assert!(!it.create_subfolder);
 
         let tr = base.join("transmission");
         std::fs::create_dir_all(tr.join("torrents")).unwrap();

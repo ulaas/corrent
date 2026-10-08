@@ -94,7 +94,7 @@
         <CustomAction Id="UnregisterHandlers" FileKey="CorrentExe" ExeCommand="--unregister" Execute="deferred" Impersonate="yes" Return="ignore" />
         <InstallExecuteSequence>
             <Custom Action="RegisterHandlers" After="InstallFiles">&amp;Associations = 3</Custom>
-            <Custom Action="UnregisterHandlers" Before="RemoveFiles">(&amp;Associations = 2) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
+            <Custom Action="UnregisterHandlers" Before="RemoveFiles">(&amp;Associations = 2 OR REMOVE = "ALL") AND NOT UPGRADINGPRODUCTCODE</Custom>
         </InstallExecuteSequence>
 
         <Icon Id="CorrentIcon" SourceFile="assets\icon\corrent.ico" />

@@ -26,6 +26,8 @@ pub struct Source {
 pub struct ImportDialog {
     pub sources: Vec<Source>,
     pub start_paused: bool,
+    /// Also add torrents whose data wasn't found (they download again).
+    pub include_missing: bool,
     /// Client type for "Scan another folder…".
     pub other_client: Client,
     tx: mpsc::Sender<Scanned>,
@@ -35,7 +37,14 @@ pub struct ImportDialog {
 impl CorrentApp {
     pub fn open_import(&mut self) {
         let (tx, rx) = mpsc::channel();
-        let mut d = ImportDialog { sources: Vec::new(), start_paused: true, other_client: Client::QBittorrent, tx, rx };
+        let mut d = ImportDialog {
+            sources: Vec::new(),
+            start_paused: true,
+            include_missing: false,
+            other_client: Client::QBittorrent,
+            tx,
+            rx,
+        };
         for c in Client::ALL {
             if let Some(dir) = c.default_dir().filter(|d| d.is_dir()) {
                 self.scan_import(&mut d, c, dir);
@@ -85,10 +94,11 @@ impl CorrentApp {
                 ui.label(RichText::new(t!("Import from another client")).font(theme::title()).color(p.text));
             });
             ui.label(
-                RichText::new(
+                RichText::new(t!(
                     "Torrents keep their data where the other client saved it. Corrent checks the existing files \
-                     and never downloads them again; categories and tags come along from qBittorrent.",
-                )
+                     and never downloads them again; categories and tags come along from qBittorrent. Deluge doesn't \
+                     say where it saved data, so its torrents are looked for in your default folder."
+                ))
                 .small()
                 .color(p.text_dim),
             );
@@ -129,6 +139,17 @@ impl CorrentApp {
                                 if already > 0 {
                                     t.push_str(&t!(" · {already} already in Corrent", already = already));
                                 }
+                                let missing = s
+                                    .result
+                                    .as_ref()
+                                    .and_then(|r| r.as_ref().ok())
+                                    .map(|items| {
+                                        items.iter().filter(|i| !i.data_found && !present.contains(&i.hash)).count()
+                                    })
+                                    .unwrap_or(0);
+                                if missing > 0 {
+                                    t.push_str(&t!(" · data not found for {missing}", missing = missing));
+                                }
                                 ui.label(RichText::new(t).small().color(p.text_dim));
                             }
                         }
@@ -161,6 +182,8 @@ impl CorrentApp {
             ui.add_space(8.0);
             ui.checkbox(&mut d.start_paused, t!("Add paused"))
                 .on_hover_text(t!("Recommended while the other client still runs, so both don't use the same files"));
+            ui.checkbox(&mut d.include_missing, t!("Also add torrents whose data wasn't found"))
+                .on_hover_text(t!("They start downloading from scratch."));
             ui.add_space(12.0);
             let total: usize = d
                 .sources
@@ -168,7 +191,7 @@ impl CorrentApp {
                 .filter(|s| s.include)
                 .filter_map(|s| s.result.as_ref()?.as_ref().ok())
                 .flatten()
-                .filter(|i| !present.contains(&i.hash))
+                .filter(|i| !present.contains(&i.hash) && (i.data_found || d.include_missing))
                 .count();
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let label = if total == 1 {
@@ -196,7 +219,7 @@ impl CorrentApp {
             for s in d.sources.iter().filter(|s| s.include) {
                 let Some(Ok(items)) = &s.result else { continue };
                 for it in items {
-                    if !seen.insert(it.hash) {
+                    if !(it.data_found || d.include_missing) || !seen.insert(it.hash) {
                         continue;
                     }
                     n += 1;
@@ -205,7 +228,11 @@ impl CorrentApp {
                         torrent_bytes: Some(it.bytes.clone()),
                         save_path: it.save_path.clone().unwrap_or_else(|| self.settings.downloads.save_path.clone()),
                         // Other clients put multi-file torrents in a folder named after the torrent.
-                        create_subfolder: it.save_path.is_some() || self.settings.downloads.create_subfolder,
+                        create_subfolder: if it.save_path.is_some() {
+                            it.create_subfolder
+                        } else {
+                            self.settings.downloads.create_subfolder
+                        },
                         category: it.category.clone(),
                         tags: it.tags.clone(),
                         paused: d.start_paused || it.paused,

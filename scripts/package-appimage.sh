@@ -10,7 +10,11 @@ appdir=target/appimage/AppDir
 rm -rf "$appdir"
 install -Dm755 target/release/corrent "$appdir/usr/bin/corrent"
 install -Dm644 packaging/linux/corrent.desktop "$appdir/usr/share/applications/corrent.desktop"
-install -Dm644 packaging/linux/io.github.ulaas.Corrent.metainfo.xml "$appdir/usr/share/metainfo/corrent.appdata.xml"
+install -d "$appdir/usr/share/metainfo"
+# Inside the AppImage the desktop file is corrent.desktop: point the AppStream data at it.
+sed -e 's|<id>io.github.ulaas.Corrent</id>|<id>corrent</id>|' \
+    -e 's|io.github.ulaas.Corrent.desktop|corrent.desktop|' \
+    packaging/linux/io.github.ulaas.Corrent.metainfo.xml > "$appdir/usr/share/metainfo/corrent.appdata.xml"
 for s in 32 64 128 256 512; do
   install -Dm644 "assets/icon/corrent-$s.png" "$appdir/usr/share/icons/hicolor/${s}x${s}/apps/corrent.png"
 done

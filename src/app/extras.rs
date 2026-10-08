@@ -65,7 +65,7 @@ impl CorrentApp {
                 self.open_creator();
             }
             ui.menu_button(format!("{}  {}", icons::POWER, t!("When downloads finish")), |ui| {
-                for a in crate::integration::power::WhenDone::ALL {
+                for a in crate::integration::power::WhenDone::ALL.into_iter().filter(|a| a.available()) {
                     if ui.add(egui::Button::selectable(self.when_done.action == a, a.label())).clicked() {
                         self.set_when_done(a);
                         ui.close();

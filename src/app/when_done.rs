@@ -36,16 +36,27 @@ impl CorrentApp {
     }
 
     pub(super) fn when_done_logic(&mut self, ctx: &Context) {
-        let w = &mut self.when_done;
-        if w.action == WhenDone::Nothing || w.countdown.is_some() {
+        if self.when_done.action == WhenDone::Nothing {
             return;
         }
-        let active = crate::engine::logic::downloads_active(&self.snap.torrents);
+        // Torrents being moved or re-checked briefly have no row: they count as active.
+        let active = crate::engine::logic::downloads_active(&self.snap.torrents) || self.snap.busy_ops > 0;
+        let w = &mut self.when_done;
+        if w.countdown.is_some() {
+            if active {
+                // Something started downloading again: wait for it instead.
+                w.countdown = None;
+                w.had_active = true;
+            }
+            return;
+        }
         if active {
             w.had_active = true;
         } else if w.had_active {
             w.had_active = false;
             w.countdown = Some(Instant::now());
+            // The countdown must be visible (and cancellable) even when Corrent sits in the tray.
+            self.show_window(ctx);
             ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
         }
     }
