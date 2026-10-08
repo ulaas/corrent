@@ -9,6 +9,7 @@ mod dnd;
 mod extras;
 mod feeds;
 pub mod icon;
+mod import_dialog;
 mod integration_ui;
 pub mod log;
 mod onboarding;
@@ -25,6 +26,7 @@ mod toolbar;
 mod tray;
 #[cfg(test)]
 mod ui_tests;
+mod when_done;
 mod win_chrome;
 mod window;
 
@@ -340,6 +342,8 @@ pub struct CorrentApp {
     pub free_cache: Option<(String, std::time::Instant, Option<u64>)>,
     pub batch: Option<batch::BatchDialog>,
     pub creator: Option<creator::CreatorState>,
+    pub import: Option<import_dialog::ImportDialog>,
+    pub when_done: when_done::WhenDoneState,
     pub main_view: feeds::MainView,
     pub feeds: feeds::FeedsUi,
     pub torznab: search_view::SearchUi,
@@ -454,6 +458,8 @@ impl CorrentApp {
             free_cache: None,
             batch: None,
             creator: None,
+            import: None,
+            when_done: Default::default(),
             main_view: Default::default(),
             feeds: Default::default(),
             torznab: Default::default(),
@@ -768,6 +774,15 @@ impl CorrentApp {
                 toasts::ToastAction::Undo(h) => self.engine.send(crate::engine::EngineCommand::UndoRemove(h)),
                 toasts::ToastAction::OpenFolder(p) | toasts::ToastAction::OpenFile(p) => open_path(&p),
                 toasts::ToastAction::Copy(text) => self.copy(text),
+                toasts::ToastAction::OpenUrl(url) => {
+                    if url.starts_with("https://") {
+                        let _ = open::that_detached(url);
+                    }
+                }
+                toasts::ToastAction::SkipVersion(v) => {
+                    self.settings.updates.skip_version = v;
+                    self.save_settings();
+                }
                 toasts::ToastAction::Show(h) => {
                     self.show_window(ctx);
                     self.prefs.status_filter = StatusFilter::All;
@@ -853,6 +868,7 @@ impl eframe::App for CorrentApp {
         ctx.request_repaint_after(std::time::Duration::from_secs(2));
         self.process_launch_queue();
         self.poll_remote();
+        self.poll_updates();
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -903,6 +919,7 @@ impl CorrentApp {
                 "magnet" => self.open_magnet_dialog(),
                 "about" => self.extras.about = true,
                 "creator" => self.open_creator(),
+                "import" => self.open_import(),
                 "feeds" => self.main_view = feeds::MainView::Feeds,
                 "search" => self.main_view = feeds::MainView::Search,
                 "rules" => {
@@ -1001,6 +1018,9 @@ impl CorrentApp {
         self.onboarding(&ctx, &p);
         self.creator_dialog(&ctx, &p);
         self.rules_dialog(&ctx, &p);
+        self.import_dialog(&ctx, &p);
+        self.when_done_logic(&ctx);
+        self.when_done_dialog(&ctx, &p);
         self.batch_dialog(&ctx, &p);
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);

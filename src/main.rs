@@ -6,12 +6,14 @@ mod backup;
 mod config;
 mod crash;
 mod engine;
+mod import;
 mod integration;
 mod migrate;
 mod rss;
 mod search;
 mod store;
 mod ui;
+mod updates;
 mod util;
 mod webapi;
 

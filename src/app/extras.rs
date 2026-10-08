@@ -60,6 +60,20 @@ impl CorrentApp {
             if ui.button(format!("{}  Create torrent…  (Ctrl+N)", icons::FILE_PLUS)).clicked() {
                 self.open_creator();
             }
+            ui.menu_button(format!("{}  When downloads finish", icons::POWER), |ui| {
+                for a in crate::integration::power::WhenDone::ALL {
+                    if ui.add(egui::Button::selectable(self.when_done.action == a, a.label())).clicked() {
+                        self.set_when_done(a);
+                        ui.close();
+                    }
+                }
+            });
+            if ui.button(format!("{}  Check for updates", icons::ARROW_CIRCLE_UP)).clicked() {
+                self.check_for_updates(true);
+            }
+            if ui.button(format!("{}  Import from another client…", icons::ARROW_SQUARE_IN)).clicked() {
+                self.open_import();
+            }
             if ui.button(format!("{}  Statistics", icons::CHART_BAR)).clicked() {
                 self.extras.stats = true;
             }

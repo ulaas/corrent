@@ -28,6 +28,20 @@ impl CorrentApp {
             ui.painter().circle_filled(r.center(), 4.0, dot);
             ui.label(RichText::new(text).small().color(p.text_dim));
 
+            let wd = self.when_done.action;
+            if wd != crate::integration::power::WhenDone::Nothing {
+                let r = ui
+                    .add(
+                        egui::Label::new(
+                            RichText::new(format!("{} {}", icons::POWER, wd.label())).small().color(p.warn),
+                        )
+                        .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text("When all downloads finish. Click to cancel.");
+                if r.clicked() {
+                    self.set_when_done(crate::integration::power::WhenDone::Nothing);
+                }
+            }
             if let Some(port) = s.listen_port {
                 ui.label(RichText::new(format!("{} Port {port}", icons::PLUGS)).small().color(p.text_dim))
                     .on_hover_text("Incoming connection port");

@@ -159,6 +159,18 @@ pub fn file_order(names: &[std::path::PathBuf], priority: &std::collections::BTr
     order
 }
 
+/// Something is still downloading (or waiting to): "when downloads finish" waits for this to end.
+pub fn downloads_active(torrents: &[TorrentView]) -> bool {
+    torrents.iter().any(|t| {
+        !t.pending
+            && match t.state {
+                TorrentState::Downloading | TorrentState::Stalled | TorrentState::Metadata => true,
+                TorrentState::Checking | TorrentState::Queued => t.progress < 1.0,
+                _ => false,
+            }
+    })
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -359,5 +371,15 @@ pub mod tests {
         assert_eq!(file_order(&names, &none), vec![1, 2, 0], "by name like librqbit");
         let pri: std::collections::BTreeMap<usize, i8> = [(0, 1), (1, -1)].into_iter().collect();
         assert_eq!(file_order(&names, &pri), vec![0, 2, 1], "high first, low last");
+    }
+
+    #[test]
+    fn downloads_active_ignores_paused_and_seeding() {
+        let v = |state, progress| TorrentView { state, progress, ..Default::default() };
+        assert!(!downloads_active(&[v(TorrentState::Seeding, 1.0), v(TorrentState::Paused, 0.3)]));
+        assert!(downloads_active(&[v(TorrentState::Stalled, 0.3)]));
+        assert!(downloads_active(&[v(TorrentState::Queued, 0.0)]));
+        assert!(!downloads_active(&[v(TorrentState::Queued, 1.0)]), "queued for seeding");
+        assert!(!downloads_active(&[]));
     }
 }

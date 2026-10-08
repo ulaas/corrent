@@ -77,6 +77,7 @@ pub struct Settings {
     pub rss: crate::rss::RssSettings,
     pub search: crate::search::SearchSettings,
     pub web_api: crate::webapi::WebApiSettings,
+    pub updates: crate::updates::UpdateSettings,
     pub appearance: Appearance,
     pub advanced: Advanced,
 }
@@ -593,6 +594,7 @@ impl Settings {
         section!("rss", rss);
         section!("search", search);
         section!("web_api", web_api);
+        section!("updates", updates);
         section!("appearance", appearance);
         section!("advanced", advanced);
         (s, lost)

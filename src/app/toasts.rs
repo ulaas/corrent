@@ -15,6 +15,8 @@ pub enum ToastAction {
     OpenFile(std::path::PathBuf),
     Show(crate::engine::types::InfoHash),
     Copy(String),
+    OpenUrl(String),
+    SkipVersion(String),
 }
 
 struct Toast {

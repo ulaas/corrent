@@ -105,7 +105,7 @@ impl Page {
     fn keywords(self) -> &'static str {
         match self {
             Page::Behavior => {
-                "confirm exit tray close minimize start minimized notifications notify delete dialog skip run program command complete default handler magnet torrent association register"
+                "confirm exit tray close minimize start minimized notifications notify delete dialog skip run program command complete default handler magnet torrent association register updates version"
             }
             Page::Downloads => {
                 "save path folder default subfolder paused recent remember delete torrent file watch folders automatic"
@@ -256,6 +256,9 @@ impl CorrentApp {
         new.behavior.register_torrent_handler = b.register_torrent_handler;
         new.behavior.keep_handler_registration = b.keep_handler_registration;
         new.behavior.handler_prompt_dismissed = b.handler_prompt_dismissed;
+        // Kept outside the settings window (update check bookkeeping).
+        new.updates.last_check = self.settings.updates.last_check;
+        new.updates.skip_version = self.settings.updates.skip_version.clone();
         // Feeds and rules are edited in the Feeds view, possibly while this window is open.
         new.rss.feeds = self.settings.rss.feeds.clone();
         new.rss.rules = self.settings.rss.rules.clone();
@@ -497,6 +500,21 @@ impl CorrentApp {
                     ui.set_width(ui.available_width());
                     heading(ui, p, "Open with Corrent");
                     self.handler_card(ui, p);
+                });
+                ui.add_space(10.0);
+                card(p).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    heading(ui, p, "Updates");
+                    toggle(
+                        ui,
+                        p,
+                        "Check for new versions automatically",
+                        "Once a day, asks GitHub for the latest release. Nothing is downloaded or installed.",
+                        &mut s.updates.check_automatically,
+                    );
+                    if ui.button(format!("{}  Check now", icons::ARROW_CIRCLE_UP)).clicked() {
+                        self.check_for_updates(true);
+                    }
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {

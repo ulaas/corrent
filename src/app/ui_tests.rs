@@ -304,6 +304,30 @@ fn icon_buttons_have_accessible_names() {
     }
 }
 
+#[test]
+fn when_done_counts_down_after_downloads_finish_and_can_be_cancelled() {
+    use crate::integration::power::WhenDone;
+    let (_f, app) = app("whendone", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().set_when_done(WhenDone::Sleep);
+    h.run_steps(2);
+    assert!(h.state().when_done.countdown.is_none(), "still downloading");
+    let app = h.state_mut();
+    app.snap = Arc::new(Snapshot {
+        torrents: vec![torrent(1, "Alpha", TorrentState::Seeding)],
+        generation: 2,
+        ..Default::default()
+    });
+    h.run_steps(3);
+    assert!(h.state().when_done.countdown.is_some(), "countdown started");
+    h.get_by_label("All downloads finished");
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(h.state().when_done.countdown.is_none());
+    assert_eq!(h.state().when_done.action, WhenDone::Nothing, "cancel clears the action");
+}
+
 /// Scale check (A9): 5,000 torrents. Run with
 /// `cargo test --release perf_5000 -- --ignored --nocapture`.
 #[test]

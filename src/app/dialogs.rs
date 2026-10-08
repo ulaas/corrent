@@ -131,6 +131,8 @@ impl CorrentApp {
             || self.onboarding.is_some()
             || self.creator.is_some()
             || self.feeds.rules.is_some()
+            || self.import.is_some()
+            || self.when_done.countdown.is_some()
     }
 
     /// Free space for a path typed in a dialog, refreshed at most every two seconds.
