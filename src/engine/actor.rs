@@ -1262,7 +1262,7 @@ impl Actor {
         };
 
         // Activity sparklines: the last minute or so, refreshed every other tick.
-        if self.tick_count % 2 == 0 {
+        if self.tick_count.is_multiple_of(2) {
             const ROW_SAMPLES: usize = 40;
             let kib = |b: u64| (b / 1024).min(u32::MAX as u64) as u32;
             self.row_history = Arc::new(
