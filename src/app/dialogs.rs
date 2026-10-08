@@ -924,6 +924,7 @@ impl CorrentApp {
                                                     len: f.len,
                                                     done: None,
                                                     priority: None,
+                                                    streaming: false,
                                                 })
                                                 .collect();
                                             let checked = d.checked.clone();

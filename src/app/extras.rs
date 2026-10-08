@@ -17,6 +17,7 @@ use crate::util::{fmt_bytes, fmt_duration, fmt_ratio};
 pub struct Extras {
     pub about: bool,
     pub stats: bool,
+    pub streams: bool,
     pub log: bool,
     pub log_filter: String,
     pub log_level: u8, // 0 = info+, 1 = warn+, 2 = error
@@ -83,6 +84,9 @@ impl CorrentApp {
             if ui.button(format!("{}  {}", icons::CHART_BAR, t!("Statistics"))).clicked() {
                 self.extras.stats = true;
             }
+            if ui.button(format!("{}  {}", icons::PLAY_CIRCLE, t!("Streaming"))).clicked() {
+                self.extras.streams = true;
+            }
             if ui.button(format!("{}  {}", icons::SCROLL, t!("Log"))).clicked() {
                 self.extras.log = true;
             }
@@ -105,6 +109,7 @@ impl CorrentApp {
     pub(super) fn extra_windows(&mut self, ctx: &Context, p: &Palette) {
         self.about_window(ctx, p);
         self.stats_window(ctx, p);
+        self.streams_window(ctx, p);
         self.log_window(ctx, p);
     }
 

@@ -415,3 +415,60 @@ fn perf_5000_torrents() {
     }
     println!("frame, unchanged snapshot: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / frames as f64);
 }
+
+#[test]
+fn streaming_status_bar_and_window() {
+    use crate::engine::types::{SessionView, StreamState, StreamView};
+    let (_f, mut app) = app("streams", vec![torrent(1, "Sintel", TorrentState::Downloading)]);
+    let stream = |id, state| StreamView {
+        id,
+        hash: InfoHash([1; 20]),
+        torrent_name: "Sintel".into(),
+        file_name: "Sintel/sintel.mkv".into(),
+        file_len: 1 << 30,
+        client: "127.0.0.1".into(),
+        player: "VLC 3.0.20".into(),
+        user_agent: "VLC/3.0.20 LibVLC/3.0.20".into(),
+        state,
+        connections: 1,
+        requests: 3,
+        served: 200 << 20,
+        rate_bps: 2 << 20,
+        position: 300 << 20,
+        buffered_ahead: Some(40 << 20),
+        availability: vec![255; 60].into_iter().chain(vec![0; 60]).collect(),
+        ..Default::default()
+    };
+    app.snap = Arc::new(Snapshot {
+        session: SessionView {
+            stream: Some((5000, "tok".into())),
+            streams: vec![stream(1, StreamState::Ended), stream(2, StreamState::Buffering)],
+            stream_slots: (1, 3),
+            ..Default::default()
+        },
+        ..(*app.snap).clone()
+    });
+    let mut h = harness(app);
+    h.run_steps(3);
+    // Only the active stream counts in the status bar.
+    h.get_by_label_contains("Streaming to 1 player").click();
+    h.run_steps(3);
+    assert!(h.state().extras.streams, "the chip opens the Streaming window");
+    h.get_by_label("Server on 127.0.0.1:5000");
+    h.get_by_label("1 of 3 slots in use");
+    h.get_by_label("Buffering");
+    h.get_by_label("Ended");
+    assert_eq!(h.query_all_by_label("VLC 3.0.20").count(), 2);
+    h.get_by_label("40.0 MiB buffered ahead");
+    // Active streams can be stopped, ended ones played again.
+    assert_eq!(h.query_all_by_label_contains("Stop").count(), 1);
+    assert_eq!(h.query_all_by_label_contains("Play again").count(), 1);
+    assert_eq!(h.query_all_by_label_contains("Copy link").count(), 2);
+
+    // Empty state.
+    let app = h.state_mut();
+    app.snap = Arc::new(Snapshot { session: SessionView::default(), ..(*app.snap).clone() });
+    h.run_steps(3);
+    h.get_by_label("Nothing is streaming");
+    assert!(h.query_by_label_contains("Streaming to 1 player").is_none());
+}

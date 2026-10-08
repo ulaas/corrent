@@ -37,7 +37,8 @@ corrent --status | --register | --unregister | --write-icons <dir> | --help
 
 Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_TAB=general|files|peers|trackers|pieces|speed`,
-`CORRENT_DEV_OPEN=settings|remote|magnet|about|log|stats|creator|import|feeds|rules|remove|remove-undo`,
+`CORRENT_DEV_OPEN=settings|remote|magnet|about|log|stats|streams|creator|import|feeds|rules|remove|remove-undo`,
+`CORRENT_DEV_STREAM_URL=<file>` (writes the first torrent's stream URL prefix; play it with `curl`),
 `CORRENT_DEV_PANIC=ui|engine`, `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
 To pre-configure the test profile, write `target/debug/corrent-data/settings.toml`
 (e.g. `skip_add_dialog = true`, a scratch `save_path`). The hooks run once, on the first frame

@@ -142,6 +142,10 @@ pub struct Actor {
     restore_checked: bool,
     low_space_warned: bool,
     stream: Option<Arc<super::stream::StreamServer>>,
+    /// Per stream session: last sample (time, bytes served) and smoothed rate.
+    stream_rates: HashMap<u64, (Instant, u64, f64)>,
+    /// Piece bitfields of torrents being streamed, refreshed about once a second.
+    stream_haves: HashMap<InfoHash, (Instant, Vec<u8>, u32)>,
     rss: crate::rss::Rss,
     /// Adds started by feed rules (pending id → article), so a failed add can be retried.
     rss_adds: HashMap<u64, crate::rss::Download>,
@@ -212,6 +216,8 @@ impl Actor {
             restore_checked: false,
             low_space_warned: false,
             stream: None,
+            stream_rates: HashMap::new(),
+            stream_haves: HashMap::new(),
             rss,
             rss_adds: HashMap::new(),
             rss_failures: HashMap::new(),
@@ -606,6 +612,13 @@ impl Actor {
                     if let Some(t) = self.handle_for(h) {
                         t.set_ratelimits(session::limits(down_kib, up_kib));
                     }
+                }
+            }
+            EngineCommand::StopStream(id) => {
+                if let Some(st) = &self.stream
+                    && st.stop(id)
+                {
+                    tracing::info!("stream {id} stopped by the user");
                 }
             }
             EngineCommand::ReloadIpFilter => {
@@ -1515,6 +1528,8 @@ impl Actor {
             session_downloaded: self.session_down_total,
             session_uploaded: self.session_up_total,
             stream: self.stream.as_ref().map(|s| (s.port, s.token.clone())),
+            streams: self.stream_views(&handles),
+            stream_slots: self.stream.as_ref().map(|s| s.slots()).unwrap_or_default(),
             blocked_ranges: sess.blocklist.len(),
             allowed_ranges: sess.allowlist.as_ref().map(|a| a.len()),
         };
@@ -1845,6 +1860,85 @@ impl Actor {
             pieces,
             history: self.torrent_history.get(&hash).cloned().unwrap_or_default(),
         }
+    }
+
+    /// Stream sessions with torrent names, smoothed rates and file availability.
+    fn stream_views(&mut self, handles: &[(usize, Arc<ManagedTorrent>)]) -> Vec<StreamView> {
+        let Some(server) = &self.stream else { return Vec::new() };
+        let infos = server.sessions();
+        let now = Instant::now();
+        self.stream_rates.retain(|id, _| infos.iter().any(|i| i.id == *id));
+        self.stream_haves.retain(|h, _| infos.iter().any(|i| i.hash == *h));
+        let mut out = Vec::with_capacity(infos.len());
+        for i in infos {
+            let handle = handles.iter().find(|(_, h)| h.info_hash().0 == i.hash.0);
+            let rate = match self.stream_rates.get(&i.id) {
+                Some(&(t, served, ema)) => {
+                    let dt = now.duration_since(t).as_secs_f64();
+                    if dt < 0.2 {
+                        ema
+                    } else {
+                        let inst = i.served.saturating_sub(served) as f64 / dt;
+                        let ema = if i.state.is_active() { ema * 0.6 + inst * 0.4 } else { 0.0 };
+                        self.stream_rates.insert(i.id, (now, i.served, ema));
+                        ema
+                    }
+                }
+                None => {
+                    self.stream_rates.insert(i.id, (now, i.served, 0.0));
+                    0.0
+                }
+            };
+            let mut buffered_ahead = None;
+            let mut availability = Vec::new();
+            if let Some((id, h)) = handle {
+                let stale = self.stream_haves.get(&i.hash).is_none_or(|(t, _, _)| t.elapsed() > Duration::from_secs(1));
+                if stale
+                    && let Some(api) = &self.api
+                    && let Ok((bf, n)) = api.api_dump_haves(TorrentIdOrHash::Id(*id))
+                {
+                    self.stream_haves.insert(i.hash, (now, bf.as_raw_slice().to_vec(), n));
+                }
+                let layout = h
+                    .with_metadata(|m| {
+                        m.file_infos
+                            .get(i.file)
+                            .map(|f| (f.offset_in_torrent, m.info.lengths().default_piece_length() as u64))
+                    })
+                    .ok()
+                    .flatten();
+                if let (Some((bits, n)), Some((offset, piece_len))) =
+                    (self.stream_haves.get(&i.hash).map(|(_, b, n)| (b, *n)), layout)
+                {
+                    let (ahead, strip) =
+                        super::stream::file_availability(bits, n, piece_len, offset, i.file_len, i.position, 120);
+                    buffered_ahead = Some(ahead);
+                    availability = strip;
+                }
+            }
+            out.push(StreamView {
+                id: i.id,
+                hash: i.hash,
+                torrent_name: handle.map(|(_, h)| h.name().unwrap_or_default()).unwrap_or_default(),
+                file: i.file,
+                player: super::stream::player_name(&i.user_agent),
+                file_name: i.file_name,
+                file_len: i.file_len,
+                client: i.client.to_string(),
+                user_agent: i.user_agent,
+                state: i.state,
+                connections: i.connections,
+                requests: i.requests,
+                refused: i.refused,
+                elapsed_secs: i.elapsed.as_secs(),
+                served: i.served,
+                rate_bps: rate as u64,
+                position: i.position,
+                buffered_ahead,
+                availability,
+            });
+        }
+        out
     }
 
     fn publish(&mut self) {

@@ -42,6 +42,30 @@ impl CorrentApp {
                     self.set_when_done(crate::integration::power::WhenDone::Nothing);
                 }
             }
+            let active = s.streams.iter().filter(|x| x.state.is_active()).count();
+            if active > 0 {
+                let buffering = s.streams.iter().any(|x| x.state == crate::engine::types::StreamState::Buffering);
+                let text = if active == 1 {
+                    t!("Streaming to 1 player").to_string()
+                } else {
+                    t!("Streaming to {n} players", n = active)
+                };
+                let r = ui
+                    .add(
+                        egui::Label::new(
+                            RichText::new(format!("{} {text}", icons::PLAY_CIRCLE)).small().color(if buffering {
+                                p.warn
+                            } else {
+                                p.accent
+                            }),
+                        )
+                        .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text(t!("Media players are reading files from Corrent. Click for details."));
+                if r.clicked() {
+                    self.extras.streams = !self.extras.streams;
+                }
+            }
             if let Some(port) = s.listen_port {
                 ui.label(
                     RichText::new(format!("{} {}", icons::PLUGS, t!("Port {port}", port = port)))

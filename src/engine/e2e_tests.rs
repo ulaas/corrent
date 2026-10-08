@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use librqbit::{CreateTorrentOptions, ListenerMode, ListenerOptions, ManagedTorrent, Session, SessionOptions};
 
-use super::types::{AddSource, InfoHash, Snapshot, TorrentState, TorrentView};
+use super::types::{AddSource, InfoHash, Snapshot, StreamState, TorrentState, TorrentView};
 use super::{AddRequest, EngineCommand, EngineEvent, EngineHandle};
 use crate::config::{Paths, Settings};
 
@@ -429,6 +429,35 @@ async fn streaming_server_serves_ranges() {
 
     let (head, _) = get(port, &format!("/wrong-token/{}/0/data.bin", s.hash.to_hex()), None).await;
     assert!(head.starts_with("HTTP/1.1 404"), "a wrong token is rejected");
+
+    // The requests show up as one stream session with the client's details.
+    let vlc = |range: &'static str| format!("{range}\r\nUser-Agent: VLC/3.0.20 LibVLC/3.0.20");
+    let (head, _) = get(port, &path, Some(vlc("bytes=0-999").as_str())).await;
+    assert!(head.starts_with("HTTP/1.1 206"), "{head}");
+    let (head, _) = get(port, &path, Some(vlc("bytes=1000-1999").as_str())).await;
+    assert!(head.starts_with("HTTP/1.1 206"), "{head}");
+    let snap = wait_for(&l, "stream session listed", 10, |sn| {
+        sn.session.streams.iter().any(|v| v.player == "VLC 3.0.20" && v.served == 2000)
+    })
+    .await;
+    let v = snap.session.streams.iter().find(|v| v.player == "VLC 3.0.20").unwrap();
+    assert_eq!((v.hash, v.file, v.file_len), (s.hash, 0, SIZE as u64));
+    assert_eq!(v.client, "127.0.0.1");
+    assert_eq!(v.requests, 2);
+    assert_eq!(v.position, 2000);
+    assert_eq!(v.buffered_ahead, Some(SIZE as u64 - 2000), "the whole file is downloaded");
+    assert!(v.availability.iter().all(|&a| a == 255));
+    assert!(!v.torrent_name.is_empty());
+    assert_eq!(snap.session.streams.len(), 2, "requests without a User-Agent are another client");
+
+    // Stop: the same player is refused for a while.
+    l.engine.send(EngineCommand::StopStream(v.id));
+    wait_for(&l, "stream stopped", 10, |sn| {
+        sn.session.streams.iter().any(|x| x.id == v.id && x.state == StreamState::Stopped)
+    })
+    .await;
+    let (head, _) = get(port, &path, Some(vlc("bytes=0-9").as_str())).await;
+    assert!(head.starts_with("HTTP/1.1 410"), "{head}");
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }

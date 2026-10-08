@@ -19,6 +19,7 @@ mod search_view;
 mod settings_window;
 mod sidebar;
 mod statusbar;
+mod streams;
 mod table;
 mod titlebar;
 mod toasts;
@@ -967,7 +968,8 @@ impl CorrentApp {
     /// Debug-only hooks for screenshot testing (see CLAUDE.md for the full list):
     /// CORRENT_DEV_SELECT=<n> selects the n-th row, CORRENT_DEV_TAB picks the details tab,
     /// CORRENT_DEV_OPEN opens a window or view, CORRENT_DEV_SEARCH runs a search,
-    /// CORRENT_DEV_PANIC/LIGHT/MICA. They run once, on the first frame with at least one torrent.
+    /// CORRENT_DEV_PANIC/LIGHT/MICA, CORRENT_DEV_STREAM_URL=<file> writes the first torrent's stream
+    /// URL prefix. They run once, on the first frame with at least one torrent.
     fn dev_hooks(&mut self, ctx: &Context) {
         if self.dev_done || self.snap.torrents.is_empty() {
             return;
@@ -1007,6 +1009,7 @@ impl CorrentApp {
                 }
                 "log" => self.extras.log = true,
                 "stats" => self.extras.stats = true,
+                "streams" => self.extras.streams = true,
                 "remove" | "remove-undo" => {
                     let h = self.snap.torrents[0].hash;
                     self.engine.send(crate::engine::EngineCommand::Delete { hashes: vec![h], with_data: false });
@@ -1023,6 +1026,13 @@ impl CorrentApp {
             self.main_view = feeds::MainView::Search;
             self.torznab.query = q;
             self.dev_start_search();
+        }
+        // Base stream URL of the first torrent, so a test can play it with curl.
+        if let Ok(out) = std::env::var("CORRENT_DEV_STREAM_URL")
+            && let Some((port, token)) = &self.snap.session.stream
+        {
+            let base = format!("http://127.0.0.1:{port}/{token}/{}/", self.snap.torrents[0].hash.to_hex());
+            let _ = std::fs::write(out, base);
         }
         if std::env::var("CORRENT_DEV_LIGHT").is_ok() {
             ctx.set_theme(egui::ThemePreference::Light);

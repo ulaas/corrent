@@ -257,6 +257,18 @@ impl CorrentApp {
             loading(ui, p, t.has_metadata);
             return;
         };
+        let streamed: std::collections::HashSet<usize> = self
+            .snap
+            .session
+            .streams
+            .iter()
+            .filter(|s| s.hash == t.hash && s.state.is_active())
+            .map(|s| s.file)
+            .collect();
+        if !streamed.is_empty() {
+            self.stream_notice(ui, p, t.hash);
+            ui.add_space(4.0);
+        }
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.file_filter)
@@ -300,6 +312,7 @@ impl CorrentApp {
                 len: f.len,
                 done: Some(f.done),
                 priority: Some(f.priority),
+                streaming: streamed.contains(&f.index),
             })
             .collect();
         let included: std::collections::HashSet<usize> =

@@ -15,6 +15,8 @@ pub struct Entry<'a> {
     pub done: Option<u64>,
     /// Download priority (1 high, 0 normal, -1 low); None hides priorities (add dialog).
     pub priority: Option<i8>,
+    /// A media player is reading this file through the streaming server.
+    pub streaming: bool,
 }
 
 pub fn priority_label(p: i8) -> &'static str {
@@ -163,7 +165,12 @@ fn show_node(
             if ui.add_enabled(editable, egui::Checkbox::new(&mut on, "")).changed() {
                 change.set.push((e.index, on));
             }
-            ui.label(RichText::new(file_icon(name)).color(p.text_dim));
+            if e.streaming {
+                ui.label(RichText::new(icons::PLAY_CIRCLE).color(p.accent))
+                    .on_hover_text(t!("Being streamed to a media player"));
+            } else {
+                ui.label(RichText::new(file_icon(name)).color(p.text_dim));
+            }
             ui.add(egui::Label::new(RichText::new(name).color(if on { p.text } else { p.text_mute })).truncate());
             row_tail(ui, p, e.len, e.done, e.priority);
         });

@@ -188,6 +188,56 @@ pub struct TorrentDetail {
     pub history: VecDeque<(u64, u64)>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StreamState {
+    /// Data is flowing to the player.
+    #[default]
+    Playing,
+    /// The player waits for pieces that aren't downloaded yet.
+    Buffering,
+    /// The player stopped reading (paused, or its buffer is full).
+    Paused,
+    /// All connections closed (the player stopped or finished).
+    Ended,
+    /// Stopped from Corrent.
+    Stopped,
+}
+
+impl StreamState {
+    pub fn is_active(self) -> bool {
+        matches!(self, StreamState::Playing | StreamState::Buffering | StreamState::Paused)
+    }
+}
+
+/// A media player reading a file through the streaming server.
+#[derive(Clone, Debug, Default)]
+pub struct StreamView {
+    pub id: u64,
+    pub hash: InfoHash,
+    pub torrent_name: String,
+    pub file: usize,
+    pub file_name: String,
+    pub file_len: u64,
+    /// Client address (loopback) and friendly player name from its User-Agent.
+    pub client: String,
+    pub player: String,
+    pub user_agent: String,
+    pub state: StreamState,
+    pub connections: usize,
+    pub requests: u32,
+    /// Requests refused because every streaming slot was busy.
+    pub refused: u32,
+    pub elapsed_secs: u64,
+    pub served: u64,
+    pub rate_bps: u64,
+    /// Byte offset being read in the file.
+    pub position: u64,
+    /// Downloaded bytes contiguous from `position` (None while metadata is unknown).
+    pub buffered_ahead: Option<u64>,
+    /// Availability of the file in equal buckets, 0 (missing) to 255 (downloaded).
+    pub availability: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SessionView {
     pub down_bps: u64,
@@ -201,6 +251,10 @@ pub struct SessionView {
     pub session_uploaded: u64,
     /// Local streaming server (port, URL token) for playing files while they download.
     pub stream: Option<(u16, String)>,
+    /// Players reading from the streaming server, newest last.
+    pub streams: Vec<StreamView>,
+    /// Streaming bodies being sent and the maximum at once.
+    pub stream_slots: (usize, usize),
     /// Address ranges loaded from the IP filter (blocked, allowed).
     pub blocked_ranges: usize,
     pub allowed_ranges: Option<usize>,
