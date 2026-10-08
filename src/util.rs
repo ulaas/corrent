@@ -82,6 +82,32 @@ pub fn explain_io(msg: &str) -> String {
     format!("{hint}\n\n{msg}")
 }
 
+/// `bytes` random bytes from the OS generator, hex-encoded.
+pub fn random_hex(bytes: usize) -> String {
+    let mut b = vec![0u8; bytes];
+    aws_lc_rs::rand::fill(&mut b).expect("OS random generator");
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// A URL without credentials, query or fragment (private feeds carry passkeys there), for logs.
+pub fn redact_url(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut u) => {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            let had_query = u.query().is_some();
+            u.set_query(None);
+            u.set_fragment(None);
+            let mut s = u.to_string();
+            if had_query {
+                s.push_str("?…");
+            }
+            s
+        }
+        Err(_) => "(invalid address)".into(),
+    }
+}
+
 pub fn now_unix() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -342,6 +368,17 @@ mod tests {
 
 #[cfg(test)]
 mod more_tests {
+
+    #[test]
+    fn redacts_secrets_from_urls() {
+        assert_eq!(
+            crate::util::redact_url("https://user:pw@tracker.example/rss?passkey=abc#x"),
+            "https://tracker.example/rss?…"
+        );
+        assert_eq!(crate::util::redact_url("https://a.example/feed.xml"), "https://a.example/feed.xml");
+        assert_eq!(crate::util::random_hex(16).len(), 32);
+    }
+
     use super::*;
 
     #[test]

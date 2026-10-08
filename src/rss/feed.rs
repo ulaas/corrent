@@ -103,12 +103,12 @@ pub fn client(proxy: Option<String>) -> reqwest::Client {
 }
 
 pub async fn fetch(client: &reqwest::Client, url: &str) -> Result<ParsedFeed, String> {
-    let mut resp = client.get(url).send().await.map_err(|e| describe(&e))?;
+    let mut resp = client.get(url).send().await.map_err(describe)?;
     if !resp.status().is_success() {
         return Err(format!("the server answered {}", resp.status()));
     }
     let mut body = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|e| describe(&e))? {
+    while let Some(chunk) = resp.chunk().await.map_err(describe)? {
         body.extend_from_slice(&chunk);
         if body.len() > MAX_FEED_BYTES {
             return Err("the feed is too large".into());
@@ -118,14 +118,16 @@ pub async fn fetch(client: &reqwest::Client, url: &str) -> Result<ParsedFeed, St
     tokio::task::spawn_blocking(move || parse(&body, &url)).await.map_err(|e| e.to_string())?
 }
 
-fn describe(e: &reqwest::Error) -> String {
+fn describe(e: reqwest::Error) -> String {
     if e.is_timeout() {
         "the server didn't answer in time".into()
     } else if e.is_connect() {
         "couldn't connect to the server".into()
     } else {
+        // Feed URLs may contain passkeys: keep them out of messages and logs.
+        let e = e.without_url();
         let mut s = e.to_string();
-        let mut src = std::error::Error::source(e);
+        let mut src = std::error::Error::source(&e);
         while let Some(inner) = src {
             s = format!("{s}: {inner}");
             src = inner.source();

@@ -60,19 +60,24 @@ pub fn search_url(p: &TorznabProvider, query: &str) -> Result<url::Url, String> 
 
 pub async fn search(client: &reqwest::Client, p: &TorznabProvider, query: &str) -> Result<Vec<SearchResult>, String> {
     let url = search_url(p, query)?;
-    let resp = client.get(url).send().await.map_err(|e| {
+    let describe = |e: reqwest::Error| {
         if e.is_timeout() {
             "the provider didn't answer in time".to_string()
         } else if e.is_connect() {
             "couldn't connect to the provider".to_string()
         } else {
-            e.to_string()
+            // The URL carries the API key: never show it.
+            e.without_url().to_string()
         }
-    })?;
+    };
+    let mut resp = client.get(url).send().await.map_err(describe)?;
     let status = resp.status();
-    let body = resp.bytes().await.map_err(|e| e.to_string())?;
-    if body.len() > 16 * 1024 * 1024 {
-        return Err("the answer is too large".into());
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(describe)? {
+        body.extend_from_slice(&chunk);
+        if body.len() > 16 * 1024 * 1024 {
+            return Err("the answer is too large".into());
+        }
     }
     // Torznab reports errors as XML, sometimes with an HTTP error status.
     match parse(&body, &p.name) {

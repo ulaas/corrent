@@ -11,6 +11,7 @@ use super::types::InfoHash;
 
 #[derive(Clone, Debug)]
 pub struct CreateRequest {
+    pub id: u64,
     pub source: PathBuf,
     pub name: Option<String>,
     pub trackers: Vec<String>,
@@ -67,7 +68,11 @@ pub async fn create(req: &CreateRequest) -> anyhow::Result<Created> {
         magnet.push_str("&tr=");
         magnet.push_str(&super::types::url_encode(t));
     }
+    let had_bak = req.save_to.with_extension("torrent.bak").exists();
     crate::util::write_atomic(&req.save_to, &bytes).with_context(|| format!("writing {}", req.save_to.display()))?;
+    if !had_bak {
+        let _ = std::fs::remove_file(req.save_to.with_extension("torrent.bak"));
+    }
     Ok(Created { bytes, hash, name, magnet })
 }
 
@@ -95,9 +100,12 @@ pub fn total_size(path: &Path) -> u64 {
     while let Some(dir) = stack.pop() {
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for e in rd.flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    stack.push(p);
+                let Ok(ft) = e.file_type() else { continue };
+                if ft.is_symlink() {
+                    continue;
+                }
+                if ft.is_dir() {
+                    stack.push(e.path());
                 } else if let Ok(m) = e.metadata() {
                     sum += m.len();
                 }
@@ -126,6 +134,7 @@ mod tests {
         std::fs::write(dir.join("src/a.txt"), vec![7u8; 100_000]).unwrap();
         std::fs::write(dir.join("src/sub/b.bin"), vec![9u8; 50_000]).unwrap();
         let req = CreateRequest {
+            id: 1,
             source: dir.join("src"),
             name: Some("My Share".into()),
             trackers: vec!["udp://tracker.example:1337/announce".into()],

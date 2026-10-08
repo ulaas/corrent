@@ -90,6 +90,8 @@ pub enum EngineEvent {
     },
     /// A torrent file was created (or creating failed).
     Created {
+        /// The request id, so a late answer for a closed dialog is ignored.
+        id: u64,
         result: Result<(String, PathBuf, String, Option<InfoHash>), String>,
     },
     /// An undo re-added a torrent.
@@ -114,7 +116,10 @@ pub enum EngineCommand {
     /// Fetch one feed (or all) now.
     RssRefresh(Option<String>),
     /// An article was added by hand: rules skip it from now on.
-    RssMarkDownloaded(String),
+    RssMarkDownloaded {
+        feed: String,
+        guid: String,
+    },
     /// Re-add torrents removed (without data) in the last two minutes.
     UndoRemove(Vec<InfoHash>),
     /// Abort an add that is still resolving metadata (identified by its placeholder row hash).

@@ -23,11 +23,7 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
-pub fn random_hex(bytes: usize) -> String {
-    let mut b = vec![0u8; bytes];
-    rand::fill(&mut b).expect("OS random generator");
-    hex(&b)
-}
+use crate::util::random_hex;
 
 /// `pbkdf2-sha256$<iterations>$<salt>$<hash>` (hex).
 pub fn hash_password(password: &str) -> String {

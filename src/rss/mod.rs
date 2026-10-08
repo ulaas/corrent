@@ -119,6 +119,14 @@ pub struct Download {
     pub link: String,
     pub title: String,
     pub rule: RssRule,
+    /// Identifies the article in the downloaded set (see [`Rss::forget`]).
+    pub key: String,
+    pub episode: Option<String>,
+}
+
+/// Article ids are only unique within a feed (many trackers use plain numbers).
+fn article_key(feed: &str, guid: &str) -> String {
+    format!("{feed}\u{1f}{guid}")
 }
 
 pub struct Rss {
@@ -128,20 +136,80 @@ pub struct Rss {
     next_due: HashMap<String, Instant>,
     in_flight: HashSet<String>,
     view: Arc<RssView>,
+    /// The state file couldn't be read: don't overwrite it and don't auto-download (the record of
+    /// what was already downloaded is unknown).
+    read_only: bool,
+    /// Shown to the user once.
+    pub warning: Option<String>,
 }
 
 impl Rss {
     pub fn load(path: PathBuf) -> Rss {
-        let data: StateFile = match std::fs::read(&path) {
-            Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
-                tracing::error!("rss.json is invalid ({e}); starting with an empty feed cache");
-                let _ = std::fs::copy(&path, path.with_extension(format!("json.bad-{}", crate::util::now_unix())));
+        let parse = |b: &[u8]| serde_json::from_slice::<StateFile>(b).ok();
+        let mut warning = None;
+        let mut read_only = false;
+        // A transient read failure (lock, antivirus) must not be mistaken for "no history".
+        let mut read = std::fs::read(&path);
+        for _ in 0..5 {
+            match &read {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    std::thread::sleep(Duration::from_millis(100));
+                    read = std::fs::read(&path);
+                }
+                _ => break,
+            }
+        }
+        let data = match read {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => StateFile::default(),
+            Err(e) => {
+                tracing::error!("rss.json can't be read ({e}); feeds are read-only this session");
+                read_only = true;
+                warning = Some(format!(
+                    "Corrent couldn't read its feed history ({e}). Automatic feed downloads are paused until the \
+                     next start, so nothing is downloaded twice."
+                ));
                 StateFile::default()
-            }),
-            Err(_) => StateFile::default(),
+            }
+            Ok(b) => match parse(&b) {
+                Some(d) => d,
+                None => {
+                    let bad = path.with_extension(format!("json.bad-{}", crate::util::now_unix()));
+                    let _ = std::fs::copy(&path, &bad);
+                    match std::fs::read(path.with_extension("json.bak")).ok().and_then(|b| parse(&b)) {
+                        Some(d) => {
+                            tracing::error!("rss.json is invalid; restored from its backup");
+                            d
+                        }
+                        None => {
+                            tracing::error!("rss.json is invalid and has no usable backup");
+                            read_only = true;
+                            warning = Some(format!(
+                                "Corrent's feed history was damaged (kept as {}). Automatic feed downloads are \
+                                 paused for this session so nothing is downloaded twice.",
+                                bad.display()
+                            ));
+                            StateFile::default()
+                        }
+                    }
+                }
+            },
         };
         let downloaded = data.downloaded.iter().cloned().collect();
-        Rss { path, data, downloaded, next_due: HashMap::new(), in_flight: HashSet::new(), view: Default::default() }
+        Rss {
+            path,
+            data,
+            downloaded,
+            next_due: HashMap::new(),
+            in_flight: HashSet::new(),
+            view: Default::default(),
+            read_only,
+            warning,
+        }
+    }
+
+    fn is_downloaded(&self, feed: &str, guid: &str) -> bool {
+        // Bare guids were written before ids were scoped per feed.
+        self.downloaded.contains(&article_key(feed, guid)) || self.downloaded.contains(guid)
     }
 
     pub fn view(&self) -> Arc<RssView> {
@@ -185,7 +253,7 @@ impl Rss {
         let cache = self.data.feeds.entry(url.to_string()).or_default();
         match result {
             Err(e) => {
-                tracing::info!("feed {url}: {e}");
+                tracing::info!("feed {}: {e}", crate::util::redact_url(url));
                 cache.error = Some(e);
             }
             Ok(parsed) => {
@@ -204,7 +272,7 @@ impl Rss {
                 cache.articles = merged;
             }
         }
-        let downloads = if s.auto_download { self.match_feed(url, s) } else { Vec::new() };
+        let downloads = if s.auto_download && !self.read_only { self.match_feed(url, s) } else { Vec::new() };
         self.save();
         self.rebuild(s);
         downloads
@@ -212,7 +280,7 @@ impl Rss {
 
     /// Re-run the rules over every cached article (after rules changed).
     pub fn apply_rules(&mut self, s: &RssSettings) -> Vec<Download> {
-        if !s.auto_download {
+        if !s.auto_download || self.read_only {
             return Vec::new();
         }
         let urls: Vec<String> = self.data.feeds.keys().cloned().collect();
@@ -243,7 +311,8 @@ impl Rss {
         // Oldest first, so the first release of an episode wins.
         for a in cache.articles.iter().rev() {
             let Some(link) = &a.torrent else { continue };
-            if self.downloaded.contains(&a.guid) || marks.iter().any(|(g, _, _)| g == &a.guid) {
+            let key = article_key(url, &a.guid);
+            if self.is_downloaded(url, &a.guid) || marks.iter().any(|(k, _, _)| *k == key) {
                 continue;
             }
             for (rule, m) in &rules {
@@ -258,13 +327,19 @@ impl Rss {
                         continue;
                     }
                 }
-                out.push(Download { link: link.clone(), title: a.title.clone(), rule: (*rule).clone() });
-                marks.push((a.guid.clone(), rule.name.clone(), episode));
+                out.push(Download {
+                    link: link.clone(),
+                    title: a.title.clone(),
+                    rule: (*rule).clone(),
+                    key: key.clone(),
+                    episode: episode.clone(),
+                });
+                marks.push((key, rule.name.clone(), episode));
                 break;
             }
         }
-        for (guid, rule, episode) in marks {
-            self.remember(guid);
+        for (key, rule, episode) in marks {
+            self.remember(key);
             if let Some(ep) = episode {
                 self.data.episodes.entry(rule).or_default().push(ep);
             }
@@ -273,12 +348,26 @@ impl Rss {
     }
 
     /// Mark an article as downloaded (e.g. added by hand), so rules skip it.
-    pub fn mark_downloaded(&mut self, guid: String, s: &RssSettings) {
-        if !self.downloaded.contains(&guid) {
-            self.remember(guid);
+    pub fn mark_downloaded(&mut self, feed: &str, guid: &str, s: &RssSettings) {
+        if !self.is_downloaded(feed, guid) {
+            self.remember(article_key(feed, guid));
             self.save();
             self.rebuild(s);
         }
+    }
+
+    /// Adding a rule's download failed: let a later refresh try again.
+    pub fn forget(&mut self, d: &Download, s: &RssSettings) {
+        if self.downloaded.remove(&d.key) {
+            self.data.downloaded.retain(|k| *k != d.key);
+        }
+        if let Some(ep) = &d.episode
+            && let Some(v) = self.data.episodes.get_mut(&d.rule.name)
+        {
+            v.retain(|e| e != ep);
+        }
+        self.save();
+        self.rebuild(s);
     }
 
     fn remember(&mut self, guid: String) {
@@ -306,7 +395,7 @@ impl Rss {
         self.rebuild(s);
     }
 
-    fn rebuild(&mut self, s: &RssSettings) {
+    pub fn rebuild(&mut self, s: &RssSettings) {
         let feeds = s
             .feeds
             .iter()
@@ -327,7 +416,7 @@ impl Rss {
                                 .iter()
                                 .map(|a| ArticleView {
                                     article: a.clone(),
-                                    downloaded: self.downloaded.contains(&a.guid),
+                                    downloaded: self.is_downloaded(&f.url, &a.guid),
                                 })
                                 .collect()
                         })
@@ -343,6 +432,9 @@ impl Rss {
     }
 
     fn save(&mut self) {
+        if self.read_only {
+            return;
+        }
         self.data.schema_version = STATE_VERSION;
         match serde_json::to_vec(&self.data) {
             Ok(b) => {
@@ -423,6 +515,38 @@ mod tests {
         rss.settings_changed(&RssSettings::default());
         assert!(rss.view().feeds.is_empty());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ids_are_per_feed_failed_adds_retry_and_damage_is_read_only() {
+        let path = std::env::temp_dir().join(format!("corrent-rss-keys-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut s = settings(vec![RssRule { name: "A".into(), must_contain: "a".into(), ..Default::default() }]);
+        s.feeds.push(FeedConfig { url: "https://feed2".into(), ..Default::default() });
+        let mut rss = Rss::load(path.clone());
+        let d = rss.fetched("https://feed", parsed(vec![article("1", "A")]), &s);
+        assert_eq!(d.len(), 1);
+        // Same guid in another feed is a different article.
+        assert_eq!(rss.fetched("https://feed2", parsed(vec![article("1", "A")]), &s).len(), 1);
+        // A failed add is forgotten and matched again.
+        rss.forget(&d[0], &s);
+        assert_eq!(rss.fetched("https://feed", parsed(vec![article("1", "A")]), &s).len(), 1);
+        // Legacy bare ids still count as downloaded.
+        rss.remember("legacy".into());
+        assert!(rss.fetched("https://feed", parsed(vec![article("legacy", "A")]), &s).is_empty());
+        drop(rss);
+        // Damaged file without backup: read-only, nothing auto-downloaded, file untouched.
+        let _ = std::fs::remove_file(path.with_extension("json.bak"));
+        std::fs::write(&path, b"{ broken").unwrap();
+        let mut rss = Rss::load(path.clone());
+        assert!(rss.warning.is_some());
+        assert!(rss.fetched("https://feed", parsed(vec![article("9", "A")]), &s).is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{ broken");
+        for f in std::fs::read_dir(std::env::temp_dir()).unwrap().flatten() {
+            if f.file_name().to_string_lossy().starts_with(&format!("corrent-rss-keys-{}", std::process::id())) {
+                let _ = std::fs::remove_file(f.path());
+            }
+        }
     }
 
     #[test]

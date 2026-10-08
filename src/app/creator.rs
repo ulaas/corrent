@@ -15,7 +15,12 @@ use crate::util::fmt_bytes;
 
 pub struct CreatorState {
     pub source: Option<PathBuf>,
+    pub source_is_file: bool,
     pub size: u64,
+    /// Folder size being computed off the UI thread.
+    size_rx: Option<std::sync::mpsc::Receiver<u64>>,
+    /// Id of the create request in flight.
+    pub request: Option<u64>,
     pub name: String,
     pub trackers: String,
     /// 0 = automatic.
@@ -31,7 +36,10 @@ impl CreatorState {
     pub fn new(default_trackers: &[String]) -> Self {
         CreatorState {
             source: None,
+            source_is_file: false,
             size: 0,
+            size_rx: None,
+            request: None,
             name: String::new(),
             trackers: default_trackers.join("\n"),
             piece_length: 0,
@@ -43,8 +51,17 @@ impl CreatorState {
         }
     }
 
-    pub fn set_source(&mut self, p: PathBuf) {
-        self.size = total_size(&p);
+    pub fn set_source(&mut self, p: PathBuf, rt: &tokio::runtime::Handle, ctx: &egui::Context) {
+        // Walking a big folder takes a while: do it off the UI thread.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (path, ctx) = (p.clone(), ctx.clone());
+        rt.spawn_blocking(move || {
+            let _ = tx.send(total_size(&path));
+            ctx.request_repaint();
+        });
+        self.size = 0;
+        self.size_rx = Some(rx);
+        self.source_is_file = p.is_file();
         self.name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let parent = p.parent().map(PathBuf::from).unwrap_or_default();
         self.output = Some(parent.join(format!("{}.torrent", self.name)));
@@ -63,6 +80,10 @@ impl CorrentApp {
 
     pub(super) fn creator_dialog(&mut self, ctx: &Context, p: &Palette) {
         let Some(mut c) = self.creator.take() else { return };
+        if let Some(size) = c.size_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            c.size = size;
+            c.size_rx = None;
+        }
         let mut close = false;
         let mut pick: Option<(PickTarget, PickKind)> = None;
         let busy_picker = self.picker_busy();
@@ -94,13 +115,15 @@ impl CorrentApp {
                             pick = Some((PickTarget::CreatorSource, PickKind::Folder));
                         }
                     });
-                    if c.size > 0 {
+                    if c.size_rx.is_some() {
+                        ui.add(egui::Spinner::new().size(12.0));
+                    } else if c.size > 0 {
                         ui.label(RichText::new(fmt_bytes(c.size)).small().color(p.text_dim));
                     }
                 });
                 ui.end_row();
                 ui.label("Name");
-                let is_file = c.source.as_ref().is_some_and(|s| s.is_file());
+                let is_file = c.source_is_file;
                 ui.add_enabled(!is_file, egui::TextEdit::singleline(&mut c.name).desired_width(420.0))
                     .on_disabled_hover_text("A single-file torrent is named after its file");
                 ui.end_row();
@@ -158,7 +181,11 @@ impl CorrentApp {
                 let label = if c.busy { "Hashing…".to_string() } else { format!("{}  Create", icons::CHECK) };
                 if ui.add_enabled_ui(ready, |ui| primary_button(ui, p, &label)).inner.clicked() {
                     c.busy = true;
+                    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    c.request = Some(id);
                     let req = CreateRequest {
+                        id,
                         source: c.source.clone().unwrap(),
                         name: Some(c.name.trim().to_string()),
                         trackers: c

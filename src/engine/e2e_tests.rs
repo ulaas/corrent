@@ -352,6 +352,7 @@ async fn created_torrent_seeds_and_downloads() {
     let a = start(&a_dir);
     wait_for(&a, "engine A running", 20, |sn| sn.session.listen_port.is_some()).await;
     a.engine.send(EngineCommand::CreateTorrent(Box::new(super::creator::CreateRequest {
+        id: 1,
         source: src.clone(),
         name: Some("Renamed share".into()),
         trackers: vec![],

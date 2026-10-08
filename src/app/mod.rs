@@ -701,13 +701,18 @@ impl CorrentApp {
                     }
                 }
                 EngineEvent::DataWarning(w) => self.data_notes.push(w),
-                EngineEvent::Created { result } => {
-                    if let Some(c) = &mut self.creator {
+                EngineEvent::Created { id, result } => {
+                    // Ignore answers for a dialog that was closed (or a newer request).
+                    let current = self.creator.as_ref().is_some_and(|c| c.request == Some(id));
+                    if let Some(c) = self.creator.as_mut().filter(|_| current) {
                         c.busy = false;
+                        c.request = None;
                     }
                     match result {
                         Ok((name, path, magnet, seeding)) => {
-                            self.creator = None;
+                            if current {
+                                self.creator = None;
+                            }
                             let folder = path.parent().map(std::path::PathBuf::from).unwrap_or_default();
                             let mut actions = vec![
                                 ("Show file".into(), toasts::ToastAction::OpenFolder(folder)),

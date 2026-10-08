@@ -118,6 +118,9 @@ pub struct Actor {
     low_space_warned: bool,
     stream: Option<Arc<super::stream::StreamServer>>,
     rss: crate::rss::Rss,
+    /// Adds started by feed rules (pending id → article), so a failed add can be retried.
+    rss_adds: HashMap<u64, crate::rss::Download>,
+    rss_failures: HashMap<String, u32>,
     rss_client: Option<(Option<String>, reqwest::Client)>,
 }
 
@@ -132,7 +135,8 @@ impl Actor {
     ) -> Self {
         let (internal_tx, internal_rx) = mpsc::unbounded_channel();
         let store = Store::load(paths.store_file());
-        let rss = crate::rss::Rss::load(paths.rss_file());
+        let mut rss = crate::rss::Rss::load(paths.rss_file());
+        rss.rebuild(&settings.rss);
         let alt = settings.speed.alt_enabled;
         Actor {
             paths,
@@ -182,6 +186,8 @@ impl Actor {
             low_space_warned: false,
             stream: None,
             rss,
+            rss_adds: HashMap::new(),
+            rss_failures: HashMap::new(),
             rss_client: None,
         }
     }
@@ -189,6 +195,9 @@ impl Actor {
     pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<EngineCommand>) {
         let mut internal_rx = self.internal_rx.take().expect("run called once");
         if let Some(w) = self.store.warning.take() {
+            self.emit(EngineEvent::DataWarning(w));
+        }
+        if let Some(w) = self.rss.warning.take() {
             self.emit(EngineEvent::DataWarning(w));
         }
         match super::stream::StreamServer::start().await {
@@ -342,7 +351,8 @@ impl Actor {
         };
         match cmd {
             EngineCommand::CreateTorrent(req) => {
-                let Some(sess) = self.session.clone() else { return };
+                let sess = self.session.clone();
+                let id = req.id;
                 let events = self.events.clone();
                 let ctx = self.ctx.clone();
                 let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
@@ -369,6 +379,11 @@ impl Actor {
                                 add_to_top: false,
                                 initial_peers: None,
                             };
+                            let sess = sess.ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "the torrent file was saved, but seeding needs the engine, which isn't running"
+                                )
+                            })?;
                             add_torrent(&sess, &add, peer_limit).await?;
                         }
                         anyhow::Ok((
@@ -380,7 +395,7 @@ impl Actor {
                     }
                     .await
                     .map_err(|e| format!("{e:#}"));
-                    let _ = events.send(EngineEvent::Created { result });
+                    let _ = events.send(EngineEvent::Created { id, result });
                     ctx.request_repaint();
                 });
             }
@@ -421,7 +436,9 @@ impl Actor {
                     }
                 }
             }
-            EngineCommand::Add(req) => self.start_add(req),
+            EngineCommand::Add(req) => {
+                self.start_add(req);
+            }
             EngineCommand::Preview { req, source } => self.start_preview(req, source),
             EngineCommand::CancelPreview(req) => {
                 if let Some(h) = self.previews.remove(&req) {
@@ -619,7 +636,9 @@ impl Actor {
                 }
             }
             EngineCommand::RssRefresh(url) => self.rss.refresh_now(url.as_deref()),
-            EngineCommand::RssMarkDownloaded(guid) => self.rss.mark_downloaded(guid, &self.settings.rss),
+            EngineCommand::RssMarkDownloaded { feed, guid } => {
+                self.rss.mark_downloaded(&feed, &guid, &self.settings.rss)
+            }
             EngineCommand::SetAltSpeed(on) => {
                 self.alt = on;
                 self.apply_rate_limits();
@@ -632,7 +651,8 @@ impl Actor {
 
     /// Start fetching feeds that are due.
     fn poll_feeds(&mut self) {
-        if self.settings.rss.feeds.is_empty() {
+        // Without a session, matches couldn't be added (and would be marked as downloaded).
+        if self.settings.rss.feeds.is_empty() || self.session.is_none() {
             return;
         }
         let due = self.rss.due(&self.settings.rss);
@@ -657,7 +677,8 @@ impl Actor {
 
     /// Add an article chosen by a download rule.
     fn rss_add(&mut self, d: crate::rss::Download, settings: &Settings) {
-        let source = if d.link.starts_with("magnet:") { AddSource::Magnet(d.link) } else { AddSource::Url(d.link) };
+        let link = d.link.clone();
+        let source = if link.starts_with("magnet:") { AddSource::Magnet(link) } else { AddSource::Url(link) };
         let category = d.rule.category.clone().filter(|c| !c.is_empty());
         let save_path = d
             .rule
@@ -670,7 +691,7 @@ impl Actor {
             .unwrap_or_else(|| settings.downloads.save_path.clone());
         tracing::info!("rss rule {:?}: adding {:?}", d.rule.name, d.title);
         self.toast(ToastKind::Info, format!("Feed rule “{}” added “{}”", d.rule.name, d.title));
-        self.start_add(Box::new(AddRequest {
+        let pending = self.start_add(Box::new(AddRequest {
             source,
             torrent_bytes: None,
             save_path,
@@ -682,6 +703,12 @@ impl Actor {
             add_to_top: false,
             initial_peers: None,
         }));
+        match pending {
+            Some(id) => {
+                self.rss_adds.insert(id, d);
+            }
+            None => self.rss.forget(&d, &settings.rss),
+        }
     }
 
     fn register_tags(&mut self, tags: &[String]) {
@@ -778,10 +805,11 @@ impl Actor {
         self.previews.insert(req, handle);
     }
 
-    fn start_add(&mut self, req: Box<AddRequest>) {
+    /// Returns the pending-add id, or None if nothing was started.
+    fn start_add(&mut self, req: Box<AddRequest>) -> Option<u64> {
         let Some(sess) = self.session.clone() else {
             self.toast(ToastKind::Error, "The engine is not running; cannot add torrents.");
-            return;
+            return None;
         };
         let pending = self.next_pending;
         self.next_pending += 1;
@@ -812,6 +840,7 @@ impl Actor {
         if let Some(p) = self.pending.get_mut(&pending) {
             p.task = Some(task);
         }
+        Some(pending)
     }
 
     fn start_readd(
@@ -978,6 +1007,18 @@ impl Actor {
             }
             Internal::AddFinished { pending, req, result } => {
                 self.pending.remove(&pending);
+                if let Some(d) = self.rss_adds.remove(&pending)
+                    && let Err(e) = &result
+                    && !e.contains("already")
+                {
+                    // Retry on a later refresh, but give up on links that keep failing.
+                    let n = self.rss_failures.entry(d.key.clone()).or_default();
+                    *n += 1;
+                    if *n < 3 {
+                        let rss = self.settings.rss.clone();
+                        self.rss.forget(&d, &rss);
+                    }
+                }
                 match result {
                     Ok((hash, name)) => {
                         let top = req.add_to_top;
@@ -1149,7 +1190,7 @@ impl Actor {
                     })
                     .unwrap_or_else(|| self.settings.downloads.save_path.clone());
                 tracing::info!("watch folder: adding {}", hit.source.describe());
-                self.start_add(Box::new(AddRequest {
+                let _ = self.start_add(Box::new(AddRequest {
                     source: hit.source,
                     torrent_bytes: None,
                     save_path,

@@ -162,7 +162,7 @@ impl CorrentApp {
                 PickTarget::OnboardingFolder => self.settings.downloads.save_path = first,
                 PickTarget::CreatorSource => {
                     if let Some(c) = &mut self.creator {
-                        c.set_source(first);
+                        c.set_source(first, &self.rt, &self.ctx);
                     }
                 }
                 PickTarget::RssRuleFolder => {

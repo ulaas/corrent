@@ -219,7 +219,13 @@ impl CorrentApp {
                 self.update_rss(|r| {
                     r.feeds.retain(|f| f.url != u);
                     for rule in &mut r.rules {
-                        rule.feeds.retain(|f| f != &u);
+                        if rule.feeds.contains(&u) {
+                            rule.feeds.retain(|f| f != &u);
+                            // An empty list means "all feeds": don't widen the rule silently.
+                            if rule.feeds.is_empty() {
+                                rule.enabled = false;
+                            }
+                        }
                     }
                 });
                 self.toasts.push(ToastKind::Info, "Feed removed");
@@ -277,7 +283,7 @@ impl CorrentApp {
             .filter(|r| rule_is_active(r))
             .filter_map(|r| Matcher::new(r).ok().map(|m| (r.name.clone(), m, r.clone())))
             .collect();
-        let mut download: Option<(String, String)> = None;
+        let mut download: Option<(String, String, String)> = None;
         let multi = shown.len() > 1;
         let mut tb = TableBuilder::new(ui)
             .id_salt("articles")
@@ -358,7 +364,7 @@ impl CorrentApp {
                                 .on_hover_text(link)
                                 .clicked()
                             {
-                                download = Some((link.clone(), a.article.guid.clone()));
+                                download = Some((link.clone(), f.url.clone(), a.article.guid.clone()));
                             }
                         }
                         None => {
@@ -367,10 +373,10 @@ impl CorrentApp {
                     });
                 });
             });
-        if let Some((link, guid)) = download {
+        if let Some((link, feed, guid)) = download {
             let src = if link.starts_with("magnet:") { AddSource::Magnet(link) } else { AddSource::Url(link) };
             self.launch_queue.push_back(src);
-            self.engine.send(EngineCommand::RssMarkDownloaded(guid));
+            self.engine.send(EngineCommand::RssMarkDownloaded { feed, guid });
         }
     }
 
@@ -383,7 +389,7 @@ impl CorrentApp {
         let categories: Vec<String> = self.snap.categories.keys().cloned().collect();
         let auto = self.settings.rss.auto_download;
         let resp = egui::Modal::new(Id::new("rss_rules")).show(ctx, |ui| {
-            ui.set_width(860.0);
+            ui.set_width(860.0_f32.min(ctx.content_rect().width() - 60.0));
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icons::FUNNEL).size(20.0).color(p.accent));
                 ui.label(RichText::new("Download rules").font(theme::title()).color(p.text));

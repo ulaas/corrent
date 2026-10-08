@@ -18,29 +18,40 @@ pub struct StreamServer {
     pub port: u16,
     pub token: String,
     session: Mutex<Option<Arc<Session>>>,
+    streams: Arc<tokio::sync::Semaphore>,
 }
 
 fn random_token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    // RandomState is seeded from OS randomness once per process.
-    let mut out = String::new();
-    for i in 0..2u64 {
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u64(i ^ crate::util::now_unix() as u64);
-        out.push_str(&format!("{:016x}", h.finish()));
-    }
-    out
+    crate::util::random_hex(16)
 }
+
+/// Each open stream holds one of librqbit's blocking-I/O permits (8 by default, shared with
+/// piece writes); keep enough free for the engine.
+const MAX_STREAMS: usize = 3;
+const HEAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 impl StreamServer {
     pub async fn start() -> anyhow::Result<Arc<StreamServer>> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
-        let server = Arc::new(StreamServer { port, token: random_token(), session: Mutex::new(None) });
+        let server = Arc::new(StreamServer {
+            port,
+            token: random_token(),
+            session: Mutex::new(None),
+            streams: Arc::new(tokio::sync::Semaphore::new(MAX_STREAMS)),
+        });
         let s = server.clone();
         tokio::spawn(async move {
             loop {
-                let Ok((conn, _)) = listener.accept().await else { continue };
+                let conn = match listener.accept().await {
+                    Ok((conn, _)) => conn,
+                    Err(e) => {
+                        // e.g. out of file handles: back off instead of spinning.
+                        tracing::debug!("stream accept failed: {e}");
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        continue;
+                    }
+                };
                 let s = s.clone();
                 tokio::spawn(async move {
                     if let Err(e) = s.handle(conn).await {
@@ -57,7 +68,7 @@ impl StreamServer {
     }
 
     async fn handle(&self, mut conn: TcpStream) -> anyhow::Result<()> {
-        let head = read_head(&mut conn).await?;
+        let head = tokio::time::timeout(HEAD_TIMEOUT, read_head(&mut conn)).await??;
         let req = parse_request(&head).ok_or_else(|| anyhow::anyhow!("bad request"))?;
         let Some((hash, file)) = parse_path(&req.path, &self.token) else {
             return respond(&mut conn, "404 Not Found", &[], b"not found").await;
@@ -66,15 +77,15 @@ impl StreamServer {
         let Some(handle) = session.and_then(|s| s.get(TorrentIdOrHash::Hash(Id20::new(hash.0)))) else {
             return respond(&mut conn, "404 Not Found", &[], b"torrent not found").await;
         };
-        let name = handle
-            .with_metadata(|m| m.file_infos.get(file).map(|f| f.relative_filename.to_string_lossy().into_owned()))
+        let info = handle
+            .with_metadata(|m| {
+                m.file_infos.get(file).map(|f| (f.relative_filename.to_string_lossy().into_owned(), f.len))
+            })
             .ok()
             .flatten();
-        let Some(name) = name else {
+        let Some((name, len)) = info else {
             return respond(&mut conn, "404 Not Found", &[], b"file not found").await;
         };
-        let mut stream = handle.stream(file).await?;
-        let len = stream.len();
         let ctype = content_type(&name);
         let (start, end, status) = match req.range {
             Some((s, e)) => {
@@ -88,6 +99,17 @@ impl StreamServer {
             None => (0, len.saturating_sub(1), "200 OK"),
         };
         let body_len = if len == 0 { 0 } else { end - start + 1 };
+        let permit = if req.head || body_len == 0 {
+            None
+        } else {
+            match self.streams.clone().try_acquire_owned() {
+                Ok(p) => Some(p),
+                Err(_) => {
+                    let busy: &[u8] = b"too many streams open; close a player and try again";
+                    return respond(&mut conn, "503 Service Unavailable", &[("Retry-After", "2")], busy).await;
+                }
+            }
+        };
         let mut headers = format!(
             "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {body_len}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n"
         );
@@ -99,6 +121,8 @@ impl StreamServer {
         if req.head || body_len == 0 {
             return Ok(());
         }
+        let _permit = permit;
+        let mut stream = handle.stream(file).await?;
         stream.seek(std::io::SeekFrom::Start(start)).await?;
         let mut limited = stream.take(body_len);
         tokio::io::copy(&mut limited, &mut conn).await?;
