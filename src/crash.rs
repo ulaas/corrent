@@ -18,17 +18,32 @@ fn marker(log_dir: &Path) -> PathBuf {
     log_dir.join("running.marker")
 }
 
+/// Set by the panic hook; survives a normal quit (e.g. after an engine-task panic the UI kept
+/// running) and is cleared when the user dismisses the banner.
+fn pending(log_dir: &Path) -> PathBuf {
+    log_dir.join("crash.pending")
+}
+
+pub fn dismiss(log_dir: &Path) {
+    let _ = std::fs::remove_file(pending(log_dir));
+}
+
 /// Call once at startup: inspects the previous run and marks this one as running.
 pub fn start(log_dir: &Path) -> PreviousRun {
     let _ = std::fs::create_dir_all(log_dir);
     let m = marker(log_dir);
     let since = std::fs::metadata(&m).and_then(|md| md.modified()).ok();
-    let unclean = since.is_some();
-    let report = since.and_then(|t| {
-        reports(log_dir)
-            .into_iter()
-            .find(|p| std::fs::metadata(p).and_then(|md| md.modified()).map(|mt| mt >= t).unwrap_or(false))
-    });
+    let crashed = pending(log_dir).exists();
+    let unclean = since.is_some() || crashed;
+    let report = if crashed {
+        reports(log_dir).into_iter().next()
+    } else {
+        since.and_then(|t| {
+            reports(log_dir)
+                .into_iter()
+                .find(|p| std::fs::metadata(p).and_then(|md| md.modified()).map(|mt| mt >= t).unwrap_or(false))
+        })
+    };
     let _ = std::fs::write(&m, std::process::id().to_string());
     PreviousRun { unclean, report }
 }
@@ -90,6 +105,7 @@ fn write_report(log_dir: &Path, info: &std::panic::PanicHookInfo<'_>) -> std::io
         }
     }
     f.flush()?;
+    let _ = std::fs::write(pending(log_dir), path.to_string_lossy().as_bytes());
     for old in reports(log_dir).into_iter().skip(KEEP_REPORTS) {
         let _ = std::fs::remove_file(old);
     }

@@ -254,6 +254,8 @@ pub struct CorrentApp {
     pub engine: EngineHandle,
     pub rt: tokio::runtime::Handle,
     events: std::sync::mpsc::Receiver<EngineEvent>,
+    /// Lets background UI work report back through the engine event channel.
+    ui_events_tx: std::sync::mpsc::Sender<EngineEvent>,
     pub snap: Arc<Snapshot>,
     pub prefs: UiPrefs,
     pub toasts: Toasts,
@@ -318,6 +320,7 @@ impl CorrentApp {
         let mut prefs: UiPrefs = cc.storage.and_then(|s| eframe::get_value(s, "ui_prefs")).unwrap_or_default();
         prefs.tracker_filter = GroupFilter::All;
         let (tx, rx) = std::sync::mpsc::channel();
+        let ui_events_tx = tx.clone();
         let engine = EngineHandle::start(&rt, paths.clone(), settings.clone(), cc.egui_ctx.clone(), tx);
         if first_run {
             let _ = settings.save(&paths);
@@ -328,6 +331,7 @@ impl CorrentApp {
             engine,
             rt,
             events: rx,
+            ui_events_tx,
             snap: Arc::new(Snapshot::default()),
             prefs,
             toasts: Toasts::default(),
@@ -411,17 +415,25 @@ impl CorrentApp {
 
     pub fn export_backup(&mut self, dest: std::path::PathBuf) {
         let paths = self.paths.clone();
-        match crate::backup::export(&paths, &dest) {
-            Ok(n) => self.toasts.push(ToastKind::Success, format!("Backed up {n} files to {}", dest.display())),
-            Err(e) => self.toasts.push(ToastKind::Error, format!("Backup failed: {e:#}")),
-        }
+        let tx = self.ui_events_tx.clone();
+        let ctx = self.ctx.clone();
+        self.toasts.push(ToastKind::Info, "Backing up…");
+        self.rt.spawn_blocking(move || {
+            let msg = match crate::backup::export(&paths, &dest) {
+                Ok(n) => (ToastKind::Success, format!("Backed up {n} files to {}", dest.display())),
+                Err(e) => (ToastKind::Error, format!("Backup failed: {e:#}")),
+            };
+            let _ = tx.send(EngineEvent::Toast(msg.0, msg.1));
+            ctx.request_repaint();
+        });
     }
 
     pub fn import_backup(&mut self, src: std::path::PathBuf) {
         match crate::backup::stage_import(&self.paths, &src) {
-            Ok(_) => self.data_notes.push(
-                "The backup will be restored the next time Corrent starts. Quit and reopen Corrent to finish.".into(),
-            ),
+            Ok(parts) => self.data_notes.push(format!(
+                "The backup ({}) will be restored the next time Corrent starts. Quit and reopen Corrent to finish.",
+                parts.join(", ")
+            )),
             Err(e) => self.toasts.push(ToastKind::Error, format!("Can't restore: {e:#}")),
         }
     }
@@ -458,6 +470,7 @@ impl CorrentApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if crate::ui::widgets::secondary_button(ui, "Dismiss").clicked() {
                             self.previous_run.unclean = false;
+                            crate::crash::dismiss(&self.paths.log_dir());
                         }
                         if let Some(r) = &report
                             && crate::ui::widgets::secondary_button(ui, "View report").clicked()

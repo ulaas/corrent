@@ -821,7 +821,11 @@ impl Actor {
                     Ok(()) => {
                         let name = meta.display_name.clone().unwrap_or(meta.name.clone());
                         // Bring back category, tags, dates, queue position and totals.
-                        *self.store.meta_mut(hash) = *meta;
+                        let mut meta = *meta;
+                        if meta.pause_reason == Some(PauseReason::Queue) && !self.settings.queue.enabled {
+                            meta.pause_reason = None;
+                        }
+                        *self.store.meta_mut(hash) = meta;
                         self.store.normalize_queue();
                         self.store.maybe_save(true);
                         self.emit(EngineEvent::Restored { hash, name });
@@ -1038,6 +1042,11 @@ impl Actor {
             all_time_uploaded: self.store.data.stats.all_time_uploaded,
             free_space: self.free_space,
             warning: self.warning.clone(),
+            undoable: self
+                .undo
+                .iter()
+                .map(|(h, e)| (*h, e.meta.display_name.clone().unwrap_or(e.meta.name.clone())))
+                .collect(),
         };
         self.snapshot.store(Arc::new(snap));
         self.store.maybe_save(false);

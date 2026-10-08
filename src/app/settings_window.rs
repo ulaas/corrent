@@ -490,7 +490,7 @@ impl CorrentApp {
                                 if custom {
                                     let mut path = w.save_path.clone().unwrap_or_else(|| s.downloads.save_path.clone());
                                     if path_input(ui, &mut path) {
-                                        *browse = Some((PickTarget::WatchFolderSave(i), path.clone()));
+                                        *browse = Some((PickTarget::WatchFolderSave(w.path.clone()), path.clone()));
                                     }
                                     w.save_path = Some(path);
                                 } else {

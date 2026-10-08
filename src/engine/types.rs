@@ -221,6 +221,8 @@ pub struct Snapshot {
     pub all_time_uploaded: u64,
     pub free_space: Option<u64>,
     pub warning: Option<String>,
+    /// Recently removed torrents that can still be restored (hash, name).
+    pub undoable: Vec<(InfoHash, String)>,
 }
 
 /// Where a torrent to be added comes from.

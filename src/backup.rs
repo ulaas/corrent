@@ -8,6 +8,10 @@ use anyhow::Context as _;
 use crate::config::Paths;
 
 const RESTORE_DIR: &str = ".restore";
+const RESTORE_TMP: &str = ".restore.tmp";
+/// Written last when staging; a staged restore without it is ignored.
+const COMPLETE: &str = ".complete";
+const COMPONENTS: [&str; 4] = ["settings.toml", "store.json", "session", "torrents"];
 
 /// Files and folders that make up a profile, relative to the data dir.
 fn entries(paths: &Paths) -> Vec<PathBuf> {
@@ -22,7 +26,9 @@ fn entries(paths: &Paths) -> Vec<PathBuf> {
         let d = paths.data_dir.join(dir);
         if let Ok(rd) = std::fs::read_dir(&d) {
             for e in rd.flatten() {
-                if e.path().is_file() {
+                // Skip temp files the engine may be writing right now.
+                let is_tmp = e.path().extension().is_some_and(|x| x == "tmp");
+                if e.path().is_file() && !is_tmp {
                     out.push(PathBuf::from(dir).join(e.file_name()));
                 }
             }
@@ -52,8 +58,9 @@ pub fn export(paths: &Paths, dest: &Path) -> anyhow::Result<usize> {
     Ok(list.len())
 }
 
-/// Validate and unpack a backup into the staging folder; it is applied at the next start.
-pub fn stage_import(paths: &Paths, src: &Path) -> anyhow::Result<usize> {
+/// Validate and unpack a backup; it is applied at the next start. Returns the components found
+/// (e.g. "settings", "torrent list"). Nothing is staged unless the whole archive extracts cleanly.
+pub fn stage_import(paths: &Paths, src: &Path) -> anyhow::Result<Vec<&'static str>> {
     let file = std::fs::File::open(src).with_context(|| format!("opening {}", src.display()))?;
     let mut zip = zip::ZipArchive::new(file).context("not a valid backup file")?;
     let names: Vec<String> = zip.file_names().map(String::from).collect();
@@ -61,58 +68,90 @@ pub fn stage_import(paths: &Paths, src: &Path) -> anyhow::Result<usize> {
         names.iter().any(|n| n == "settings.toml" || n == "store.json"),
         "this zip is not a Corrent backup"
     );
+    let tmp = paths.data_dir.join(RESTORE_TMP);
+    let _ = std::fs::remove_dir_all(&tmp);
+    let result = (|| -> anyhow::Result<()> {
+        std::fs::create_dir_all(&tmp)?;
+        for i in 0..zip.len() {
+            let mut f = zip.by_index(i)?;
+            // enclosed_name rejects absolute paths and `..` components.
+            let Some(rel) = f.enclosed_name() else { continue };
+            let comps = rel.components().count();
+            let allowed = rel == Path::new("settings.toml")
+                || rel == Path::new("store.json")
+                || ((rel.starts_with("session") || rel.starts_with("torrents")) && comps == 2);
+            if !allowed || f.is_dir() {
+                continue;
+            }
+            let out = tmp.join(&rel);
+            if let Some(p) = out.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf)?;
+            std::fs::write(out, buf)?;
+        }
+        std::fs::write(tmp.join(COMPLETE), b"ok")?;
+        Ok(())
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
     let stage = paths.data_dir.join(RESTORE_DIR);
     let _ = std::fs::remove_dir_all(&stage);
-    std::fs::create_dir_all(&stage)?;
-    let mut count = 0;
-    for i in 0..zip.len() {
-        let mut f = zip.by_index(i)?;
-        // enclosed_name rejects absolute paths and `..` components.
-        let Some(rel) = f.enclosed_name() else { continue };
-        let allowed = rel == Path::new("settings.toml")
-            || rel == Path::new("store.json")
-            || rel.starts_with("session")
-            || rel.starts_with("torrents");
-        if !allowed || f.is_dir() {
-            continue;
+    std::fs::rename(&tmp, &stage)?;
+    let mut found = Vec::new();
+    for (name, label) in [
+        ("settings.toml", "settings"),
+        ("store.json", "categories, tags and totals"),
+        ("session", "torrent list"),
+        ("torrents", "metainfo backups"),
+    ] {
+        if stage.join(name).exists() {
+            found.push(label);
         }
-        let out = stage.join(&rel);
-        if let Some(p) = out.parent() {
-            std::fs::create_dir_all(p)?;
-        }
-        let mut buf = Vec::new();
-        f.read_to_end(&mut buf)?;
-        std::fs::write(out, buf)?;
-        count += 1;
     }
-    Ok(count)
+    Ok(found)
 }
 
 /// Apply a staged restore (call at startup before anything reads the data dir).
-/// The current data is moved to `pre-restore-<time>` first.
+///
+/// Only components present in the backup are replaced; each replaced component's current data
+/// is moved to `pre-restore-<time>` first. Every applied component is removed from the stage,
+/// so an interrupted restore resumes where it stopped instead of wiping data.
 pub fn apply_pending(paths: &Paths) -> Option<String> {
+    let _ = std::fs::remove_dir_all(paths.data_dir.join(RESTORE_TMP));
     let stage = paths.data_dir.join(RESTORE_DIR);
     if !stage.is_dir() {
         return None;
     }
+    if !stage.join(COMPLETE).exists() {
+        let _ = std::fs::remove_dir_all(&stage);
+        return None;
+    }
     let keep = paths.data_dir.join(format!("pre-restore-{}", crate::util::now_unix()));
+    let mut applied = 0;
     let result = (|| -> std::io::Result<()> {
-        std::fs::create_dir_all(&keep)?;
-        for name in ["settings.toml", "store.json", "session", "torrents"] {
+        for name in COMPONENTS {
+            let staged = stage.join(name);
+            if !staged.exists() {
+                continue;
+            }
             let cur = paths.data_dir.join(name);
             if cur.exists() {
+                std::fs::create_dir_all(&keep)?;
                 std::fs::rename(&cur, keep.join(name))?;
             }
-            let staged = stage.join(name);
-            if staged.exists() {
-                std::fs::rename(&staged, &cur)?;
-            }
+            std::fs::rename(&staged, &cur)?;
+            applied += 1;
         }
         std::fs::remove_dir_all(&stage)
     })();
+    let kept = if keep.exists() { format!(" The previous data was kept in {}.", keep.display()) } else { String::new() };
     Some(match result {
-        Ok(()) => format!("Restored your data from a backup. The previous data was kept in {}.", keep.display()),
-        Err(e) => format!("Restoring from the backup failed ({e}). Your previous data is in {}.", keep.display()),
+        Ok(()) => format!("Restored {applied} part(s) of your data from a backup.{kept}"),
+        Err(e) => format!("Restoring from the backup was interrupted ({e}); it will continue next start.{kept}"),
     })
 }
 
@@ -133,11 +172,44 @@ mod tests {
         assert_eq!(export(&paths, &zip).unwrap(), 3);
 
         std::fs::write(paths.settings_file(), "changed").unwrap();
-        assert_eq!(stage_import(&paths, &zip).unwrap(), 3);
+        assert_eq!(stage_import(&paths, &zip).unwrap().len(), 3);
         let msg = apply_pending(&paths).unwrap();
         assert!(msg.starts_with("Restored"));
         assert_eq!(std::fs::read_to_string(paths.settings_file()).unwrap(), "[speed]\ndownload_limit = 5\n");
         assert!(apply_pending(&paths).is_none());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn partial_backup_keeps_other_components() {
+        let base = std::env::temp_dir().join(format!("corrent-backup-part-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let paths = Paths { data_dir: base.join("data"), portable: true };
+        std::fs::create_dir_all(paths.session_dir()).unwrap();
+        std::fs::write(paths.session_dir().join("session.json"), "live").unwrap();
+        std::fs::write(paths.store_file(), "{\"live\":1}").unwrap();
+        // A backup with settings only.
+        let zip_path = base.join("s.zip");
+        let mut z = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+        z.start_file("settings.toml", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(b"[speed]\n").unwrap();
+        z.finish().unwrap();
+        assert_eq!(stage_import(&paths, &zip_path).unwrap(), vec!["settings"]);
+        apply_pending(&paths).unwrap();
+        assert_eq!(std::fs::read_to_string(paths.session_dir().join("session.json")).unwrap(), "live");
+        assert_eq!(std::fs::read_to_string(paths.store_file()).unwrap(), "{\"live\":1}");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn incomplete_stage_is_ignored() {
+        let base = std::env::temp_dir().join(format!("corrent-backup-inc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let paths = Paths { data_dir: base.join("data"), portable: true };
+        std::fs::create_dir_all(paths.data_dir.join(RESTORE_DIR)).unwrap();
+        std::fs::write(paths.store_file(), "keep").unwrap();
+        assert!(apply_pending(&paths).is_none());
+        assert_eq!(std::fs::read_to_string(paths.store_file()).unwrap(), "keep");
         let _ = std::fs::remove_dir_all(base);
     }
 

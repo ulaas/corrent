@@ -30,6 +30,18 @@ impl CorrentApp {
             if ui.button(format!("{}  Resume all", icons::PLAY)).clicked() {
                 self.engine.send(crate::engine::EngineCommand::ResumeAll);
             }
+            if !self.snap.undoable.is_empty() {
+                let n = self.snap.undoable.len();
+                let label = if n == 1 {
+                    format!("{}  Undo remove “{}”", icons::ARROW_COUNTER_CLOCKWISE, self.snap.undoable[0].1)
+                } else {
+                    format!("{}  Undo remove ({n} torrents)", icons::ARROW_COUNTER_CLOCKWISE)
+                };
+                if ui.button(label).clicked() {
+                    let hashes = self.snap.undoable.iter().map(|(h, _)| *h).collect();
+                    self.engine.send(crate::engine::EngineCommand::UndoRemove(hashes));
+                }
+            }
             ui.separator();
             let mut sidebar = self.prefs.show_sidebar;
             if ui.checkbox(&mut sidebar, "Sidebar  (Ctrl+B)").changed() {

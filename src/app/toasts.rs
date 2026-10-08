@@ -45,9 +45,23 @@ impl Toasts {
             ToastKind::Warning => tracing::warn!(target: "corrent::notice", "{text}"),
             _ => tracing::info!(target: "corrent::notice", "{text}"),
         }
-        // Collapse exact duplicates that arrive in bursts.
+        // Collapse exact duplicates that arrive in bursts, keeping the newest actions
+        // (Undo lists are merged so every removal stays undoable).
         if let Some(t) = self.items.iter_mut().find(|t| t.text == text) {
             t.created = Instant::now();
+            let mut merged = actions;
+            for (label, a) in &mut merged {
+                if let ToastAction::Undo(new) = a
+                    && let Some((_, ToastAction::Undo(old))) = t.actions.iter().find(|(l, _)| l == label)
+                {
+                    for h in old {
+                        if !new.contains(h) {
+                            new.push(*h);
+                        }
+                    }
+                }
+            }
+            t.actions = merged;
             return;
         }
         let mut ttl = match kind {
@@ -56,12 +70,14 @@ impl Toasts {
             _ => Duration::from_secs(4),
         };
         if !actions.is_empty() {
-            ttl += Duration::from_secs(4);
+            ttl += Duration::from_secs(12);
         }
         self.next += 1;
         self.items.push(Toast { id: self.next, kind, text, created: Instant::now(), ttl, actions });
-        if self.items.len() > 6 {
-            self.items.remove(0);
+        // Over the cap, drop the oldest toast without actions first.
+        while self.items.len() > 6 {
+            let idx = self.items.iter().position(|t| t.actions.is_empty()).unwrap_or(0);
+            self.items.remove(idx);
         }
     }
 
@@ -163,11 +179,23 @@ mod tests {
         t.push(ToastKind::Info, "same");
         t.push(ToastKind::Info, "same");
         assert_eq!(t.items.len(), 1);
+        t.push_with(ToastKind::Info, "undo me", vec![("Undo".into(), ToastAction::Undo(vec![]))]);
         for i in 0..10 {
             t.push(ToastKind::Info, format!("n{i}"));
         }
         assert_eq!(t.items.len(), 6);
+        assert!(t.items.iter().any(|x| x.text == "undo me"), "actionable toasts survive the cap");
         assert_eq!(t.items.last().unwrap().text, "n9");
+    }
+
+    #[test]
+    fn collapsed_undo_merges_hashes() {
+        use crate::engine::types::InfoHash;
+        let mut t = Toasts::default();
+        t.push_with(ToastKind::Info, "Removed 2 torrents", vec![("Undo".into(), ToastAction::Undo(vec![InfoHash([1; 20])]))]);
+        t.push_with(ToastKind::Info, "Removed 2 torrents", vec![("Undo".into(), ToastAction::Undo(vec![InfoHash([2; 20])]))]);
+        assert_eq!(t.items.len(), 1);
+        assert_eq!(t.items[0].actions[0].1, ToastAction::Undo(vec![InfoHash([2; 20]), InfoHash([1; 20])]));
     }
 
     #[test]

@@ -21,21 +21,26 @@ pub enum PickTarget {
     CategoryFolder,
     SettingsSaveFolder,
     WatchFolderAdd,
-    WatchFolderSave(usize),
+    /// Keyed by the watch folder's path (row indices can shift while the picker is open).
+    WatchFolderSave(PathBuf),
     BackupExport,
     BackupImport,
 }
 
+type PickResult = (u64, PickTarget, Vec<PathBuf>);
+
 pub struct Pickers {
-    tx: Sender<(PickTarget, Vec<PathBuf>)>,
-    rx: Receiver<(PickTarget, Vec<PathBuf>)>,
-    pub open: Option<PickTarget>,
+    tx: Sender<PickResult>,
+    rx: Receiver<PickResult>,
+    /// The open picker: sequence id, target and when it was opened.
+    pub open: Option<(u64, PickTarget, std::time::Instant)>,
+    seq: u64,
 }
 
 impl Default for Pickers {
     fn default() -> Self {
         let (tx, rx) = channel();
-        Pickers { tx, rx, open: None }
+        Pickers { tx, rx, open: None, seq: 0 }
     }
 }
 
@@ -51,10 +56,12 @@ pub enum PickKind {
 impl CorrentApp {
     /// Open a native picker without blocking. Only one picker is open at a time.
     pub fn pick(&mut self, target: PickTarget, kind: PickKind, start: Option<PathBuf>) {
-        if self.pickers.open.is_some() {
+        if self.picker_busy() {
             return;
         }
-        self.pickers.open = Some(target.clone());
+        self.pickers.seq += 1;
+        let seq = self.pickers.seq;
+        self.pickers.open = Some((seq, target.clone(), std::time::Instant::now()));
         let tx = self.pickers.tx.clone();
         let ctx = self.ctx.clone();
         let mut dialog = rfd::AsyncFileDialog::new();
@@ -92,15 +99,15 @@ impl CorrentApp {
                     .map(|h| vec![h.path().to_path_buf()])
                     .unwrap_or_default(),
             };
-            let _ = tx.send((target, paths));
+            let _ = tx.send((seq, target, paths));
             ctx.request_repaint();
         });
     }
 
     /// Apply finished picker results (called every frame from `logic`).
     pub(super) fn drain_pickers(&mut self) {
-        while let Ok((target, paths)) = self.pickers.rx.try_recv() {
-            if self.pickers.open.as_ref() == Some(&target) {
+        while let Ok((seq, target, paths)) = self.pickers.rx.try_recv() {
+            if self.pickers.open.as_ref().is_some_and(|(s, _, _)| *s == seq) {
                 self.pickers.open = None;
             }
             let Some(first) = paths.first().cloned() else { continue };
@@ -134,8 +141,10 @@ impl CorrentApp {
                         d.settings.watch.push(WatchFolder { path: first, ..Default::default() });
                     }
                 }
-                PickTarget::WatchFolderSave(i) => {
-                    if let Some(w) = self.settings_draft.as_mut().and_then(|d| d.settings.watch.get_mut(i)) {
+                PickTarget::WatchFolderSave(folder) => {
+                    if let Some(w) =
+                        self.settings_draft.as_mut().and_then(|d| d.settings.watch.iter_mut().find(|w| w.path == folder))
+                    {
                         w.save_path = Some(first);
                     }
                 }
@@ -145,7 +154,9 @@ impl CorrentApp {
         }
     }
 
+    /// A picker is open. A picker that never reports back (e.g. a failed dialog backend) stops
+    /// blocking new ones after 15 minutes.
     pub fn picker_busy(&self) -> bool {
-        self.pickers.open.is_some()
+        self.pickers.open.as_ref().is_some_and(|(_, _, at)| at.elapsed() < std::time::Duration::from_secs(900))
     }
 }
