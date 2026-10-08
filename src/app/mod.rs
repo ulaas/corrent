@@ -1,6 +1,7 @@
 //! The eframe application: UI state, event handling and frame layout.
 
 mod actions;
+mod batch;
 mod details;
 mod dialogs;
 mod dnd;
@@ -17,6 +18,7 @@ mod titlebar;
 mod toasts;
 mod toolbar;
 mod tray;
+mod win_chrome;
 mod window;
 
 use std::collections::{HashSet, VecDeque};
@@ -321,6 +323,9 @@ pub struct CorrentApp {
     previous_run: crate::crash::PreviousRun,
     pub data_notes: Vec<String>,
     pub free_cache: Option<(String, std::time::Instant, Option<u64>)>,
+    pub batch: Option<batch::BatchDialog>,
+    /// Windows 11 draws a native rounded border, so ours is skipped.
+    pub native_frame: bool,
     pub pickers: pickers::Pickers,
     pub extras: extras::Extras,
     icon_tex: Option<egui::TextureHandle>,
@@ -390,6 +395,8 @@ impl CorrentApp {
             previous_run: Default::default(),
             data_notes: Vec::new(),
             free_cache: None,
+            batch: None,
+            native_frame: win_chrome::round_corners(cc),
             pickers: Default::default(),
             extras: Default::default(),
             icon_tex: None,
@@ -716,8 +723,18 @@ impl CorrentApp {
     }
 
     fn process_launch_queue(&mut self) {
-        while let Some(src) = self.launch_queue.pop_front() {
-            self.begin_add(src);
+        if self.launch_queue.is_empty() {
+            return;
+        }
+        let sources: Vec<AddSource> = self.launch_queue.drain(..).collect();
+        if self.settings.behavior.skip_add_dialog {
+            for src in sources {
+                self.add_source(src);
+            }
+        } else if sources.len() == 1 && self.batch.is_none() {
+            self.begin_add(sources.into_iter().next().unwrap());
+        } else {
+            self.begin_batch(sources);
         }
     }
 }
@@ -798,6 +815,7 @@ impl eframe::App for CorrentApp {
         self.drag_and_drop(&ctx, &p);
         self.window_frame(&ctx, &p);
         self.extra_windows(&ctx, &p);
+        self.batch_dialog(&ctx, &p);
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);
         self.shortcuts(&ctx);

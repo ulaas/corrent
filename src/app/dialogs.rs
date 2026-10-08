@@ -85,7 +85,7 @@ fn path_field(ui: &mut Ui, p: &Palette, path: &mut String, width: f32, busy: boo
 
 impl CorrentApp {
     pub fn modal_open(&self) -> bool {
-        self.modal.is_some() || !self.add_dialogs.is_empty() || self.settings_draft.is_some()
+        self.modal.is_some() || !self.add_dialogs.is_empty() || self.settings_draft.is_some() || self.batch.is_some()
     }
 
     /// Free space for a path typed in a dialog, refreshed at most every two seconds.

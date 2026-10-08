@@ -81,6 +81,10 @@ impl CorrentApp {
             return;
         }
         let rect = ctx.content_rect();
+        if self.native_frame {
+            // Windows 11 draws its own rounded border; only the resize handles are needed.
+            return self.resize_handles(ctx, rect);
+        }
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("window_border")));
         painter.rect_stroke(
             rect.shrink(0.5),
@@ -89,6 +93,12 @@ impl CorrentApp {
             egui::StrokeKind::Inside,
         );
 
+        self.resize_handles(ctx, rect);
+    }
+}
+
+impl CorrentApp {
+    fn resize_handles(&mut self, ctx: &Context, rect: Rect) {
         let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else { return };
         let m = 5.0;
         let (l, r, t, b) =

@@ -109,6 +109,9 @@ impl CorrentApp {
                     self.launch_queue.extend(paths.into_iter().map(AddSource::File));
                 }
                 PickTarget::AddDialogFolder(req) => {
+                    if let Some(b) = self.batch.as_mut().filter(|b| b.req == req) {
+                        b.save_path = s.clone();
+                    }
                     if let Some(d) = self.add_dialogs.iter_mut().find(|d| d.req == req) {
                         d.save_path = s;
                     }
