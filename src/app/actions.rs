@@ -171,6 +171,9 @@ impl CorrentApp {
         if consume(sc(Modifiers::COMMAND, Key::O)) {
             self.pick_torrent_files();
         }
+        if consume(sc(Modifiers::COMMAND, Key::N)) {
+            self.open_creator();
+        }
         if consume(sc(Modifiers::COMMAND, Key::Comma)) {
             self.open_settings();
         }

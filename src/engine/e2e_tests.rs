@@ -337,3 +337,57 @@ async fn engine_restart_after_panic_replays_commands() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn created_torrent_seeds_and_downloads() {
+    let dir = temp_dir("create");
+    let src = dir.join("share");
+    std::fs::create_dir_all(src.join("inner")).unwrap();
+    std::fs::write(src.join("one.bin"), content()).unwrap();
+    std::fs::write(src.join("inner/two.txt"), b"hello from corrent").unwrap();
+
+    // Engine A creates the torrent from the folder and seeds it in place.
+    let a_dir = dir.join("a");
+    let a = start(&a_dir);
+    wait_for(&a, "engine A running", 20, |sn| sn.session.listen_port.is_some()).await;
+    a.engine.send(EngineCommand::CreateTorrent(Box::new(super::creator::CreateRequest {
+        source: src.clone(),
+        name: Some("Renamed share".into()),
+        trackers: vec![],
+        piece_length: Some(64 * 1024),
+        private: false,
+        comment: Some("e2e".into()),
+        save_to: dir.join("share.torrent"),
+        seed: true,
+    })));
+    let snap =
+        wait_for(&a, "creator seeding", 60, |sn| sn.torrents.iter().any(|t| t.state == TorrentState::Seeding)).await;
+    let seeded = snap.torrents.iter().find(|t| t.state == TorrentState::Seeding).unwrap().clone();
+    assert_eq!(seeded.name, "Renamed share");
+    assert_eq!(seeded.downloaded, 0, "seeding from existing data, nothing downloaded");
+    let port = snap.session.listen_port.unwrap();
+
+    // Engine B downloads it from A.
+    let b_dir = dir.join("b");
+    let b = start(&b_dir);
+    let bytes = std::fs::read(dir.join("share.torrent")).unwrap();
+    b.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        source: AddSource::Bytes { name: "share.torrent".into(), bytes },
+        torrent_bytes: None,
+        save_path: b_dir.join("dl"),
+        create_subfolder: true,
+        category: None,
+        tags: vec![],
+        paused: false,
+        only_files: None,
+        add_to_top: false,
+        initial_peers: Some(vec![format!("127.0.0.1:{port}").parse().unwrap()]),
+    })));
+    let snap = wait_for(&b, "download from creator", 60, |sn| complete(sn, seeded.hash)).await;
+    let got = find(&snap, seeded.hash).unwrap();
+    assert_eq!(std::fs::read(got.content_path.join("inner/two.txt")).unwrap(), b"hello from corrent");
+    assert_eq!(std::fs::read(got.content_path.join("one.bin")).unwrap(), content());
+    stop(b).await;
+    stop(a).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

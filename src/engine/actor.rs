@@ -317,6 +317,49 @@ impl Actor {
             other => other,
         };
         match cmd {
+            EngineCommand::CreateTorrent(req) => {
+                let Some(sess) = self.session.clone() else { return };
+                let events = self.events.clone();
+                let ctx = self.ctx.clone();
+                let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
+                tokio::spawn(async move {
+                    let result = async {
+                        let created = super::creator::create(&req).await?;
+                        if req.seed {
+                            // Seed from where the data already is: the folder itself for a folder
+                            // torrent, its parent for a single file.
+                            let (save_path, subfolder) = if req.source.is_dir() {
+                                (req.source.clone(), false)
+                            } else {
+                                (super::creator::seed_folder(&req.source), false)
+                            };
+                            let add = AddRequest {
+                                source: AddSource::Bytes { name: created.name.clone(), bytes: created.bytes.clone() },
+                                torrent_bytes: Some(created.bytes.clone()),
+                                save_path,
+                                create_subfolder: subfolder,
+                                category: None,
+                                tags: Vec::new(),
+                                paused: false,
+                                only_files: None,
+                                add_to_top: false,
+                                initial_peers: None,
+                            };
+                            add_torrent(&sess, &add, peer_limit).await?;
+                        }
+                        anyhow::Ok((
+                            created.name,
+                            req.save_to.clone(),
+                            created.magnet,
+                            req.seed.then_some(created.hash),
+                        ))
+                    }
+                    .await
+                    .map_err(|e| format!("{e:#}"));
+                    let _ = events.send(EngineEvent::Created { result });
+                    ctx.request_repaint();
+                });
+            }
             EngineCommand::UndoRemove(hashes) => {
                 for hash in hashes {
                     let Some(e) = self.undo.remove(&hash) else { continue };
@@ -671,7 +714,7 @@ impl Actor {
         let tx = self.internal_tx.clone();
         let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
         let task = tokio::spawn(async move {
-            let result = add(&sess, &req, peer_limit).await.map_err(|e| format!("{e:#}"));
+            let result = add_torrent(&sess, &req, peer_limit).await.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Internal::AddFinished { pending, req, result });
         });
         if let Some(p) = self.pending.get_mut(&pending) {
@@ -1726,7 +1769,11 @@ pub fn sanitize_name(name: &str) -> String {
     if trimmed.is_empty() { "torrent".into() } else { trimmed }
 }
 
-async fn add(sess: &Arc<Session>, req: &AddRequest, peer_limit: Option<usize>) -> anyhow::Result<(InfoHash, String)> {
+async fn add_torrent(
+    sess: &Arc<Session>,
+    req: &AddRequest,
+    peer_limit: Option<usize>,
+) -> anyhow::Result<(InfoHash, String)> {
     let bytes = match &req.torrent_bytes {
         Some(b) => b.clone(),
         None => fetch_torrent_bytes(sess, &req.source).await?,

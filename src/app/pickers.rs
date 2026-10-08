@@ -26,6 +26,8 @@ pub enum PickTarget {
     BackupExport,
     BackupImport,
     OnboardingFolder,
+    CreatorSource,
+    CreatorOutput,
 }
 
 type PickResult = (u64, PickTarget, Vec<PathBuf>);
@@ -48,6 +50,8 @@ impl Default for Pickers {
 pub enum PickKind {
     Folder,
     TorrentFiles,
+    AnyFile,
+    SaveTorrent(String),
     SaveZip(String),
     OpenZip,
 }
@@ -77,6 +81,14 @@ impl CorrentApp {
                     .pick_files()
                     .await
                     .map(|v| v.iter().map(|h| h.path().to_path_buf()).collect())
+                    .unwrap_or_default(),
+                PickKind::AnyFile => dialog.pick_file().await.map(|h| vec![h.path().to_path_buf()]).unwrap_or_default(),
+                PickKind::SaveTorrent(name) => dialog
+                    .add_filter("Torrent file", &["torrent"])
+                    .set_file_name(name)
+                    .save_file()
+                    .await
+                    .map(|h| vec![h.path().to_path_buf()])
                     .unwrap_or_default(),
                 PickKind::SaveZip(name) => dialog
                     .add_filter("Corrent backup", &["zip"])
@@ -147,6 +159,16 @@ impl CorrentApp {
                     }
                 }
                 PickTarget::OnboardingFolder => self.settings.downloads.save_path = first,
+                PickTarget::CreatorSource => {
+                    if let Some(c) = &mut self.creator {
+                        c.set_source(first);
+                    }
+                }
+                PickTarget::CreatorOutput => {
+                    if let Some(c) = &mut self.creator {
+                        c.output = Some(first);
+                    }
+                }
                 PickTarget::BackupExport => self.export_backup(first),
                 PickTarget::BackupImport => self.import_backup(first),
             }

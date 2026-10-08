@@ -57,6 +57,9 @@ impl CorrentApp {
                 self.save_settings();
             }
             ui.separator();
+            if ui.button(format!("{}  Create torrent…  (Ctrl+N)", icons::FILE_PLUS)).clicked() {
+                self.open_creator();
+            }
             if ui.button(format!("{}  Statistics", icons::CHART_BAR)).clicked() {
                 self.extras.stats = true;
             }

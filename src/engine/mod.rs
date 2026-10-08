@@ -3,6 +3,7 @@
 
 mod actor;
 mod automation;
+pub mod creator;
 #[cfg(test)]
 mod e2e_tests;
 pub mod logic;
@@ -86,6 +87,10 @@ pub enum EngineEvent {
         name: String,
         undoable: bool,
     },
+    /// A torrent file was created (or creating failed).
+    Created {
+        result: Result<(String, PathBuf, String, Option<InfoHash>), String>,
+    },
     /// An undo re-added a torrent.
     Restored {
         hash: InfoHash,
@@ -103,6 +108,8 @@ pub enum EngineCommand {
         source: AddSource,
     },
     CancelPreview(u64),
+    /// Create a .torrent from a file/folder (and optionally seed it).
+    CreateTorrent(Box<creator::CreateRequest>),
     /// Re-add torrents removed (without data) in the last two minutes.
     UndoRemove(Vec<InfoHash>),
     /// Abort an add that is still resolving metadata (identified by its placeholder row hash).

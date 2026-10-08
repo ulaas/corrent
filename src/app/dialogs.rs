@@ -90,6 +90,7 @@ impl CorrentApp {
             || self.settings_draft.is_some()
             || self.batch.is_some()
             || self.onboarding.is_some()
+            || self.creator.is_some()
     }
 
     /// Free space for a path typed in a dialog, refreshed at most every two seconds.

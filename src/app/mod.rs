@@ -2,6 +2,7 @@
 
 mod actions;
 mod batch;
+mod creator;
 mod details;
 mod dialogs;
 mod dnd;
@@ -329,6 +330,7 @@ pub struct CorrentApp {
     pub data_notes: Vec<String>,
     pub free_cache: Option<(String, std::time::Instant, Option<u64>)>,
     pub batch: Option<batch::BatchDialog>,
+    pub creator: Option<creator::CreatorState>,
     row_first_seen: std::collections::HashMap<InfoHash, std::time::Instant>,
     rows_seen_once: bool,
     /// Windows 11 draws a native rounded border, so ours is skipped.
@@ -434,6 +436,7 @@ impl CorrentApp {
             data_notes: Vec::new(),
             free_cache: None,
             batch: None,
+            creator: None,
             row_first_seen: Default::default(),
             rows_seen_once: false,
             native_frame,
@@ -678,6 +681,26 @@ impl CorrentApp {
                     }
                 }
                 EngineEvent::DataWarning(w) => self.data_notes.push(w),
+                EngineEvent::Created { result } => {
+                    if let Some(c) = &mut self.creator {
+                        c.busy = false;
+                    }
+                    match result {
+                        Ok((name, path, magnet, seeding)) => {
+                            self.creator = None;
+                            let folder = path.parent().map(std::path::PathBuf::from).unwrap_or_default();
+                            let mut actions = vec![
+                                ("Show file".into(), toasts::ToastAction::OpenFolder(folder)),
+                                ("Copy magnet".into(), toasts::ToastAction::Copy(magnet)),
+                            ];
+                            if let Some(h) = seeding {
+                                actions.push(("Show".into(), toasts::ToastAction::Show(h)));
+                            }
+                            self.toasts.push_with(ToastKind::Success, format!("Created “{name}”"), actions);
+                        }
+                        Err(e) => self.toasts.push(ToastKind::Error, format!("Couldn't create the torrent: {e}")),
+                    }
+                }
                 EngineEvent::Removed { hash, name, undoable } => {
                     self.selected.remove(&hash);
                     if undoable {
@@ -716,6 +739,7 @@ impl CorrentApp {
             match a {
                 toasts::ToastAction::Undo(h) => self.engine.send(crate::engine::EngineCommand::UndoRemove(h)),
                 toasts::ToastAction::OpenFolder(p) | toasts::ToastAction::OpenFile(p) => open_path(&p),
+                toasts::ToastAction::Copy(text) => self.copy(text),
                 toasts::ToastAction::Show(h) => {
                     self.show_window(ctx);
                     self.prefs.status_filter = StatusFilter::All;
@@ -841,6 +865,7 @@ impl CorrentApp {
                 "settings" => self.open_settings(),
                 "magnet" => self.open_magnet_dialog(),
                 "about" => self.extras.about = true,
+                "creator" => self.open_creator(),
                 "log" => self.extras.log = true,
                 "stats" => self.extras.stats = true,
                 "remove" | "remove-undo" => {
@@ -919,6 +944,7 @@ impl CorrentApp {
         self.window_frame(&ctx, &p);
         self.extra_windows(&ctx, &p);
         self.onboarding(&ctx, &p);
+        self.creator_dialog(&ctx, &p);
         self.batch_dialog(&ctx, &p);
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);
