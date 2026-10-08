@@ -191,7 +191,7 @@ owner pushes the repo, so nothing local is gated on it.
 | M3 | Corrupt-file recovery, data backup/export (A7 recovery part) | – | – | Done |
 | M4 | Pure-logic extraction + 80+ unit tests (A1) | – | – | Done |
 | M5 | Empty states + toasts with actions (B2, B12) | – | – | Done |
-| M6 | First real run on Linux (VM/WSLg) and macOS: portal file dialogs, KSNI tray, IPC, MIME registration, Apple Events | – | – | Prepared — needs real hardware (`docs/PLATFORM-TESTING.md`); Linux cross-builds, macOS type-checks |
+| M6 | First real run on Linux (VM/WSLg) and macOS: portal file dialogs, KSNI tray, IPC, MIME registration, Apple Events | – | – | Owner task (owner's decision, 2026-10-08): run `docs/PLATFORM-TESTING.md` on real Linux/macOS; Linux cross-builds and passes clippy, macOS type-checks |
 | M7 | CI config, fmt/clippy gates, cargo-deny, MSRV job (A4, A12) — owner pushes | – | – | Done — runs once pushed |
 | M8 | Loopback engine integration tests (A2) | M4 | [u] | Done |
 | M9 | Schema versioning + migrations (A7) | M3 | – | Done |
@@ -211,7 +211,7 @@ owner pushes the repo, so nothing local is gated on it.
 | M23 | Per-torrent limits, IP filter UI (C6 partial, C7) | M9 | [U] runtime limits | Done |
 | M24 | Sequential + per-file priorities; per-category limits (C6) | M23 | [U] | Done |
 | M25 | Import from other clients (C8); shutdown when done; update checks (C9, C10) | M9, M1 | – | Done |
-| M26 | Packaging: MSI/winget, portable zip, dmg, AppImage/Flatpak (C11) | M7 | – | Prepared — first build on CI with a tag |
+| M26 | Packaging: MSI/winget, portable zip, dmg, AppImage/Flatpak (C11) | M7 | – | Prepared; owner builds/signs/submits (owner's decision, 2026-10-08) — first build on CI with a tag; portable zip built and smoke-tested locally |
 | M27 | i18n string table → Fluent, Turkish (B9); web UI (C5b); Mica spike (B5b) | M15, M20 | – | Done (Turkish, gettext-style; web UI; Mica no-go) |
 | — | DHT patch upstream package (A11), any time | – | [U] | Patches ready in `docs/upstream/` — owner opens the PRs |
 
