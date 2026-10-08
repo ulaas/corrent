@@ -184,3 +184,34 @@ fn magnet_dialog_counts_recognized_links() {
     h.run_steps(3);
     h.get_by_label("2 item(s) recognized");
 }
+
+#[test]
+fn first_run_shows_onboarding_and_finishes() {
+    let (_f, mut app) = app("onboarding", vec![]);
+    app.onboarding = Some(super::onboarding::Onboarding { step: 0 });
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label("Welcome to Corrent");
+    h.get_by_label("Next").click();
+    h.run_steps(3);
+    h.get_by_label("Pick a look");
+    h.get_by_label("Next").click();
+    h.run_steps(3);
+    h.get_by_label("Open magnet links with Corrent?");
+    h.get_by_label("Get started").click();
+    h.run_steps(3);
+    assert!(h.state().onboarding.is_none());
+    assert!(h.state().settings.behavior.handler_prompt_dismissed);
+}
+
+#[test]
+fn sidebar_sections_collapse() {
+    let (_f, app) = app("collapse", vec![torrent(1, "A", TorrentState::Seeding)]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    assert!(h.query_by_label("Uncategorized").is_some());
+    h.get_by_label_contains("CATEGORIES").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Uncategorized").is_none());
+    assert!(h.state().prefs.collapsed.contains(&"categories".to_string()));
+}

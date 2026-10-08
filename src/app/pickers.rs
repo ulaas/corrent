@@ -25,6 +25,7 @@ pub enum PickTarget {
     WatchFolderSave(PathBuf),
     BackupExport,
     BackupImport,
+    OnboardingFolder,
 }
 
 type PickResult = (u64, PickTarget, Vec<PathBuf>);
@@ -145,6 +146,7 @@ impl CorrentApp {
                         w.save_path = Some(first);
                     }
                 }
+                PickTarget::OnboardingFolder => self.settings.downloads.save_path = first,
                 PickTarget::BackupExport => self.export_backup(first),
                 PickTarget::BackupImport => self.import_backup(first),
             }

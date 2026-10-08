@@ -419,6 +419,7 @@ pub struct Appearance {
     pub animations: bool,
     pub show_sparklines: bool,
     pub state_colored_progress: bool,
+    pub striped_rows: bool,
 }
 
 impl Default for Appearance {
@@ -433,6 +434,7 @@ impl Default for Appearance {
             animations: true,
             show_sparklines: true,
             state_colored_progress: true,
+            striped_rows: false,
         }
     }
 }

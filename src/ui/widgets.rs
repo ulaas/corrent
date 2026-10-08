@@ -291,13 +291,6 @@ pub fn empty_compact(ui: &mut Ui, p: &Palette, icon: &str, title: &str, hint: &s
     });
 }
 
-/// Section header label (small, uppercase, muted).
-pub fn section_header(ui: &mut Ui, p: &Palette, text: &str) {
-    ui.add_space(6.0);
-    ui.label(RichText::new(text.to_uppercase()).size(10.5).color(p.text_mute).strong());
-    ui.add_space(2.0);
-}
-
 /// Card frame used for grouped content (settings, details).
 pub fn card(p: &Palette) -> egui::Frame {
     egui::Frame::new()

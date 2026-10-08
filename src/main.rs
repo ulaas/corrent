@@ -135,6 +135,7 @@ fn handler_cli(register: bool, unregister: bool) -> i32 {
     let result = if register {
         os_handler::register(true, true)
     } else if unregister {
+        integration::app_identity::remove();
         os_handler::unregister(true, true)
     } else {
         Ok(())

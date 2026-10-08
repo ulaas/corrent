@@ -47,20 +47,71 @@ impl CorrentApp {
                 if s.alt_speed {
                     ui.label(RichText::new(format!("{} Alt speed", icons::GAUGE)).small().color(p.warn));
                 }
-                ui.label(RichText::new(fmt_speed(s.up_bps, units)).monospace().color(p.success))
-                    .on_hover_text(format!("Uploaded this session: {}", fmt_bytes(s.session_uploaded)));
+                let up_r = ui
+                    .add(
+                        egui::Label::new(RichText::new(fmt_speed(s.up_bps, units)).monospace().color(p.success))
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text(format!(
+                        "Uploaded this session: {}\nClick to set an upload limit",
+                        fmt_bytes(s.session_uploaded)
+                    ));
+                self.limit_menu(&up_r, false);
                 ui.label(RichText::new(icons::ARROW_UP).color(p.success));
                 if self.settings.appearance.show_sparklines {
                     sparkline(ui, &ups, p.success, vec2(70.0, 16.0));
                 }
                 ui.add_space(8.0);
-                ui.label(RichText::new(fmt_speed(s.down_bps, units)).monospace().color(p.accent))
-                    .on_hover_text(format!("Downloaded this session: {}", fmt_bytes(s.session_downloaded)));
+                let down_r = ui
+                    .add(
+                        egui::Label::new(RichText::new(fmt_speed(s.down_bps, units)).monospace().color(p.accent))
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text(format!(
+                        "Downloaded this session: {}\nClick to set a download limit",
+                        fmt_bytes(s.session_downloaded)
+                    ));
+                self.limit_menu(&down_r, true);
                 ui.label(RichText::new(icons::ARROW_DOWN).color(p.accent));
                 if self.settings.appearance.show_sparklines {
                     sparkline(ui, &downs, p.accent, vec2(70.0, 16.0));
                 }
             });
+        });
+    }
+
+    /// Quick global speed-limit presets under a speed readout.
+    fn limit_menu(&mut self, resp: &egui::Response, download: bool) {
+        egui::Popup::menu(resp).show(|ui| {
+            ui.set_min_width(170.0);
+            ui.label(RichText::new(if download { "Download limit" } else { "Upload limit" }).strong());
+            let current = if download { self.settings.speed.download_limit } else { self.settings.speed.upload_limit };
+            for (label, kib) in [
+                ("Unlimited", 0u32),
+                ("256 KiB/s", 256),
+                ("1 MiB/s", 1024),
+                ("5 MiB/s", 5120),
+                ("10 MiB/s", 10240),
+                ("50 MiB/s", 51200),
+            ] {
+                if ui.selectable_label(current == kib, label).clicked() {
+                    let mut s = self.settings.clone();
+                    if download {
+                        s.speed.download_limit = kib;
+                    } else {
+                        s.speed.upload_limit = kib;
+                    }
+                    self.settings = s.clone();
+                    self.save_settings();
+                    self.engine.send(crate::engine::EngineCommand::ApplySettings(Box::new(s)));
+                    self.engine.send(crate::engine::EngineCommand::SetAltSpeed(self.snap.session.alt_speed));
+                    ui.close();
+                }
+            }
+            if self.snap.session.alt_speed {
+                ui.separator();
+                ui.label(RichText::new("Alternative limits are active").small());
+            }
         });
     }
 }

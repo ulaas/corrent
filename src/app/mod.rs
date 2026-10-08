@@ -9,6 +9,7 @@ mod extras;
 pub mod icon;
 mod integration_ui;
 pub mod log;
+mod onboarding;
 mod pickers;
 mod settings_window;
 mod sidebar;
@@ -234,6 +235,8 @@ pub struct UiPrefs {
     pub category_filter: GroupFilter,
     pub tag_filter: GroupFilter,
     pub tracker_filter: GroupFilter,
+    /// Collapsed sidebar sections ("status", "categories", "tags").
+    pub collapsed: Vec<String>,
 }
 
 impl Default for UiPrefs {
@@ -259,6 +262,7 @@ impl Default for UiPrefs {
             category_filter: GroupFilter::All,
             tag_filter: GroupFilter::All,
             tracker_filter: GroupFilter::All,
+            collapsed: Vec::new(),
         }
     }
 }
@@ -301,9 +305,8 @@ pub struct CorrentApp {
     pub add_dialogs: VecDeque<dialogs::AddDialog>,
     pub next_req: u64,
     pub settings_draft: Option<settings_window::SettingsDraft>,
-    /// No settings file existed at startup (used by onboarding).
-    #[allow(dead_code)]
-    pub first_run: bool,
+    /// First-run welcome flow (shown when no settings file existed).
+    pub onboarding: Option<onboarding::Onboarding>,
     pub quitting: bool,
     applied_appearance: Option<crate::config::Appearance>,
 
@@ -412,7 +415,7 @@ impl CorrentApp {
             add_dialogs: VecDeque::new(),
             next_req: 0,
             settings_draft: None,
-            first_run,
+            onboarding: first_run.then_some(onboarding::Onboarding { step: 0 }),
             quitting: false,
             applied_appearance: None,
             ipc,
@@ -915,6 +918,7 @@ impl CorrentApp {
         self.drag_and_drop(&ctx, &p);
         self.window_frame(&ctx, &p);
         self.extra_windows(&ctx, &p);
+        self.onboarding(&ctx, &p);
         self.batch_dialog(&ctx, &p);
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);

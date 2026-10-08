@@ -93,7 +93,7 @@ impl CorrentApp {
 
     /// First-run / not-default banner above the list.
     pub(super) fn handler_banner(&mut self, ui: &mut Ui, p: &Palette) {
-        if self.settings.behavior.handler_prompt_dismissed {
+        if self.settings.behavior.handler_prompt_dismissed || self.onboarding.is_some() {
             return;
         }
         let st = self.handler_status.lock().ok().and_then(|g| g.clone());

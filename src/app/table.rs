@@ -211,7 +211,7 @@ impl CorrentApp {
         egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 0 }).show(ui, |ui| {
             let mut tb = TableBuilder::new(ui)
                 .id_salt("torrents")
-                .striped(false)
+                .striped(self.settings.appearance.striped_rows)
                 .resizable(true)
                 .sense(Sense::click())
                 .cell_layout(Layout::left_to_right(Align::Center))

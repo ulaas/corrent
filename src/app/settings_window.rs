@@ -67,6 +67,21 @@ impl Page {
         }
     }
 
+    /// Whether the draft differs from the saved settings on this page.
+    fn changed(self, a: &Settings, b: &Settings) -> bool {
+        match self {
+            Page::Behavior => a.behavior != b.behavior,
+            Page::Downloads => a.downloads != b.downloads || a.watch != b.watch,
+            Page::Connection => a.connection != b.connection,
+            Page::Speed => a.speed != b.speed,
+            Page::BitTorrent => a.bittorrent != b.bittorrent,
+            Page::Queue => a.queue != b.queue,
+            Page::Seeding => a.seeding != b.seeding,
+            Page::Appearance => a.appearance != b.appearance,
+            Page::Advanced => a.advanced != b.advanced,
+        }
+    }
+
     /// Searchable keywords for every field on the page.
     fn keywords(self) -> &'static str {
         match self {
@@ -273,6 +288,11 @@ impl CorrentApp {
                                     let sel = draft.page == page;
                                     let r =
                                         super::sidebar::row(ui, p, page.icon(), p.text_dim, page.label(), None, sel);
+                                    if page.changed(&self.settings, &draft.settings) {
+                                        let c = egui::pos2(r.rect.right() - 12.0, r.rect.center().y);
+                                        ui.painter().circle_filled(c, 3.5, p.accent);
+                                        r.clone().on_hover_text("Unsaved changes");
+                                    }
                                     if r.clicked() {
                                         draft.page = page;
                                     }
@@ -948,6 +968,13 @@ impl CorrentApp {
                         );
                     });
                     toggle(ui, p, "Color progress bars by state", "", &mut s.appearance.state_colored_progress);
+                    toggle(
+                        ui,
+                        p,
+                        "Striped rows",
+                        "Alternate row shading in the torrent list.",
+                        &mut s.appearance.striped_rows,
+                    );
                     toggle(ui, p, "Speed graphs in the status bar", "", &mut s.appearance.show_sparklines);
                     toggle(ui, p, "Animations", "", &mut s.appearance.animations);
                     row(ui, p, "Speed units", "", |ui| {

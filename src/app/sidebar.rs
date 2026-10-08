@@ -8,7 +8,6 @@ use super::{CorrentApp, GroupFilter, StatusFilter};
 use crate::engine::EngineCommand;
 use crate::engine::types::Snapshot;
 use crate::ui::theme::Palette;
-use crate::ui::widgets::section_header;
 
 #[derive(Default)]
 pub struct Counts {
@@ -138,10 +137,20 @@ fn hint(ui: &mut Ui, p: &Palette, text: &str) {
     ui.add_space(2.0);
 }
 
-fn section(ui: &mut Ui, p: &Palette, title: &str, add: Option<&str>) -> bool {
+/// Section header with a collapse toggle and an optional "+" button. Returns (add clicked).
+fn section(ui: &mut Ui, p: &Palette, title: &str, add: Option<&str>, collapsed: &mut bool) -> bool {
     let mut clicked = false;
     ui.horizontal(|ui| {
-        section_header(ui, p, title);
+        let caret = if *collapsed { icons::CARET_RIGHT } else { icons::CARET_DOWN };
+        let header = ui.add(
+            egui::Label::new(
+                RichText::new(format!("{caret} {}", title.to_uppercase())).size(10.5).color(p.text_mute).strong(),
+            )
+            .sense(Sense::click()),
+        );
+        if header.on_hover_text(if *collapsed { "Expand" } else { "Collapse" }).clicked() {
+            *collapsed = !*collapsed;
+        }
         if let Some(tip) = add {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(4.0);
@@ -155,6 +164,7 @@ fn section(ui: &mut Ui, p: &Palette, title: &str, add: Option<&str>) -> bool {
             });
         }
     });
+    ui.add_space(2.0);
     clicked
 }
 
@@ -163,140 +173,156 @@ impl CorrentApp {
         self.counts.update(&self.snap);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
+            let total = self.snap.torrents.len();
             ui.add_space(4.0);
-            section(ui, p, "Status", None);
-            for (i, f) in StatusFilter::ALL.iter().enumerate() {
-                let count = self.counts.status.get(i).copied().unwrap_or(0);
-                // Hide rarely-relevant filters when empty to keep the list calm.
-                if count == 0
-                    && matches!(f, StatusFilter::Errored | StatusFilter::Stalled)
-                    && self.prefs.status_filter != *f
-                {
-                    continue;
-                }
-                let color = match f {
-                    StatusFilter::Errored => p.error,
-                    StatusFilter::Seeding => p.success,
-                    StatusFilter::Downloading => p.accent,
-                    _ => p.text_dim,
-                };
-                if row(ui, p, f.icon(), color, f.label(), Some(count), self.prefs.status_filter == *f).clicked() {
-                    self.prefs.status_filter = *f;
+            let mut c = self.prefs.collapsed.contains(&"status".to_string());
+            section(ui, p, "Status", None, &mut c);
+            set_collapsed(&mut self.prefs.collapsed, "status", c);
+            if !c {
+                for (i, f) in StatusFilter::ALL.iter().enumerate() {
+                    let count = self.counts.status.get(i).copied().unwrap_or(0);
+                    // Hide rarely-relevant filters when empty to keep the list calm.
+                    if count == 0
+                        && matches!(f, StatusFilter::Errored | StatusFilter::Stalled)
+                        && self.prefs.status_filter != *f
+                    {
+                        continue;
+                    }
+                    let color = match f {
+                        StatusFilter::Errored => p.error,
+                        StatusFilter::Seeding => p.success,
+                        StatusFilter::Downloading => p.accent,
+                        _ => p.text_dim,
+                    };
+                    if row(ui, p, f.icon(), color, f.label(), Some(count), self.prefs.status_filter == *f).clicked() {
+                        self.prefs.status_filter = *f;
+                    }
                 }
             }
-
             ui.add_space(10.0);
-            if section(ui, p, "Categories", Some("New category…")) {
+            let mut c = self.prefs.collapsed.contains(&"categories".to_string());
+            if section(ui, p, "Categories", Some("New category…"), &mut c) {
                 self.open_new_category(None);
             }
-            let total = self.snap.torrents.len();
-            if row(
-                ui,
-                p,
-                icons::FOLDERS,
-                p.text_dim,
-                "All",
-                Some(total),
-                self.prefs.category_filter == GroupFilter::All,
-            )
-            .clicked()
-            {
-                self.prefs.category_filter = GroupFilter::All;
+            set_collapsed(&mut self.prefs.collapsed, "categories", c);
+            if !c {
+                if row(
+                    ui,
+                    p,
+                    icons::FOLDERS,
+                    p.text_dim,
+                    "All",
+                    Some(total),
+                    self.prefs.category_filter == GroupFilter::All,
+                )
+                .clicked()
+                {
+                    self.prefs.category_filter = GroupFilter::All;
+                }
+                if row(
+                    ui,
+                    p,
+                    icons::FOLDER_DASHED,
+                    p.text_dim,
+                    "Uncategorized",
+                    Some(self.counts.uncategorized),
+                    self.prefs.category_filter == GroupFilter::None,
+                )
+                .clicked()
+                {
+                    self.prefs.category_filter = GroupFilter::None;
+                }
+                let cats: Vec<(String, usize)> = self.counts.categories.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                if cats.is_empty() {
+                    hint(ui, p, "Categories group torrents and can have their own save folder.");
+                }
+                for (c, n) in cats {
+                    let depth = c.matches('/').count();
+                    let label = c.rsplit('/').next().unwrap_or(&c).to_string();
+                    ui.horizontal(|ui| {
+                        ui.add_space(depth as f32 * 14.0);
+                        let sel = self.prefs.category_filter == GroupFilter::Named(c.clone());
+                        let r = row(ui, p, icons::FOLDER_SIMPLE, p.warn, &label, Some(n), sel);
+                        if r.clicked() {
+                            self.prefs.category_filter = GroupFilter::Named(c.clone());
+                        }
+                        r.context_menu(|ui| {
+                            if ui.button(format!("{}  Edit…", icons::PENCIL_SIMPLE)).clicked() {
+                                self.open_edit_category(c.clone());
+                            }
+                            if ui.button(format!("{}  Add subcategory…", icons::FOLDER_SIMPLE_PLUS)).clicked() {
+                                self.open_new_category(None);
+                                if let Some(super::dialogs::Modal::Category { name, .. }) = &mut self.modal {
+                                    *name = format!("{c}/");
+                                }
+                            }
+                            if ui.button(format!("{}  Remove category", icons::TRASH)).clicked() {
+                                let mut cats = self.snap.categories.clone();
+                                cats.retain(|k, _| k != &c && !k.starts_with(&format!("{c}/")));
+                                self.engine.send(EngineCommand::SetCategories(cats));
+                                if self.prefs.category_filter == GroupFilter::Named(c.clone()) {
+                                    self.prefs.category_filter = GroupFilter::All;
+                                }
+                            }
+                        });
+                    });
+                }
             }
-            if row(
-                ui,
-                p,
-                icons::FOLDER_DASHED,
-                p.text_dim,
-                "Uncategorized",
-                Some(self.counts.uncategorized),
-                self.prefs.category_filter == GroupFilter::None,
-            )
-            .clicked()
-            {
-                self.prefs.category_filter = GroupFilter::None;
+            ui.add_space(10.0);
+            let mut c = self.prefs.collapsed.contains(&"tags".to_string());
+            if section(ui, p, "Tags", Some("New tag…"), &mut c) {
+                self.open_new_tag(None);
             }
-            let cats: Vec<(String, usize)> = self.counts.categories.iter().map(|(k, v)| (k.clone(), *v)).collect();
-            if cats.is_empty() {
-                hint(ui, p, "Categories group torrents and can have their own save folder.");
-            }
-            for (c, n) in cats {
-                let depth = c.matches('/').count();
-                let label = c.rsplit('/').next().unwrap_or(&c).to_string();
-                ui.horizontal(|ui| {
-                    ui.add_space(depth as f32 * 14.0);
-                    let sel = self.prefs.category_filter == GroupFilter::Named(c.clone());
-                    let r = row(ui, p, icons::FOLDER_SIMPLE, p.warn, &label, Some(n), sel);
+            set_collapsed(&mut self.prefs.collapsed, "tags", c);
+            if !c {
+                if row(ui, p, icons::TAG, p.text_dim, "All", Some(total), self.prefs.tag_filter == GroupFilter::All)
+                    .clicked()
+                {
+                    self.prefs.tag_filter = GroupFilter::All;
+                }
+                if row(
+                    ui,
+                    p,
+                    icons::TAG_SIMPLE,
+                    p.text_dim,
+                    "Untagged",
+                    Some(self.counts.untagged),
+                    self.prefs.tag_filter == GroupFilter::None,
+                )
+                .clicked()
+                {
+                    self.prefs.tag_filter = GroupFilter::None;
+                }
+                let tags: Vec<(String, usize)> = self.counts.tags.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                if tags.is_empty() {
+                    hint(ui, p, "Tags are free-form labels; a torrent can have several.");
+                }
+                for (tag, n) in tags {
+                    let sel = self.prefs.tag_filter == GroupFilter::Named(tag.clone());
+                    let r = row(ui, p, icons::HASH, p.queued, &tag, Some(n), sel);
                     if r.clicked() {
-                        self.prefs.category_filter = GroupFilter::Named(c.clone());
+                        self.prefs.tag_filter = GroupFilter::Named(tag.clone());
                     }
                     r.context_menu(|ui| {
-                        if ui.button(format!("{}  Edit…", icons::PENCIL_SIMPLE)).clicked() {
-                            self.open_edit_category(c.clone());
-                        }
-                        if ui.button(format!("{}  Add subcategory…", icons::FOLDER_SIMPLE_PLUS)).clicked() {
-                            self.open_new_category(None);
-                            if let Some(super::dialogs::Modal::Category { name, .. }) = &mut self.modal {
-                                *name = format!("{c}/");
-                            }
-                        }
-                        if ui.button(format!("{}  Remove category", icons::TRASH)).clicked() {
-                            let mut cats = self.snap.categories.clone();
-                            cats.retain(|k, _| k != &c && !k.starts_with(&format!("{c}/")));
-                            self.engine.send(EngineCommand::SetCategories(cats));
-                            if self.prefs.category_filter == GroupFilter::Named(c.clone()) {
-                                self.prefs.category_filter = GroupFilter::All;
+                        if ui.button(format!("{}  Remove tag", icons::TRASH)).clicked() {
+                            let tags: Vec<String> = self.snap.tags.iter().filter(|t| **t != tag).cloned().collect();
+                            self.engine.send(EngineCommand::SetTagList(tags));
+                            if sel {
+                                self.prefs.tag_filter = GroupFilter::All;
                             }
                         }
                     });
-                });
-            }
-
-            ui.add_space(10.0);
-            if section(ui, p, "Tags", Some("New tag…")) {
-                self.open_new_tag(None);
-            }
-            if row(ui, p, icons::TAG, p.text_dim, "All", Some(total), self.prefs.tag_filter == GroupFilter::All)
-                .clicked()
-            {
-                self.prefs.tag_filter = GroupFilter::All;
-            }
-            if row(
-                ui,
-                p,
-                icons::TAG_SIMPLE,
-                p.text_dim,
-                "Untagged",
-                Some(self.counts.untagged),
-                self.prefs.tag_filter == GroupFilter::None,
-            )
-            .clicked()
-            {
-                self.prefs.tag_filter = GroupFilter::None;
-            }
-            let tags: Vec<(String, usize)> = self.counts.tags.iter().map(|(k, v)| (k.clone(), *v)).collect();
-            if tags.is_empty() {
-                hint(ui, p, "Tags are free-form labels; a torrent can have several.");
-            }
-            for (tag, n) in tags {
-                let sel = self.prefs.tag_filter == GroupFilter::Named(tag.clone());
-                let r = row(ui, p, icons::HASH, p.queued, &tag, Some(n), sel);
-                if r.clicked() {
-                    self.prefs.tag_filter = GroupFilter::Named(tag.clone());
                 }
-                r.context_menu(|ui| {
-                    if ui.button(format!("{}  Remove tag", icons::TRASH)).clicked() {
-                        let tags: Vec<String> = self.snap.tags.iter().filter(|t| **t != tag).cloned().collect();
-                        self.engine.send(EngineCommand::SetTagList(tags));
-                        if sel {
-                            self.prefs.tag_filter = GroupFilter::All;
-                        }
-                    }
-                });
             }
-
             ui.add_space(12.0);
         });
+    }
+}
+
+fn set_collapsed(list: &mut Vec<String>, key: &str, collapsed: bool) {
+    list.retain(|k| k != key);
+    if collapsed {
+        list.push(key.to_string());
     }
 }
 
