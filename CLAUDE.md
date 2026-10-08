@@ -29,7 +29,8 @@ librqbit 9.0.1 engine. Goal: full-featured, beautiful, stable, easy to use, full
 ```sh
 cargo build                 # debug
 cargo build --release       # target/release/corrent.exe (owner runs this build)
-cargo test                  # unit tests (19 at last count; one touches HKCU\Software\CorrentTest)
+cargo test                  # unit + loopback engine integration tests (src/engine/e2e_tests.rs)
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo deny check   # CI gates
 ./target/debug/corrent.exe --portable [magnet|url|file]
 corrent --status | --register | --unregister | --write-icons <dir> | --help
 ```
