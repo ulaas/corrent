@@ -76,6 +76,7 @@ pub struct Settings {
     pub watch: Vec<WatchFolder>,
     pub rss: crate::rss::RssSettings,
     pub search: crate::search::SearchSettings,
+    pub web_api: crate::webapi::WebApiSettings,
     pub appearance: Appearance,
     pub advanced: Advanced,
 }
@@ -546,6 +547,7 @@ impl Settings {
         section!("watch", watch);
         section!("rss", rss);
         section!("search", search);
+        section!("web_api", web_api);
         section!("appearance", appearance);
         section!("advanced", advanced);
         (s, lost)

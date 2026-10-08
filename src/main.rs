@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![recursion_limit = "256"]
 
 mod app;
 mod backup;
@@ -12,6 +13,7 @@ mod search;
 mod store;
 mod ui;
 mod util;
+mod webapi;
 
 use std::sync::Arc;
 

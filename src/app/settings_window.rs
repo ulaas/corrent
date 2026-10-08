@@ -24,12 +24,13 @@ pub enum Page {
     Seeding,
     Feeds,
     Search,
+    Remote,
     Appearance,
     Advanced,
 }
 
 impl Page {
-    const ALL: [Page; 11] = [
+    const ALL: [Page; 12] = [
         Page::Behavior,
         Page::Downloads,
         Page::Connection,
@@ -39,6 +40,7 @@ impl Page {
         Page::Seeding,
         Page::Feeds,
         Page::Search,
+        Page::Remote,
         Page::Appearance,
         Page::Advanced,
     ];
@@ -54,6 +56,7 @@ impl Page {
             Page::Seeding => "Seeding",
             Page::Feeds => "Feeds",
             Page::Search => "Search",
+            Page::Remote => "Remote control",
             Page::Appearance => "Appearance",
             Page::Advanced => "Advanced",
         }
@@ -70,6 +73,7 @@ impl Page {
             Page::Seeding => icons::PLANT,
             Page::Feeds => icons::RSS,
             Page::Search => icons::MAGNIFYING_GLASS,
+            Page::Remote => icons::PLUGS,
             Page::Appearance => icons::PALETTE,
             Page::Advanced => icons::WRENCH,
         }
@@ -86,6 +90,7 @@ impl Page {
             Page::Queue => a.queue != b.queue,
             Page::Seeding => a.seeding != b.seeding,
             Page::Search => a.search != b.search,
+            Page::Remote => a.web_api != b.web_api,
             Page::Feeds => {
                 (a.rss.auto_download, a.rss.refresh_minutes, a.rss.max_articles)
                     != (b.rss.auto_download, b.rss.refresh_minutes, b.rss.max_articles)
@@ -111,6 +116,9 @@ impl Page {
             Page::BitTorrent => "dht lsd local peer discovery pex trackers default trackers fastresume resume",
             Page::Queue => "queue active downloads uploads total slow torrents",
             Page::Seeding => "ratio seeding time inactive limit pause remove share",
+            Page::Remote => {
+                "remote control web api qbittorrent sonarr radarr lidarr prowlarr port password username lan"
+            }
             Page::Search => "search torznab jackett prowlarr indexer provider api key",
             Page::Feeds => "rss atom feeds refresh interval articles auto download rules automatic episodes",
             Page::Appearance => {
@@ -123,6 +131,8 @@ impl Page {
 
 pub struct SettingsDraft {
     pub settings: Settings,
+    /// New web API password (hashed when applied); empty = unchanged.
+    pub new_password: String,
     pub page: Page,
     pub search: String,
     pub trackers_text: String,
@@ -225,8 +235,13 @@ impl CorrentApp {
         }
         let s = self.settings.clone();
         let trackers_text = s.bittorrent.default_trackers.join("\n");
-        self.settings_draft =
-            Some(SettingsDraft { settings: s, page: Page::Behavior, search: String::new(), trackers_text });
+        self.settings_draft = Some(SettingsDraft {
+            settings: s,
+            new_password: String::new(),
+            page: Page::Behavior,
+            search: String::new(),
+            trackers_text,
+        });
         self.refresh_handler_status(false);
     }
 
@@ -416,6 +431,10 @@ impl CorrentApp {
             close = true;
         }
         if apply {
+            if !draft.new_password.is_empty() {
+                draft.settings.web_api.password_hash = crate::webapi::hash_password(&draft.new_password);
+                draft.new_password.clear();
+            }
             let new = draft.settings.clone();
             let text = draft.trackers_text.clone();
             self.apply_settings(new, &text);
@@ -1032,6 +1051,66 @@ impl CorrentApp {
                                 ui.selectable_value(&mut s.appearance.speed_units, SpeedUnits::Decimal, "kB/s, MB/s");
                                 ui.selectable_value(&mut s.appearance.speed_units, SpeedUnits::Bits, "kbit/s, Mbit/s");
                             });
+                    });
+                });
+            }
+            Page::Remote => {
+                let status = self.remote.status.clone();
+                card(p).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    heading(ui, p, "qBittorrent-compatible Web API");
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                "Lets Sonarr, Radarr, Lidarr and similar tools use Corrent as their download client: add it there as a “qBittorrent” client with the address, port, username and password below.",
+                            )
+                            .small()
+                            .color(p.text_dim),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(8.0);
+                    toggle(ui, p, "Enabled", "", &mut s.web_api.enabled);
+                    row(ui, p, "Port", "", |ui| {
+                        ui.add(egui::DragValue::new(&mut s.web_api.port).range(1024..=65535));
+                    });
+                    toggle(
+                        ui,
+                        p,
+                        "Allow other devices on the network",
+                        "Off: only programs on this computer can connect (recommended).",
+                        &mut s.web_api.allow_lan,
+                    );
+                    row(ui, p, "Username", "", |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut s.web_api.username).desired_width(200.0));
+                    });
+                    let has = !s.web_api.password_hash.is_empty();
+                    row(ui, p, "Password", if has { "Leave empty to keep the current password." } else { "Required." }, |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut d.new_password)
+                                .password(true)
+                                .desired_width(200.0)
+                                .hint_text(if has { "••••••••" } else { "Choose a password" }),
+                        );
+                    });
+                    if s.web_api.allow_lan && !d.new_password.is_empty() && d.new_password.len() < 8 {
+                        ui.label(
+                            RichText::new("Use at least 8 characters when other devices can connect.").small().color(p.warn),
+                        );
+                    }
+                    ui.add_space(4.0);
+                    let (icon, color, text) = match &status {
+                        super::remote::RemoteStatus::Off => (icons::CIRCLE, p.text_mute, "Off".to_string()),
+                        super::remote::RemoteStatus::Starting => (icons::CIRCLE_NOTCH, p.accent, "Starting…".to_string()),
+                        super::remote::RemoteStatus::Running(a) => {
+                            let host = if a.ip().is_unspecified() { "this computer's address".to_string() } else { a.ip().to_string() };
+                            (icons::CHECK_CIRCLE, p.success, format!("Running — host {host}, port {}", a.port()))
+                        }
+                        super::remote::RemoteStatus::Failed(e) => (icons::WARNING_CIRCLE, p.error, e.clone()),
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(icon).color(color));
+                        ui.label(RichText::new(text).color(color));
                     });
                 });
             }

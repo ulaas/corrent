@@ -13,6 +13,7 @@ mod integration_ui;
 pub mod log;
 mod onboarding;
 mod pickers;
+mod remote;
 mod search_view;
 mod settings_window;
 mod sidebar;
@@ -336,6 +337,7 @@ pub struct CorrentApp {
     pub main_view: feeds::MainView,
     pub feeds: feeds::FeedsUi,
     pub torznab: search_view::SearchUi,
+    pub remote: remote::RemoteCtl,
     row_first_seen: std::collections::HashMap<InfoHash, std::time::Instant>,
     rows_seen_once: bool,
     /// Windows 11 draws a native rounded border, so ours is skipped.
@@ -399,6 +401,7 @@ impl CorrentApp {
         if first_run {
             let _ = settings.save(&paths);
         }
+        let remote = remote::RemoteCtl::new(&settings);
         CorrentApp {
             paths,
             settings,
@@ -445,6 +448,7 @@ impl CorrentApp {
             main_view: Default::default(),
             feeds: Default::default(),
             torznab: Default::default(),
+            remote,
             row_first_seen: Default::default(),
             rows_seen_once: false,
             native_frame,
@@ -615,6 +619,7 @@ impl CorrentApp {
     }
 
     pub fn save_settings(&mut self) {
+        self.sync_remote();
         if let Err(e) = self.settings.save(&self.paths) {
             let msg = format!("Your settings couldn't be saved: {}", crate::util::explain_io(&format!("{e:#}")));
             if !self.data_notes.contains(&msg) {
@@ -829,6 +834,7 @@ impl eframe::App for CorrentApp {
         self.window_logic(ctx);
         ctx.request_repaint_after(std::time::Duration::from_secs(2));
         self.process_launch_queue();
+        self.poll_remote();
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -875,6 +881,7 @@ impl CorrentApp {
         if let Ok(w) = std::env::var("CORRENT_DEV_OPEN") {
             match w.as_str() {
                 "settings" => self.open_settings(),
+                "remote" => self.open_settings_at(settings_window::Page::Remote),
                 "magnet" => self.open_magnet_dialog(),
                 "about" => self.extras.about = true,
                 "creator" => self.open_creator(),
