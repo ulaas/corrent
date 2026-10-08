@@ -100,6 +100,9 @@ pub enum EngineCommand {
     ApplySettings(Box<Settings>),
     SetAltSpeed(bool),
     Shutdown(std::sync::mpsc::Sender<()>),
+    /// Debug builds only: panic inside the engine task (crash-report testing).
+    #[cfg(debug_assertions)]
+    DevPanic,
 }
 
 /// Free space on the volume holding `path` (or its nearest existing ancestor).

@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod crash;
 mod engine;
 mod integration;
 mod store;
@@ -57,6 +58,12 @@ fn main() -> eframe::Result {
     };
 
     let _log_guard = init_logging(&paths);
+    crash::install_hook(paths.log_dir());
+    let previous_run = crash::start(&paths.log_dir());
+    if previous_run.unclean {
+        tracing::warn!("previous run did not shut down cleanly");
+    }
+    let log_dir = paths.log_dir();
     std::thread::spawn(util::local_offset_secs);
     let (settings, first_run) = Settings::load(&paths);
     let launch: Vec<AddSource> = items.iter().filter_map(|a| AddSource::parse(a)).collect();
@@ -104,11 +111,15 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let _ = ctx_cell.set(cc.egui_ctx.clone());
-            Ok(Box::new(app::CorrentApp::new(cc, handle, paths, settings, first_run, launch, ipc_rx, start_minimized)))
+            Ok(Box::new(
+                app::CorrentApp::new(cc, handle, paths, settings, first_run, launch, ipc_rx, start_minimized)
+                    .with_previous_run(previous_run),
+            ))
         }),
     );
     // Let blocking hash/IO tasks finish briefly, but never hang on exit.
     rt.shutdown_timeout(std::time::Duration::from_secs(3));
+    crash::finish(&log_dir);
     result
 }
 

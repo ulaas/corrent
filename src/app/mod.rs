@@ -293,6 +293,7 @@ pub struct CorrentApp {
     tray: Option<tray::Tray>,
     tray_failed: bool,
     pub ctx: egui::Context,
+    previous_run: crate::crash::PreviousRun,
     pub pickers: pickers::Pickers,
     pub extras: extras::Extras,
     icon_tex: Option<egui::TextureHandle>,
@@ -357,6 +358,7 @@ impl CorrentApp {
             tray: None,
             tray_failed: false,
             ctx: cc.egui_ctx.clone(),
+            previous_run: Default::default(),
             pickers: Default::default(),
             extras: Default::default(),
             icon_tex: None,
@@ -365,6 +367,49 @@ impl CorrentApp {
         }
         .init_integration()
         .with_tray(&cc.egui_ctx)
+    }
+
+    pub fn with_previous_run(mut self, p: crate::crash::PreviousRun) -> Self {
+        self.previous_run = p;
+        self
+    }
+
+    /// "Closed unexpectedly" banner shown after an unclean exit.
+    fn crash_banner(&mut self, ui: &mut Ui, p: &Palette) {
+        if !self.previous_run.unclean {
+            return;
+        }
+        let report = self.previous_run.report.clone();
+        egui::Frame::new()
+            .fill(p.warn.gamma_multiply(0.12))
+            .stroke(egui::Stroke::new(1.0, p.warn.gamma_multiply(0.5)))
+            .corner_radius(egui::CornerRadius::same(10))
+            .inner_margin(egui::Margin::symmetric(14, 10))
+            .outer_margin(egui::Margin { left: 10, right: 10, top: 8, bottom: 2 })
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(egui_phosphor::regular::WARNING).size(20.0).color(p.warn));
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("Corrent closed unexpectedly last time").strong().color(p.text));
+                        let detail = if report.is_some() {
+                            "A crash report was saved. Your torrents and settings were restored."
+                        } else {
+                            "It may have been ended by the system or another program. Your torrents were restored."
+                        };
+                        ui.label(egui::RichText::new(detail).small().color(p.text_dim));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if crate::ui::widgets::secondary_button(ui, "Dismiss").clicked() {
+                            self.previous_run.unclean = false;
+                        }
+                        if let Some(r) = &report
+                            && crate::ui::widgets::secondary_button(ui, "View report").clicked()
+                        {
+                            open_path(r);
+                        }
+                    });
+                });
+            });
     }
 
     fn with_tray(mut self, ctx: &Context) -> Self {
@@ -532,6 +577,7 @@ impl eframe::App for CorrentApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(p.bg0).inner_margin(egui::Margin::same(0)))
             .show(ui, |ui| {
+                self.crash_banner(ui, &p);
                 self.handler_banner(ui, &p);
                 self.torrent_table(ui, &p);
             });
@@ -591,6 +637,11 @@ impl CorrentApp {
                 "stats" => self.extras.stats = true,
                 _ => {}
             }
+        }
+        match std::env::var("CORRENT_DEV_PANIC").as_deref() {
+            Ok("ui") => panic!("CORRENT_DEV_PANIC=ui"),
+            Ok("engine") => self.engine.send(crate::engine::EngineCommand::DevPanic),
+            _ => {}
         }
         if std::env::var("CORRENT_DEV_LIGHT").is_ok() {
             ctx.set_theme(egui::ThemePreference::Light);
