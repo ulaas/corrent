@@ -3,6 +3,7 @@
 
 mod actor;
 mod automation;
+pub mod logic;
 mod restore;
 mod session;
 pub mod types;

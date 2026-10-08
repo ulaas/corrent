@@ -188,3 +188,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+    use crate::engine::types::InfoHash;
+
+    #[test]
+    fn placeholders_expand() {
+        let t = TorrentView {
+            name: "N".into(),
+            hash: InfoHash([0xab; 20]),
+            size: 42,
+            category: Some("C".into()),
+            tags: vec!["a".into(), "b".into()],
+            save_path: "D".into(),
+            content_path: "F".into(),
+            ..Default::default()
+        };
+        assert_eq!(expand_command("%N|%F|%D|%C|%T|%Z|%%|%X", &t), "N|F|D|C|a,b|42|%|%X");
+        assert!(expand_command("%I", &t).starts_with("abab"));
+    }
+
+    #[test]
+    fn split_handles_quotes_inside_words() {
+        assert_eq!(split_args(r#"prog --name="a b" x"#), vec!["prog", "--name=a b", "x"]);
+        assert!(split_args("   ").is_empty());
+    }
+}

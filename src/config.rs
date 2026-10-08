@@ -564,3 +564,55 @@ mod tests {
         assert_eq!(c.proxy_url().unwrap(), "socks5://a%20b:p@127.0.0.1:1080");
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn restart_needed_only_for_engine_settings() {
+        let a = Settings::default();
+        let mut b = a.clone();
+        b.speed.download_limit = 10;
+        b.appearance.compact_rows = true;
+        b.queue.max_active_downloads = 1;
+        assert!(!a.requires_restart(&b));
+        b.connection.listen_port = 7000;
+        assert!(a.requires_restart(&b));
+        let mut c = a.clone();
+        c.bittorrent.dht = false;
+        assert!(a.requires_restart(&c));
+    }
+
+    #[test]
+    fn effective_speed() {
+        let s = Speed { download_limit: 1, upload_limit: 2, alt_download_limit: 3, alt_upload_limit: 4, ..Default::default() };
+        assert_eq!(s.effective(false), (1, 2));
+        assert_eq!(s.effective(true), (3, 4));
+    }
+
+    #[test]
+    fn recent_paths_dedupe_and_cap() {
+        let mut d = Downloads::default();
+        for i in 0..12 {
+            d.push_recent(PathBuf::from(format!("p{i}")));
+        }
+        d.push_recent(PathBuf::from("p5"));
+        assert_eq!(d.recent_paths.len(), 8);
+        assert_eq!(d.recent_paths[0], PathBuf::from("p5"));
+        assert_eq!(d.recent_paths.iter().filter(|p| **p == PathBuf::from("p5")).count(), 1);
+    }
+
+    #[test]
+    fn default_folder_is_corrent_subfolder() {
+        assert!(default_download_dir().ends_with("Corrent"));
+        assert_eq!(default_download_dir().parent(), Some(os_download_dir().as_path()));
+    }
+
+    #[test]
+    fn accents_have_names() {
+        for a in Accent::ALL {
+            assert!(!a.name().is_empty());
+        }
+    }
+}

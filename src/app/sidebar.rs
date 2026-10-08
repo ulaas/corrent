@@ -227,3 +227,25 @@ impl CorrentApp {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::types::{InfoHash, TorrentView};
+
+    #[test]
+    fn counts_include_parent_categories_and_untagged() {
+        let mut a = TorrentView { hash: InfoHash([1; 20]), category: Some("Movies/HD".into()), ..Default::default() };
+        a.tags = vec!["x".into()];
+        let b = TorrentView { hash: InfoHash([2; 20]), ..Default::default() };
+        let snap = Snapshot { torrents: vec![a, b], generation: 1, tags: vec!["unused".into()], ..Default::default() };
+        let mut c = Counts::default();
+        c.update(&snap);
+        assert_eq!(c.categories.get("Movies"), Some(&1));
+        assert_eq!(c.categories.get("Movies/HD"), Some(&1));
+        assert_eq!(c.uncategorized, 1);
+        assert_eq!(c.untagged, 1);
+        assert_eq!(c.tags.get("unused"), Some(&0), "known tags are listed even when empty");
+        assert_eq!(c.status[0], 2, "All");
+    }
+}

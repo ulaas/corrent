@@ -116,3 +116,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn reports_are_newest_first_and_filtered() {
+        let dir = std::env::temp_dir().join(format!("corrent-crash2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("crash-1.txt"), "a").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(dir.join("crash-2.txt"), "b").unwrap();
+        std::fs::write(dir.join("corrent.log"), "c").unwrap();
+        let r = reports(&dir);
+        assert_eq!(r.len(), 2);
+        assert!(r[0].ends_with("crash-2.txt"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

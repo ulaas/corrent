@@ -164,3 +164,36 @@ fn row_tail(ui: &mut Ui, p: &Palette, len: u64, done: Option<u64>) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn icons_by_extension() {
+        assert_eq!(file_icon("movie.MKV"), icons::FILE_VIDEO);
+        assert_eq!(file_icon("song.flac"), icons::FILE_AUDIO);
+        assert_eq!(file_icon("archive.7z"), icons::FILE_ZIP);
+        assert_eq!(file_icon("noext"), icons::FILE);
+    }
+
+    #[test]
+    fn tree_groups_by_directory() {
+        let comps: Vec<Vec<String>> = vec![
+            vec!["a".into(), "x.txt".into()],
+            vec!["a".into(), "b".into(), "y.txt".into()],
+            vec!["z.txt".into()],
+        ];
+        let mut root = Node::default();
+        for (i, c) in comps.iter().enumerate() {
+            root.insert(c, i);
+        }
+        assert_eq!(root.files, vec![2]);
+        let a = &root.dirs["a"];
+        assert_eq!(a.files, vec![0]);
+        let mut all = Vec::new();
+        root.collect(&mut all);
+        all.sort();
+        assert_eq!(all, vec![0, 1, 2]);
+    }
+}

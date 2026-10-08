@@ -280,3 +280,75 @@ mod tests {
         assert_eq!(ps, vec![0, 1, 2, 3]);
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("corrent-store-{name}-{}.json", std::process::id()))
+    }
+
+    #[test]
+    fn quiet_access_does_not_dirty_existing() {
+        let mut s = Store::load(tmp("q"));
+        s.meta_mut(InfoHash([1; 20]));
+        s.dirty = false;
+        s.meta_quiet(InfoHash([1; 20])).last_activity = 5;
+        assert!(!s.dirty);
+        s.meta_quiet(InfoHash([2; 20]));
+        assert!(s.dirty, "new entries are always saved");
+    }
+
+    #[test]
+    fn remove_renumbers_queue() {
+        let mut s = Store::load(tmp("r"));
+        for i in 0..3u8 {
+            s.meta_mut(InfoHash([i; 20]));
+        }
+        s.remove(&InfoHash([0; 20]));
+        let mut ps: Vec<u32> = s.data.torrents.values().map(|m| m.queue_pos).collect();
+        ps.sort();
+        assert_eq!(ps, vec![0, 1]);
+    }
+
+    #[test]
+    fn save_and_reload() {
+        let p = tmp("s");
+        let mut s = Store::load(p.clone());
+        s.meta_mut(InfoHash([9; 20])).category = Some("Movies".into());
+        s.maybe_save(true);
+        let back = Store::load(p.clone());
+        assert_eq!(back.get(&InfoHash([9; 20])).unwrap().category.as_deref(), Some("Movies"));
+        assert!(back.warning.is_none());
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(p.with_extension("json.bak"));
+    }
+
+    #[test]
+    fn corrupt_store_falls_back_to_backup() {
+        let p = tmp("c");
+        let mut s = Store::load(p.clone());
+        s.meta_mut(InfoHash([3; 20])).tags = vec!["x".into()];
+        s.maybe_save(true);
+        s.meta_mut(InfoHash([4; 20]));
+        s.maybe_save(true); // second save creates .bak with the first version
+        std::fs::write(&p, b"{ broken").unwrap();
+        let back = Store::load(p.clone());
+        assert!(back.warning.as_deref().unwrap_or("").contains("restored from its backup"));
+        assert!(back.get(&InfoHash([3; 20])).is_some());
+        for f in std::fs::read_dir(std::env::temp_dir()).unwrap().flatten() {
+            let n = f.file_name().to_string_lossy().into_owned();
+            if n.starts_with(&format!("corrent-store-c-{}", std::process::id())) {
+                let _ = std::fs::remove_file(f.path());
+            }
+        }
+    }
+
+    #[test]
+    fn counters_first_sample_counts_fully() {
+        let mut m = TorrentMeta::default();
+        assert_eq!(m.absorb_counters(10, 20), (10, 20));
+        assert_eq!(m.absorb_counters(10, 20), (0, 0));
+    }
+}

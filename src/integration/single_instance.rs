@@ -168,3 +168,26 @@ mod tests {
         assert!(parse_line("RM -rf").is_none());
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn non_file_args_pass_through() {
+        assert_eq!(normalize_arg("magnet:?xt=urn:btih:abc"), "magnet:?xt=urn:btih:abc");
+        assert_eq!(normalize_arg("https://x/y.torrent"), "https://x/y.torrent");
+    }
+
+    #[test]
+    fn existing_non_torrent_files_are_rejected() {
+        let f = std::env::temp_dir().join(format!("corrent-ipc-{}.txt", std::process::id()));
+        std::fs::write(&f, "x").unwrap();
+        assert!(parse_line(&format!("ADD {}", f.display())).is_none());
+        let t = f.with_extension("torrent");
+        std::fs::write(&t, "x").unwrap();
+        assert!(matches!(parse_line(&format!("ADD {}", t.display())), Some(IpcMessage::Add(AddSource::File(_)))));
+        let _ = std::fs::remove_file(f);
+        let _ = std::fs::remove_file(t);
+    }
+}

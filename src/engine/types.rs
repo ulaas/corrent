@@ -42,7 +42,7 @@ impl<'de> serde::Deserialize<'de> for InfoHash {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]
 pub enum TorrentState {
     /// Waiting for metadata from peers (magnet links).
     Metadata,
@@ -51,6 +51,7 @@ pub enum TorrentState {
     Stalled,
     Seeding,
     Completed,
+    #[default]
     Paused,
     Queued,
     Error,
@@ -83,7 +84,7 @@ impl TorrentState {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TorrentView {
     pub id: usize,
     pub hash: InfoHash,
@@ -342,5 +343,72 @@ mod tests {
             Some("Hello World 2")
         );
         assert_eq!(url_decode("a%2"), "a%2");
+    }
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn info_hash_rejects_bad_hex() {
+        assert!(InfoHash::from_hex("abc").is_none());
+        assert!(InfoHash::from_hex(&"zz".repeat(20)).is_none());
+        assert!(InfoHash::from_hex(&format!("  {}  ", "0a".repeat(20))).is_some(), "whitespace is trimmed");
+    }
+
+    #[test]
+    fn info_hash_serde() {
+        let h = InfoHash([7; 20]);
+        let json = serde_json::to_string(&h).unwrap();
+        assert_eq!(json, format!("\"{}\"", "07".repeat(20)));
+        assert_eq!(serde_json::from_str::<InfoHash>(&json).unwrap(), h);
+        assert!(serde_json::from_str::<InfoHash>("\"nope\"").is_err());
+    }
+
+    #[test]
+    fn url_coding_roundtrip() {
+        for s in ["a b/c?d=e&f", "Ünïcødé 名前", "100%"] {
+            assert_eq!(url_decode(&url_encode(s)), s);
+        }
+    }
+
+    #[test]
+    fn magnet_link_contains_name_and_trackers() {
+        let t = TorrentView {
+            hash: InfoHash([1; 20]),
+            name: "My File".into(),
+            trackers: vec!["udp://t.example:80".into()],
+            ..Default::default()
+        };
+        let m = t.magnet();
+        assert!(m.starts_with("magnet:?xt=urn:btih:0101"));
+        assert!(m.contains("&dn=My%20File"));
+        assert!(m.contains("&tr=udp%3A%2F%2Ft.example%3A80"));
+    }
+
+    #[test]
+    fn parse_more_sources() {
+        assert!(matches!(AddSource::parse("  \"magnet:?xt=urn:btih:x\"  "), Some(AddSource::Magnet(_))));
+        assert!(matches!(AddSource::parse("HTTP://X/Y"), Some(AddSource::Url(_))));
+        let b32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        assert!(matches!(AddSource::parse(b32), Some(AddSource::Magnet(m)) if m.ends_with(b32)));
+        assert_eq!(AddSource::parse("hello world"), None);
+    }
+
+    #[test]
+    fn describe_sources() {
+        assert_eq!(AddSource::File("C:/x/y.torrent".into()).describe(), "y.torrent");
+        assert_eq!(AddSource::Magnet("magnet:?xt=urn:btih:x&dn=Big%20Buck".into()).describe(), "Big Buck");
+        assert!(AddSource::Url("https://example.com/".repeat(10)).describe().ends_with('…'));
+    }
+
+    #[test]
+    fn state_flags() {
+        assert!(TorrentState::Downloading.is_active());
+        assert!(!TorrentState::Paused.is_active());
+        assert!(TorrentState::Queued.is_paused_like());
+        assert!(!TorrentState::Seeding.is_paused_like());
+        assert_eq!(TorrentState::Metadata.label(), "Fetching metadata");
     }
 }

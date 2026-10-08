@@ -1032,19 +1032,18 @@ impl Actor {
             structural = true;
         }
 
-        let state = match &stats.state {
-            _ if busy.is_some() => TorrentState::Checking,
-            TorrentStatsState::Error => TorrentState::Error,
-            TorrentStatsState::Initializing { .. } => TorrentState::Checking,
-            TorrentStatsState::Paused => match m.pause_reason {
-                Some(PauseReason::Queue) => TorrentState::Queued,
-                _ if stats.finished => TorrentState::Completed,
-                _ => TorrentState::Paused,
+        let state = super::logic::map_state(&super::logic::StateInput {
+            status: match &stats.state {
+                TorrentStatsState::Error => super::logic::EngineStatus::Error,
+                TorrentStatsState::Initializing { .. } => super::logic::EngineStatus::Initializing,
+                TorrentStatsState::Paused => super::logic::EngineStatus::Paused,
+                TorrentStatsState::Live => super::logic::EngineStatus::Live,
             },
-            TorrentStatsState::Live if stats.finished => TorrentState::Seeding,
-            TorrentStatsState::Live if stalled => TorrentState::Stalled,
-            TorrentStatsState::Live => TorrentState::Downloading,
-        };
+            finished: stats.finished,
+            busy: busy.is_some(),
+            stalled,
+            pause_reason: m.pause_reason,
+        });
 
         if state == TorrentState::Seeding {
             let carry = self.seed_carry_ms.entry(hash).or_insert(0);
@@ -1264,13 +1263,7 @@ impl Actor {
             return;
         }
         let (minutes, weekday) = crate::util::local_minutes_and_weekday();
-        let day_ok = sch.days & (1 << weekday) != 0;
-        let in_window = if sch.from_minutes <= sch.to_minutes {
-            minutes >= sch.from_minutes && minutes < sch.to_minutes
-        } else {
-            minutes >= sch.from_minutes || minutes < sch.to_minutes
-        };
-        let want = day_ok && in_window;
+        let want = super::logic::in_schedule(sch, minutes, weekday);
         // Only act on transitions so a manual toggle holds until the next boundary.
         if self.last_schedule_state != Some(want) {
             self.last_schedule_state = Some(want);
@@ -1288,54 +1281,28 @@ impl Actor {
     fn run_queue(&mut self, views: &[TorrentView], handles: &[(usize, Arc<ManagedTorrent>)]) {
         let q = self.settings.queue.clone();
         let Some(sess) = self.session.clone() else { return };
-        let mut order: Vec<&TorrentView> = views
-            .iter()
-            .filter(|v| !v.pending && v.busy.is_none() && v.has_metadata)
-            .filter(|v| !matches!(v.state, TorrentState::Error | TorrentState::Checking))
-            .collect();
-        order.sort_by_key(|v| v.queue_pos);
-
-        let (mut dl, mut up, mut total) = (0u32, 0u32, 0u32);
-        let mut to_pause = Vec::new();
-        let mut to_resume = Vec::new();
-        for v in order {
-            let Some(m) = self.store.get(&v.hash) else { continue };
-            if m.force_started {
-                continue;
-            }
-            // User- and limit-paused torrents are outside the queue's control.
-            if matches!(m.pause_reason, Some(PauseReason::User) | Some(PauseReason::SeedLimit)) {
-                continue;
-            }
-            let running = matches!(
-                v.state,
-                TorrentState::Downloading | TorrentState::Stalled | TorrentState::Seeding | TorrentState::Metadata
-            );
-            let finished = v.completed_at.is_some() && v.done >= v.size;
-            let slow_now = running && v.down_bps < q.slow_down_kib as u64 * 1024 && v.up_bps < q.slow_up_kib as u64 * 1024;
-            let slow_for = if slow_now {
-                self.slow_since.entry(v.hash).or_insert_with(Instant::now).elapsed()
+        // Track how long each running torrent has been slow (time-dependent input to the planner).
+        for v in views {
+            if super::logic::is_slow_now(v, &q) {
+                self.slow_since.entry(v.hash).or_insert_with(Instant::now);
             } else {
                 self.slow_since.remove(&v.hash);
-                Duration::ZERO
-            };
-            let settled = self.resumed_at.get(&v.hash).is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
-            let slow = q.ignore_slow && slow_now && slow_for >= Duration::from_secs(60) && settled;
-            if running && slow {
-                continue; // inactive torrents don't occupy a slot
-            }
-            let fits = total < q.max_active_total
-                && if finished { up < q.max_active_uploads } else { dl < q.max_active_downloads };
-            if fits {
-                total += 1;
-                if finished { up += 1 } else { dl += 1 }
-                if !running && m.pause_reason == Some(PauseReason::Queue) {
-                    to_resume.push(v.hash);
-                }
-            } else if running {
-                to_pause.push(v.hash);
             }
         }
+        let items: Vec<super::logic::QueueItem<'_>> = views
+            .iter()
+            .filter_map(|v| {
+                let meta = self.store.get(&v.hash)?;
+                Some(super::logic::QueueItem {
+                    view: v,
+                    meta,
+                    slow_for: self.slow_since.get(&v.hash).map(|t| t.elapsed()).unwrap_or_default(),
+                    since_resume: self.resumed_at.get(&v.hash).map(|t| t.elapsed()),
+                })
+            })
+            .collect();
+        let plan = super::logic::plan_queue(&q, items);
+        let (to_pause, to_resume) = (plan.pause, plan.resume);
         if to_pause.is_empty() && to_resume.is_empty() {
             return;
         }
@@ -1361,34 +1328,13 @@ impl Actor {
 
     fn run_seed_limits(&mut self, views: &[TorrentView]) {
         let s = self.settings.seeding.clone();
-        let mut actions = Vec::new();
-        for v in views.iter().filter(|v| v.state == TorrentState::Seeding) {
-            let Some(m) = self.store.get(&v.hash) else { continue };
-            if m.seed_limit_exempt || m.force_started {
-                continue;
-            }
-            let ratio_limit = m.seed_ratio_override.or(s.ratio_enabled.then_some(s.ratio));
-            let time_limit = m.seed_time_override_min.or(s.time_enabled.then_some(s.time_minutes));
-            let mut reason = None;
-            if let Some(r) = ratio_limit
-                && r > 0.0
-                && v.ratio >= r
-            {
-                reason = Some(format!("reached ratio {r:.2}"));
-            }
-            if let Some(t) = time_limit
-                && t > 0
-                && m.seeding_seconds >= t as u64 * 60
-            {
-                reason = Some(format!("seeded for {}", crate::util::fmt_duration(Duration::from_secs(t as u64 * 60))));
-            }
-            if s.inactive_enabled && s.inactive_minutes > 0 && m.inactive_seeding_secs >= s.inactive_minutes as u64 * 60 {
-                reason = Some("was inactive".to_string());
-            }
-            if let Some(r) = reason {
-                actions.push((v.hash, v.name.clone(), r));
-            }
-        }
+        let actions: Vec<(InfoHash, String, String)> = views
+            .iter()
+            .filter_map(|v| {
+                let m = self.store.get(&v.hash)?;
+                super::logic::seed_limit_reason(v, m, &s).map(|r| (v.hash, v.name.clone(), r))
+            })
+            .collect();
         for (hash, name, why) in actions {
             match s.action {
                 SeedAction::Pause => {
@@ -1766,5 +1712,31 @@ mod tests {
         assert_eq!(sanitize_name("a/b:c?"), "a_b_c_");
         assert_eq!(sanitize_name("  ..  "), "torrent");
         assert_eq!(sanitize_name("Movie (2020)."), "Movie (2020)");
+    }
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn pending_hashes_are_unique_and_marked() {
+        assert_ne!(pending_hash(1), pending_hash(2));
+        assert_eq!(pending_hash(7).0[0], 0xff);
+    }
+
+    #[test]
+    fn sanitize_strips_reserved_characters() {
+        assert_eq!(sanitize_name("a<b>c|d*e"), "a_b_c_d_e");
+        assert_eq!(sanitize_name("tab\there"), "tab_here");
+        assert_eq!(sanitize_name("ok name"), "ok name");
+    }
+
+    #[test]
+    fn kib_limits() {
+        assert_eq!(super::super::session::kib_limit(0), None);
+        assert_eq!(super::super::session::kib_limit(2).map(|n| n.get()), Some(2048));
+        let l = super::super::session::limits(1, 0);
+        assert!(l.download_bps.is_some() && l.upload_bps.is_none());
     }
 }

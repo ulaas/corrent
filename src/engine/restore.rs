@@ -142,3 +142,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn friendly_messages() {
+        assert!(friendly("error opening x: Access is denied. (os error 5)").contains("antivirus"));
+        assert!(friendly("os error 32").contains("in use"));
+        assert!(friendly("No space left on device").contains("disk is full"));
+        assert_eq!(friendly("something else"), "something else");
+    }
+
+    #[test]
+    fn missing_session_file_is_empty() {
+        assert!(persisted_entries(std::path::Path::new("Z:/definitely/not/here")).is_empty());
+    }
+}

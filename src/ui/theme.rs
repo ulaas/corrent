@@ -269,3 +269,32 @@ fn style(s: &mut egui::Style, p: &Palette, a: &Appearance) {
     ]
     .into();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_colors_are_distinct_where_it_matters() {
+        for p in [Palette::dark(accent_color(Accent::Blue, [0; 3], true)), Palette::light(accent_color(Accent::Blue, [0; 3], false))] {
+            let c = |s| p.state_color(s);
+            assert_ne!(c(TorrentState::Downloading), c(TorrentState::Seeding));
+            assert_ne!(c(TorrentState::Error), c(TorrentState::Paused));
+            assert_ne!(c(TorrentState::Queued), c(TorrentState::Paused));
+        }
+    }
+
+    #[test]
+    fn custom_accent_is_used() {
+        assert_eq!(accent_color(Accent::Custom, [1, 2, 3], true), Color32::from_rgb(1, 2, 3));
+        assert_ne!(accent_color(Accent::Teal, [0; 3], true), accent_color(Accent::Teal, [0; 3], false));
+    }
+
+    #[test]
+    fn every_state_has_an_icon() {
+        use TorrentState::*;
+        for s in [Metadata, Checking, Downloading, Stalled, Seeding, Completed, Paused, Queued, Error] {
+            assert!(!Palette::state_icon(s).is_empty());
+        }
+    }
+}

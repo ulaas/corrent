@@ -103,3 +103,29 @@ fn ui_accent_bar(ctx: &Context, rect: egui::Rect, color: Color32, id: u64) {
     let bar = egui::Rect::from_min_max(rect.left_top() + vec2(0.0, 8.0), egui::pos2(rect.left() + 3.0, rect.bottom() - 8.0));
     painter.rect_filled(bar, CornerRadius::same(2), color);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicates_collapse_and_list_is_capped() {
+        let mut t = Toasts::default();
+        t.push(ToastKind::Info, "same");
+        t.push(ToastKind::Info, "same");
+        assert_eq!(t.items.len(), 1);
+        for i in 0..10 {
+            t.push(ToastKind::Info, format!("n{i}"));
+        }
+        assert_eq!(t.items.len(), 6);
+        assert_eq!(t.items.last().unwrap().text, "n9");
+    }
+
+    #[test]
+    fn errors_stay_longer() {
+        let mut t = Toasts::default();
+        t.push(ToastKind::Error, "e");
+        t.push(ToastKind::Info, "i");
+        assert!(t.items[0].ttl > t.items[1].ttl);
+    }
+}

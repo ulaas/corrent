@@ -624,3 +624,107 @@ mod tests {
         assert_eq!(tracker_host("udp://tracker.example.org:1337/announce"), "tracker.example.org");
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+    use crate::app::{StatusFilter, UiPrefs};
+    use crate::engine::types::InfoHash;
+
+    fn t(n: u8, name: &str) -> TorrentView {
+        TorrentView { hash: InfoHash([n; 20]), name: name.into(), size: n as u64 * 10, queue_pos: n as u32, ..Default::default() }
+    }
+
+    fn snap(ts: Vec<TorrentView>) -> Snapshot {
+        Snapshot { torrents: ts, ..Default::default() }
+    }
+
+    #[test]
+    fn category_filter_includes_children() {
+        let mut a = t(1, "a");
+        a.category = Some("Movies/HD".into());
+        let mut b = t(2, "b");
+        b.category = Some("Music".into());
+        let prefs = UiPrefs { category_filter: GroupFilter::Named("Movies".into()), ..Default::default() };
+        assert!(matches_filters(&a, &prefs, ""));
+        assert!(!matches_filters(&b, &prefs, ""));
+        let none = UiPrefs { category_filter: GroupFilter::None, ..Default::default() };
+        assert!(matches_filters(&t(3, "c"), &none, ""));
+        assert!(!matches_filters(&a, &none, ""));
+    }
+
+    #[test]
+    fn tag_and_tracker_filters() {
+        let mut a = t(1, "a");
+        a.tags = vec!["linux".into()];
+        a.trackers = vec!["udp://tracker.example.org:1337/announce".into()];
+        let tag = UiPrefs { tag_filter: GroupFilter::Named("linux".into()), ..Default::default() };
+        assert!(matches_filters(&a, &tag, ""));
+        assert!(!matches_filters(&t(2, "b"), &tag, ""));
+        let tr = UiPrefs { tracker_filter: GroupFilter::Named("tracker.example.org".into()), ..Default::default() };
+        assert!(matches_filters(&a, &tr, ""));
+        let none = UiPrefs { tracker_filter: GroupFilter::None, ..Default::default() };
+        assert!(matches_filters(&t(2, "b"), &none, ""));
+    }
+
+    #[test]
+    fn search_terms_all_must_match() {
+        let mut a = t(1, "Ubuntu Server 24.04");
+        a.tags = vec!["iso".into()];
+        let p = UiPrefs::default();
+        assert!(matches_filters(&a, &p, "ubuntu 24"));
+        assert!(matches_filters(&a, &p, "ubuntu iso"), "tags match whole terms");
+        assert!(!matches_filters(&a, &p, "ubuntu desktop"));
+        assert!(matches_filters(&a, &p, "0101"), "info hash prefix");
+    }
+
+    #[test]
+    fn status_filters() {
+        let mut d = t(1, "d");
+        d.state = TorrentState::Downloading;
+        d.down_bps = 5;
+        let mut s = t(2, "s");
+        s.state = TorrentState::Seeding;
+        s.completed_at = Some(1);
+        assert!(StatusFilter::Downloading.matches(&d));
+        assert!(!StatusFilter::Downloading.matches(&s));
+        assert!(StatusFilter::Seeding.matches(&s));
+        assert!(StatusFilter::Completed.matches(&s));
+        assert!(StatusFilter::Active.matches(&d));
+        assert!(StatusFilter::Inactive.matches(&s));
+    }
+
+    #[test]
+    fn sorting_by_name_natural_and_size_desc() {
+        let sn = snap(vec![t(1, "ep10"), t(2, "ep2"), t(3, "Ep1")]);
+        let mut p = UiPrefs { sort: Col::Name, sort_asc: true, ..Default::default() };
+        let rows = compute_rows(&sn, &p, "");
+        let names: Vec<&str> = rows.iter().map(|&i| sn.torrents[i].name.as_str()).collect();
+        assert_eq!(names, vec!["Ep1", "ep2", "ep10"]);
+        p.sort = Col::Size;
+        p.sort_asc = false;
+        let rows = compute_rows(&sn, &p, "");
+        assert_eq!(sn.torrents[rows[0]].size, 30);
+    }
+
+    #[test]
+    fn eta_sort_puts_unknown_last() {
+        let mut a = t(1, "a");
+        a.eta = Some(Duration::from_secs(5));
+        let b = t(2, "b");
+        let sn = snap(vec![b, a]);
+        let p = UiPrefs { sort: Col::Eta, sort_asc: true, ..Default::default() };
+        let rows = compute_rows(&sn, &p, "");
+        assert_eq!(sn.torrents[rows[0]].name, "a");
+    }
+
+    #[test]
+    fn status_text_variants() {
+        let mut a = t(1, "a");
+        a.state = TorrentState::Checking;
+        a.progress = 0.5;
+        assert_eq!(status_text(&a), "Checking 50%");
+        a.busy = Some("Moving files…".into());
+        assert_eq!(status_text(&a), "Moving files…");
+    }
+}

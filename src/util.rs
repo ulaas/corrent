@@ -286,3 +286,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn bytes_units() {
+        assert_eq!(fmt_bytes(0), "0 B");
+        assert_eq!(fmt_bytes(10 * 1024 * 1024), "10.0 MiB");
+        assert_eq!(fmt_bytes(150 * 1024 * 1024 * 1024), "150 GiB");
+    }
+
+    #[test]
+    fn speed_units() {
+        assert_eq!(fmt_speed(1000, SpeedUnits::Decimal), "1.0 kB/s");
+        assert_eq!(fmt_speed(125, SpeedUnits::Bits), "1.0 kbit/s");
+        assert_eq!(fmt_speed(500, SpeedUnits::Binary), "500 B/s");
+        assert_eq!(fmt_speed(200 * 1024 * 1024, SpeedUnits::Binary), "200 MiB/s");
+    }
+
+    #[test]
+    fn durations() {
+        assert_eq!(fmt_duration(Duration::from_secs(5)), "5s");
+        assert_eq!(fmt_duration(Duration::from_secs(65)), "1m 05s");
+        assert_eq!(fmt_duration(Duration::from_secs(2 * 86400 + 3600)), "2d 1h");
+        assert_eq!(fmt_duration(Duration::from_secs(200 * 86400)), "∞");
+    }
+
+    #[test]
+    fn ratio_and_dates() {
+        assert_eq!(fmt_ratio(f32::INFINITY), "∞");
+        assert_eq!(fmt_ratio(1.234), "1.23");
+        assert_eq!(fmt_date(0), "—");
+        assert_eq!(civil_from_days(19782), (2024, 2, 29), "leap day");
+    }
+
+    #[test]
+    fn minutes_and_weekday_in_range() {
+        let (m, d) = local_minutes_and_weekday();
+        assert!(m < 24 * 60);
+        assert!(d < 7);
+    }
+
+    #[test]
+    fn atomic_write_creates_parent_dirs() {
+        let dir = std::env::temp_dir().join(format!("corrent-aw-{}", std::process::id())).join("a/b");
+        write_atomic(&dir.join("f.txt"), b"x").unwrap();
+        assert_eq!(std::fs::read(dir.join("f.txt")).unwrap(), b"x");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap().parent().unwrap());
+    }
+}
