@@ -107,6 +107,14 @@ pub(super) fn row(ui: &mut Ui, p: &Palette, icon: &str, icon_color: Color32, lab
     resp
 }
 
+fn hint(ui: &mut Ui, p: &Palette, text: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(14.0);
+        ui.add(egui::Label::new(RichText::new(text).small().color(p.text_mute)).wrap());
+    });
+    ui.add_space(2.0);
+}
+
 fn section(ui: &mut Ui, p: &Palette, title: &str, add: Option<&str>) -> bool {
     let mut clicked = false;
     ui.horizontal(|ui| {
@@ -163,6 +171,9 @@ impl CorrentApp {
                 self.prefs.category_filter = GroupFilter::None;
             }
             let cats: Vec<(String, usize)> = self.counts.categories.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            if cats.is_empty() {
+                hint(ui, p, "Categories group torrents and can have their own save folder.");
+            }
             for (c, n) in cats {
                 let depth = c.matches('/').count();
                 let label = c.rsplit('/').next().unwrap_or(&c).to_string();
@@ -206,6 +217,9 @@ impl CorrentApp {
                 self.prefs.tag_filter = GroupFilter::None;
             }
             let tags: Vec<(String, usize)> = self.counts.tags.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            if tags.is_empty() {
+                hint(ui, p, "Tags are free-form labels; a torrent can have several.");
+            }
             for (tag, n) in tags {
                 let sel = self.prefs.tag_filter == GroupFilter::Named(tag.clone());
                 let r = row(ui, p, icons::HASH, p.queued, &tag, Some(n), sel);

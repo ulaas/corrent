@@ -27,8 +27,22 @@ enum Internal {
     OpFinished { hash: InfoHash, what: &'static str, result: Result<(), String> },
     Deleted { hash: InfoHash, result: Result<(), String> },
     RestoreReport(Vec<super::restore::FailedRestore>),
+    UndoFinished { hash: InfoHash, meta: Box<crate::store::TorrentMeta>, result: Result<(), String> },
     RestoreRetried { hash: InfoHash, result: Result<(), String>, quiet: bool },
 }
+
+/// What is needed to re-add a torrent that was just removed (Undo).
+struct UndoEntry {
+    bytes: Vec<u8>,
+    output: PathBuf,
+    only_files: Option<Vec<usize>>,
+    paused: bool,
+    trackers: Vec<String>,
+    meta: crate::store::TorrentMeta,
+    at: Instant,
+}
+
+const UNDO_WINDOW: Duration = Duration::from_secs(120);
 
 struct PendingAdd {
     name: String,
@@ -92,6 +106,8 @@ pub struct Actor {
     resumed_at: HashMap<InfoHash, Instant>,
     deferred_settings: Option<Box<Settings>>,
     failed: HashMap<InfoHash, super::restore::FailedRestore>,
+    undo_pending: HashMap<InfoHash, UndoEntry>,
+    undo: HashMap<InfoHash, UndoEntry>,
     /// Pruning the store waits until failed restores have been identified.
     restore_checked: bool,
 }
@@ -148,6 +164,8 @@ impl Actor {
             resumed_at: HashMap::new(),
             deferred_settings: None,
             failed: HashMap::new(),
+            undo_pending: HashMap::new(),
+            undo: HashMap::new(),
             restore_checked: false,
         }
     }
@@ -292,6 +310,33 @@ impl Actor {
             other => other,
         };
         match cmd {
+            EngineCommand::UndoRemove(hashes) => {
+                for hash in hashes {
+                    let Some(e) = self.undo.remove(&hash) else { continue };
+                    if e.at.elapsed() > UNDO_WINDOW {
+                        continue;
+                    }
+                    let Some(sess) = self.session.clone() else { continue };
+                    let tx = self.internal_tx.clone();
+                    self.busy.insert(hash, "Restoring…".into());
+                    tokio::spawn(async move {
+                        let opts = AddTorrentOptions {
+                            paused: e.paused,
+                            only_files: e.only_files.clone(),
+                            output_folder: Some(e.output.to_string_lossy().into_owned()),
+                            overwrite: true,
+                            trackers: (!e.trackers.is_empty()).then(|| e.trackers.clone()),
+                            ..Default::default()
+                        };
+                        let result = sess
+                            .add_torrent(AddTorrent::from_bytes(e.bytes), Some(opts))
+                            .await
+                            .map(|_| ())
+                            .map_err(|err| format!("{err:#}"));
+                        let _ = tx.send(Internal::UndoFinished { hash, meta: Box::new(e.meta), result });
+                    });
+                }
+            }
             EngineCommand::CancelAdd(hash) => {
                 let ids: Vec<u64> = self.pending.iter().filter(|(_, p)| p.hash == hash).map(|(id, _)| *id).collect();
                 for id in ids {
@@ -351,7 +396,7 @@ impl Actor {
                         self.store.data.purge.push(hash);
                         self.forget_hash(&hash);
                         self.store.maybe_save(true);
-                        self.emit(EngineEvent::Removed { hash });
+                        self.emit(EngineEvent::Removed { hash, name: String::new(), undoable: false });
                         if with_data {
                             self.toast(ToastKind::Info, "The torrent was removed; its files were left in place because they couldn't be opened.");
                         }
@@ -544,6 +589,23 @@ impl Actor {
 
     fn delete(&mut self, hash: InfoHash, with_data: bool) {
         let Some(sess) = self.session.clone() else { return };
+        if !with_data
+            && let Some(h) = self.handle_for(&hash)
+            && let Ok(bytes) = h.with_metadata(|m| m.torrent_bytes.to_vec())
+        {
+            self.undo_pending.insert(
+                hash,
+                UndoEntry {
+                    bytes,
+                    output: h.output_folder().to_path_buf(),
+                    only_files: h.only_files(),
+                    paused: h.is_paused(),
+                    trackers: h.shared().trackers.iter().map(|u| u.to_string()).collect(),
+                    meta: self.store.get(&hash).cloned().unwrap_or_default(),
+                    at: Instant::now(),
+                },
+            );
+        }
         self.busy.insert(hash, if with_data { "Deleting files…".into() } else { "Removing…".into() });
         let tx = self.internal_tx.clone();
         tokio::spawn(async move {
@@ -753,6 +815,20 @@ impl Actor {
                     Err(e) => self.toast(ToastKind::Error, format!("Operation failed: {e}")),
                 }
             }
+            Internal::UndoFinished { hash, meta, result } => {
+                self.busy.remove(&hash);
+                match result {
+                    Ok(()) => {
+                        let name = meta.display_name.clone().unwrap_or(meta.name.clone());
+                        // Bring back category, tags, dates, queue position and totals.
+                        *self.store.meta_mut(hash) = *meta;
+                        self.store.normalize_queue();
+                        self.store.maybe_save(true);
+                        self.emit(EngineEvent::Restored { hash, name });
+                    }
+                    Err(e) => self.toast(ToastKind::Error, format!("Undo failed: {e}")),
+                }
+            }
             Internal::RestoreReport(list) => {
                 if !list.is_empty() {
                     let n = list.len();
@@ -789,9 +865,20 @@ impl Actor {
                 }
                 // librqbit forgets the torrent before touching files, so it may be gone despite an error.
                 if result.is_ok() || gone {
+                    let name = self.store.get(&hash).map(|m| m.display_name.clone().unwrap_or(m.name.clone())).unwrap_or_default();
                     self.forget_hash(&hash);
                     self.store.maybe_save(true);
-                    self.emit(EngineEvent::Removed { hash });
+                    let undoable = match self.undo_pending.remove(&hash) {
+                        Some(mut e) => {
+                            e.at = Instant::now();
+                            self.undo.insert(hash, e);
+                            true
+                        }
+                        None => false,
+                    };
+                    self.emit(EngineEvent::Removed { hash, name, undoable });
+                } else {
+                    self.undo_pending.remove(&hash);
                 }
                 self.maybe_apply_deferred();
             }
@@ -806,6 +893,9 @@ impl Actor {
         self.tick_count += 1;
 
         self.run_schedule();
+        if self.tick_count % 20 == 5 {
+            self.undo.retain(|_, e| e.at.elapsed() <= UNDO_WINDOW);
+        }
         // Files blocked by antivirus or another program are often released later.
         if self.tick_count % 120 == 60 && !self.failed.is_empty() {
             let hashes: Vec<InfoHash> = self.failed.keys().filter(|h| !self.busy.contains_key(h)).copied().collect();

@@ -522,29 +522,86 @@ impl CorrentApp {
     }
 
     fn drain_events(&mut self, ctx: &Context) {
+        let mut removed: Vec<(InfoHash, String)> = Vec::new();
         while let Ok(ev) = self.events.try_recv() {
             match ev {
                 EngineEvent::Toast(kind, text) => self.toasts.push(kind, text),
-                EngineEvent::Added { name, .. } => {
-                    self.toasts.push(ToastKind::Success, format!("Added “{name}”"));
+                EngineEvent::Added { name, hash } => {
+                    self.toasts.push_with(
+                        ToastKind::Success,
+                        format!("Added “{name}”"),
+                        vec![("Show".into(), toasts::ToastAction::Show(hash))],
+                    );
                     if self.settings.behavior.notify_on_add && self.window_hidden {
                         self.notify("Torrent added", &name);
                     }
                 }
-                EngineEvent::Completed { name, size, .. } => {
-                    self.toasts.push(ToastKind::Success, format!("Download complete: “{name}”"));
+                EngineEvent::Completed { name, size, content_path, save_path, .. } => {
+                    self.toasts.push_with(
+                        ToastKind::Success,
+                        format!("Download complete: “{name}”"),
+                        vec![
+                            ("Open".into(), toasts::ToastAction::OpenFile(content_path)),
+                            ("Show in folder".into(), toasts::ToastAction::OpenFolder(save_path)),
+                        ],
+                    );
                     if self.settings.behavior.notify_on_complete {
                         self.notify("Download complete", &format!("{name} ({})", crate::util::fmt_bytes(size)));
                     }
                 }
                 EngineEvent::DataWarning(w) => self.data_notes.push(w),
-                EngineEvent::Removed { hash } => {
+                EngineEvent::Removed { hash, name, undoable } => {
                     self.selected.remove(&hash);
+                    if undoable {
+                        removed.push((hash, name));
+                    }
+                }
+                EngineEvent::Restored { hash, name } => {
+                    self.toasts.push_with(
+                        ToastKind::Success,
+                        format!("Restored “{name}”"),
+                        vec![("Show".into(), toasts::ToastAction::Show(hash))],
+                    );
                 }
                 EngineEvent::PreviewReady { req, result } => self.on_preview_ready(req, result),
             }
         }
+        #[cfg(debug_assertions)]
+        if !removed.is_empty() && std::env::var("CORRENT_DEV_OPEN").as_deref() == Ok("remove-undo") {
+            self.engine.send(crate::engine::EngineCommand::UndoRemove(removed.iter().map(|(h, _)| *h).collect()));
+        }
+        // One toast (with Undo) per burst of removals.
+        if !removed.is_empty() {
+            let text = if removed.len() == 1 {
+                format!("Removed “{}”", removed[0].1)
+            } else {
+                format!("Removed {} torrents", removed.len())
+            };
+            let hashes = removed.into_iter().map(|(h, _)| h).collect();
+            self.toasts.push_with(ToastKind::Info, text, vec![("Undo".into(), toasts::ToastAction::Undo(hashes))]);
+        }
         let _ = ctx;
+    }
+
+    fn run_toast_actions(&mut self, ctx: &Context, actions: Vec<toasts::ToastAction>) {
+        for a in actions {
+            match a {
+                toasts::ToastAction::Undo(h) => self.engine.send(crate::engine::EngineCommand::UndoRemove(h)),
+                toasts::ToastAction::OpenFolder(p) | toasts::ToastAction::OpenFile(p) => open_path(&p),
+                toasts::ToastAction::Show(h) => {
+                    self.show_window(ctx);
+                    self.prefs.status_filter = StatusFilter::All;
+                    self.prefs.category_filter = GroupFilter::All;
+                    self.prefs.tag_filter = GroupFilter::All;
+                    self.search.clear();
+                    self.selected.clear();
+                    self.selected.insert(h);
+                    self.focus = Some(h);
+                    self.anchor = Some(h);
+                    self.scroll_to_focus = true;
+                }
+            }
+        }
     }
 
     fn apply_appearance_if_changed(&mut self, ctx: &Context) {
@@ -647,7 +704,8 @@ impl eframe::App for CorrentApp {
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);
         self.shortcuts(&ctx);
-        self.toasts.show(&ctx, &p);
+        let actions = self.toasts.show(&ctx, &p);
+        self.run_toast_actions(&ctx, actions);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -694,6 +752,10 @@ impl CorrentApp {
                 "about" => self.extras.about = true,
                 "log" => self.extras.log = true,
                 "stats" => self.extras.stats = true,
+                "remove" | "remove-undo" => {
+                    let h = self.snap.torrents[0].hash;
+                    self.engine.send(crate::engine::EngineCommand::Delete { hashes: vec![h], with_data: false });
+                }
                 _ => {}
             }
         }

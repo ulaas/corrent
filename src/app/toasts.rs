@@ -2,10 +2,19 @@
 
 use std::time::{Duration, Instant};
 
-use egui::{Align2, Color32, Context, CornerRadius, FontId, Id, Order, RichText, Sense, Stroke, vec2};
+use egui::{Align2, Color32, Context, CornerRadius, FontId, Id, Order, RichText, Stroke, vec2};
 
 use crate::engine::ToastKind;
 use crate::ui::theme::Palette;
+
+/// Something a toast button can do; resolved by the app.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ToastAction {
+    Undo(Vec<crate::engine::types::InfoHash>),
+    OpenFolder(std::path::PathBuf),
+    OpenFile(std::path::PathBuf),
+    Show(crate::engine::types::InfoHash),
+}
 
 struct Toast {
     id: u64,
@@ -13,6 +22,7 @@ struct Toast {
     text: String,
     created: Instant,
     ttl: Duration,
+    actions: Vec<(String, ToastAction)>,
 }
 
 #[derive(Default)]
@@ -23,31 +33,48 @@ pub struct Toasts {
 
 impl Toasts {
     pub fn push(&mut self, kind: ToastKind, text: impl Into<String>) {
+        self.push_with(kind, text, Vec::new());
+    }
+
+    /// A toast with buttons. Toasts with actions stay a little longer.
+    pub fn push_with(&mut self, kind: ToastKind, text: impl Into<String>, actions: Vec<(String, ToastAction)>) {
         let text = text.into();
+        // The log window doubles as notification history.
+        match kind {
+            ToastKind::Error => tracing::error!(target: "corrent::notice", "{text}"),
+            ToastKind::Warning => tracing::warn!(target: "corrent::notice", "{text}"),
+            _ => tracing::info!(target: "corrent::notice", "{text}"),
+        }
         // Collapse exact duplicates that arrive in bursts.
         if let Some(t) = self.items.iter_mut().find(|t| t.text == text) {
             t.created = Instant::now();
             return;
         }
-        let ttl = match kind {
+        let mut ttl = match kind {
             ToastKind::Error => Duration::from_secs(8),
             ToastKind::Warning => Duration::from_secs(6),
             _ => Duration::from_secs(4),
         };
+        if !actions.is_empty() {
+            ttl += Duration::from_secs(4);
+        }
         self.next += 1;
-        self.items.push(Toast { id: self.next, kind, text, created: Instant::now(), ttl });
+        self.items.push(Toast { id: self.next, kind, text, created: Instant::now(), ttl, actions });
         if self.items.len() > 6 {
             self.items.remove(0);
         }
     }
 
-    pub fn show(&mut self, ctx: &Context, p: &Palette) {
+    /// Draw toasts; returns the actions the user clicked.
+    pub fn show(&mut self, ctx: &Context, p: &Palette) -> Vec<ToastAction> {
+        let mut clicked = Vec::new();
         if self.items.is_empty() {
-            return;
+            return clicked;
         }
         let screen = ctx.content_rect();
         let mut y = screen.bottom() - 40.0;
         let mut remove = Vec::new();
+        let mut remove_now: Vec<u64> = Vec::new();
         let now = Instant::now();
         for t in self.items.iter().rev() {
             let age = now.duration_since(t.created);
@@ -76,25 +103,47 @@ impl Toasts {
                     .shadow(ui.visuals().popup_shadow)
                     .inner_margin(egui::Margin { left: 14, right: 12, top: 10, bottom: 10 })
                     .show(ui, |ui| {
-                        ui.set_max_width(380.0);
+                        ui.set_max_width(400.0);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(icon).font(FontId::proportional(18.0)).color(accent));
-                            ui.add(egui::Label::new(RichText::new(&t.text).color(p.text)).wrap());
+                            ui.vertical(|ui| {
+                                ui.add(egui::Label::new(RichText::new(&t.text).color(p.text)).wrap());
+                                if !t.actions.is_empty() {
+                                    ui.add_space(2.0);
+                                    ui.horizontal(|ui| {
+                                        for (label, action) in &t.actions {
+                                            let b = egui::Button::new(RichText::new(label).color(p.accent).strong())
+                                                .fill(p.accent_soft())
+                                                .stroke(Stroke::NONE)
+                                                .corner_radius(CornerRadius::same(6));
+                                            if ui.add(b).clicked() {
+                                                clicked.push(action.clone());
+                                                remove_now.push(t.id);
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                            if ui
+                                .add(egui::Button::new(RichText::new(egui_phosphor::regular::X).color(p.text_dim)).frame(false))
+                                .on_hover_text("Dismiss")
+                                .clicked()
+                            {
+                                remove_now.push(t.id);
+                            }
                         });
                     })
                     .response
             });
             let rect = resp.inner.rect;
             ui_accent_bar(ctx, rect, accent, t.id);
-            let r = resp.response.interact(Sense::click());
-            ctx.data_mut(|d| d.insert_temp(hovered_id, r.hovered()));
-            if r.clicked() {
-                remove.push(t.id);
-            }
+            let hovered_now = ctx.pointer_hover_pos().is_some_and(|p| rect.contains(p));
+            ctx.data_mut(|d| d.insert_temp(hovered_id, hovered_now));
             y -= rect.height() + 10.0;
         }
-        self.items.retain(|t| !remove.contains(&t.id));
+        self.items.retain(|t| !remove.contains(&t.id) && !remove_now.contains(&t.id));
         ctx.request_repaint_after(Duration::from_millis(250));
+        clicked
     }
 }
 

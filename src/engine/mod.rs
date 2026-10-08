@@ -68,7 +68,9 @@ pub enum EngineEvent {
     PreviewReady { req: u64, result: Result<Box<Preview>, String> },
     Added { hash: InfoHash, name: String },
     Completed { hash: InfoHash, name: String, content_path: PathBuf, save_path: PathBuf, size: u64 },
-    Removed { hash: InfoHash },
+    Removed { hash: InfoHash, name: String, undoable: bool },
+    /// An undo re-added a torrent.
+    Restored { hash: InfoHash, name: String },
     /// Persistent problem with the user's data (shown as a banner until dismissed).
     DataWarning(String),
 }
@@ -78,6 +80,8 @@ pub enum EngineCommand {
     Add(Box<AddRequest>),
     Preview { req: u64, source: AddSource },
     CancelPreview(u64),
+    /// Re-add torrents removed (without data) in the last two minutes.
+    UndoRemove(Vec<InfoHash>),
     /// Abort an add that is still resolving metadata (identified by its placeholder row hash).
     CancelAdd(InfoHash),
     Pause(Vec<InfoHash>),

@@ -197,6 +197,10 @@ impl CorrentApp {
                             .collect()
                     })
                     .unwrap_or_default();
+                if lines.is_empty() {
+                    crate::ui::widgets::empty_compact(ui, p, icons::SCROLL, "No log entries", "Messages appear here as Corrent works.");
+                    return;
+                }
                 egui::Frame::new().fill(p.bg0).corner_radius(egui::CornerRadius::same(8)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
                     egui::ScrollArea::both().stick_to_bottom(true).auto_shrink([false, false]).show_rows(ui, 18.0, lines.len(), |ui, range| {
                         for l in &lines[range] {

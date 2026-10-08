@@ -275,6 +275,19 @@ pub fn empty_state(ui: &mut Ui, p: &Palette, icon: &str, title: &str, subtitle: 
     });
 }
 
+/// Compact empty state for panels and tabs: icon, title and hint, centered.
+pub fn empty_compact(ui: &mut Ui, p: &Palette, icon: &str, title: &str, hint: &str) {
+    ui.vertical_centered(|ui| {
+        ui.add_space((ui.available_height() * 0.22).clamp(8.0, 60.0));
+        ui.label(RichText::new(icon).size(30.0).color(p.text_mute));
+        ui.add_space(4.0);
+        ui.label(RichText::new(title).strong().color(p.text_dim));
+        if !hint.is_empty() {
+            ui.label(RichText::new(hint).small().color(p.text_mute));
+        }
+    });
+}
+
 /// Section header label (small, uppercase, muted).
 pub fn section_header(ui: &mut Ui, p: &Palette, text: &str) {
     ui.add_space(6.0);

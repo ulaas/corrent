@@ -70,14 +70,13 @@ impl CorrentApp {
         ui.add_space(4.0);
 
         let Some(hash) = self.detail_hash() else {
-            ui.centered_and_justified(|ui| {
-                let msg = if self.selected.len() > 1 {
-                    format!("{} torrents selected", self.selected.len())
-                } else {
-                    "Select a torrent to see its details".to_string()
-                };
-                ui.label(RichText::new(msg).color(p.text_mute));
-            });
+            if self.selected.len() > 1 {
+                let n = self.selected.len();
+                let total: u64 = self.selected_views().iter().map(|t| t.size).sum();
+                widgets::empty_compact(ui, p, icons::STACK, &format!("{n} torrents selected"), &format!("{} in total", fmt_bytes(total)));
+            } else {
+                widgets::empty_compact(ui, p, icons::CURSOR_CLICK, "Nothing selected", "Select a torrent to see its details.");
+            }
             return;
         };
         let snap = self.snap.clone();
@@ -232,7 +231,12 @@ impl CorrentApp {
             ui.checkbox(&mut self.show_all_peers, RichText::new("Show connecting and dead peers").small());
         });
         if peers.is_empty() {
-            ui.centered_and_justified(|ui| ui.label(RichText::new("No connected peers").color(p.text_mute)));
+            let hint = if self.selected_views().first().is_some_and(|t| t.state.is_paused_like()) {
+                "Resume the torrent to connect to peers."
+            } else {
+                "Peers are found through trackers, DHT and peer exchange; this can take a minute."
+            };
+            widgets::empty_compact(ui, p, icons::USERS_THREE, "No connected peers", hint);
             return;
         }
         TableBuilder::new(ui)
@@ -470,6 +474,10 @@ impl CorrentApp {
             });
         });
         let n = hist.len();
+        if n < 3 {
+            widgets::empty_compact(ui, p, icons::CHART_LINE, "Collecting speed data…", "");
+            return;
+        }
         let down: Vec<[f64; 2]> = hist.iter().enumerate().map(|(i, (d, _))| [(i as f64 - n as f64) * interval, *d as f64]).collect();
         let up: Vec<[f64; 2]> = hist.iter().enumerate().map(|(i, (_, u))| [(i as f64 - n as f64) * interval, *u as f64]).collect();
         let _ = title;
@@ -503,7 +511,15 @@ impl CorrentApp {
 }
 
 fn loading(ui: &mut Ui, p: &Palette, has_metadata: bool) {
-    ui.centered_and_justified(|ui| {
-        ui.label(RichText::new(if has_metadata { "Loading…" } else { "Waiting for metadata…" }).color(p.text_mute));
-    });
+    if has_metadata {
+        widgets::empty_compact(ui, p, icons::HOURGLASS_MEDIUM, "Loading…", "");
+    } else {
+        widgets::empty_compact(
+            ui,
+            p,
+            icons::MAGNET,
+            "Waiting for metadata",
+            "File and piece information appears once peers send the torrent's metadata.",
+        );
+    }
 }
