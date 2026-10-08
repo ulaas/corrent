@@ -37,7 +37,7 @@ corrent --status | --register | --unregister | --write-icons <dir> | --help
 
 Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_TAB=general|files|peers|trackers|pieces|speed`,
-`CORRENT_DEV_OPEN=settings|magnet|about|log|stats|creator|feeds|rules`, `CORRENT_DEV_LIGHT=1`.
+`CORRENT_DEV_OPEN=settings|magnet|about|log|stats|creator|feeds|rules`, `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`.
 To pre-configure the test profile, write `target/debug/corrent-data/settings.toml`
 (e.g. `skip_add_dialog = true`, a scratch `save_path`).
 
@@ -58,6 +58,7 @@ src/engine/{session,types,automation,restore}.rs
 src/engine/{creator,stream}.rs
                             Torrent creation; token-protected loopback HTTP streaming
 src/rss/                    Feeds (fetch/parse), download rules, persisted state (rss.json)
+src/search.rs               Torznab client (user-configured providers only)
 src/store.rs                App-side per-torrent data (categories, tags, dates, queue, pause reasons,
                             cumulative counters) — atomic JSON with .bak
 src/config.rs               Settings (TOML, serde defaults), paths (portable vs OS dirs)
@@ -87,10 +88,11 @@ schedule, watch folders, run-on-complete; tray, notifications; custom title bar;
 failed-restore recovery. Roadmap M1–M18 done: async pickers, crash reports, corrupt-file recovery
 and backups, logic tests, toasts with actions/undo, CI config, loopback e2e tests, schema
 migrations, typed I/O errors, engine restart, batch add, kittest UI tests, typography/motion,
-onboarding, torrent creator (M16), streaming to a media player (M17), RSS feeds + rules (M18).
+onboarding, torrent creator (M16), streaming to a media player (M17), RSS feeds + rules (M18), Torznab
+search (M19).
 Fable reviews of M1–M15 were addressed. Default save folder: `Downloads/Corrent`.
 
-Next steps: M19 onward in `docs/ROADMAP.md`.
+Next steps: M20 onward in `docs/ROADMAP.md`.
 
 Known gaps: engine lacks encryption, per-file priorities, sequential mode and per-torrent speed
 limits; macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.

@@ -75,6 +75,7 @@ pub struct Settings {
     pub seeding: Seeding,
     pub watch: Vec<WatchFolder>,
     pub rss: crate::rss::RssSettings,
+    pub search: crate::search::SearchSettings,
     pub appearance: Appearance,
     pub advanced: Advanced,
 }
@@ -544,6 +545,7 @@ impl Settings {
         section!("seeding", seeding);
         section!("watch", watch);
         section!("rss", rss);
+        section!("search", search);
         section!("appearance", appearance);
         section!("advanced", advanced);
         (s, lost)

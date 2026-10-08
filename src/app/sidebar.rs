@@ -334,13 +334,14 @@ impl CorrentApp {
             }
             ui.add_space(10.0);
             let mut c = self.prefs.collapsed.contains(&"feeds".to_string());
-            section(ui, p, "Feeds", None, &mut c);
+            section(ui, p, "Discover", None, &mut c);
             set_collapsed(&mut self.prefs.collapsed, "feeds", c);
             if !c {
                 let rss = self.snap.rss.clone();
                 let errors = rss.feeds.iter().filter(|f| f.error.is_some()).count();
                 let (icon, color) = if errors > 0 { (icons::WARNING_CIRCLE, p.error) } else { (icons::RSS, p.accent) };
-                let r = row(ui, p, icon, color, "RSS feeds", Some(rss.feeds.len()), !tv);
+                let feeds_view = self.main_view == super::feeds::MainView::Feeds;
+                let r = row(ui, p, icon, color, "RSS feeds", Some(rss.feeds.len()), feeds_view);
                 let r = if errors > 0 {
                     r.on_hover_text(format!(
                         "{errors} feed{} couldn't be refreshed",
@@ -351,6 +352,15 @@ impl CorrentApp {
                 };
                 if r.clicked() {
                     self.main_view = super::feeds::MainView::Feeds;
+                }
+                let search_view = self.main_view == super::feeds::MainView::Search;
+                let n = self.torznab.results.len();
+                if row(ui, p, icons::MAGNIFYING_GLASS, p.text_dim, "Search", Some(n), search_view)
+                    .on_hover_text("Search your Torznab providers (Jackett, Prowlarr, …)")
+                    .clicked()
+                {
+                    self.main_view = super::feeds::MainView::Search;
+                    self.torznab.focus = true;
                 }
             }
             ui.add_space(12.0);

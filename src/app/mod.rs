@@ -13,6 +13,7 @@ mod integration_ui;
 pub mod log;
 mod onboarding;
 mod pickers;
+mod search_view;
 mod settings_window;
 mod sidebar;
 mod statusbar;
@@ -334,6 +335,7 @@ pub struct CorrentApp {
     pub creator: Option<creator::CreatorState>,
     pub main_view: feeds::MainView,
     pub feeds: feeds::FeedsUi,
+    pub torznab: search_view::SearchUi,
     row_first_seen: std::collections::HashMap<InfoHash, std::time::Instant>,
     rows_seen_once: bool,
     /// Windows 11 draws a native rounded border, so ours is skipped.
@@ -442,6 +444,7 @@ impl CorrentApp {
             creator: None,
             main_view: Default::default(),
             feeds: Default::default(),
+            torznab: Default::default(),
             row_first_seen: Default::default(),
             rows_seen_once: false,
             native_frame,
@@ -876,6 +879,7 @@ impl CorrentApp {
                 "about" => self.extras.about = true,
                 "creator" => self.open_creator(),
                 "feeds" => self.main_view = feeds::MainView::Feeds,
+                "search" => self.main_view = feeds::MainView::Search,
                 "rules" => {
                     self.main_view = feeds::MainView::Feeds;
                     self.feeds.rules = Some(feeds::RulesEditor { rules: self.settings.rss.rules.clone(), selected: 0 });
@@ -893,6 +897,11 @@ impl CorrentApp {
             Ok("ui") => panic!("CORRENT_DEV_PANIC=ui"),
             Ok("engine") => self.engine.send(crate::engine::EngineCommand::DevPanic),
             _ => {}
+        }
+        if let Ok(q) = std::env::var("CORRENT_DEV_SEARCH") {
+            self.main_view = feeds::MainView::Search;
+            self.torznab.query = q;
+            self.dev_start_search();
         }
         if std::env::var("CORRENT_DEV_LIGHT").is_ok() {
             ctx.set_theme(egui::ThemePreference::Light);
@@ -956,6 +965,7 @@ impl CorrentApp {
                 match self.main_view {
                     feeds::MainView::Torrents => self.torrent_table(ui, &p),
                     feeds::MainView::Feeds => self.feeds_view(ui, &p),
+                    feeds::MainView::Search => self.search_view(ui, &p),
                 }
             },
         );

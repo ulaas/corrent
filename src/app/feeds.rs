@@ -19,6 +19,7 @@ pub enum MainView {
     #[default]
     Torrents,
     Feeds,
+    Search,
 }
 
 #[derive(Default)]

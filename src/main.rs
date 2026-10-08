@@ -8,6 +8,7 @@ mod engine;
 mod integration;
 mod migrate;
 mod rss;
+mod search;
 mod store;
 mod ui;
 mod util;

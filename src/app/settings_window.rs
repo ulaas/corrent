@@ -23,12 +23,13 @@ pub enum Page {
     Queue,
     Seeding,
     Feeds,
+    Search,
     Appearance,
     Advanced,
 }
 
 impl Page {
-    const ALL: [Page; 10] = [
+    const ALL: [Page; 11] = [
         Page::Behavior,
         Page::Downloads,
         Page::Connection,
@@ -37,6 +38,7 @@ impl Page {
         Page::Queue,
         Page::Seeding,
         Page::Feeds,
+        Page::Search,
         Page::Appearance,
         Page::Advanced,
     ];
@@ -51,6 +53,7 @@ impl Page {
             Page::Queue => "Queue",
             Page::Seeding => "Seeding",
             Page::Feeds => "Feeds",
+            Page::Search => "Search",
             Page::Appearance => "Appearance",
             Page::Advanced => "Advanced",
         }
@@ -66,6 +69,7 @@ impl Page {
             Page::Queue => icons::LIST_NUMBERS,
             Page::Seeding => icons::PLANT,
             Page::Feeds => icons::RSS,
+            Page::Search => icons::MAGNIFYING_GLASS,
             Page::Appearance => icons::PALETTE,
             Page::Advanced => icons::WRENCH,
         }
@@ -81,6 +85,7 @@ impl Page {
             Page::BitTorrent => a.bittorrent != b.bittorrent,
             Page::Queue => a.queue != b.queue,
             Page::Seeding => a.seeding != b.seeding,
+            Page::Search => a.search != b.search,
             Page::Feeds => {
                 (a.rss.auto_download, a.rss.refresh_minutes, a.rss.max_articles)
                     != (b.rss.auto_download, b.rss.refresh_minutes, b.rss.max_articles)
@@ -106,6 +111,7 @@ impl Page {
             Page::BitTorrent => "dht lsd local peer discovery pex trackers default trackers fastresume resume",
             Page::Queue => "queue active downloads uploads total slow torrents",
             Page::Seeding => "ratio seeding time inactive limit pause remove share",
+            Page::Search => "search torznab jackett prowlarr indexer provider api key",
             Page::Feeds => "rss atom feeds refresh interval articles auto download rules automatic episodes",
             Page::Appearance => {
                 "theme dark light system accent color colour compact rows zoom scale units animations sparklines progress"
@@ -206,6 +212,13 @@ fn minutes_input(ui: &mut Ui, minutes: &mut u16) {
 }
 
 impl CorrentApp {
+    pub fn open_settings_at(&mut self, page: Page) {
+        self.open_settings();
+        if let Some(d) = &mut self.settings_draft {
+            d.page = page;
+        }
+    }
+
     pub fn open_settings(&mut self) {
         if self.settings_draft.is_some() {
             return;
@@ -1020,6 +1033,84 @@ impl CorrentApp {
                                 ui.selectable_value(&mut s.appearance.speed_units, SpeedUnits::Bits, "kbit/s, Mbit/s");
                             });
                     });
+                });
+            }
+            Page::Search => {
+                card(p).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    heading(ui, p, "Torznab providers");
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                "Corrent searches only providers you add here, such as a Jackett or Prowlarr you run. \
+                                 Jackett: copy an indexer's “Torznab Feed” address and the API key from its dashboard.",
+                            )
+                            .small()
+                            .color(p.text_dim),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(8.0);
+                    let mut remove = None;
+                    for (i, pr) in s.search.providers.iter_mut().enumerate() {
+                        egui::Frame::new()
+                            .fill(p.bg1)
+                            .corner_radius(egui::CornerRadius::same(8))
+                            .inner_margin(egui::Margin::same(10))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                egui::Grid::new(("provider", i)).num_columns(2).spacing(vec2(10.0, 6.0)).show(
+                                    ui,
+                                    |ui| {
+                                        ui.label("Name");
+                                        ui.horizontal(|ui| {
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut pr.name)
+                                                    .desired_width(220.0)
+                                                    .hint_text("e.g. Jackett"),
+                                            );
+                                            toggle_switch(ui, p, &mut pr.enabled).on_hover_text("Enabled");
+                                            if ui
+                                                .button(RichText::new(icons::TRASH).color(p.error))
+                                                .on_hover_text("Remove")
+                                                .clicked()
+                                            {
+                                                remove = Some(i);
+                                            }
+                                        });
+                                        ui.end_row();
+                                        ui.label("Address");
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut pr.url).desired_width(420.0).hint_text(
+                                                "http://127.0.0.1:9117/api/v2.0/indexers/all/results/torznab",
+                                            ),
+                                        );
+                                        ui.end_row();
+                                        ui.label("API key");
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut pr.api_key)
+                                                .desired_width(420.0)
+                                                .password(true),
+                                        );
+                                        ui.end_row();
+                                    },
+                                );
+                                if !pr.url.trim().is_empty() && crate::search::search_url(pr, "x").is_err() {
+                                    ui.label(
+                                        RichText::new("The address must be an http:// or https:// URL")
+                                            .small()
+                                            .color(p.warn),
+                                    );
+                                }
+                            });
+                        ui.add_space(6.0);
+                    }
+                    if let Some(i) = remove {
+                        s.search.providers.remove(i);
+                    }
+                    if ui.button(format!("{}  Add provider", icons::PLUS)).clicked() {
+                        s.search.providers.push(Default::default());
+                    }
                 });
             }
             Page::Feeds => {
