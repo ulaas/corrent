@@ -72,7 +72,7 @@ impl CorrentApp {
         self.rt.spawn(async move {
             let result = WebApiServer::start(cfg.clone(), engine, shared).await.map_err(|e| {
                 if e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::AddrInUse) {
-                    format!("port {} is already in use by another program", cfg.port)
+                    t!("port {port} is already in use by another program", port = cfg.port)
                 } else {
                     format!("{e:#}")
                 }

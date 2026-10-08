@@ -43,9 +43,9 @@ pub struct SearchResult {
 
 /// The request URL for a free-text search (the API key is a query parameter, as Torznab requires).
 pub fn search_url(p: &TorznabProvider, query: &str) -> Result<url::Url, String> {
-    let mut u = url::Url::parse(p.url.trim()).map_err(|_| "the provider address is not a valid URL".to_string())?;
+    let mut u = url::Url::parse(p.url.trim()).map_err(|_| t!("the provider address is not a valid URL").to_string())?;
     if !matches!(u.scheme(), "http" | "https") {
-        return Err("the provider address must start with http:// or https://".into());
+        return Err(t!("the provider address must start with http:// or https://").into());
     }
     {
         let mut q = u.query_pairs_mut();
@@ -62,9 +62,9 @@ pub async fn search(client: &reqwest::Client, p: &TorznabProvider, query: &str) 
     let url = search_url(p, query)?;
     let describe = |e: reqwest::Error| {
         if e.is_timeout() {
-            "the provider didn't answer in time".to_string()
+            t!("the provider didn't answer in time").to_string()
         } else if e.is_connect() {
-            "couldn't connect to the provider".to_string()
+            t!("couldn't connect to the provider").to_string()
         } else {
             // The URL carries the API key: never show it.
             e.without_url().to_string()
@@ -76,13 +76,13 @@ pub async fn search(client: &reqwest::Client, p: &TorznabProvider, query: &str) 
     while let Some(chunk) = resp.chunk().await.map_err(describe)? {
         body.extend_from_slice(&chunk);
         if body.len() > 16 * 1024 * 1024 {
-            return Err("the answer is too large".into());
+            return Err(t!("the answer is too large").into());
         }
     }
     // Torznab reports errors as XML, sometimes with an HTTP error status.
     match parse(&body, &p.name) {
         Ok(r) => Ok(r),
-        Err(e) if !status.is_success() => Err(format!("the provider answered {status} ({e})")),
+        Err(e) if !status.is_success() => Err(t!("the provider answered {status} ({e})", status = status, e = e)),
         Err(e) => Err(e),
     }
 }

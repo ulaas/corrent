@@ -14,7 +14,6 @@ pub enum Lang {
     Turkish = 1,
 }
 
-#[allow(dead_code)] // M27: wired to the Language setting next
 impl Lang {
     pub const ALL: [Lang; 2] = [Lang::English, Lang::Turkish];
 
@@ -42,13 +41,14 @@ impl Lang {
 static CURRENT: AtomicU8 = AtomicU8::new(0);
 
 /// `setting`: "" = follow the system, otherwise a language code.
-#[allow(dead_code)] // M27: wired to the Language setting next
+/// The OS language if Corrent has it, else English.
+pub fn system_language() -> Lang {
+    sys_locale::get_locale().and_then(|l| Lang::from_code(&l)).unwrap_or(Lang::English)
+}
+
 pub fn set_language(setting: &str) {
-    let lang = if setting.trim().is_empty() {
-        sys_locale::get_locale().and_then(|l| Lang::from_code(&l)).unwrap_or(Lang::English)
-    } else {
-        Lang::from_code(setting).unwrap_or(Lang::English)
-    };
+    let lang =
+        if setting.trim().is_empty() { system_language() } else { Lang::from_code(setting).unwrap_or(Lang::English) };
     CURRENT.store(lang as u8, Ordering::Relaxed);
 }
 
@@ -133,7 +133,6 @@ mod tests {
 
     /// Every `t!("…")` in the source has a Turkish translation with the same placeholders.
     #[test]
-    #[ignore = "M27 in progress: the Turkish catalog isn't filled in yet"]
     fn turkish_catalog_is_complete() {
         let cat = parse(include_str!("../assets/i18n/tr.toml"));
         let mut missing = Vec::new();
@@ -150,6 +149,42 @@ mod tests {
         }
         assert!(missing.is_empty(), "{} untranslated:\n{}", missing.len(), missing.join("\n"));
         assert!(bad.is_empty(), "placeholders differ:\n{}", bad.join("\n"));
+    }
+
+    /// CI gate: user-visible text in the UI goes through `t!`. Flags plain literals passed to
+    /// the usual text-taking calls in src/app and src/ui (outside tests).
+    #[test]
+    fn no_hard_coded_ui_strings() {
+        let calls = regex::Regex::new(
+            r#"(RichText::new|\.label|\.button|\.small_button|\.on_hover_text|\.on_disabled_hover_text|\.hint_text|\.labeled|\.menu_button|\.selected_text|primary_button\(ui, p,|secondary_button\(ui,|danger_button\(ui, p,|heading\(ui, p,|ToastKind::[A-Za-z]+,)\(?\s*"[^"]*[A-Za-z]{2,}[^"]*""#,
+        )
+        .unwrap();
+        let icon_label = regex::Regex::new(r#"format!\("\{\}\s+(\{\}\s+)?[A-Za-z]{2,}"#).unwrap();
+        let mut found = Vec::new();
+        for dir in ["src/app", "src/ui"] {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.extension().is_none_or(|x| x != "rs") || p.ends_with("ui_tests.rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&p).unwrap();
+                // Skip inline test modules (`#[cfg(test)]` + `mod x {`), not `mod x;` declarations.
+                let code = match text.find(
+                    "#[cfg(test)]
+mod tests {",
+                ) {
+                    Some(i) => &text[..i],
+                    None => text.as_str(),
+                };
+                for (n, line) in code.lines().enumerate() {
+                    if calls.is_match(line) || icon_label.is_match(line) {
+                        found.push(format!("{}:{}: {}", p.display(), n + 1, line.trim()));
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "wrap these in t!():\n{}", found.join("\n"));
     }
 
     fn placeholders(s: &str) -> Vec<String> {
@@ -174,12 +209,17 @@ mod tests {
                     stack.push(p);
                 } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("i18n.rs") {
                     let text = std::fs::read_to_string(&p).unwrap();
-                    for marker in ["t!(\"", "tk!(\""] {
+                    for marker in ["t!(", "tk!("] {
                         for (i, _) in text.match_indices(marker) {
-                            if i > 0 && text.as_bytes()[i - 1].is_ascii_alphanumeric() {
-                                continue; // e.g. assert!("…") is not t!
+                            let prev = text[..i].chars().next_back();
+                            if prev.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                                continue; // e.g. assert!(…) is not t!
                             }
-                            if let Some(lit) = read_literal(&text[i + marker.len() - 1..]) {
+                            // The literal may start on the next line.
+                            let rest = text[i + marker.len()..].trim_start();
+                            if rest.starts_with('"')
+                                && let Some(lit) = read_literal(rest)
+                            {
                                 out.insert(lit);
                             }
                         }

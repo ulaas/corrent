@@ -204,8 +204,10 @@ impl CorrentApp {
                         .and_then(|t| crate::ui::theme::PaletteDef::from_toml(&t));
                     match (result, &mut self.settings_draft) {
                         (Ok(def), Some(d)) => {
-                            self.toasts
-                                .push(crate::engine::ToastKind::Success, format!("Imported theme “{}”", def.name));
+                            self.toasts.push(
+                                crate::engine::ToastKind::Success,
+                                t!("Imported theme “{name}”", name = def.name),
+                            );
                             d.settings.appearance.custom_palette = Some(def);
                             d.settings.appearance.preset = crate::config::PalettePreset::Custom;
                         }
@@ -226,7 +228,7 @@ impl CorrentApp {
                             Ok(()) => self.toasts.push(crate::engine::ToastKind::Success, t!("Theme exported")),
                             Err(e) => self.toasts.push(
                                 crate::engine::ToastKind::Error,
-                                format!("Couldn't save the theme: {}", crate::util::explain_io(&format!("{e:#}"))),
+                                t!("Couldn't save the theme: {why}", why = crate::util::explain_io(&format!("{e:#}"))),
                             ),
                         }
                     }

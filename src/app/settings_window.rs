@@ -202,8 +202,8 @@ fn kib(ui: &mut Ui, v: &mut u32) {
             .speed(16.0)
             .custom_formatter(|n, _| if n <= 0.0 { t!("∞ Unlimited").into() } else { format!("{n:.0} KiB/s") })
             .custom_parser(|s| {
-                let t = s.trim().trim_end_matches(t!("KiB/s")).trim();
-                if t.is_empty() || t == "∞" || t.eq_ignore_ascii_case("unlimited") {
+                let t = s.trim().trim_end_matches("KiB/s").trim();
+                if t.is_empty() || t.starts_with('∞') || t.eq_ignore_ascii_case("unlimited") {
                     Some(0.0)
                 } else {
                     t.parse().ok()
@@ -410,8 +410,9 @@ impl CorrentApp {
                                     if self.settings.requires_restart(&pending) {
                                         ui.label(
                                             RichText::new(format!(
-                                                "{}  Applying will briefly reconnect all torrents.",
-                                                icons::ARROWS_CLOCKWISE
+                                                "{}  {}",
+                                                icons::ARROWS_CLOCKWISE,
+                                                t!("Applying will briefly reconnect all torrents.")
                                             ))
                                             .small()
                                             .color(p.warn),
@@ -890,7 +891,7 @@ impl CorrentApp {
                     ui.add_space(4.0);
                     let sv = &self.snap.session;
                     ui.horizontal(|ui| {
-                        let mut text = format!("{} blocked ranges loaded", sv.blocked_ranges);
+                        let mut text = t!("{n} blocked ranges loaded", n = sv.blocked_ranges);
                         if let Some(a) = sv.allowed_ranges {
                             text.push_str(&t!(" · {a} allowed", a = a));
                         }
@@ -1100,6 +1101,21 @@ impl CorrentApp {
             Page::Appearance => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    heading(ui, p, t!("Language"));
+                    let current = crate::i18n::Lang::from_code(&s.appearance.language);
+                    egui::ComboBox::from_id_salt("language")
+                        .selected_text(match current {
+                            Some(l) => l.native_name().to_string(),
+                            None => t!("System ({lang})", lang = crate::i18n::system_language().native_name()),
+                        })
+                        .show_ui(ui, |ui| {
+                            let sys = t!("System ({lang})", lang = crate::i18n::system_language().native_name());
+                            ui.selectable_value(&mut s.appearance.language, String::new(), sys);
+                            for l in crate::i18n::Lang::ALL {
+                                ui.selectable_value(&mut s.appearance.language, l.code().to_string(), l.native_name());
+                            }
+                        });
+                    ui.add_space(12.0);
                     heading(ui, p, t!("Theme"));
                     ui.horizontal(|ui| {
                         for (mode, icon, label) in [
@@ -1208,8 +1224,9 @@ impl CorrentApp {
                             egui::Grid::new("palette_editor").num_columns(4).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
                                 for (i, (field, label)) in theme::PALETTE_FIELDS.iter().enumerate() {
                                     if let Some(c) = pal.color_mut(field) {
+                                        let label = crate::i18n::tr(label);
                                         changed |= ui.color_edit_button_srgba(c).labeled(label).changed();
-                                        ui.label(RichText::new(*label).color(p.text_dim));
+                                        ui.label(RichText::new(label).color(p.text_dim));
                                     }
                                     if i % 2 == 1 {
                                         ui.end_row();

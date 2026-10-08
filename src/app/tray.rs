@@ -64,7 +64,7 @@ impl Tray {
 
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip(t!("Corrent"))
+            .with_tooltip("Corrent")
             .with_icon(icon)
             .with_menu_on_left_click(false)
             .build();

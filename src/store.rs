@@ -157,19 +157,19 @@ impl Store {
                             // Put the good copy back so the next save never rotates the corrupt
                             // file over the only good backup.
                             let _ = std::fs::copy(&bak, &path);
-                            warning = Some(format!(
+                            warning = Some(t!(
                                 "Corrent's data file was damaged and was restored from its backup; the most recent changes \
-                                 (categories, tags, totals) may be missing. The damaged file was kept as {}.",
-                                bad.display()
+                                 (categories, tags, totals) may be missing. The damaged file was kept as {path}.",
+                                path = bad.display()
                             ));
                             Some(d)
                         }
                         None => {
                             let _ = std::fs::remove_file(&path);
-                            warning = Some(format!(
+                            warning = Some(t!(
                                 "Corrent's data file was damaged and no usable backup exists: categories, tags and totals were \
-                                 reset. Your torrents are unaffected. The damaged file was kept as {}.",
-                                bad.display()
+                                 reset. Your torrents are unaffected. The damaged file was kept as {path}.",
+                                path = bad.display()
                             ));
                             None
                         }
@@ -182,7 +182,7 @@ impl Store {
         let mut read_only = newer_unreadable;
         if newer_unreadable {
             warning = Some(
-                "Corrent's data was saved by a newer version and can't be read by this one. Categories and tags are hidden and nothing is saved until you update Corrent; your torrents are unaffected."
+                t!("Corrent's data was saved by a newer version and can't be read by this one. Categories and tags are hidden and nothing is saved until you update Corrent; your torrents are unaffected.")
                     .into(),
             );
         }
@@ -191,9 +191,10 @@ impl Store {
         let from = data.schema_version;
         if from > STORE_VERSION {
             read_only = true;
-            warning.get_or_insert(format!(
+            warning.get_or_insert(t!(
                 "Corrent's data was saved by a newer version (format {from}). Changes to categories, tags and \
-                 totals won't be saved until you update Corrent."
+                 totals won't be saved until you update Corrent.",
+                from = from
             ));
         } else if from < STORE_VERSION {
             if path.exists() && !newer_unreadable {

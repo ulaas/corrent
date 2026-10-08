@@ -15,19 +15,19 @@ impl WhenDone {
 
     pub fn label(self) -> &'static str {
         match self {
-            WhenDone::Nothing => "Do nothing",
-            WhenDone::Quit => "Quit Corrent",
-            WhenDone::Sleep => "Put the computer to sleep",
-            WhenDone::Shutdown => "Shut down the computer",
+            WhenDone::Nothing => t!("Do nothing"),
+            WhenDone::Quit => t!("Quit Corrent"),
+            WhenDone::Sleep => t!("Put the computer to sleep"),
+            WhenDone::Shutdown => t!("Shut down the computer"),
         }
     }
 
     pub fn verb(self) -> &'static str {
         match self {
             WhenDone::Nothing => "",
-            WhenDone::Quit => "Corrent will quit",
-            WhenDone::Sleep => "The computer will go to sleep",
-            WhenDone::Shutdown => "The computer will shut down",
+            WhenDone::Quit => t!("Corrent will quit"),
+            WhenDone::Sleep => t!("The computer will go to sleep"),
+            WhenDone::Shutdown => t!("The computer will shut down"),
         }
     }
 }

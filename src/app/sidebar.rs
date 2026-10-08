@@ -346,10 +346,11 @@ impl CorrentApp {
                 let feeds_view = self.main_view == super::feeds::MainView::Feeds;
                 let r = row(ui, p, icon, color, t!("RSS feeds"), Some(rss.feeds.len()), feeds_view);
                 let r = if errors > 0 {
-                    r.on_hover_text(format!(
-                        "{errors} feed{} couldn't be refreshed",
-                        if errors == 1 { "" } else { "s" }
-                    ))
+                    r.on_hover_text(if errors == 1 {
+                        t!("1 feed couldn't be refreshed").to_string()
+                    } else {
+                        t!("{errors} feeds couldn't be refreshed", errors = errors)
+                    })
                 } else {
                     r.on_hover_text(t!("Follow feeds and download new items automatically"))
                 };

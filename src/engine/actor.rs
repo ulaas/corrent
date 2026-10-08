@@ -270,7 +270,7 @@ impl Actor {
             }
         }
         self.engine_state = EngineState::Failed(last_err.clone());
-        self.toast(ToastKind::Error, format!("Could not start the torrent engine: {last_err}"));
+        self.toast(ToastKind::Error, t!("Could not start the torrent engine: {last_err}", last_err = last_err));
         self.publish();
     }
 
@@ -328,7 +328,7 @@ impl Actor {
     fn not_busy(&self, hashes: Vec<InfoHash>) -> Vec<InfoHash> {
         let (ok, busy): (Vec<_>, Vec<_>) = hashes.into_iter().partition(|h| !self.busy.contains_key(h));
         if !busy.is_empty() {
-            self.toast(ToastKind::Info, "Some torrents are busy with another operation; try again in a moment.");
+            self.toast(ToastKind::Info, t!("Some torrents are busy with another operation; try again in a moment."));
         }
         ok
     }
@@ -347,7 +347,7 @@ impl Actor {
             EngineCommand::Recheck(h) => EngineCommand::Recheck(self.not_busy(h)),
             EngineCommand::SetFiles { hash, included } if self.busy.contains_key(&hash) => {
                 let _ = included;
-                self.toast(ToastKind::Info, "This torrent is busy with another operation.");
+                self.toast(ToastKind::Info, t!("This torrent is busy with another operation."));
                 return;
             }
             other => other,
@@ -492,7 +492,7 @@ impl Actor {
                         self.store.maybe_save(true);
                         self.emit(EngineEvent::Removed { hash, name: String::new(), undoable: false });
                         if with_data {
-                            self.toast(ToastKind::Info, "The torrent was removed; its files were left in place because they couldn't be opened.");
+                            self.toast(ToastKind::Info, t!("The torrent was removed; its files were left in place because they couldn't be opened."));
                         }
                     } else {
                         self.delete(hash, with_data);
@@ -503,9 +503,9 @@ impl Actor {
                 if let (Some(sess), Some(h)) = (self.session.clone(), self.handle_for(&hash)) {
                     let set: HashSet<usize> = included.into_iter().collect();
                     if set.is_empty() {
-                        self.toast(ToastKind::Warning, "At least one file must stay selected.");
+                        self.toast(ToastKind::Warning, t!("At least one file must stay selected."));
                     } else if let Err(e) = sess.update_only_files(&h, &set).await {
-                        self.toast(ToastKind::Error, format!("Could not update file selection: {e:#}"));
+                        self.toast(ToastKind::Error, t!("Could not update file selection: {e}", e = format!("{e:#}")));
                     }
                 }
             }
@@ -572,10 +572,10 @@ impl Actor {
                     self.stop_session().await;
                     self.start_session().await;
                     if self.engine_state == EngineState::Running {
-                        self.toast(ToastKind::Success, "IP filter reloaded.");
+                        self.toast(ToastKind::Success, t!("IP filter reloaded."));
                     }
                 } else {
-                    self.toast(ToastKind::Info, "Try again once running operations finish.");
+                    self.toast(ToastKind::Info, t!("Try again once running operations finish."));
                 }
             }
             EngineCommand::QueueMove { hashes, mv } => {
@@ -649,7 +649,7 @@ impl Actor {
                 let restart = self.settings.requires_restart(&new);
                 if restart && !self.busy.is_empty() {
                     // Tasks hold the current session; restarting under them could corrupt its state.
-                    self.toast(ToastKind::Info, "Network settings will apply once running operations finish.");
+                    self.toast(ToastKind::Info, t!("Network settings will apply once running operations finish."));
                     self.deferred_settings = Some(new);
                     return;
                 }
@@ -672,7 +672,7 @@ impl Actor {
                     self.stop_session().await;
                     self.start_session().await;
                     if self.engine_state == EngineState::Running {
-                        self.toast(ToastKind::Success, "Settings applied — reconnected.");
+                        self.toast(ToastKind::Success, t!("Settings applied — reconnected."));
                     }
                 } else {
                     self.apply_rate_limits();
@@ -733,7 +733,7 @@ impl Actor {
             })
             .unwrap_or_else(|| settings.downloads.save_path.clone());
         tracing::info!("rss rule {:?}: adding {:?}", d.rule.name, d.title);
-        self.toast(ToastKind::Info, format!("Feed rule “{}” added “{}”", d.rule.name, d.title));
+        self.toast(ToastKind::Info, t!("Feed rule “{rule}” added “{title}”", rule = d.rule.name, title = d.title));
         let pending = self.start_add(Box::new(AddRequest {
             source,
             torrent_bytes: None,
@@ -797,7 +797,7 @@ impl Actor {
         if matches!(h.stats().state, TorrentStatsState::Paused)
             && let Err(e) = sess.unpause(&h).await
         {
-            self.toast(ToastKind::Error, format!("Could not resume: {e:#}"));
+            self.toast(ToastKind::Error, t!("Could not resume: {e}", e = format!("{e:#}")));
         }
         // Going live resets the limiter to the add-time limits.
         let m = self.store.get(&hash).map(|m| (m.down_limit_kib, m.up_limit_kib)).unwrap_or((0, 0));
@@ -854,7 +854,7 @@ impl Actor {
     /// Returns the pending-add id, or None if nothing was started.
     fn start_add(&mut self, req: Box<AddRequest>) -> Option<u64> {
         let Some(sess) = self.session.clone() else {
-            self.toast(ToastKind::Error, "The engine is not running; cannot add torrents.");
+            self.toast(ToastKind::Error, t!("The engine is not running; cannot add torrents."));
             return None;
         };
         let pending = self.next_pending;
@@ -1060,9 +1060,9 @@ impl Actor {
             self.low_space_warned = true;
             self.toast(
                 ToastKind::Warning,
-                format!(
-                    "Only {} free in the download folder. Downloads will fail when the disk is full.",
-                    crate::util::fmt_bytes(free)
+                t!(
+                    "Only {free} free in the download folder. Downloads will fail when the disk is full.",
+                    free = crate::util::fmt_bytes(free)
                 ),
             );
         } else if free >= 2 * LOW {
@@ -1145,7 +1145,10 @@ impl Actor {
                         self.emit(EngineEvent::Added { hash, name });
                     }
                     Err(e) => {
-                        self.toast(ToastKind::Error, format!("Could not add {}: {e}", req.source.describe()));
+                        self.toast(
+                            ToastKind::Error,
+                            t!("Could not add {name}: {e}", name = req.source.describe(), e = e),
+                        );
                     }
                 }
             }
@@ -1156,13 +1159,13 @@ impl Actor {
                 match result {
                     Ok(()) => {
                         let msg = match what {
-                            "move" => "Files moved. Verifying data…",
-                            "recheck" => "Re-checking data…",
-                            _ => "Trackers added. Verifying data…",
+                            "move" => t!("Files moved. Verifying data…"),
+                            "recheck" => t!("Re-checking data…"),
+                            _ => t!("Trackers added. Verifying data…"),
                         };
                         self.toast(ToastKind::Info, msg);
                     }
-                    Err(e) => self.toast(ToastKind::Error, format!("Operation failed: {e}")),
+                    Err(e) => self.toast(ToastKind::Error, t!("Operation failed: {e}", e = e)),
                 }
             }
             Internal::UndoFinished { hash, meta, result } => {
@@ -1180,7 +1183,7 @@ impl Actor {
                         self.store.maybe_save(true);
                         self.emit(EngineEvent::Restored { hash, name });
                     }
-                    Err(e) => self.toast(ToastKind::Error, format!("Undo failed: {e}")),
+                    Err(e) => self.toast(ToastKind::Error, t!("Undo failed: {e}", e = e)),
                 }
             }
             Internal::RestoreReport(list) => {
@@ -1189,9 +1192,9 @@ impl Actor {
                     self.toast(
                         ToastKind::Error,
                         if n == 1 {
-                            "A torrent could not be loaded — see its error in the list.".to_string()
+                            t!("A torrent could not be loaded — see its error in the list.").to_string()
                         } else {
-                            format!("{n} torrents could not be loaded — see their errors in the list.")
+                            t!("{n} torrents could not be loaded — see their errors in the list.", n = n)
                         },
                     );
                 }
@@ -1203,14 +1206,17 @@ impl Actor {
                 match result {
                     Ok(()) => {
                         self.failed.remove(&hash);
-                        self.toast(ToastKind::Success, "Torrent loaded.");
+                        self.toast(ToastKind::Success, t!("Torrent loaded."));
                     }
                     Err(e) => {
                         if let Some(f) = self.failed.get_mut(&hash) {
                             f.error = e;
                         }
                         if !quiet {
-                            self.toast(ToastKind::Error, "Still can't load the torrent — see the error in the list.");
+                            self.toast(
+                                ToastKind::Error,
+                                t!("Still can't load the torrent — see the error in the list."),
+                            );
                         }
                     }
                 }
@@ -1219,7 +1225,7 @@ impl Actor {
                 self.busy.remove(&hash);
                 let gone = self.handle_for(&hash).is_none();
                 if let Err(e) = &result {
-                    self.toast(ToastKind::Error, format!("Delete failed: {e}"));
+                    self.toast(ToastKind::Error, t!("Delete failed: {e}", e = e));
                 }
                 // librqbit forgets the torrent before touching files, so it may be gone despite an error.
                 if result.is_ok() || gone {
@@ -1440,9 +1446,9 @@ impl Actor {
         self.snapshot.store(Arc::new(snap));
         self.store.maybe_save(false);
         if let Some(e) = self.store.take_save_error() {
-            self.emit(EngineEvent::DataWarning(format!(
-                "Corrent couldn't save its data: {}",
-                crate::util::explain_io(&e)
+            self.emit(EngineEvent::DataWarning(t!(
+                "Corrent couldn't save its data: {why}",
+                why = crate::util::explain_io(&e)
             )));
         }
         self.check_free_space();
@@ -1780,9 +1786,9 @@ impl Actor {
                 self.toast(
                     ToastKind::Info,
                     if want {
-                        "Scheduled alternative speed limits enabled."
+                        t!("Scheduled alternative speed limits enabled.")
                     } else {
-                        "Scheduled alternative speed limits ended."
+                        t!("Scheduled alternative speed limits ended.")
                     },
                 );
             }
@@ -1865,11 +1871,11 @@ impl Actor {
                             let _ = sess.pause(&h).await;
                         });
                     }
-                    self.toast(ToastKind::Info, format!("Stopped seeding “{name}”: {why}."));
+                    self.toast(ToastKind::Info, t!("Stopped seeding “{name}”: {why}.", name = name, why = why));
                 }
                 SeedAction::Remove | SeedAction::RemoveWithData => {
                     self.delete(hash, s.action == SeedAction::RemoveWithData);
-                    self.toast(ToastKind::Info, format!("Removed “{name}”: {why}."));
+                    self.toast(ToastKind::Info, t!("Removed “{name}”: {why}.", name = name, why = why));
                 }
             }
         }

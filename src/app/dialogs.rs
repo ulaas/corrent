@@ -314,7 +314,7 @@ impl CorrentApp {
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new(format!("{} item(s) recognized", sources.len())).small().color(p.text_dim),
+                            RichText::new(t!("Recognized: {n}", n = sources.len())).small().color(p.text_dim),
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             let add = ui
@@ -349,7 +349,7 @@ impl CorrentApp {
                             ui.label(RichText::new(format!("•  {name}")).color(p.text));
                         }
                         if n > 50 {
-                            ui.label(RichText::new(format!("…and {} more", n - 50)).color(p.text_dim));
+                            ui.label(RichText::new(t!("…and {n} more", n = n - 50)).color(p.text_dim));
                         }
                     });
                     ui.add_space(10.0);
@@ -357,7 +357,7 @@ impl CorrentApp {
                     ui.radio_value(
                         with_data,
                         true,
-                        RichText::new(format!("Also delete downloaded files ({})", fmt_bytes(*total))).color(p.error),
+                        RichText::new(t!("Also delete downloaded files ({size})", size = fmt_bytes(*total))).color(p.error),
                     );
                     if *with_data {
                         ui.label(
@@ -402,7 +402,7 @@ impl CorrentApp {
                     if let Some(free) = free {
                         let short = need > free;
                         ui.label(
-                            RichText::new(format!("{} needed · {} free", fmt_bytes(need), fmt_bytes(free)))
+                            RichText::new(t!("{need} needed · {free} free", need = fmt_bytes(need), free = fmt_bytes(free)))
                                 .small()
                                 .color(if short { p.error } else { p.text_dim }),
                         );
@@ -628,8 +628,8 @@ impl CorrentApp {
                                         if n <= 0.0 { t!("∞ Unlimited").into() } else { format!("{n:.0} KiB/s") }
                                     })
                                     .custom_parser(|s| {
-                                        let t = s.trim().trim_end_matches(t!("KiB/s")).trim();
-                                        if t.is_empty() || t == "∞" || t.eq_ignore_ascii_case("unlimited") {
+                                        let t = s.trim().trim_end_matches("KiB/s").trim();
+                                        if t.is_empty() || t.starts_with('∞') || t.eq_ignore_ascii_case("unlimited") {
                                             Some(0.0)
                                         } else {
                                             t.parse().ok()
@@ -674,8 +674,9 @@ impl CorrentApp {
                     );
                     ui.label(
                         RichText::new(format!(
-                            "{}  The torrent is briefly re-added; its data is re-verified (not re-downloaded).",
-                            icons::INFO
+                            "{}  {}",
+                            icons::INFO,
+                            t!("The torrent is briefly re-added; its data is re-verified (not re-downloaded).")
                         ))
                         .small()
                         .color(p.text_dim),
@@ -698,9 +699,14 @@ impl CorrentApp {
                     title(ui, p, icons::SIGN_OUT, t!("Quit Corrent?"));
                     let active = self.snap.torrents.iter().filter(|t| t.state.is_active()).count();
                     ui.label(
-                        RichText::new(format!(
-                            "{active} torrent(s) are still transferring. They will resume next time you start Corrent."
-                        ))
+                        RichText::new(if active == 1 {
+                            t!("1 torrent is still transferring. It will resume next time you start Corrent.").to_string()
+                        } else {
+                            t!(
+                                "{active} torrents are still transferring. They will resume next time you start Corrent.",
+                                active = active
+                            )
+                        })
                         .color(p.text_dim),
                     );
                     ui.add_space(14.0);
@@ -781,7 +787,7 @@ impl CorrentApp {
                     if let Some(free) = d.free_cache.as_ref().and_then(|c| c.2) {
                         let need: u64 = d.preview.as_ref().map(|pv| selected_size(pv, &d.checked)).unwrap_or(0);
                         let color = if need > free { p.error } else { p.text_dim };
-                        ui.label(RichText::new(format!("{} free", fmt_bytes(free))).small().color(color));
+                        ui.label(RichText::new(t!("{free} free", free = fmt_bytes(free))).small().color(color));
                     }
                     ui.add_space(8.0);
                     ui.label(RichText::new(t!("Category")).small().strong().color(p.text_dim));
@@ -937,11 +943,11 @@ impl CorrentApp {
                                 });
                             let sel = d.checked.iter().filter(|c| **c).count();
                             ui.label(
-                                RichText::new(format!(
-                                    "{} of {} files selected · {}",
-                                    sel,
-                                    pv.files.len(),
-                                    fmt_bytes(selected_size(pv, &d.checked))
+                                RichText::new(t!(
+                                    "{sel} of {total} files selected · {size}",
+                                    sel = sel,
+                                    total = pv.files.len(),
+                                    size = fmt_bytes(selected_size(pv, &d.checked))
                                 ))
                                 .small()
                                 .color(p.text_dim),

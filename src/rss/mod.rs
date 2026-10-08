@@ -164,9 +164,10 @@ impl Rss {
             Err(e) => {
                 tracing::error!("rss.json can't be read ({e}); feeds are read-only this session");
                 read_only = true;
-                warning = Some(format!(
+                warning = Some(t!(
                     "Corrent couldn't read its feed history ({e}). Automatic feed downloads are paused until the \
-                     next start, so nothing is downloaded twice."
+                     next start, so nothing is downloaded twice.",
+                    e = e
                 ));
                 StateFile::default()
             }
@@ -183,10 +184,10 @@ impl Rss {
                         None => {
                             tracing::error!("rss.json is invalid and has no usable backup");
                             read_only = true;
-                            warning = Some(format!(
-                                "Corrent's feed history was damaged (kept as {}). Automatic feed downloads are \
+                            warning = Some(t!(
+                                "Corrent's feed history was damaged (kept as {path}). Automatic feed downloads are \
                                  paused for this session so nothing is downloaded twice.",
-                                bad.display()
+                                path = bad.display()
                             ));
                             StateFile::default()
                         }

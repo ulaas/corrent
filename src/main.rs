@@ -77,6 +77,7 @@ fn main() -> eframe::Result {
     std::thread::spawn(util::local_offset_secs);
     let restore_note = backup::apply_pending(&paths);
     let (settings, first_run, settings_warning) = Settings::load(&paths);
+    i18n::set_language(&settings.appearance.language);
     let data_notes: Vec<String> = restore_note.into_iter().chain(settings_warning).collect();
     let launch: Vec<AddSource> = items.iter().filter_map(|a| AddSource::parse(a)).collect();
     let start_minimized = flag("--minimized") || settings.behavior.start_minimized;

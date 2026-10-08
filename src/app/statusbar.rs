@@ -43,13 +43,23 @@ impl CorrentApp {
                 }
             }
             if let Some(port) = s.listen_port {
-                ui.label(RichText::new(format!("{} Port {port}", icons::PLUGS)).small().color(p.text_dim))
-                    .on_hover_text(t!("Incoming connection port"));
+                ui.label(
+                    RichText::new(format!("{} {}", icons::PLUGS, t!("Port {port}", port = port)))
+                        .small()
+                        .color(p.text_dim),
+                )
+                .on_hover_text(t!("Incoming connection port"));
             }
-            ui.label(RichText::new(format!("{} {} peers", icons::USERS, s.peers_live)).small().color(p.text_dim));
+            ui.label(
+                RichText::new(format!("{} {}", icons::USERS, t!("{n} peers", n = s.peers_live)))
+                    .small()
+                    .color(p.text_dim),
+            );
             if let Some(free) = self.snap.free_space {
                 ui.label(
-                    RichText::new(format!("{} {} free", icons::HARD_DRIVE, fmt_bytes(free))).small().color(p.text_dim),
+                    RichText::new(format!("{} {}", icons::HARD_DRIVE, t!("{free} free", free = fmt_bytes(free))))
+                        .small()
+                        .color(p.text_dim),
                 )
                 .on_hover_text(t!("Free space in the default download folder"));
             }
@@ -66,9 +76,9 @@ impl CorrentApp {
                         egui::Label::new(RichText::new(fmt_speed(s.up_bps, units)).monospace().color(p.success))
                             .sense(egui::Sense::click()),
                     )
-                    .on_hover_text(format!(
-                        "Uploaded this session: {}\nClick to set an upload limit",
-                        fmt_bytes(s.session_uploaded)
+                    .on_hover_text(t!(
+                        "Uploaded this session: {size}\nClick to set an upload limit",
+                        size = fmt_bytes(s.session_uploaded)
                     ));
                 self.limit_menu(&up_r, false);
                 ui.label(RichText::new(icons::ARROW_UP).color(p.success));
@@ -81,9 +91,9 @@ impl CorrentApp {
                         egui::Label::new(RichText::new(fmt_speed(s.down_bps, units)).monospace().color(p.accent))
                             .sense(egui::Sense::click()),
                     )
-                    .on_hover_text(format!(
-                        "Downloaded this session: {}\nClick to set a download limit",
-                        fmt_bytes(s.session_downloaded)
+                    .on_hover_text(t!(
+                        "Downloaded this session: {size}\nClick to set a download limit",
+                        size = fmt_bytes(s.session_downloaded)
                     ));
                 self.limit_menu(&down_r, true);
                 ui.label(RichText::new(icons::ARROW_DOWN).color(p.accent));

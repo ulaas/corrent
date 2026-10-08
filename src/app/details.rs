@@ -48,7 +48,11 @@ impl CorrentApp {
             let mut underline: Option<egui::Rect> = None;
             for (tab, icon, label) in TABS {
                 let sel = self.prefs.details_tab == tab;
-                let text = RichText::new(format!("{icon}  {label}")).color(if sel { p.text } else { p.text_dim });
+                let text = RichText::new(format!("{icon}  {}", crate::i18n::tr(label))).color(if sel {
+                    p.text
+                } else {
+                    p.text_dim
+                });
                 let r = ui.add(egui::Button::new(text).frame(false).min_size(vec2(0.0, 28.0)));
                 if sel {
                     underline = Some(r.rect);
@@ -90,7 +94,7 @@ impl CorrentApp {
                     p,
                     icons::STACK,
                     &t!("{n} torrents selected", n = n),
-                    &format!("{} in total", fmt_bytes(total)),
+                    &t!("{size} in total", size = fmt_bytes(total)),
                 );
             } else {
                 widgets::empty_compact(
@@ -156,7 +160,7 @@ impl CorrentApp {
                 (t!("Done"), fmt_bytes(t.done)),
                 (t!("Download speed"), fmt_speed(t.down_bps, units)),
                 (t!("Upload speed"), fmt_speed(t.up_bps, units)),
-                ("ETA", t.eta.map(fmt_duration).unwrap_or_else(|| "—".into())),
+                (t!("ETA"), t.eta.map(fmt_duration).unwrap_or_else(|| "—".into())),
                 (t!("Downloaded"), fmt_bytes(t.downloaded)),
                 (t!("Uploaded"), fmt_bytes(t.uploaded)),
                 (t!("Ratio"), fmt_ratio(t.ratio)),
@@ -172,7 +176,12 @@ impl CorrentApp {
                 ),
                 (
                     t!("Peers"),
-                    format!("{} connected · {} known · {} connecting", t.peers_live, t.peers_seen, t.peers_connecting),
+                    t!(
+                        "{live} connected · {known} known · {connecting} connecting",
+                        live = t.peers_live,
+                        known = t.peers_seen,
+                        connecting = t.peers_connecting
+                    ),
                 ),
                 (
                     t!("Seeding time"),
@@ -255,7 +264,11 @@ impl CorrentApp {
                     .desired_width(220.0),
             );
             let n_sel = d.files.iter().filter(|f| f.included).count();
-            ui.label(RichText::new(format!("{n_sel} of {} files selected", d.files.len())).small().color(p.text_dim));
+            ui.label(
+                RichText::new(t!("{n_sel} of {total} files selected", n_sel = n_sel, total = d.files.len()))
+                    .small()
+                    .color(p.text_dim),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let media = self.media_files(t.hash);
                 if let Some((idx, name, _)) = media.first().cloned()
@@ -338,7 +351,7 @@ impl CorrentApp {
             (b.down_bps + b.up_bps).cmp(&(a.down_bps + a.up_bps)).then_with(|| b.downloaded.cmp(&a.downloaded))
         });
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{} peers", peers.len())).small().color(p.text_dim));
+            ui.label(RichText::new(t!("{n} peers", n = peers.len())).small().color(p.text_dim));
             ui.checkbox(&mut self.show_all_peers, RichText::new(t!("Show connecting and dead peers")).small());
         });
         if peers.is_empty() {
@@ -438,7 +451,11 @@ impl CorrentApp {
                 (t!("Disabled").to_string(), p.text_mute)
             } else {
                 (
-                    format!("{} tracker(s)", t.trackers.len()),
+                    (if t.trackers.len() == 1 {
+                        t!("1 tracker").to_string()
+                    } else {
+                        t!("{n} trackers", n = t.trackers.len())
+                    }),
                     if t.trackers.is_empty() { p.text_mute } else { p.success },
                 )
             };
@@ -470,9 +487,11 @@ impl CorrentApp {
             });
             ui.add_space(6.0);
             ui.label(
-                RichText::new(format!(
-                    "{} connected · {} connecting · {} known peers",
-                    t.peers_live, t.peers_connecting, t.peers_seen
+                RichText::new(t!(
+                    "{live} connected · {connecting} connecting · {known} known peers",
+                    live = t.peers_live,
+                    connecting = t.peers_connecting,
+                    known = t.peers_seen
                 ))
                 .small()
                 .color(p.text_dim),
@@ -482,7 +501,7 @@ impl CorrentApp {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("TRACKERS  ·  {}", t.trackers.len())).size(10.5).strong().color(p.text_mute),
+                    RichText::new(t!("TRACKERS  ·  {n}", n = t.trackers.len())).size(10.5).strong().color(p.text_mute),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button(format!("{}  {}", icons::PLUS, t!("Add trackers…"))).clicked() {
@@ -562,7 +581,9 @@ impl CorrentApp {
         };
         let have: u32 = bits.iter().map(|b| b.count_ones()).sum();
         ui.label(
-            RichText::new(format!("{have} of {n} pieces · {} each", fmt_bytes(t.piece_size))).small().color(p.text_dim),
+            RichText::new(t!("{have} of {n} pieces · {size} each", have = have, n = n, size = fmt_bytes(t.piece_size)))
+                .small()
+                .color(p.text_dim),
         );
         ui.add_space(6.0);
         // A grid of cells, one per bucket of pieces.
@@ -598,7 +619,12 @@ impl CorrentApp {
             }
         }
         if let Some((a, z, got)) = hovered {
-            resp.on_hover_text(format!("Pieces {}–{} · {:.0}% downloaded", a, z - 1, got * 100.0));
+            resp.on_hover_text(t!(
+                "Pieces {from}–{to} · {pct}% downloaded",
+                from = a,
+                to = z - 1,
+                pct = format!("{:.0}", got * 100.0)
+            ));
         }
     }
 
@@ -642,7 +668,7 @@ impl CorrentApp {
             .show_grid([false, true])
             .x_axis_formatter(|m, _| {
                 let s = -m.value;
-                if s < 0.5 { "now".into() } else { format!("-{}", fmt_duration(Duration::from_secs_f64(s))) }
+                if s < 0.5 { t!("now").into() } else { format!("-{}", fmt_duration(Duration::from_secs_f64(s))) }
             })
             .y_axis_formatter(move |m, _| if m.value <= 0.0 { String::new() } else { fmt_speed(m.value as u64, units) })
             .label_formatter(move |hp| match hp {

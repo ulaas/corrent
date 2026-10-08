@@ -51,7 +51,7 @@ impl CorrentApp {
                         .push(ToastKind::Success, t!("Corrent is registered for magnet links and torrent files."));
                 }
             }
-            Err(e) => self.toasts.push(ToastKind::Error, format!("Registration failed: {e:#}")),
+            Err(e) => self.toasts.push(ToastKind::Error, t!("Registration failed: {e}", e = format!("{e:#}"))),
         }
         self.save_settings();
         // Status is read synchronously here so the follow-up hint is accurate.

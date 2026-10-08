@@ -172,7 +172,7 @@ pub fn status_text(t: &TorrentView) -> String {
         return b.clone();
     }
     match t.state {
-        TorrentState::Checking => format!("Checking {:.0}%", t.progress * 100.0),
+        TorrentState::Checking => t!("Checking {pct}%", pct = format!("{:.0}", t.progress * 100.0)),
         TorrentState::Error => t!("Error").into(),
         s => s.label().into(),
     }
@@ -538,9 +538,11 @@ impl CorrentApp {
                     ui.label(num(t.peers_live.to_string()));
                 })
                 .response
-                .on_hover_text(format!(
-                    "{} connected · {} connecting · {} known\nA torrent with few seeders may only have a handful of connections.",
-                    t.peers_live, t.peers_connecting, t.peers_seen
+                .on_hover_text(t!(
+                    "{live} connected · {connecting} connecting · {known} known\nA torrent with few seeders may only have a handful of connections.",
+                    live = t.peers_live,
+                    connecting = t.peers_connecting,
+                    known = t.peers_seen
                 ));
             }
             Col::Activity => {
@@ -557,10 +559,10 @@ impl CorrentApp {
                     let max = downs.iter().chain(&ups).fold(1.0f32, |m, v| m.max(*v));
                     widgets::paint_series(ui.painter(), rect, &ups, p.success, Some(max), false);
                     widgets::paint_series(ui.painter(), rect, &downs, p.accent, Some(max), true);
-                    resp.on_hover_text(format!(
-                        "Last minute — down {} · up {}",
-                        fmt_speed(t.down_bps, units),
-                        fmt_speed(t.up_bps, units)
+                    resp.on_hover_text(t!(
+                        "Last minute — down {down} · up {up}",
+                        down = fmt_speed(t.down_bps, units),
+                        up = fmt_speed(t.up_bps, units)
                     ));
                 }
             }
@@ -637,7 +639,7 @@ impl CorrentApp {
         parts.push(status_text(t));
         if t.size > 0 {
             if t.done < t.size {
-                parts.push(format!("{} of {}", fmt_bytes(t.done), fmt_bytes(t.size)));
+                parts.push(t!("{done} of {size}", done = fmt_bytes(t.done), size = fmt_bytes(t.size)));
             } else {
                 parts.push(fmt_bytes(t.size));
             }
@@ -648,15 +650,19 @@ impl CorrentApp {
                     parts.push(format!("↓ {}", fmt_speed(t.down_bps, units)));
                 }
                 if let Some(eta) = t.eta {
-                    parts.push(format!("{} left", fmt_duration(eta)));
+                    parts.push(t!("{eta} left", eta = fmt_duration(eta)));
                 }
-                parts.push(format!("{} of {} peers connected", t.peers_live, t.peers_seen.max(t.peers_live)));
+                parts.push(t!(
+                    "{live} of {known} peers connected",
+                    live = t.peers_live,
+                    known = t.peers_seen.max(t.peers_live)
+                ));
             }
             TorrentState::Seeding => {
                 if t.up_bps > 0 {
                     parts.push(format!("↑ {}", fmt_speed(t.up_bps, units)));
                 }
-                parts.push(format!("ratio {}", fmt_ratio(t.ratio)));
+                parts.push(t!("ratio {r}", r = fmt_ratio(t.ratio)));
             }
             _ => {}
         }
@@ -693,7 +699,7 @@ impl CorrentApp {
                 p,
                 icons::MAGNIFYING_GLASS,
                 t!("No matches"),
-                &format!("No torrents match “{}”.", self.search.trim()),
+                &t!("No torrents match “{q}”.", q = self.search.trim()),
             );
             ui.vertical_centered(|ui| {
                 if widgets::secondary_button(ui, t!("Clear search")).clicked() {
@@ -705,7 +711,7 @@ impl CorrentApp {
                 ui,
                 p,
                 icons::FUNNEL,
-                &format!("Nothing in “{}”", self.prefs.status_filter.label()),
+                &t!("Nothing in “{f}”", f = self.prefs.status_filter.label()),
                 t!("No torrents match the current filters."),
             );
             ui.vertical_centered(|ui| {

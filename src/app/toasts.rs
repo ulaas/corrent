@@ -191,10 +191,10 @@ mod tests {
     #[test]
     fn duplicates_collapse_and_list_is_capped() {
         let mut t = Toasts::default();
-        t.push(ToastKind::Info, t!("same"));
-        t.push(ToastKind::Info, t!("same"));
+        t.push(ToastKind::Info, "same");
+        t.push(ToastKind::Info, "same");
         assert_eq!(t.items.len(), 1);
-        t.push_with(ToastKind::Info, t!("undo me"), vec![("Undo".into(), ToastAction::Undo(vec![]))]);
+        t.push_with(ToastKind::Info, "undo me", vec![("Undo".into(), ToastAction::Undo(vec![]))]);
         for i in 0..10 {
             t.push(ToastKind::Info, format!("n{i}"));
         }

@@ -428,7 +428,7 @@ impl PaletteDef {
     /// Parse a `theme.toml`, with errors a person can act on.
     pub fn from_toml(text: &str) -> Result<PaletteDef, String> {
         let def: PaletteDef =
-            toml::from_str(text).map_err(|e| format!("not a Corrent theme file ({})", e.message()))?;
+            toml::from_str(text).map_err(|e| t!("not a Corrent theme file ({why})", why = e.message()))?;
         def.to_palette()?;
         Ok(def)
     }
@@ -500,22 +500,22 @@ pub fn install_fonts(ctx: &Context) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("corrent_fonts_installed"), true));
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
-        t!("Inter").into(),
+        "Inter".into(),
         Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/Inter-Regular.ttf"))),
     );
     fonts.font_data.insert(
-        t!("InterSemiBold").into(),
+        "InterSemiBold".into(),
         Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/Inter-SemiBold.ttf"))),
     );
     fonts.font_data.insert(
-        t!("JetBrainsMono").into(),
+        "JetBrainsMono".into(),
         Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf"))),
     );
-    fonts.families.entry(FontFamily::Proportional).or_default().insert(0, t!("Inter").into());
-    fonts.families.entry(FontFamily::Monospace).or_default().insert(0, t!("JetBrainsMono").into());
+    fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "Inter".into());
+    fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "JetBrainsMono".into());
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     // A bold family for headings; falls back to the regular stack for icons and symbols.
-    let mut bold = vec![t!("InterSemiBold").to_string()];
+    let mut bold = vec!["InterSemiBold".to_string()];
     bold.extend(fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
     fonts.families.insert(FontFamily::Name("bold".into()), bold);
     ctx.set_fonts(fonts);

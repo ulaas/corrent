@@ -403,13 +403,13 @@ impl Accent {
 
     pub fn name(self) -> &'static str {
         match self {
-            Accent::Blue => "Blue",
-            Accent::Violet => "Violet",
-            Accent::Teal => "Teal",
-            Accent::Green => "Green",
-            Accent::Orange => "Orange",
-            Accent::Pink => "Pink",
-            Accent::Custom => "Custom",
+            Accent::Blue => t!("Blue"),
+            Accent::Violet => t!("Violet"),
+            Accent::Teal => t!("Teal"),
+            Accent::Green => t!("Green"),
+            Accent::Orange => t!("Orange"),
+            Accent::Pink => t!("Pink"),
+            Accent::Custom => t!("Custom"),
         }
     }
 }
@@ -439,6 +439,8 @@ pub struct Appearance {
     pub custom_palette: Option<crate::ui::theme::PaletteDef>,
     /// Switch to the high-contrast palette while the OS high-contrast mode is on.
     pub follow_os_high_contrast: bool,
+    /// Interface language code ("" = follow the system).
+    pub language: String,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default, Hash)]
@@ -462,11 +464,11 @@ impl PalettePreset {
 
     pub fn name(self) -> &'static str {
         match self {
-            PalettePreset::Corrent => "Corrent",
-            PalettePreset::Nord => "Nord",
-            PalettePreset::Solarized => "Solarized",
-            PalettePreset::HighContrast => "High contrast",
-            PalettePreset::Custom => "Custom",
+            PalettePreset::Corrent => t!("Corrent"),
+            PalettePreset::Nord => t!("Nord"),
+            PalettePreset::Solarized => t!("Solarized"),
+            PalettePreset::HighContrast => t!("High contrast"),
+            PalettePreset::Custom => t!("Custom"),
         }
     }
 }
@@ -487,6 +489,7 @@ impl Default for Appearance {
             preset: PalettePreset::Corrent,
             custom_palette: None,
             follow_os_high_contrast: true,
+            language: String::new(),
         }
     }
 }

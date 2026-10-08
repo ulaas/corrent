@@ -64,7 +64,7 @@ impl CorrentApp {
             });
             ui.add_space(6.0);
             ui.label(
-                RichText::new(format!("{} in {} seconds.", action.verb(), left.as_secs() + 1))
+                RichText::new(t!("{what} in {n} seconds.", what = action.verb(), n = left.as_secs() + 1))
                     .size(theme::type_scale::HEADING)
                     .color(p.text),
             );
@@ -147,7 +147,11 @@ impl CorrentApp {
             Ok(Some(r)) if manual || r.version != self.settings.updates.skip_version => {
                 self.toasts.push_with(
                     ToastKind::Info,
-                    format!("Corrent {} is available (you have {}).", r.version, env!("CARGO_PKG_VERSION")),
+                    t!(
+                        "Corrent {new} is available (you have {current}).",
+                        new = r.version,
+                        current = env!("CARGO_PKG_VERSION")
+                    ),
                     vec![
                         (t!("Download").into(), toasts::ToastAction::OpenUrl(r.url)),
                         (t!("Skip this version").into(), toasts::ToastAction::SkipVersion(r.version)),

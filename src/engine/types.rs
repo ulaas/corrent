@@ -61,15 +61,15 @@ pub enum TorrentState {
 impl TorrentState {
     pub fn label(self) -> &'static str {
         match self {
-            TorrentState::Metadata => "Fetching metadata",
-            TorrentState::Checking => "Checking",
-            TorrentState::Downloading => "Downloading",
-            TorrentState::Stalled => "Stalled",
-            TorrentState::Seeding => "Seeding",
-            TorrentState::Completed => "Completed",
-            TorrentState::Paused => "Paused",
-            TorrentState::Queued => "Queued",
-            TorrentState::Error => "Error",
+            TorrentState::Metadata => t!("Fetching metadata"),
+            TorrentState::Checking => t!("Checking"),
+            TorrentState::Downloading => t!("Downloading"),
+            TorrentState::Stalled => t!("Stalled"),
+            TorrentState::Seeding => t!("Seeding"),
+            TorrentState::Completed => t!("Completed"),
+            TorrentState::Paused => t!("Paused"),
+            TorrentState::Queued => t!("Queued"),
+            TorrentState::Error => t!("Error"),
         }
     }
 

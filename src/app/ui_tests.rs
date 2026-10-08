@@ -41,6 +41,8 @@ fn settings(dir: &std::path::Path) -> Settings {
     s.bittorrent.lsd = false;
     s.bittorrent.trackers_enabled = false;
     s.behavior.handler_prompt_dismissed = true;
+    // Tests read English labels, whatever the machine's language.
+    s.appearance.language = "en".into();
     s
 }
 
@@ -203,7 +205,7 @@ fn magnet_dialog_counts_recognized_links() {
         text: "magnet:?xt=urn:btih:0101010101010101010101010101010101010101\nnot a link\nhttps://x/y.torrent".into(),
     });
     h.run_steps(3);
-    h.get_by_label("2 item(s) recognized");
+    h.get_by_label("Recognized: 2");
 }
 
 #[test]

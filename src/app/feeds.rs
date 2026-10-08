@@ -77,7 +77,9 @@ impl CorrentApp {
                 ui.label(RichText::new(t!("Feeds")).font(theme::title()).color(p.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let n = self.settings.rss.rules.iter().filter(|r| rule_is_active(r)).count();
-                    if primary_button(ui, p, &format!("{}  Download rules ({n})", icons::FUNNEL)).clicked() {
+                    if primary_button(ui, p, &format!("{}  {}", icons::FUNNEL, t!("Download rules ({n})", n = n)))
+                        .clicked()
+                    {
                         self.feeds.rules = Some(RulesEditor { rules: self.settings.rss.rules.clone(), selected: 0 });
                     }
                     let loading = rss.feeds.iter().any(|f| f.loading);
@@ -184,7 +186,7 @@ impl CorrentApp {
                 let sel = self.feeds.selected.as_deref() == Some(f.url.as_str());
                 let resp = super::sidebar::row(ui, p, icon, color, &f.title, Some(f.articles.len()), sel);
                 let resp = match &f.error {
-                    Some(e) => resp.on_hover_text(format!("{}\n\nLast refresh failed: {e}", f.url)),
+                    Some(e) => resp.on_hover_text(t!("{url}\n\nLast refresh failed: {e}", url = f.url, e = e)),
                     None => resp.on_hover_text(&f.url),
                 };
                 if resp.clicked() {
@@ -247,7 +249,9 @@ impl CorrentApp {
                 ui.label(RichText::new(&one.title).font(theme::heading()).color(p.text));
                 let status = match (&one.error, one.last_ok) {
                     (Some(e), _) => RichText::new(format!("{}  {e}", icons::WARNING)).small().color(p.error),
-                    (None, Some(t)) => RichText::new(format!("Updated {}", fmt_date(t))).small().color(p.text_dim),
+                    (None, Some(t)) => {
+                        RichText::new(t!("Updated {date}", date = fmt_date(t))).small().color(p.text_dim)
+                    }
                     (None, None) if one.loading => RichText::new(t!("Loading…")).small().color(p.text_dim),
                     (None, None) => RichText::new(t!("Not loaded yet")).small().color(p.text_dim),
                 };
@@ -621,14 +625,12 @@ fn rule_preview(ui: &mut Ui, p: &Palette, r: &RssRule, feeds: &[FeedView], auto:
     let new = hits.iter().filter(|(_, d)| !d).count();
     let text = match (hits.len(), new) {
         (0, _) => t!("Matches no current articles").to_string(),
-        (n, 0) => format!("Matches {n} current article{} (all downloaded)", if n == 1 { "" } else { "s" }),
-        (n, k) if auto => {
-            format!(
-                "Matches {n} current article{} — {k} will be downloaded when you save",
-                if n == 1 { "" } else { "s" }
-            )
-        }
-        (n, _) => format!("Matches {n} current article{} (auto-download is off)", if n == 1 { "" } else { "s" }),
+        (1, 0) => t!("Matches 1 current article (already downloaded)").to_string(),
+        (n, 0) => t!("Matches {n} current articles (all downloaded)", n = n),
+        (1, _) if auto => t!("Matches 1 current article — it will be downloaded when you save").to_string(),
+        (n, k) if auto => t!("Matches {n} current articles — {k} will be downloaded when you save", n = n, k = k),
+        (1, _) => t!("Matches 1 current article (auto-download is off)").to_string(),
+        (n, _) => t!("Matches {n} current articles (auto-download is off)", n = n),
     };
     ui.label(RichText::new(text).strong().color(if new > 0 { p.accent } else { p.text_dim }));
     egui::ScrollArea::vertical().id_salt("rule_preview").max_height(150.0).show(ui, |ui| {

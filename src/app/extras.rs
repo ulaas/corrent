@@ -33,9 +33,13 @@ impl CorrentApp {
             if !self.snap.undoable.is_empty() {
                 let n = self.snap.undoable.len();
                 let label = if n == 1 {
-                    format!("{}  Undo remove “{}”", icons::ARROW_COUNTER_CLOCKWISE, self.snap.undoable[0].1)
+                    format!(
+                        "{}  {}",
+                        icons::ARROW_COUNTER_CLOCKWISE,
+                        t!("Undo remove “{name}”", name = self.snap.undoable[0].1)
+                    )
                 } else {
-                    format!("{}  Undo remove ({n} torrents)", icons::ARROW_COUNTER_CLOCKWISE)
+                    format!("{}  {}", icons::ARROW_COUNTER_CLOCKWISE, t!("Undo remove ({n} torrents)", n = n))
                 };
                 if ui.button(label).clicked() {
                     let hashes = self.snap.undoable.iter().map(|(h, _)| *h).collect();
@@ -111,7 +115,7 @@ impl CorrentApp {
                 ui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(72.0, 72.0)));
                 ui.add_space(8.0);
                 ui.label(RichText::new(t!("Corrent")).font(theme::bold(theme::type_scale::DISPLAY)).color(p.text));
-                ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(p.text_dim));
+                ui.label(RichText::new(t!("Version {v}", v = env!("CARGO_PKG_VERSION"))).color(p.text_dim));
                 ui.add_space(8.0);
                 ui.label(RichText::new(t!("A beautiful, stable BitTorrent client.")).color(p.text));
                 ui.add_space(8.0);

@@ -121,7 +121,11 @@ impl CorrentApp {
                             }
                             Some(Ok(_)) => {
                                 let already = count - new;
-                                let mut t = format!("{count} torrent{}", if count == 1 { "" } else { "s" });
+                                let mut t = if count == 1 {
+                                    t!("1 torrent").to_string()
+                                } else {
+                                    t!("{count} torrents", count = count)
+                                };
                                 if already > 0 {
                                     t.push_str(&t!(" · {already} already in Corrent", already = already));
                                 }
@@ -167,7 +171,11 @@ impl CorrentApp {
                 .filter(|i| !present.contains(&i.hash))
                 .count();
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let label = format!("Import {total} torrent{}", if total == 1 { "" } else { "s" });
+                let label = if total == 1 {
+                    t!("Import 1 torrent").to_string()
+                } else {
+                    t!("Import {total} torrents", total = total)
+                };
                 if ui.add_enabled_ui(total > 0, |ui| primary_button(ui, p, &label)).inner.clicked() {
                     import = true;
                 }
@@ -209,10 +217,11 @@ impl CorrentApp {
             }
             self.toasts.push(
                 ToastKind::Info,
-                format!(
-                    "Importing {n} torrent{}; existing files are checked, not downloaded again.",
-                    if n == 1 { "" } else { "s" }
-                ),
+                if n == 1 {
+                    t!("Importing 1 torrent; existing files are checked, not downloaded again.").to_string()
+                } else {
+                    t!("Importing {n} torrents; existing files are checked, not downloaded again.", n = n)
+                },
             );
             return;
         }

@@ -165,9 +165,13 @@ impl CorrentApp {
                         self.open_settings_at(super::settings_window::Page::Search);
                     }
                     ui.label(
-                        RichText::new(format!("{configured} provider{}", if configured == 1 { "" } else { "s" }))
-                            .small()
-                            .color(p.text_dim),
+                        RichText::new(if configured == 1 {
+                            t!("1 provider").to_string()
+                        } else {
+                            t!("{n} providers", n = configured)
+                        })
+                        .small()
+                        .color(p.text_dim),
                     );
                 });
             });
@@ -221,20 +225,20 @@ impl CorrentApp {
                 if s.pending > 0 {
                     ui.add(egui::Spinner::new().color(p.accent));
                     ui.label(
-                        RichText::new(format!(
-                            "Searching {} provider{}…",
-                            s.pending,
-                            if s.pending == 1 { "" } else { "s" }
-                        ))
+                        RichText::new(if s.pending == 1 {
+                            t!("Searching 1 provider…").to_string()
+                        } else {
+                            t!("Searching {n} providers…", n = s.pending)
+                        })
                         .color(p.text_dim),
                     );
                 } else if s.searched {
                     ui.label(
-                        RichText::new(format!(
-                            "{} result{}",
-                            s.results.len(),
-                            if s.results.len() == 1 { "" } else { "s" }
-                        ))
+                        RichText::new(if s.results.len() == 1 {
+                            t!("1 result").to_string()
+                        } else {
+                            t!("{n} results", n = s.results.len())
+                        })
                         .color(p.text_dim),
                     );
                 }
@@ -368,8 +372,11 @@ impl CorrentApp {
                                 } else {
                                     p.success
                                 };
-                                ui.label(RichText::new(s.to_string()).small().color(c))
-                                    .on_hover_text(format!("{s} seeders, {} peers", r.peers.unwrap_or(0)));
+                                ui.label(RichText::new(s.to_string()).small().color(c)).on_hover_text(t!(
+                                    "{s} seeders, {p} peers",
+                                    s = s,
+                                    p = r.peers.unwrap_or(0)
+                                ));
                             }
                         });
                         row.col(|ui| {

@@ -96,7 +96,7 @@ impl CorrentApp {
         let paths = self.paths.clone();
         std::thread::spawn(move || {
             let mut n = notify_rust::Notification::new();
-            n.appname(t!("Corrent")).summary(&title).body(&body);
+            n.appname("Corrent").summary(&title).body(&body);
             // Windows: show as "Corrent" with its icon rather than the PowerShell default.
             if let Some(id) = crate::integration::app_identity::ensure(&paths) {
                 n.app_id(id);

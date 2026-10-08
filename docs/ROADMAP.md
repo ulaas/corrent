@@ -134,7 +134,7 @@ upstream feature we don't enable yet.
 | B6 Theme editor | Edit palette live, import/export `theme.toml`, 4 presets. | `Palette: Serialize`, `Appearance.custom_palette`. | Round-trips; invalid files rejected clearly. |
 | B7 High contrast | Preset + follow OS high-contrast. | 7:1 palette, 2 px focus rings, state never by color alone. | Contrast script passes. |
 | B8 Accessibility | Screen-reader support, labels on every icon button, focus order, announced toasts. | Enable eframe's `accesskit` feature in the production build (currently off); `icon_button` requires a label. | AccessKit tree asserts names. |
-| B9 i18n | Language setting, Turkish as the second locale. | Touches every string: first extract a string table, adopt Fluent later; schedule after the main features. | CI grep gate for hard-coded strings. |
+| B9 i18n | Language setting, Turkish as the second locale. | Touches every string: first extract a string table, adopt Fluent later; schedule after the main features. *Done (M27) gettext-style: the English text is the key, named placeholders, singular/plural as separate keys; Fluent is not needed for two languages.* | CI grep gate for hard-coded strings. |
 | B10 Row sparklines | Optional per-row down/up sparkline column. | Compact history tail in `TorrentView` only when visible. | Stays within the A9 budget. |
 | B11 Drag to reorder | Drag rows to reorder the queue; drag headers to reorder columns. | `dnd_drag_source`, new `QueueMove::To(pos)`. | Multi-select keeps order; persisted. |
 | B12 Toasts with actions | "Undo remove", "Open folder", "Retry", "Show"; sticky errors; history in the Log window. | `ToastAction` enum resolved to commands. | Undo re-adds a removed torrent. |

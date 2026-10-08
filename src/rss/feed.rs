@@ -28,7 +28,7 @@ pub fn parse(bytes: &[u8], url: &str) -> Result<ParsedFeed, String> {
         .base_uri(Some(url))
         .build()
         .parse(bytes)
-        .map_err(|e| format!("not a valid feed ({e})"))?;
+        .map_err(|e| t!("not a valid feed ({e})", e = e))?;
     let articles = feed
         .entries
         .into_iter()
@@ -105,13 +105,13 @@ pub fn client(proxy: Option<String>) -> reqwest::Client {
 pub async fn fetch(client: &reqwest::Client, url: &str) -> Result<ParsedFeed, String> {
     let mut resp = client.get(url).send().await.map_err(describe)?;
     if !resp.status().is_success() {
-        return Err(format!("the server answered {}", resp.status()));
+        return Err(t!("the server answered {status}", status = resp.status()));
     }
     let mut body = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(describe)? {
         body.extend_from_slice(&chunk);
         if body.len() > MAX_FEED_BYTES {
-            return Err("the feed is too large".into());
+            return Err(t!("the feed is too large").into());
         }
     }
     let url = url.to_string();
@@ -120,9 +120,9 @@ pub async fn fetch(client: &reqwest::Client, url: &str) -> Result<ParsedFeed, St
 
 fn describe(e: reqwest::Error) -> String {
     if e.is_timeout() {
-        "the server didn't answer in time".into()
+        t!("the server didn't answer in time").into()
     } else if e.is_connect() {
-        "couldn't connect to the server".into()
+        t!("couldn't connect to the server").into()
     } else {
         // Feed URLs may contain passkeys: keep them out of messages and logs.
         let e = e.without_url();

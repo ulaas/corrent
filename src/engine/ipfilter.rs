@@ -81,7 +81,7 @@ fn gunzip_if_needed(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
         flate2::read::MultiGzDecoder::new(&bytes[..])
             .take(MAX_LIST_BYTES as u64)
             .read_to_end(&mut out)
-            .map_err(|e| format!("the list is not valid gzip ({e})"))?;
+            .map_err(|e| t!("the list is not valid gzip ({e})", e = e))?;
         Ok(out)
     } else {
         Ok(bytes)
@@ -105,13 +105,13 @@ async fn fetch(client: &reqwest::Client, source: &str) -> Result<Vec<u8>, String
         None => {
             let mut resp = client.get(source).send().await.map_err(|e| e.without_url().to_string())?;
             if !resp.status().is_success() {
-                return Err(format!("the server answered {}", resp.status()));
+                return Err(t!("the server answered {status}", status = resp.status()));
             }
             let mut body = Vec::new();
             while let Some(chunk) = resp.chunk().await.map_err(|e| e.without_url().to_string())? {
                 body.extend_from_slice(&chunk);
                 if body.len() > MAX_LIST_BYTES {
-                    return Err("the list is too large".into());
+                    return Err(t!("the list is too large").into());
                 }
             }
             body
@@ -121,7 +121,7 @@ async fn fetch(client: &reqwest::Client, source: &str) -> Result<Vec<u8>, String
 }
 
 /// Download (or read) a list; fall back to the cached copy from an earlier start.
-async fn load(client: &reqwest::Client, source: &str, cache: &Path, what: &str, warnings: &mut Vec<String>) -> String {
+async fn load(client: &reqwest::Client, source: &str, cache: &Path, allow: bool, warnings: &mut Vec<String>) -> String {
     match fetch(client, source).await {
         Ok(bytes) => {
             let _ = crate::util::write_atomic(cache, &bytes);
@@ -129,11 +129,19 @@ async fn load(client: &reqwest::Client, source: &str, cache: &Path, what: &str, 
         }
         Err(e) => match std::fs::read(cache) {
             Ok(b) => {
-                warnings.push(format!("The {what} couldn't be updated ({e}); using the copy from an earlier start."));
+                warnings.push(if allow {
+                    t!("The allowlist couldn't be updated ({e}); using the copy from an earlier start.", e = e)
+                } else {
+                    t!("The blocklist couldn't be updated ({e}); using the copy from an earlier start.", e = e)
+                });
                 String::from_utf8_lossy(&b).into_owned()
             }
             Err(_) => {
-                warnings.push(format!("The {what} couldn't be loaded ({e}); continuing without it."));
+                warnings.push(if allow {
+                    t!("The allowlist couldn't be loaded ({e}); continuing without it.", e = e)
+                } else {
+                    t!("The blocklist couldn't be loaded ({e}); continuing without it.", e = e)
+                });
                 String::new()
             }
         },
@@ -148,14 +156,13 @@ pub async fn prepare(paths: &Paths, c: &Connection) -> Prepared {
     }
     let dir = paths.data_dir.join("ipfilter");
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        out.warnings.push(format!("The IP filter couldn't be prepared: {e}"));
+        out.warnings.push(t!("The IP filter couldn't be prepared: {e}", e = e));
         return out;
     }
     let client = crate::rss::feed::client(c.proxy_url());
     let mut block = String::new();
     if !c.blocklist_url.trim().is_empty() {
-        block =
-            load(&client, &c.blocklist_url, &dir.join("blocklist-download.txt"), "blocklist", &mut out.warnings).await;
+        block = load(&client, &c.blocklist_url, &dir.join("blocklist-download.txt"), false, &mut out.warnings).await;
     }
     if !block.is_empty() && !block.ends_with('\n') {
         block.push('\n');
@@ -165,12 +172,11 @@ pub async fn prepare(paths: &Paths, c: &Connection) -> Prepared {
         let f = dir.join("blocklist.txt");
         match crate::util::write_atomic(&f, block.as_bytes()) {
             Ok(()) => out.blocklist = Some(f),
-            Err(e) => out.warnings.push(format!("The blocklist couldn't be saved: {e:#}")),
+            Err(e) => out.warnings.push(t!("The blocklist couldn't be saved: {e}", e = format!("{e:#}"))),
         }
     }
     if !c.allowlist_url.trim().is_empty() {
-        let allow =
-            load(&client, &c.allowlist_url, &dir.join("allowlist-download.txt"), "allowlist", &mut out.warnings).await;
+        let allow = load(&client, &c.allowlist_url, &dir.join("allowlist-download.txt"), true, &mut out.warnings).await;
         // An empty allowlist would block every peer: only use it when it has entries.
         if allow.lines().any(|l| !l.trim().is_empty() && !l.trim().starts_with('#')) {
             let f = dir.join("allowlist.txt");

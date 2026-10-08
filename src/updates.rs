@@ -48,7 +48,7 @@ pub fn parse_release(json: &str) -> Result<Release, String> {
         #[serde(default)]
         prerelease: bool,
     }
-    let g: Gh = serde_json::from_str(json).map_err(|e| format!("unexpected answer ({e})"))?;
+    let g: Gh = serde_json::from_str(json).map_err(|e| t!("unexpected answer ({e})", e = e))?;
     if g.draft || g.prerelease {
         return Err("no stable release".into());
     }
@@ -71,7 +71,7 @@ pub async fn check(proxy: Option<String>) -> Result<Option<Release>, String> {
         return Ok(None); // no releases published yet
     }
     if !resp.status().is_success() {
-        return Err(format!("GitHub answered {}", resp.status()));
+        return Err(t!("GitHub answered {status}", status = resp.status()));
     }
     let text = resp.text().await.map_err(|e| e.without_url().to_string())?;
     let r = parse_release(&text)?;

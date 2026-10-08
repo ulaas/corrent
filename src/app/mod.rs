@@ -89,15 +89,15 @@ impl StatusFilter {
 
     pub fn label(self) -> &'static str {
         match self {
-            StatusFilter::All => "All",
-            StatusFilter::Downloading => "Downloading",
-            StatusFilter::Seeding => "Seeding",
-            StatusFilter::Completed => "Completed",
-            StatusFilter::Paused => "Paused",
-            StatusFilter::Active => "Active",
-            StatusFilter::Inactive => "Inactive",
-            StatusFilter::Stalled => "Stalled",
-            StatusFilter::Errored => "Errored",
+            StatusFilter::All => t!("All"),
+            StatusFilter::Downloading => t!("Downloading"),
+            StatusFilter::Seeding => t!("Seeding"),
+            StatusFilter::Completed => t!("Completed"),
+            StatusFilter::Paused => t!("Paused"),
+            StatusFilter::Active => t!("Active"),
+            StatusFilter::Inactive => t!("Inactive"),
+            StatusFilter::Stalled => t!("Stalled"),
+            StatusFilter::Errored => t!("Errored"),
         }
     }
 
@@ -177,26 +177,26 @@ impl Col {
     pub fn title(self) -> &'static str {
         match self {
             Col::Queue => "#",
-            Col::Name => "Name",
-            Col::Size => "Size",
-            Col::Progress => "Progress",
-            Col::Status => "Status",
-            Col::Peers => "Peers",
-            Col::Down => "Down",
-            Col::Up => "Up",
-            Col::Eta => "ETA",
-            Col::Ratio => "Ratio",
-            Col::Category => "Category",
-            Col::Tags => "Tags",
-            Col::Added => "Added",
-            Col::Completed => "Completed",
-            Col::Downloaded => "Downloaded",
-            Col::Uploaded => "Uploaded",
-            Col::SavePath => "Save path",
-            Col::Tracker => "Tracker",
-            Col::SeedTime => "Seeding time",
-            Col::LastActivity => "Last activity",
-            Col::Activity => "Activity",
+            Col::Name => t!("Name"),
+            Col::Size => t!("Size"),
+            Col::Progress => t!("Progress"),
+            Col::Status => t!("Status"),
+            Col::Peers => t!("Peers"),
+            Col::Down => t!("Down"),
+            Col::Up => t!("Up"),
+            Col::Eta => t!("ETA"),
+            Col::Ratio => t!("Ratio"),
+            Col::Category => t!("Category"),
+            Col::Tags => t!("Tags"),
+            Col::Added => t!("Added"),
+            Col::Completed => t!("Completed"),
+            Col::Downloaded => t!("Downloaded"),
+            Col::Uploaded => t!("Uploaded"),
+            Col::SavePath => t!("Save path"),
+            Col::Tracker => t!("Tracker"),
+            Col::SeedTime => t!("Seeding time"),
+            Col::LastActivity => t!("Last activity"),
+            Col::Activity => t!("Activity"),
         }
     }
 
@@ -521,8 +521,8 @@ impl CorrentApp {
         self.toasts.push(ToastKind::Info, t!("Backing up…"));
         self.rt.spawn_blocking(move || {
             let msg = match crate::backup::export(&paths, &dest) {
-                Ok(n) => (ToastKind::Success, format!("Backed up {n} files to {}", dest.display())),
-                Err(e) => (ToastKind::Error, format!("Backup failed: {e:#}")),
+                Ok(n) => (ToastKind::Success, t!("Backed up {n} files to {path}", n = n, path = dest.display())),
+                Err(e) => (ToastKind::Error, t!("Backup failed: {e}", e = format!("{e:#}"))),
             };
             let _ = tx.send(EngineEvent::Toast(msg.0, msg.1));
             ctx.request_repaint();
@@ -531,11 +531,11 @@ impl CorrentApp {
 
     pub fn import_backup(&mut self, src: std::path::PathBuf) {
         match crate::backup::stage_import(&self.paths, &src) {
-            Ok(parts) => self.data_notes.push(format!(
-                "The backup ({}) will be restored the next time Corrent starts. Quit and reopen Corrent to finish.",
-                parts.join(", ")
+            Ok(parts) => self.data_notes.push(t!(
+                "The backup ({parts}) will be restored the next time Corrent starts. Quit and reopen Corrent to finish.",
+                parts = parts.join(", ")
             )),
-            Err(e) => self.toasts.push(ToastKind::Error, format!("Can't restore: {e:#}")),
+            Err(e) => self.toasts.push(ToastKind::Error, t!("Can't restore: {e}", e = format!("{e:#}"))),
         }
     }
 
@@ -608,9 +608,9 @@ impl CorrentApp {
                             egui::RichText::new(t!("Corrent closed unexpectedly last time")).strong().color(p.text),
                         );
                         let detail = if report.is_some() {
-                            "A crash report was saved. Your torrents and settings were restored."
+                            t!("A crash report was saved. Your torrents and settings were restored.")
                         } else {
-                            "It may have been ended by the system or another program. Your torrents were restored."
+                            t!("It may have been ended by the system or another program. Your torrents were restored.")
                         };
                         ui.label(egui::RichText::new(detail).small().color(p.text_dim));
                     });
@@ -641,7 +641,7 @@ impl CorrentApp {
     pub fn save_settings(&mut self) {
         self.sync_remote();
         if let Err(e) = self.settings.save(&self.paths) {
-            let msg = format!("Your settings couldn't be saved: {}", crate::util::explain_io(&format!("{e:#}")));
+            let msg = t!("Your settings couldn't be saved: {why}", why = crate::util::explain_io(&format!("{e:#}")));
             if !self.data_notes.contains(&msg) {
                 self.data_notes.push(msg);
             }
@@ -694,10 +694,10 @@ impl CorrentApp {
                     self.toasts.push_with(
                         ToastKind::Success,
                         t!("Added “{name}”", name = name),
-                        vec![("Show".into(), toasts::ToastAction::Show(hash))],
+                        vec![(t!("Show").into(), toasts::ToastAction::Show(hash))],
                     );
                     if self.settings.behavior.notify_on_add && self.window_hidden {
-                        self.notify("Torrent added", &name);
+                        self.notify(t!("Torrent added"), &name);
                     }
                 }
                 EngineEvent::Completed { name, size, content_path, save_path, .. } => {
@@ -705,12 +705,12 @@ impl CorrentApp {
                         ToastKind::Success,
                         t!("Download complete: “{name}”", name = name),
                         vec![
-                            ("Open".into(), toasts::ToastAction::OpenFile(content_path)),
-                            ("Show in folder".into(), toasts::ToastAction::OpenFolder(save_path)),
+                            (t!("Open").into(), toasts::ToastAction::OpenFile(content_path)),
+                            (t!("Show in folder").into(), toasts::ToastAction::OpenFolder(save_path)),
                         ],
                     );
                     if self.settings.behavior.notify_on_complete {
-                        self.notify("Download complete", &format!("{name} ({})", crate::util::fmt_bytes(size)));
+                        self.notify(t!("Download complete"), &format!("{name} ({})", crate::util::fmt_bytes(size)));
                     }
                 }
                 EngineEvent::DataWarning(w) => self.data_notes.push(w),
@@ -728,11 +728,11 @@ impl CorrentApp {
                             }
                             let folder = path.parent().map(std::path::PathBuf::from).unwrap_or_default();
                             let mut actions = vec![
-                                ("Show file".into(), toasts::ToastAction::OpenFolder(folder)),
-                                ("Copy magnet".into(), toasts::ToastAction::Copy(magnet)),
+                                (t!("Show file").into(), toasts::ToastAction::OpenFolder(folder)),
+                                (t!("Copy magnet").into(), toasts::ToastAction::Copy(magnet)),
                             ];
                             if let Some(h) = seeding {
-                                actions.push(("Show".into(), toasts::ToastAction::Show(h)));
+                                actions.push((t!("Show").into(), toasts::ToastAction::Show(h)));
                             }
                             self.toasts.push_with(ToastKind::Success, t!("Created “{name}”", name = name), actions);
                         }
@@ -749,7 +749,7 @@ impl CorrentApp {
                     self.toasts.push_with(
                         ToastKind::Success,
                         t!("Restored “{name}”", name = name),
-                        vec![("Show".into(), toasts::ToastAction::Show(hash))],
+                        vec![(t!("Show").into(), toasts::ToastAction::Show(hash))],
                     );
                 }
                 EngineEvent::PreviewReady { req, result } => self.on_preview_ready(req, result),
@@ -762,12 +762,12 @@ impl CorrentApp {
         // One toast (with Undo) per burst of removals.
         if !removed.is_empty() {
             let text = if removed.len() == 1 {
-                format!("Removed “{}”", removed[0].1)
+                t!("Removed “{name}”", name = removed[0].1)
             } else {
-                format!("Removed {} torrents", removed.len())
+                t!("Removed {n} torrents", n = removed.len())
             };
             let hashes = removed.into_iter().map(|(h, _)| h).collect();
-            self.toasts.push_with(ToastKind::Info, text, vec![("Undo".into(), toasts::ToastAction::Undo(hashes))]);
+            self.toasts.push_with(ToastKind::Info, text, vec![(t!("Undo").into(), toasts::ToastAction::Undo(hashes))]);
         }
         let _ = ctx;
     }
@@ -808,6 +808,7 @@ impl CorrentApp {
         // Also re-apply when the OS high-contrast mode is switched.
         let key = (a.clone(), a.follow_os_high_contrast && theme::os_high_contrast());
         if self.applied_appearance.as_ref() != Some(&key) {
+            crate::i18n::set_language(&a.language);
             theme::apply(ctx, a);
             self.applied_appearance = Some(key);
         }
