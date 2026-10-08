@@ -50,7 +50,8 @@ pub fn paint_progress(
     let c1 = color;
     // Gradient body as a mesh, clipped into a rounded shape by drawing rounded caps.
     painter.rect_filled(fill, CornerRadius::same(r), c1);
-    let inner = Rect::from_min_max(pos2(fill.left(), fill.top()), pos2(fill.right() - rect.height() * 0.5, fill.bottom()));
+    let inner =
+        Rect::from_min_max(pos2(fill.left(), fill.top()), pos2(fill.right() - rect.height() * 0.5, fill.bottom()));
     if inner.width() > 1.0 {
         let left_cap = Rect::from_min_max(fill.min, pos2(fill.left() + rect.height(), fill.bottom()));
         painter.rect_filled(left_cap, CornerRadius::same(r), c0);
@@ -182,7 +183,7 @@ pub fn icon_button_sized(
 
 /// Primary (accent filled) button.
 pub fn primary_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
-    let fg = if p.dark { Color32::WHITE } else { Color32::WHITE };
+    let fg = Color32::WHITE;
     ui.add(
         egui::Button::new(RichText::new(text).color(fg).strong())
             .fill(p.accent)
@@ -223,7 +224,7 @@ pub fn piece_bar(ui: &mut Ui, p: &Palette, bits: &[u8], count: u32, height: f32)
     let mut x = rect.left();
     let colw = rect.width() / cols as f32;
     let mut run_start: Option<(f32, f32)> = None; // (x, alpha) to merge equal columns
-    let mut flush = |painter: &egui::Painter, from: f32, to: f32, a: f32| {
+    let flush = |painter: &egui::Painter, from: f32, to: f32, a: f32| {
         if a > 0.0 {
             painter.rect_filled(
                 Rect::from_min_max(pos2(from, rect.top()), pos2(to, rect.bottom())),

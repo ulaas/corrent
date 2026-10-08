@@ -1,0 +1,2 @@
+# Panels and painters take several style parameters by design.
+too-many-arguments-threshold = 10

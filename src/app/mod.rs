@@ -134,10 +134,11 @@ pub enum Col {
     SavePath,
     Tracker,
     SeedTime,
+    LastActivity,
 }
 
 impl Col {
-    pub const ALL: [Col; 19] = [
+    pub const ALL: [Col; 20] = [
         Col::Queue,
         Col::Name,
         Col::Size,
@@ -157,6 +158,7 @@ impl Col {
         Col::SavePath,
         Col::Tracker,
         Col::SeedTime,
+        Col::LastActivity,
     ];
 
     pub fn title(self) -> &'static str {
@@ -180,6 +182,7 @@ impl Col {
             Col::SavePath => "Save path",
             Col::Tracker => "Tracker",
             Col::SeedTime => "Seeding time",
+            Col::LastActivity => "Last activity",
         }
     }
 
@@ -192,7 +195,7 @@ impl Col {
             Col::SavePath => 220.0,
             Col::Tracker => 160.0,
             Col::Tags | Col::Category => 110.0,
-            Col::Added | Col::Completed => 130.0,
+            Col::Added | Col::Completed | Col::LastActivity => 130.0,
             _ => 86.0,
         }
     }
@@ -200,7 +203,15 @@ impl Col {
     pub fn right_aligned(self) -> bool {
         matches!(
             self,
-            Col::Size | Col::Down | Col::Up | Col::Eta | Col::Ratio | Col::Downloaded | Col::Uploaded | Col::Peers | Col::SeedTime
+            Col::Size
+                | Col::Down
+                | Col::Up
+                | Col::Eta
+                | Col::Ratio
+                | Col::Downloaded
+                | Col::Uploaded
+                | Col::Peers
+                | Col::SeedTime
         )
     }
 }
@@ -224,7 +235,17 @@ pub struct UiPrefs {
 impl Default for UiPrefs {
     fn default() -> Self {
         Self {
-            columns: vec![Col::Name, Col::Size, Col::Progress, Col::Status, Col::Peers, Col::Down, Col::Up, Col::Eta, Col::Ratio],
+            columns: vec![
+                Col::Name,
+                Col::Size,
+                Col::Progress,
+                Col::Status,
+                Col::Peers,
+                Col::Down,
+                Col::Up,
+                Col::Eta,
+                Col::Ratio,
+            ],
             sort: Col::Queue,
             sort_asc: true,
             show_sidebar: true,
@@ -276,6 +297,8 @@ pub struct CorrentApp {
     pub add_dialogs: VecDeque<dialogs::AddDialog>,
     pub next_req: u64,
     pub settings_draft: Option<settings_window::SettingsDraft>,
+    /// No settings file existed at startup (used by onboarding).
+    #[allow(dead_code)]
     pub first_run: bool,
     pub quitting: bool,
     applied_appearance: Option<crate::config::Appearance>,
@@ -636,6 +659,7 @@ impl CorrentApp {
             paused: self.settings.downloads.start_paused,
             only_files: None,
             add_to_top: false,
+            initial_peers: None,
         };
         self.engine.send(crate::engine::EngineCommand::Add(Box::new(req)));
     }
@@ -688,7 +712,12 @@ impl eframe::App for CorrentApp {
                 .resizable(true)
                 .default_size(220.0)
                 .size_range(170.0..=360.0)
-                .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 6 }))
+                .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin {
+                    left: 8,
+                    right: 8,
+                    top: 6,
+                    bottom: 6,
+                }))
                 .show(ui, |ui| self.sidebar(ui, &p));
         }
 
@@ -698,18 +727,24 @@ impl eframe::App for CorrentApp {
                 .resizable(true)
                 .default_size(280.0)
                 .size_range(160.0..=700.0)
-                .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin { left: 14, right: 14, top: 6, bottom: 8 }))
+                .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin {
+                    left: 14,
+                    right: 14,
+                    top: 6,
+                    bottom: 8,
+                }))
                 .show(ui, |ui| self.details_panel(ui, &p));
         }
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(p.bg0).inner_margin(egui::Margin::same(0)))
-            .show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg0).inner_margin(egui::Margin::same(0))).show(
+            ui,
+            |ui| {
                 self.crash_banner(ui, &p);
                 self.data_banner(ui, &p);
                 self.handler_banner(ui, &p);
                 self.torrent_table(ui, &p);
-            });
+            },
+        );
 
         self.drag_and_drop(&ctx, &p);
         self.window_frame(&ctx, &p);

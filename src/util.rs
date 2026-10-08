@@ -12,20 +12,14 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension(format!(
-        "{}.tmp",
-        path.extension().and_then(|e| e.to_str()).unwrap_or("")
-    ));
+    let tmp = path.with_extension(format!("{}.tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("")));
     {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(data)?;
         f.sync_all()?;
     }
     if path.exists() {
-        let bak = path.with_extension(format!(
-            "{}.bak",
-            path.extension().and_then(|e| e.to_str()).unwrap_or("")
-        ));
+        let bak = path.with_extension(format!("{}.bak", path.extension().and_then(|e| e.to_str()).unwrap_or("")));
         let _ = std::fs::copy(path, bak);
     }
     std::fs::rename(&tmp, path)?;
@@ -33,10 +27,7 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
 }
 
 pub fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 pub fn fmt_bytes(b: u64) -> String {
@@ -74,13 +65,7 @@ pub fn fmt_speed(bps: u64, units: SpeedUnits) -> String {
         v /= base;
         i += 1;
     }
-    if i == 0 {
-        format!("{v:.0} {}", names[i])
-    } else if v >= 100.0 {
-        format!("{v:.0} {}", names[i])
-    } else {
-        format!("{v:.1} {}", names[i])
-    }
+    if i == 0 || v >= 100.0 { format!("{v:.0} {}", names[i]) } else { format!("{v:.1} {}", names[i]) }
 }
 
 pub fn fmt_duration(d: Duration) -> String {
@@ -194,11 +179,7 @@ pub fn local_minutes_and_weekday() -> (u16, u8) {
 }
 
 pub fn fmt_ratio(r: f32) -> String {
-    if !r.is_finite() {
-        "∞".into()
-    } else {
-        format!("{r:.2}")
-    }
+    if !r.is_finite() { "∞".into() } else { format!("{r:.2}") }
 }
 
 /// Encode RGBA8 pixels as a PNG (uncompressed deflate blocks; small icons only).

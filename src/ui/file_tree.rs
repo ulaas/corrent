@@ -98,7 +98,8 @@ fn show_node(
         dir.collect(&mut all);
         let n_on = all.iter().filter(|&&i| checked(entries[i].index)).count();
         let total: u64 = all.iter().map(|&i| entries[i].len).sum();
-        let done: Option<u64> = entries.first().and_then(|e| e.done).map(|_| all.iter().filter_map(|&i| entries[i].done).sum());
+        let done: Option<u64> =
+            entries.first().and_then(|e| e.done).map(|_| all.iter().filter_map(|&i| entries[i].done).sum());
         let dir_id = id.with(name);
         let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), dir_id, true);
         if force_open {
@@ -107,7 +108,10 @@ fn show_node(
         state
             .show_header(ui, |ui| {
                 let mut on = n_on == all.len() && !all.is_empty();
-                let cb = ui.add_enabled(editable, egui::Checkbox::new(&mut on, "").indeterminate(n_on > 0 && n_on < all.len()));
+                let cb = ui.add_enabled(
+                    editable,
+                    egui::Checkbox::new(&mut on, "").indeterminate(n_on > 0 && n_on < all.len()),
+                );
                 if cb.changed() {
                     let target = n_on < all.len();
                     for &i in &all {
@@ -149,7 +153,11 @@ fn row_tail(ui: &mut Ui, p: &Palette, len: u64, done: Option<u64>) {
         cell(ui, 72.0, RichText::new(fmt_bytes(len)).monospace().small().color(p.text_dim));
         if let Some(d) = done {
             let frac = if len > 0 { d as f32 / len as f32 } else { 1.0 };
-            cell(ui, 40.0, RichText::new(format!("{:.0}%", (frac * 100.0).floor())).monospace().small().color(p.text_dim));
+            cell(
+                ui,
+                40.0,
+                RichText::new(format!("{:.0}%", (frac * 100.0).floor())).monospace().small().color(p.text_dim),
+            );
             super::widgets::progress_bar(
                 ui,
                 Id::new(("ft", len, d)),
@@ -179,11 +187,8 @@ mod tests {
 
     #[test]
     fn tree_groups_by_directory() {
-        let comps: Vec<Vec<String>> = vec![
-            vec!["a".into(), "x.txt".into()],
-            vec!["a".into(), "b".into(), "y.txt".into()],
-            vec!["z.txt".into()],
-        ];
+        let comps: Vec<Vec<String>> =
+            vec![vec!["a".into(), "x.txt".into()], vec!["a".into(), "b".into(), "y.txt".into()], vec!["z.txt".into()]];
         let mut root = Node::default();
         for (i, c) in comps.iter().enumerate() {
             root.insert(c, i);

@@ -181,7 +181,10 @@ impl CorrentApp {
         if let Some(text) = pasted {
             let sources: Vec<AddSource> = text.lines().filter_map(AddSource::parse).collect();
             if sources.is_empty() {
-                self.toasts.push(crate::engine::ToastKind::Warning, "The clipboard doesn't contain a magnet link or torrent URL.");
+                self.toasts.push(
+                    crate::engine::ToastKind::Warning,
+                    "The clipboard doesn't contain a magnet link or torrent URL.",
+                );
             }
             for s in sources {
                 self.launch_queue.push_back(s);

@@ -101,7 +101,9 @@ impl Store {
         // A transient read failure (e.g. a lock) must not be mistaken for "no data".
         for _ in 0..5 {
             match std::fs::read(&path) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => std::thread::sleep(std::time::Duration::from_millis(200)),
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    std::thread::sleep(std::time::Duration::from_millis(200))
+                }
                 _ => break,
             }
         }

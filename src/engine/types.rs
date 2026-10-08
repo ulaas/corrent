@@ -7,7 +7,7 @@ use std::time::Duration;
 pub struct InfoHash(pub [u8; 20]);
 
 impl InfoHash {
-    pub fn to_hex(&self) -> String {
+    pub fn to_hex(self) -> String {
         let mut s = String::with_capacity(40);
         for b in self.0 {
             s.push_str(&format!("{b:02x}"));
@@ -155,7 +155,6 @@ pub fn url_encode(s: &str) -> String {
 #[derive(Clone, Debug)]
 pub struct FileView {
     pub index: usize,
-    pub path: String,
     pub components: Vec<String>,
     pub len: u64,
     pub done: u64,
@@ -237,10 +236,9 @@ pub enum AddSource {
 impl AddSource {
     pub fn describe(&self) -> String {
         match self {
-            AddSource::File(p) => p
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| p.display().to_string()),
+            AddSource::File(p) => {
+                p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
+            }
             AddSource::Bytes { name, .. } => name.clone(),
             AddSource::Magnet(m) => magnet_display_name(m).unwrap_or_else(|| shorten(m, 60)),
             AddSource::Url(u) => shorten(u, 60),
@@ -330,20 +328,14 @@ mod tests {
     fn parse_sources() {
         assert!(matches!(AddSource::parse("magnet:?xt=urn:btih:abc"), Some(AddSource::Magnet(_))));
         assert!(matches!(AddSource::parse("https://x/y.torrent"), Some(AddSource::Url(_))));
-        assert!(matches!(
-            AddSource::parse("0123456789abcdef0123456789abcdef01234567"),
-            Some(AddSource::Magnet(_))
-        ));
+        assert!(matches!(AddSource::parse("0123456789abcdef0123456789abcdef01234567"), Some(AddSource::Magnet(_))));
         assert!(matches!(AddSource::parse("C:\\a b\\c.torrent"), Some(AddSource::File(_))));
         assert_eq!(AddSource::parse("   "), None);
     }
 
     #[test]
     fn magnet_name() {
-        assert_eq!(
-            magnet_display_name("magnet:?xt=urn:btih:x&dn=Hello%20World+2").as_deref(),
-            Some("Hello World 2")
-        );
+        assert_eq!(magnet_display_name("magnet:?xt=urn:btih:x&dn=Hello%20World+2").as_deref(), Some("Hello World 2"));
         assert_eq!(url_decode("a%2"), "a%2");
     }
 }

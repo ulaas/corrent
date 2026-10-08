@@ -9,8 +9,8 @@ use std::time::Duration;
 use librqbit::dht::DhtPersistenceConfig;
 use librqbit::limits::LimitsConfig;
 use librqbit::{
-    ConnectionOptions, DhtSessionConfig, ListenerMode, ListenerOptions, PeerConnectionOptions, Session,
-    SessionOptions, SessionPersistenceConfig,
+    ConnectionOptions, DhtSessionConfig, ListenerMode, ListenerOptions, PeerConnectionOptions, Session, SessionOptions,
+    SessionPersistenceConfig,
 };
 
 use crate::config::{ListenMode, Paths, Settings};
@@ -27,15 +27,15 @@ fn options(paths: &Paths, s: &Settings, port_override: Option<u16>, alt: bool) -
     let c = &s.connection;
     let bt = &s.bittorrent;
     let port = port_override.unwrap_or(if c.random_port { 0 } else { c.listen_port });
-    let listen_addr: SocketAddr =
-        if c.ipv4_only { (Ipv4Addr::UNSPECIFIED, port).into() } else { (Ipv6Addr::UNSPECIFIED, port).into() };
+    let listen_addr: SocketAddr = match c.listen_address.trim().parse::<std::net::IpAddr>() {
+        Ok(ip) => (ip, port).into(),
+        Err(_) if c.ipv4_only => (Ipv4Addr::UNSPECIFIED, port).into(),
+        Err(_) => (Ipv6Addr::UNSPECIFIED, port).into(),
+    };
     let (down, up) = s.speed.effective(alt);
 
-    let trackers: HashSet<url::Url> = bt
-        .default_trackers
-        .iter()
-        .filter_map(|t| url::Url::parse(t.trim()).ok())
-        .collect();
+    let trackers: HashSet<url::Url> =
+        bt.default_trackers.iter().filter_map(|t| url::Url::parse(t.trim()).ok()).collect();
 
     SessionOptions {
         dht: bt.dht.then(|| DhtSessionConfig {
@@ -90,14 +90,14 @@ pub async fn create(paths: &Paths, s: &Settings, alt: bool) -> anyhow::Result<(A
     match Session::new_with_opts(out.clone(), options(paths, s, None, alt)).await {
         Ok(sess) => Ok((sess, None)),
         Err(e) if !s.connection.random_port => {
-            tracing::warn!("could not start session on port {}: {e:#}; retrying on a random port", s.connection.listen_port);
+            tracing::warn!(
+                "could not start session on port {}: {e:#}; retrying on a random port",
+                s.connection.listen_port
+            );
             let sess = Session::new_with_opts(out, options(paths, s, Some(0), alt)).await?;
             Ok((
                 sess,
-                Some(format!(
-                    "Port {} is unavailable ({e}). Using a random port instead.",
-                    s.connection.listen_port
-                )),
+                Some(format!("Port {} is unavailable ({e}). Using a random port instead.", s.connection.listen_port)),
             ))
         }
         Err(e) => Err(e),

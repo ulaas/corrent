@@ -173,7 +173,11 @@ impl CorrentApp {
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.extras.log_filter).hint_text(format!("{}  Filter", icons::FUNNEL)).desired_width(220.0));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.extras.log_filter)
+                            .hint_text(format!("{}  Filter", icons::FUNNEL))
+                            .desired_width(220.0),
+                    );
                     ui.selectable_value(&mut self.extras.log_level, 0, "All");
                     ui.selectable_value(&mut self.extras.log_level, 1, "Warnings");
                     ui.selectable_value(&mut self.extras.log_level, 2, "Errors");
@@ -181,7 +185,20 @@ impl CorrentApp {
                         if ui.button(format!("{}  Copy", icons::COPY)).clicked() {
                             let text = super::log::LINES
                                 .lock()
-                                .map(|l| l.iter().map(|x| format!("{} {} {}: {}", crate::util::fmt_date(x.time), x.level, x.target, x.message)).collect::<Vec<_>>().join("\n"))
+                                .map(|l| {
+                                    l.iter()
+                                        .map(|x| {
+                                            format!(
+                                                "{} {} {}: {}",
+                                                crate::util::fmt_date(x.time),
+                                                x.level,
+                                                x.target,
+                                                x.message
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                })
                                 .unwrap_or_default();
                             self.copy(text);
                         }
@@ -204,32 +221,58 @@ impl CorrentApp {
                     .map(|l| {
                         l.iter()
                             .filter(|x| x.level <= min)
-                            .filter(|x| filter.is_empty() || x.message.to_lowercase().contains(&filter) || x.target.contains(&filter))
+                            .filter(|x| {
+                                filter.is_empty()
+                                    || x.message.to_lowercase().contains(&filter)
+                                    || x.target.contains(&filter)
+                            })
                             .cloned()
                             .collect()
                     })
                     .unwrap_or_default();
                 if lines.is_empty() {
-                    crate::ui::widgets::empty_compact(ui, p, icons::SCROLL, "No log entries", "Messages appear here as Corrent works.");
+                    crate::ui::widgets::empty_compact(
+                        ui,
+                        p,
+                        icons::SCROLL,
+                        "No log entries",
+                        "Messages appear here as Corrent works.",
+                    );
                     return;
                 }
-                egui::Frame::new().fill(p.bg0).corner_radius(egui::CornerRadius::same(8)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
-                    egui::ScrollArea::both().stick_to_bottom(true).auto_shrink([false, false]).show_rows(ui, 18.0, lines.len(), |ui, range| {
-                        for l in &lines[range] {
-                            let color = match l.level {
-                                Level::ERROR => p.error,
-                                Level::WARN => p.warn,
-                                _ => p.text_dim,
-                            };
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(crate::util::fmt_date(l.time)).monospace().small().color(p.text_mute));
-                                ui.label(RichText::new(format!("{:5}", l.level)).monospace().small().color(color));
-                                ui.label(RichText::new(&l.target).monospace().small().color(p.text_mute));
-                                ui.label(RichText::new(&l.message).monospace().small().color(p.text));
-                            });
-                        }
+                egui::Frame::new()
+                    .fill(p.bg0)
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        egui::ScrollArea::both().stick_to_bottom(true).auto_shrink([false, false]).show_rows(
+                            ui,
+                            18.0,
+                            lines.len(),
+                            |ui, range| {
+                                for l in &lines[range] {
+                                    let color = match l.level {
+                                        Level::ERROR => p.error,
+                                        Level::WARN => p.warn,
+                                        _ => p.text_dim,
+                                    };
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(crate::util::fmt_date(l.time))
+                                                .monospace()
+                                                .small()
+                                                .color(p.text_mute),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!("{:5}", l.level)).monospace().small().color(color),
+                                        );
+                                        ui.label(RichText::new(&l.target).monospace().small().color(p.text_mute));
+                                        ui.label(RichText::new(&l.message).monospace().small().color(p.text));
+                                    });
+                                }
+                            },
+                        );
                     });
-                });
             });
         if !open {
             self.extras.log = false;

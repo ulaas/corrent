@@ -13,9 +13,7 @@ pub struct Paths {
 
 impl Paths {
     pub fn resolve(force_portable: bool) -> Paths {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(Path::to_path_buf));
+        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
         let marker = exe_dir.as_ref().map(|d| d.join("portable")).filter(|p| p.exists());
         if force_portable || marker.is_some() {
             let base = exe_dir.unwrap_or_else(|| PathBuf::from("."));
@@ -165,6 +163,8 @@ pub struct Connection {
     pub listen_mode: ListenMode,
     pub ipv4_only: bool,
     pub bind_device: String,
+    /// IP address to listen on (empty = all interfaces).
+    pub listen_address: String,
     pub proxy_enabled: bool,
     pub proxy_host: String,
     pub proxy_port: u16,
@@ -185,6 +185,7 @@ impl Default for Connection {
             listen_mode: ListenMode::Tcp,
             ipv4_only: false,
             bind_device: String::new(),
+            listen_address: String::new(),
             proxy_enabled: false,
             proxy_host: String::new(),
             proxy_port: 1080,
@@ -253,11 +254,7 @@ impl Default for Speed {
 
 impl Speed {
     pub fn effective(&self, alt: bool) -> (u32, u32) {
-        if alt {
-            (self.alt_download_limit, self.alt_upload_limit)
-        } else {
-            (self.download_limit, self.upload_limit)
-        }
+        if alt { (self.alt_download_limit, self.alt_upload_limit) } else { (self.download_limit, self.upload_limit) }
     }
 }
 
@@ -586,7 +583,13 @@ mod more_tests {
 
     #[test]
     fn effective_speed() {
-        let s = Speed { download_limit: 1, upload_limit: 2, alt_download_limit: 3, alt_upload_limit: 4, ..Default::default() };
+        let s = Speed {
+            download_limit: 1,
+            upload_limit: 2,
+            alt_download_limit: 3,
+            alt_upload_limit: 4,
+            ..Default::default()
+        };
         assert_eq!(s.effective(false), (1, 2));
         assert_eq!(s.effective(true), (3, 4));
     }
@@ -600,7 +603,7 @@ mod more_tests {
         d.push_recent(PathBuf::from("p5"));
         assert_eq!(d.recent_paths.len(), 8);
         assert_eq!(d.recent_paths[0], PathBuf::from("p5"));
-        assert_eq!(d.recent_paths.iter().filter(|p| **p == PathBuf::from("p5")).count(), 1);
+        assert_eq!(d.recent_paths.iter().filter(|p| p.as_path() == Path::new("p5")).count(), 1);
     }
 
     #[test]

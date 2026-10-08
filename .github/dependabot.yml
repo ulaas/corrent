@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # egui/eframe and librqbit are pinned exactly and upgraded by hand (see docs/DEPENDENCIES.md).
+    ignore:
+      - dependency-name: "egui*"
+      - dependency-name: "eframe"
+      - dependency-name: "librqbit*"
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

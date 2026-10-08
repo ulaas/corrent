@@ -168,12 +168,21 @@ pub fn unregister(magnet: bool, torrent: bool) -> anyhow::Result<()> {
 }
 
 /// Classify one association. `class_cmd` is what Windows runs when there is no UserChoice.
-fn classify(user_choice: Option<String>, our_progid: &str, our_cmd: Option<String>, class_cmd: Option<String>) -> HandlerState {
+fn classify(
+    user_choice: Option<String>,
+    our_progid: &str,
+    our_cmd: Option<String>,
+    class_cmd: Option<String>,
+) -> HandlerState {
     let exe = exe_path().to_lowercase();
     let ours_here = |c: &Option<String>| c.as_ref().is_some_and(|c| c.to_lowercase().contains(&exe));
     match user_choice {
         Some(choice) if choice == our_progid => {
-            if ours_here(&our_cmd) { HandlerState::Ours } else { HandlerState::OtherPath }
+            if ours_here(&our_cmd) {
+                HandlerState::Ours
+            } else {
+                HandlerState::OtherPath
+            }
         }
         Some(choice) => HandlerState::OtherDefault(choice),
         None => match &class_cmd {
@@ -228,7 +237,10 @@ mod tests {
         assert_eq!(st.magnet, HandlerState::Ours);
         assert_eq!(st.torrent, HandlerState::Ours);
         assert_eq!(get(r"Classes\Corrent.Magnet", "URL Protocol").as_deref(), Some(""));
-        assert_eq!(get("RegisteredApplications", "Corrent").as_deref(), Some(r"Software\CorrentTest\Corrent\Capabilities"));
+        assert_eq!(
+            get("RegisteredApplications", "Corrent").as_deref(),
+            Some(r"Software\CorrentTest\Corrent\Capabilities")
+        );
 
         unregister(true, true).unwrap();
         assert_eq!(get(r"Classes\magnet\shell\open\command", "").as_deref(), Some(tixati));

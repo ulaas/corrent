@@ -36,9 +36,10 @@ pub fn persisted_entries(session_dir: &Path) -> Vec<FailedRestore> {
                 id: id.parse().ok()?,
                 hash,
                 output_folder: PathBuf::from(t.get("output_folder")?.as_str()?),
-                only_files: t.get("only_files").and_then(|o| o.as_array()).map(|a| {
-                    a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect()
-                }),
+                only_files: t
+                    .get("only_files")
+                    .and_then(|o| o.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect()),
                 paused: t.get("is_paused").and_then(|p| p.as_bool()).unwrap_or(false),
                 trackers: t
                     .get("trackers")
@@ -100,7 +101,10 @@ pub fn purge(session_dir: &Path, hashes: &HashSet<InfoHash>) {
         && let Some(map) = v.get_mut("torrents").and_then(|t| t.as_object_mut())
     {
         map.retain(|_, t| {
-            t.get("info_hash").and_then(|h| h.as_str()).and_then(InfoHash::from_hex).is_none_or(|h| !hashes.contains(&h))
+            t.get("info_hash")
+                .and_then(|h| h.as_str())
+                .and_then(InfoHash::from_hex)
+                .is_none_or(|h| !hashes.contains(&h))
         });
         if let Ok(out) = serde_json::to_vec(&v)
             && let Err(e) = crate::util::write_atomic(&path, &out)

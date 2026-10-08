@@ -3,6 +3,7 @@
 //! Everything is per-user and needs no administrator rights.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(windows, allow(dead_code))] // Managed/Unsupported only occur on Linux/macOS
 pub enum HandlerState {
     /// Corrent is the effective handler.
     Ours,
@@ -184,7 +185,8 @@ mod imp {
         anyhow::ensure!(in_bundle(), "run Corrent from its .app bundle to register it with Launch Services");
         let exe = std::env::current_exe()?;
         let bundle = exe.ancestors().nth(3).map(|p| p.to_path_buf()).ok_or_else(|| anyhow::anyhow!("no bundle"))?;
-        let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+        let lsregister =
+            "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
         let _ = std::process::Command::new(lsregister).arg("-f").arg(&bundle).status();
         Ok(())
     }

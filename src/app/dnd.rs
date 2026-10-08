@@ -21,7 +21,13 @@ impl CorrentApp {
             painter.rect_filled(inner, egui::CornerRadius::same(18), p.accent.gamma_multiply(0.06 * t));
             dashed_rect(&painter, inner, p.accent.gamma_multiply(t), 2.0);
             let c = inner.center();
-            painter.text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, icons::DOWNLOAD_SIMPLE, FontId::proportional(56.0), p.accent.gamma_multiply(t));
+            painter.text(
+                c - vec2(0.0, 30.0),
+                Align2::CENTER_CENTER,
+                icons::DOWNLOAD_SIMPLE,
+                FontId::proportional(56.0),
+                p.accent.gamma_multiply(t),
+            );
             painter.text(
                 c + vec2(0.0, 22.0),
                 Align2::CENTER_CENTER,

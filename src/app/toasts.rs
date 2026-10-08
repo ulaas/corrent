@@ -141,7 +141,10 @@ impl Toasts {
                                 }
                             });
                             if ui
-                                .add(egui::Button::new(RichText::new(egui_phosphor::regular::X).color(p.text_dim)).frame(false))
+                                .add(
+                                    egui::Button::new(RichText::new(egui_phosphor::regular::X).color(p.text_dim))
+                                        .frame(false),
+                                )
                                 .on_hover_text("Dismiss")
                                 .clicked()
                             {
@@ -165,7 +168,8 @@ impl Toasts {
 
 fn ui_accent_bar(ctx: &Context, rect: egui::Rect, color: Color32, id: u64) {
     let painter = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, Id::new("toast_area").with(id)));
-    let bar = egui::Rect::from_min_max(rect.left_top() + vec2(0.0, 8.0), egui::pos2(rect.left() + 3.0, rect.bottom() - 8.0));
+    let bar =
+        egui::Rect::from_min_max(rect.left_top() + vec2(0.0, 8.0), egui::pos2(rect.left() + 3.0, rect.bottom() - 8.0));
     painter.rect_filled(bar, CornerRadius::same(2), color);
 }
 
@@ -192,8 +196,16 @@ mod tests {
     fn collapsed_undo_merges_hashes() {
         use crate::engine::types::InfoHash;
         let mut t = Toasts::default();
-        t.push_with(ToastKind::Info, "Removed 2 torrents", vec![("Undo".into(), ToastAction::Undo(vec![InfoHash([1; 20])]))]);
-        t.push_with(ToastKind::Info, "Removed 2 torrents", vec![("Undo".into(), ToastAction::Undo(vec![InfoHash([2; 20])]))]);
+        t.push_with(
+            ToastKind::Info,
+            "Removed 2 torrents",
+            vec![("Undo".into(), ToastAction::Undo(vec![InfoHash([1; 20])]))],
+        );
+        t.push_with(
+            ToastKind::Info,
+            "Removed 2 torrents",
+            vec![("Undo".into(), ToastAction::Undo(vec![InfoHash([2; 20])]))],
+        );
         assert_eq!(t.items.len(), 1);
         assert_eq!(t.items[0].actions[0].1, ToastAction::Undo(vec![InfoHash([2; 20]), InfoHash([1; 20])]));
     }

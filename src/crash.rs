@@ -60,10 +60,12 @@ pub fn reports(log_dir: &Path) -> Vec<PathBuf> {
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("crash-") && n.ends_with(".txt")))
+        .filter(|p| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("crash-") && n.ends_with(".txt"))
+        })
         .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
         .collect();
-    v.sort_by(|a, b| b.0.cmp(&a.0));
+    v.sort_by_key(|x| std::cmp::Reverse(x.0));
     v.into_iter().map(|(_, p)| p).collect()
 }
 

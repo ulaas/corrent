@@ -114,7 +114,9 @@ impl CorrentApp {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(icons::MAGNET).size(20.0).color(p.accent));
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Open magnet links and .torrent files with Corrent?").strong().color(p.text));
+                        ui.label(
+                            RichText::new("Open magnet links and .torrent files with Corrent?").strong().color(p.text),
+                        );
                         let detail = match &st.magnet {
                             HandlerState::OtherDefault(app) => format!("Currently they open with {app}."),
                             _ => "Clicking a magnet link in your browser will add it here.".to_string(),

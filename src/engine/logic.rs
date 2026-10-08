@@ -106,8 +106,8 @@ pub fn plan_queue(q: &Queue, mut items: Vec<QueueItem<'_>>) -> QueuePlan {
         if running && slow {
             continue; // inactive torrents don't occupy a slot
         }
-        let fits =
-            total < q.max_active_total && if finished { up < q.max_active_uploads } else { dl < q.max_active_downloads };
+        let fits = total < q.max_active_total
+            && if finished { up < q.max_active_uploads } else { dl < q.max_active_downloads };
         if fits {
             total += 1;
             if finished {
@@ -180,7 +180,11 @@ pub mod tests {
         assert_eq!(map_state(&input(EngineStatus::Paused)), TorrentState::Paused);
         assert_eq!(map_state(&StateInput { finished: true, ..input(EngineStatus::Paused) }), TorrentState::Completed);
         assert_eq!(
-            map_state(&StateInput { pause_reason: Some(PauseReason::Queue), finished: true, ..input(EngineStatus::Paused) }),
+            map_state(&StateInput {
+                pause_reason: Some(PauseReason::Queue),
+                finished: true,
+                ..input(EngineStatus::Paused)
+            }),
             TorrentState::Queued
         );
         assert_eq!(map_state(&StateInput { busy: true, ..input(EngineStatus::Error) }), TorrentState::Checking);
@@ -203,7 +207,13 @@ pub mod tests {
     }
 
     fn q(dl: u32, up: u32, total: u32) -> Queue {
-        Queue { enabled: true, max_active_downloads: dl, max_active_uploads: up, max_active_total: total, ..Default::default() }
+        Queue {
+            enabled: true,
+            max_active_downloads: dl,
+            max_active_uploads: up,
+            max_active_total: total,
+            ..Default::default()
+        }
     }
 
     fn items<'a>(views: &'a [TorrentView], metas: &'a [TorrentMeta]) -> Vec<QueueItem<'a>> {

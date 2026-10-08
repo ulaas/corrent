@@ -25,7 +25,8 @@ impl CorrentApp {
 
             let sel = self.selected_views();
             let any = !sel.is_empty();
-            let can_resume = sel.iter().any(|t| t.state.is_paused_like() || t.state == crate::engine::types::TorrentState::Error);
+            let can_resume =
+                sel.iter().any(|t| t.state.is_paused_like() || t.state == crate::engine::types::TorrentState::Error);
             let can_pause = sel.iter().any(|t| !t.state.is_paused_like());
             let hashes = self.selected_hashes();
             if icon_button(ui, p, icons::PLAY, "Resume (Space)", can_resume).clicked() {
@@ -45,7 +46,8 @@ impl CorrentApp {
                 self.engine.send(EngineCommand::QueueMove { hashes: hashes.clone(), mv: crate::store::QueueMove::Up });
             }
             if icon_button(ui, p, icons::CARET_DOWN, "Move down in queue", any).clicked() {
-                self.engine.send(EngineCommand::QueueMove { hashes: hashes.clone(), mv: crate::store::QueueMove::Down });
+                self.engine
+                    .send(EngineCommand::QueueMove { hashes: hashes.clone(), mv: crate::store::QueueMove::Down });
             }
             if icon_button(ui, p, icons::CARET_DOUBLE_DOWN, "Move to bottom of queue", any).clicked() {
                 self.engine.send(EngineCommand::QueueMove { hashes, mv: crate::store::QueueMove::Bottom });
@@ -68,7 +70,11 @@ impl CorrentApp {
                     ui,
                     p,
                     icons::GAUGE,
-                    if alt { "Alternative speed limits are ON (Ctrl+Shift+S)" } else { "Use alternative speed limits (Ctrl+Shift+S)" },
+                    if alt {
+                        "Alternative speed limits are ON (Ctrl+Shift+S)"
+                    } else {
+                        "Use alternative speed limits (Ctrl+Shift+S)"
+                    },
                     true,
                     alt,
                     32.0,

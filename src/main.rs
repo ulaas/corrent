@@ -1,8 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod config;
 mod backup;
+mod config;
 mod crash;
 mod engine;
 mod integration;
@@ -167,14 +167,9 @@ fn init_logging(paths: &Paths) -> Option<()> {
     if std::fs::metadata(&log_file).map(|m| m.len() > 10 * 1024 * 1024).unwrap_or(false) {
         let _ = std::fs::rename(&log_file, paths.log_dir().join("corrent.old.log"));
     }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.log_dir().join("corrent.log"))
-        .ok();
-    let file_layer = file.map(|f| {
-        tracing_subscriber::fmt::layer().with_ansi(false).with_writer(std::sync::Mutex::new(f))
-    });
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(paths.log_dir().join("corrent.log")).ok();
+    let file_layer =
+        file.map(|f| tracing_subscriber::fmt::layer().with_ansi(false).with_writer(std::sync::Mutex::new(f)));
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))

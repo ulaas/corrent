@@ -33,8 +33,10 @@ impl CorrentApp {
             }
             ui.label(RichText::new(format!("{} {} peers", icons::USERS, s.peers_live)).small().color(p.text_dim));
             if let Some(free) = self.snap.free_space {
-                ui.label(RichText::new(format!("{} {} free", icons::HARD_DRIVE, fmt_bytes(free))).small().color(p.text_dim))
-                    .on_hover_text("Free space in the default download folder");
+                ui.label(
+                    RichText::new(format!("{} {} free", icons::HARD_DRIVE, fmt_bytes(free))).small().color(p.text_dim),
+                )
+                .on_hover_text("Free space in the default download folder");
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

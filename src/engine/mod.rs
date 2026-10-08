@@ -3,6 +3,8 @@
 
 mod actor;
 mod automation;
+#[cfg(test)]
+mod e2e_tests;
 pub mod logic;
 mod restore;
 mod session;
@@ -31,11 +33,12 @@ pub struct AddRequest {
     pub paused: bool,
     pub only_files: Option<Vec<usize>>,
     pub add_to_top: bool,
+    /// Peers to connect to right away (besides trackers/DHT).
+    pub initial_peers: Option<Vec<std::net::SocketAddr>>,
 }
 
 #[derive(Clone, Debug)]
 pub struct PreviewFile {
-    pub path: String,
     pub components: Vec<String>,
     pub len: u64,
 }
@@ -49,7 +52,6 @@ pub struct Preview {
     pub piece_count: u32,
     pub piece_length: u32,
     pub torrent_bytes: Vec<u8>,
-    pub multi_file: bool,
     pub already_added: bool,
     pub comment: Option<String>,
 }
@@ -65,12 +67,30 @@ pub enum ToastKind {
 #[derive(Clone, Debug)]
 pub enum EngineEvent {
     Toast(ToastKind, String),
-    PreviewReady { req: u64, result: Result<Box<Preview>, String> },
-    Added { hash: InfoHash, name: String },
-    Completed { hash: InfoHash, name: String, content_path: PathBuf, save_path: PathBuf, size: u64 },
-    Removed { hash: InfoHash, name: String, undoable: bool },
+    PreviewReady {
+        req: u64,
+        result: Result<Box<Preview>, String>,
+    },
+    Added {
+        hash: InfoHash,
+        name: String,
+    },
+    Completed {
+        name: String,
+        content_path: PathBuf,
+        save_path: PathBuf,
+        size: u64,
+    },
+    Removed {
+        hash: InfoHash,
+        name: String,
+        undoable: bool,
+    },
     /// An undo re-added a torrent.
-    Restored { hash: InfoHash, name: String },
+    Restored {
+        hash: InfoHash,
+        name: String,
+    },
     /// Persistent problem with the user's data (shown as a banner until dismissed).
     DataWarning(String),
 }
@@ -78,7 +98,10 @@ pub enum EngineEvent {
 #[derive(Debug)]
 pub enum EngineCommand {
     Add(Box<AddRequest>),
-    Preview { req: u64, source: AddSource },
+    Preview {
+        req: u64,
+        source: AddSource,
+    },
     CancelPreview(u64),
     /// Re-add torrents removed (without data) in the last two minutes.
     UndoRemove(Vec<InfoHash>),
@@ -89,18 +112,50 @@ pub enum EngineCommand {
     ForceStart(Vec<InfoHash>),
     PauseAll,
     ResumeAll,
-    Delete { hashes: Vec<InfoHash>, with_data: bool },
-    SetFiles { hash: InfoHash, included: Vec<usize> },
-    SetCategory { hashes: Vec<InfoHash>, category: Option<String> },
-    SetTags { hashes: Vec<InfoHash>, tags: Vec<String> },
-    ToggleTag { hashes: Vec<InfoHash>, tag: String, on: bool },
-    Rename { hash: InfoHash, name: Option<String> },
-    QueueMove { hashes: Vec<InfoHash>, mv: QueueMove },
-    SetSeedLimits { hashes: Vec<InfoHash>, ratio: Option<f32>, minutes: Option<u32> },
-    MoveStorage { hashes: Vec<InfoHash>, to: PathBuf },
+    Delete {
+        hashes: Vec<InfoHash>,
+        with_data: bool,
+    },
+    SetFiles {
+        hash: InfoHash,
+        included: Vec<usize>,
+    },
+    SetCategory {
+        hashes: Vec<InfoHash>,
+        category: Option<String>,
+    },
+    SetTags {
+        hashes: Vec<InfoHash>,
+        tags: Vec<String>,
+    },
+    ToggleTag {
+        hashes: Vec<InfoHash>,
+        tag: String,
+        on: bool,
+    },
+    Rename {
+        hash: InfoHash,
+        name: Option<String>,
+    },
+    QueueMove {
+        hashes: Vec<InfoHash>,
+        mv: QueueMove,
+    },
+    SetSeedLimits {
+        hashes: Vec<InfoHash>,
+        ratio: Option<f32>,
+        minutes: Option<u32>,
+    },
+    MoveStorage {
+        hashes: Vec<InfoHash>,
+        to: PathBuf,
+    },
     Recheck(Vec<InfoHash>),
     /// Add extra trackers (re-adds the torrent, which re-verifies its data).
-    AddTrackers { hash: InfoHash, trackers: Vec<String> },
+    AddTrackers {
+        hash: InfoHash,
+        trackers: Vec<String>,
+    },
     SetCategories(BTreeMap<String, CategoryInfo>),
     SetTagList(Vec<String>),
     SetDetailTarget(Option<InfoHash>),

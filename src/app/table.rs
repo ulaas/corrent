@@ -105,6 +105,7 @@ pub fn compute_rows(snap: &Snapshot, prefs: &UiPrefs, search: &str) -> Vec<usize
             Col::SavePath => a.save_path.cmp(&b.save_path),
             Col::Tracker => a.trackers.first().cmp(&b.trackers.first()),
             Col::SeedTime => a.seeding_secs.cmp(&b.seeding_secs),
+            Col::LastActivity => a.last_activity.cmp(&b.last_activity),
         }
     };
     rows.sort_by(|&a, &b| {
@@ -237,7 +238,11 @@ impl CorrentApp {
                         } else {
                             icons::CARET_DOWN
                         };
-                        let layout = if c.right_aligned() { Layout::right_to_left(Align::Center) } else { Layout::left_to_right(Align::Center) };
+                        let layout = if c.right_aligned() {
+                            Layout::right_to_left(Align::Center)
+                        } else {
+                            Layout::left_to_right(Align::Center)
+                        };
                         ui.with_layout(layout, |ui| {
                             let color = if active { p.text } else { p.text_dim };
                             if c.right_aligned() {
@@ -297,7 +302,10 @@ impl CorrentApp {
                 self.prefs.sort_asc = !self.prefs.sort_asc;
             } else {
                 self.prefs.sort = c;
-                self.prefs.sort_asc = matches!(c, Col::Name | Col::Queue | Col::Category | Col::Tags | Col::SavePath | Col::Tracker | Col::Eta);
+                self.prefs.sort_asc = matches!(
+                    c,
+                    Col::Name | Col::Queue | Col::Category | Col::Tags | Col::SavePath | Col::Tracker | Col::Eta
+                );
             }
         }
         if header_menu {
@@ -383,7 +391,9 @@ impl CorrentApp {
                         ui.add_space(2.0);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            ui.label(RichText::new(crate::ui::theme::Palette::state_icon(t.state)).size(15.0).color(color));
+                            ui.label(
+                                RichText::new(crate::ui::theme::Palette::state_icon(t.state)).size(15.0).color(color),
+                            );
                             ui.add(egui::Label::new(txt(t.name.clone()).strong()).truncate());
                         });
                         if bar_in_name {
@@ -430,7 +440,12 @@ impl CorrentApp {
                         matches!(t.state, TorrentState::Checking | TorrentState::Metadata),
                         animate,
                     );
-                    ui.label(RichText::new(format!("{:.0}%", (t.progress * 100.0).floor())).small().monospace().color(p.text_dim));
+                    ui.label(
+                        RichText::new(format!("{:.0}%", (t.progress * 100.0).floor()))
+                            .small()
+                            .monospace()
+                            .color(p.text_dim),
+                    );
                 });
             }
             Col::Status => {
@@ -449,9 +464,29 @@ impl CorrentApp {
                     t.peers_live, t.peers_connecting, t.peers_seen
                 ));
             }
-            Col::Down => right(ui, RichText::new(fmt_speed(t.down_bps, units)).monospace().color(if t.down_bps > 0 { p.accent } else { p.text_mute })),
-            Col::Up => right(ui, RichText::new(fmt_speed(t.up_bps, units)).monospace().color(if t.up_bps > 0 { p.success } else { p.text_mute })),
-            Col::Eta => right(ui, num(t.eta.map(fmt_duration).unwrap_or_else(|| if t.progress >= 1.0 { "Done".into() } else { "∞".into() }))),
+            Col::Down => right(
+                ui,
+                RichText::new(fmt_speed(t.down_bps, units)).monospace().color(if t.down_bps > 0 {
+                    p.accent
+                } else {
+                    p.text_mute
+                }),
+            ),
+            Col::Up => right(
+                ui,
+                RichText::new(fmt_speed(t.up_bps, units)).monospace().color(if t.up_bps > 0 {
+                    p.success
+                } else {
+                    p.text_mute
+                }),
+            ),
+            Col::Eta => right(
+                ui,
+                num(t
+                    .eta
+                    .map(fmt_duration)
+                    .unwrap_or_else(|| if t.progress >= 1.0 { "Done".into() } else { "∞".into() })),
+            ),
             Col::Ratio => right(ui, num(fmt_ratio(t.ratio))),
             Col::Category => {
                 ui.label(txt(t.category.clone().unwrap_or_default()));
@@ -468,12 +503,25 @@ impl CorrentApp {
             Col::Downloaded => right(ui, num(fmt_bytes(t.downloaded))),
             Col::Uploaded => right(ui, num(fmt_bytes(t.uploaded))),
             Col::SavePath => {
-                ui.add(egui::Label::new(RichText::new(t.save_path.display().to_string()).small().color(p.text_dim)).truncate());
+                ui.add(
+                    egui::Label::new(RichText::new(t.save_path.display().to_string()).small().color(p.text_dim))
+                        .truncate(),
+                );
             }
             Col::Tracker => {
-                ui.label(RichText::new(t.trackers.first().map(|u| tracker_host(u)).unwrap_or_default()).small().color(p.text_dim));
+                ui.label(
+                    RichText::new(t.trackers.first().map(|u| tracker_host(u)).unwrap_or_default())
+                        .small()
+                        .color(p.text_dim),
+                );
             }
-            Col::SeedTime => right(ui, num(if t.seeding_secs > 0 { fmt_duration(Duration::from_secs(t.seeding_secs)) } else { "—".into() })),
+            Col::SeedTime => right(
+                ui,
+                num(if t.seeding_secs > 0 { fmt_duration(Duration::from_secs(t.seeding_secs)) } else { "—".into() }),
+            ),
+            Col::LastActivity => {
+                ui.label(RichText::new(fmt_date(t.last_activity)).small().color(p.text_dim));
+            }
         }
     }
 
@@ -537,7 +585,13 @@ impl CorrentApp {
                 });
             });
         } else if !self.search.trim().is_empty() {
-            widgets::empty_state(ui, p, icons::MAGNIFYING_GLASS, "No matches", &format!("No torrents match “{}”.", self.search.trim()));
+            widgets::empty_state(
+                ui,
+                p,
+                icons::MAGNIFYING_GLASS,
+                "No matches",
+                &format!("No torrents match “{}”.", self.search.trim()),
+            );
             ui.vertical_centered(|ui| {
                 if widgets::secondary_button(ui, "Clear search").clicked() {
                     self.search.clear();
@@ -566,41 +620,38 @@ impl CorrentApp {
         let id = Id::new("column_chooser");
         let Some(pos) = self.column_menu else { return };
         let mut close = false;
-        egui::Area::new(id.with("area"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(pos)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.label(RichText::new("Columns").strong().color(p.text));
-                    ui.separator();
-                    for c in Col::ALL {
-                        if c == Col::Name {
-                            continue;
-                        }
-                        let mut on = self.prefs.columns.contains(&c);
-                        if ui.checkbox(&mut on, c.title()).changed() {
-                            if on {
-                                // Insert keeping the canonical order.
-                                let order = |x: &Col| Col::ALL.iter().position(|y| y == x).unwrap_or(0);
-                                self.prefs.columns.push(c);
-                                self.prefs.columns.sort_by_key(order);
-                            } else {
-                                self.prefs.columns.retain(|x| *x != c);
-                            }
+        egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.label(RichText::new("Columns").strong().color(p.text));
+                ui.separator();
+                for c in Col::ALL {
+                    if c == Col::Name {
+                        continue;
+                    }
+                    let mut on = self.prefs.columns.contains(&c);
+                    if ui.checkbox(&mut on, c.title()).changed() {
+                        if on {
+                            // Insert keeping the canonical order.
+                            let order = |x: &Col| Col::ALL.iter().position(|y| y == x).unwrap_or(0);
+                            self.prefs.columns.push(c);
+                            self.prefs.columns.sort_by_key(order);
+                        } else {
+                            self.prefs.columns.retain(|x| *x != c);
                         }
                     }
-                    ui.separator();
-                    if ui.button("Reset to defaults").clicked() {
-                        self.prefs.columns = super::UiPrefs::default().columns;
-                    }
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                });
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                }
+                ui.separator();
+                if ui.button("Reset to defaults").clicked() {
+                    self.prefs.columns = super::UiPrefs::default().columns;
+                }
+                if ui.button("Close").clicked() {
                     close = true;
                 }
             });
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                close = true;
+            }
+        });
         let _ = vec2;
         if close {
             self.column_menu = None;
@@ -632,7 +683,13 @@ mod more_tests {
     use crate::engine::types::InfoHash;
 
     fn t(n: u8, name: &str) -> TorrentView {
-        TorrentView { hash: InfoHash([n; 20]), name: name.into(), size: n as u64 * 10, queue_pos: n as u32, ..Default::default() }
+        TorrentView {
+            hash: InfoHash([n; 20]),
+            name: name.into(),
+            size: n as u64 * 10,
+            queue_pos: n as u32,
+            ..Default::default()
+        }
     }
 
     fn snap(ts: Vec<TorrentView>) -> Snapshot {

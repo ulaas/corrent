@@ -51,7 +51,12 @@ fn modal_frame(p: &Palette) -> egui::Frame {
         .fill(p.bg1)
         .stroke(egui::Stroke::new(1.0, p.border))
         .corner_radius(egui::CornerRadius::same(14))
-        .shadow(egui::Shadow { offset: [0, 16], blur: 40, spread: 0, color: egui::Color32::from_black_alpha(if p.dark { 140 } else { 60 }) })
+        .shadow(egui::Shadow {
+            offset: [0, 16],
+            blur: 40,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(if p.dark { 140 } else { 60 }),
+        })
         .inner_margin(egui::Margin::same(22))
 }
 
@@ -213,7 +218,10 @@ impl CorrentApp {
                 Modal::Magnet { text } => {
                     ui.set_width(560.0);
                     title(ui, p, icons::MAGNET, "Add magnet links or URLs");
-                    ui.label(RichText::new("One per line: magnet links, info hashes or http(s) links to .torrent files.").color(p.text_dim));
+                    ui.label(
+                        RichText::new("One per line: magnet links, info hashes or http(s) links to .torrent files.")
+                            .color(p.text_dim),
+                    );
                     ui.add_space(6.0);
                     let r = ui.add(
                         egui::TextEdit::multiline(text)
@@ -228,10 +236,16 @@ impl CorrentApp {
                     let sources: Vec<AddSource> = text.lines().filter_map(AddSource::parse).collect();
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("{} item(s) recognized", sources.len())).small().color(p.text_dim));
+                        ui.label(
+                            RichText::new(format!("{} item(s) recognized", sources.len())).small().color(p.text_dim),
+                        );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let add = ui.add_enabled_ui(!sources.is_empty(), |ui| primary_button(ui, p, "Continue")).inner;
-                            if add.clicked() || (ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter)) && !sources.is_empty()) {
+                            let add =
+                                ui.add_enabled_ui(!sources.is_empty(), |ui| primary_button(ui, p, "Continue")).inner;
+                            if add.clicked()
+                                || (ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
+                                    && !sources.is_empty())
+                            {
                                 for s in sources.clone() {
                                     self.launch_queue.push_back(s);
                                 }
@@ -268,11 +282,19 @@ impl CorrentApp {
                         RichText::new(format!("Also delete downloaded files ({})", fmt_bytes(*total))).color(p.error),
                     );
                     if *with_data {
-                        ui.label(RichText::new(format!("{}  Files will be permanently deleted from disk.", icons::WARNING)).small().color(p.error));
+                        ui.label(
+                            RichText::new(format!("{}  Files will be permanently deleted from disk.", icons::WARNING))
+                                .small()
+                                .color(p.error),
+                        );
                     }
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let go = if *with_data { danger_button(ui, p, "Delete files") } else { primary_button(ui, p, "Remove") };
+                        let go = if *with_data {
+                            danger_button(ui, p, "Delete files")
+                        } else {
+                            primary_button(ui, p, "Remove")
+                        };
                         if go.clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             self.engine.send(EngineCommand::Delete { hashes: hashes.clone(), with_data: *with_data });
                             for h in hashes.iter() {
@@ -293,14 +315,23 @@ impl CorrentApp {
                     }
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new("Files are moved, then verified at the new location. Transfers pause during the move.")
-                            .small()
-                            .color(p.text_dim),
+                        RichText::new(
+                            "Files are moved, then verified at the new location. Transfers pause during the move.",
+                        )
+                        .small()
+                        .color(p.text_dim),
                     );
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add_enabled_ui(!path.trim().is_empty(), |ui| primary_button(ui, p, "Move")).inner.clicked() {
-                            self.engine.send(EngineCommand::MoveStorage { hashes: hashes.clone(), to: PathBuf::from(path.trim()) });
+                        if ui
+                            .add_enabled_ui(!path.trim().is_empty(), |ui| primary_button(ui, p, "Move"))
+                            .inner
+                            .clicked()
+                        {
+                            self.engine.send(EngineCommand::MoveStorage {
+                                hashes: hashes.clone(),
+                                to: PathBuf::from(path.trim()),
+                            });
                             keep = false;
                         }
                         if secondary_button(ui, "Cancel").clicked() {
@@ -313,11 +344,16 @@ impl CorrentApp {
                     title(ui, p, icons::PENCIL_SIMPLE, "Rename torrent");
                     let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
                     r.request_focus();
-                    ui.label(RichText::new("Changes the name shown in Corrent; files on disk keep their names.").small().color(p.text_dim));
+                    ui.label(
+                        RichText::new("Changes the name shown in Corrent; files on disk keep their names.")
+                            .small()
+                            .color(p.text_dim),
+                    );
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if primary_button(ui, p, "Rename").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            self.engine.send(EngineCommand::Rename { hash: *hash, name: Some(name.trim().to_string()) });
+                            self.engine
+                                .send(EngineCommand::Rename { hash: *hash, name: Some(name.trim().to_string()) });
                             keep = false;
                         }
                         if secondary_button(ui, "Reset").clicked() {
@@ -331,10 +367,18 @@ impl CorrentApp {
                 }
                 Modal::Category { name, path, apply_to, editing } => {
                     ui.set_width(480.0);
-                    title(ui, p, icons::FOLDER_SIMPLE_PLUS, if editing.is_some() { "Edit category" } else { "New category" });
+                    title(
+                        ui,
+                        p,
+                        icons::FOLDER_SIMPLE_PLUS,
+                        if editing.is_some() { "Edit category" } else { "New category" },
+                    );
                     egui::Grid::new("cat").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
                         ui.label("Name");
-                        ui.add_enabled(editing.is_none(), egui::TextEdit::singleline(name).desired_width(340.0).hint_text("e.g. Movies or Movies/HD"));
+                        ui.add_enabled(
+                            editing.is_none(),
+                            egui::TextEdit::singleline(name).desired_width(340.0).hint_text("e.g. Movies or Movies/HD"),
+                        );
                         ui.end_row();
                         ui.label("Save path");
                         if path_field(ui, p, path, 340.0, self.picker_busy()) {
@@ -342,7 +386,11 @@ impl CorrentApp {
                         }
                         ui.end_row();
                     });
-                    ui.label(RichText::new("Torrents added to this category are saved here (leave empty for the default).").small().color(p.text_dim));
+                    ui.label(
+                        RichText::new("Torrents added to this category are saved here (leave empty for the default).")
+                            .small()
+                            .color(p.text_dim),
+                    );
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let ok = !name.trim().is_empty();
@@ -351,11 +399,16 @@ impl CorrentApp {
                             let path = path.trim();
                             cats.insert(
                                 name.trim().to_string(),
-                                crate::store::CategoryInfo { save_path: (!path.is_empty()).then(|| PathBuf::from(path)) },
+                                crate::store::CategoryInfo {
+                                    save_path: (!path.is_empty()).then(|| PathBuf::from(path)),
+                                },
                             );
                             self.engine.send(EngineCommand::SetCategories(cats));
                             if let Some(h) = apply_to.take() {
-                                self.engine.send(EngineCommand::SetCategory { hashes: h, category: Some(name.trim().to_string()) });
+                                self.engine.send(EngineCommand::SetCategory {
+                                    hashes: h,
+                                    category: Some(name.trim().to_string()),
+                                });
                             }
                             keep = false;
                         }
@@ -395,11 +448,17 @@ impl CorrentApp {
                 Modal::SeedLimits { hashes, ratio_on, ratio, time_on, minutes } => {
                     ui.set_width(440.0);
                     title(ui, p, icons::SCALES, "Seeding limits");
-                    ui.label(RichText::new("Overrides the global seeding limits for the selected torrents.").color(p.text_dim));
+                    ui.label(
+                        RichText::new("Overrides the global seeding limits for the selected torrents.")
+                            .color(p.text_dim),
+                    );
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         ui.checkbox(ratio_on, "Stop at ratio");
-                        ui.add_enabled(*ratio_on, egui::DragValue::new(ratio).range(0.1..=100.0).speed(0.05).fixed_decimals(2));
+                        ui.add_enabled(
+                            *ratio_on,
+                            egui::DragValue::new(ratio).range(0.1..=100.0).speed(0.05).fixed_decimals(2),
+                        );
                     });
                     ui.horizontal(|ui| {
                         ui.checkbox(time_on, "Stop after seeding for");
@@ -416,7 +475,11 @@ impl CorrentApp {
                             keep = false;
                         }
                         if secondary_button(ui, "Use global").clicked() {
-                            self.engine.send(EngineCommand::SetSeedLimits { hashes: hashes.clone(), ratio: None, minutes: None });
+                            self.engine.send(EngineCommand::SetSeedLimits {
+                                hashes: hashes.clone(),
+                                ratio: None,
+                                minutes: None,
+                            });
                             keep = false;
                         }
                         if secondary_button(ui, "Cancel").clicked() {
@@ -428,15 +491,24 @@ impl CorrentApp {
                     ui.set_width(520.0);
                     title(ui, p, icons::BROADCAST, "Add trackers");
                     ui.label(RichText::new("One tracker URL per line.").color(p.text_dim));
-                    ui.add(egui::TextEdit::multiline(text).desired_rows(5).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace));
+                    ui.add(
+                        egui::TextEdit::multiline(text)
+                            .desired_rows(5)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace),
+                    );
                     ui.label(
-                        RichText::new(format!("{}  The torrent is briefly re-added; its data is re-verified (not re-downloaded).", icons::INFO))
-                            .small()
-                            .color(p.text_dim),
+                        RichText::new(format!(
+                            "{}  The torrent is briefly re-added; its data is re-verified (not re-downloaded).",
+                            icons::INFO
+                        ))
+                        .small()
+                        .color(p.text_dim),
                     );
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let list: Vec<String> = text.lines().map(|l| l.trim().to_string()).filter(|l| url::Url::parse(l).is_ok()).collect();
+                        let list: Vec<String> =
+                            text.lines().map(|l| l.trim().to_string()).filter(|l| url::Url::parse(l).is_ok()).collect();
                         if ui.add_enabled_ui(!list.is_empty(), |ui| primary_button(ui, p, "Add")).inner.clicked() {
                             self.engine.send(EngineCommand::AddTrackers { hash: *hash, trackers: list });
                             keep = false;
@@ -450,7 +522,12 @@ impl CorrentApp {
                     ui.set_width(420.0);
                     title(ui, p, icons::SIGN_OUT, "Quit Corrent?");
                     let active = self.snap.torrents.iter().filter(|t| t.state.is_active()).count();
-                    ui.label(RichText::new(format!("{active} torrent(s) are still transferring. They will resume next time you start Corrent.")).color(p.text_dim));
+                    ui.label(
+                        RichText::new(format!(
+                            "{active} torrent(s) are still transferring. They will resume next time you start Corrent."
+                        ))
+                        .color(p.text_dim),
+                    );
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if primary_button(ui, p, "Quit").clicked() {
@@ -520,10 +597,8 @@ impl CorrentApp {
                                 }
                             });
                     }
-                    let stale = d
-                        .free_cache
-                        .as_ref()
-                        .is_none_or(|(p, t, _)| *p != d.save_path || t.elapsed().as_secs() >= 2);
+                    let stale =
+                        d.free_cache.as_ref().is_none_or(|(p, t, _)| *p != d.save_path || t.elapsed().as_secs() >= 2);
                     if stale {
                         let free = crate::engine::free_space_for(&PathBuf::from(&d.save_path));
                         d.free_cache = Some((d.save_path.clone(), Instant::now(), free));
@@ -563,23 +638,30 @@ impl CorrentApp {
                         if let Some(i) = remove {
                             d.tags.remove(i);
                         }
-                        egui::ComboBox::from_id_salt("add_tags").selected_text(icons::PLUS).width(40.0).show_ui(ui, |ui| {
-                            for t in &all_tags {
-                                if !d.tags.contains(t) && ui.selectable_label(false, t).clicked() {
-                                    d.tags.push(t.clone());
-                                }
-                            }
-                            ui.horizontal(|ui| {
-                                ui.add(egui::TextEdit::singleline(&mut d.tag_input).hint_text("New tag").desired_width(110.0));
-                                if ui.button("Add").clicked() && !d.tag_input.trim().is_empty() {
-                                    let t = d.tag_input.trim().to_string();
-                                    if !d.tags.contains(&t) {
-                                        d.tags.push(t);
+                        egui::ComboBox::from_id_salt("add_tags").selected_text(icons::PLUS).width(40.0).show_ui(
+                            ui,
+                            |ui| {
+                                for t in &all_tags {
+                                    if !d.tags.contains(t) && ui.selectable_label(false, t).clicked() {
+                                        d.tags.push(t.clone());
                                     }
-                                    d.tag_input.clear();
                                 }
-                            });
-                        });
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut d.tag_input)
+                                            .hint_text("New tag")
+                                            .desired_width(110.0),
+                                    );
+                                    if ui.button("Add").clicked() && !d.tag_input.trim().is_empty() {
+                                        let t = d.tag_input.trim().to_string();
+                                        if !d.tags.contains(&t) {
+                                            d.tags.push(t);
+                                        }
+                                        d.tag_input.clear();
+                                    }
+                                });
+                            },
+                        );
                     });
                     ui.add_space(8.0);
                     ui.checkbox(&mut d.start_paused, "Add paused");
@@ -607,7 +689,10 @@ impl CorrentApp {
                     match (&d.preview, &d.error) {
                         (Some(pv), _) => {
                             if pv.already_added {
-                                ui.label(RichText::new(format!("{}  This torrent is already in your list.", icons::WARNING)).color(p.warn));
+                                ui.label(
+                                    RichText::new(format!("{}  This torrent is already in your list.", icons::WARNING))
+                                        .color(p.warn),
+                                );
                             }
                             ui.horizontal(|ui| {
                                 if ui.small_button("Select all").clicked() {
@@ -619,32 +704,62 @@ impl CorrentApp {
                                 if ui.small_button("Invert").clicked() {
                                     d.checked.iter_mut().for_each(|c| *c = !*c);
                                 }
-                                ui.add(egui::TextEdit::singleline(&mut d.filter).hint_text(format!("{} Filter files", icons::FUNNEL)).desired_width(180.0));
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut d.filter)
+                                        .hint_text(format!("{} Filter files", icons::FUNNEL))
+                                        .desired_width(180.0),
+                                );
                             });
                             ui.add_space(4.0);
-                            egui::Frame::new().fill(p.bg0).corner_radius(egui::CornerRadius::same(8)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
-                                egui::ScrollArea::vertical().max_height(340.0).min_scrolled_height(340.0).auto_shrink([false, false]).show(ui, |ui| {
-                                    let entries: Vec<file_tree::Entry<'_>> = pv
-                                        .files
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(i, f)| file_tree::Entry { index: i, components: &f.components, len: f.len, done: None })
-                                        .collect();
-                                    let checked = d.checked.clone();
-                                    if let Some(ch) = file_tree::show(ui, p, Id::new(("addtree", d.req)), &entries, &|i| checked.get(i).copied().unwrap_or(true), &d.filter, true) {
-                                        for (i, on) in ch.set {
-                                            if let Some(c) = d.checked.get_mut(i) {
-                                                *c = on;
+                            egui::Frame::new()
+                                .fill(p.bg0)
+                                .corner_radius(egui::CornerRadius::same(8))
+                                .inner_margin(egui::Margin::same(8))
+                                .show(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .max_height(340.0)
+                                        .min_scrolled_height(340.0)
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            let entries: Vec<file_tree::Entry<'_>> = pv
+                                                .files
+                                                .iter()
+                                                .enumerate()
+                                                .map(|(i, f)| file_tree::Entry {
+                                                    index: i,
+                                                    components: &f.components,
+                                                    len: f.len,
+                                                    done: None,
+                                                })
+                                                .collect();
+                                            let checked = d.checked.clone();
+                                            if let Some(ch) = file_tree::show(
+                                                ui,
+                                                p,
+                                                Id::new(("addtree", d.req)),
+                                                &entries,
+                                                &|i| checked.get(i).copied().unwrap_or(true),
+                                                &d.filter,
+                                                true,
+                                            ) {
+                                                for (i, on) in ch.set {
+                                                    if let Some(c) = d.checked.get_mut(i) {
+                                                        *c = on;
+                                                    }
+                                                }
                                             }
-                                        }
-                                    }
+                                        });
                                 });
-                            });
                             let sel = d.checked.iter().filter(|c| **c).count();
                             ui.label(
-                                RichText::new(format!("{} of {} files selected · {}", sel, pv.files.len(), fmt_bytes(selected_size(pv, &d.checked))))
-                                    .small()
-                                    .color(p.text_dim),
+                                RichText::new(format!(
+                                    "{} of {} files selected · {}",
+                                    sel,
+                                    pv.files.len(),
+                                    fmt_bytes(selected_size(pv, &d.checked))
+                                ))
+                                .small()
+                                .color(p.text_dim),
                             );
                         }
                         (None, Some(err)) => {
@@ -668,11 +783,19 @@ impl CorrentApp {
                                 ui.label(RichText::new(msg).color(p.text));
                                 let secs = d.started.elapsed().as_secs();
                                 if secs >= 4 {
-                                    ui.label(RichText::new(format!("{secs}s — this can take a while for rare torrents.")).small().color(p.text_dim));
+                                    ui.label(
+                                        RichText::new(format!("{secs}s — this can take a while for rare torrents."))
+                                            .small()
+                                            .color(p.text_dim),
+                                    );
                                 }
                                 if matches!(d.source, AddSource::Magnet(_)) {
                                     ui.add_space(8.0);
-                                    if ui.button("Add without waiting").on_hover_text("Start the download now; all files will be selected.").clicked() {
+                                    if ui
+                                        .button("Add without waiting")
+                                        .on_hover_text("Start the download now; all files will be selected.")
+                                        .clicked()
+                                    {
                                         add_without_preview = true;
                                     }
                                 }
@@ -686,9 +809,16 @@ impl CorrentApp {
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let can_add = d.preview.as_ref().is_some_and(|pv| !pv.already_added && d.checked.iter().any(|c| *c))
-                        && !d.save_path.trim().is_empty();
-                    if ui.add_enabled_ui(can_add, |ui| primary_button(ui, p, &format!("{}  Add torrent", icons::DOWNLOAD_SIMPLE))).inner.clicked() {
+                    let can_add =
+                        d.preview.as_ref().is_some_and(|pv| !pv.already_added && d.checked.iter().any(|c| *c))
+                            && !d.save_path.trim().is_empty();
+                    if ui
+                        .add_enabled_ui(can_add, |ui| {
+                            primary_button(ui, p, &format!("{}  Add torrent", icons::DOWNLOAD_SIMPLE))
+                        })
+                        .inner
+                        .clicked()
+                    {
                         add = true;
                     }
                     if secondary_button(ui, "Cancel").clicked() {
@@ -707,7 +837,8 @@ impl CorrentApp {
         if add || add_without_preview {
             let save = PathBuf::from(d.save_path.trim());
             let only_files = d.preview.as_ref().and_then(|_| {
-                (!d.checked.iter().all(|c| *c)).then(|| d.checked.iter().enumerate().filter(|(_, c)| **c).map(|(i, _)| i).collect())
+                (!d.checked.iter().all(|c| *c))
+                    .then(|| d.checked.iter().enumerate().filter(|(_, c)| **c).map(|(i, _)| i).collect())
             });
             let req = AddRequest {
                 source: d.source.clone(),
@@ -719,6 +850,7 @@ impl CorrentApp {
                 paused: d.start_paused,
                 only_files,
                 add_to_top: d.add_to_top,
+                initial_peers: None,
             };
             self.engine.send(EngineCommand::CancelPreview(d.req));
             self.engine.send(EngineCommand::Add(Box::new(req)));

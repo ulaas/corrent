@@ -70,7 +70,15 @@ impl Counts {
 }
 
 /// One sidebar row: icon, label, count pill; selected rows get an accent bar.
-pub(super) fn row(ui: &mut Ui, p: &Palette, icon: &str, icon_color: Color32, label: &str, count: Option<usize>, selected: bool) -> egui::Response {
+pub(super) fn row(
+    ui: &mut Ui,
+    p: &Palette,
+    icon: &str,
+    icon_color: Color32,
+    label: &str,
+    count: Option<usize>,
+    selected: bool,
+) -> egui::Response {
     let h = 28.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     let hover = ui.ctx().animate_bool_with_time(resp.id.with("hov"), resp.hovered() || selected, 0.12);
@@ -90,18 +98,32 @@ pub(super) fn row(ui: &mut Ui, p: &Palette, icon: &str, icon_color: Color32, lab
         if selected { p.accent } else { icon_color },
     );
     let max_w = rect.width() - 80.0;
-    let mut job = egui::text::LayoutJob::simple_singleline(label.to_string(), egui::FontId::proportional(13.0), text_color);
-    job.wrap = egui::text::TextWrapping { max_width: max_w.max(10.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+    let mut job =
+        egui::text::LayoutJob::simple_singleline(label.to_string(), egui::FontId::proportional(13.0), text_color);
+    job.wrap = egui::text::TextWrapping {
+        max_width: max_w.max(10.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
     let galley = ui.painter().layout_job(job);
     ui.painter().galley(rect.left_center() + vec2(36.0, -galley.size().y / 2.0), galley, text_color);
     if let Some(count) = count.filter(|c| *c > 0 || selected) {
         let txt = count.to_string();
-        let g = ui.painter().layout_no_wrap(txt, egui::FontId::proportional(11.0), if selected { p.accent } else { p.text_dim });
+        let g = ui.painter().layout_no_wrap(
+            txt,
+            egui::FontId::proportional(11.0),
+            if selected { p.accent } else { p.text_dim },
+        );
         let pill = egui::Rect::from_center_size(
             rect.right_center() - vec2(10.0 + g.size().x / 2.0 + 6.0, 0.0),
             g.size() + vec2(12.0, 4.0),
         );
-        ui.painter().rect_filled(pill, CornerRadius::same(9), if selected { p.accent.gamma_multiply(0.15) } else { p.bg3 });
+        ui.painter().rect_filled(
+            pill,
+            CornerRadius::same(9),
+            if selected { p.accent.gamma_multiply(0.15) } else { p.bg3 },
+        );
         ui.painter().galley(pill.center() - g.size() / 2.0, g, p.text_dim);
     }
     resp
@@ -145,7 +167,10 @@ impl CorrentApp {
             for (i, f) in StatusFilter::ALL.iter().enumerate() {
                 let count = self.counts.status.get(i).copied().unwrap_or(0);
                 // Hide rarely-relevant filters when empty to keep the list calm.
-                if count == 0 && matches!(f, StatusFilter::Errored | StatusFilter::Stalled) && self.prefs.status_filter != *f {
+                if count == 0
+                    && matches!(f, StatusFilter::Errored | StatusFilter::Stalled)
+                    && self.prefs.status_filter != *f
+                {
                     continue;
                 }
                 let color = match f {
@@ -164,10 +189,30 @@ impl CorrentApp {
                 self.open_new_category(None);
             }
             let total = self.snap.torrents.len();
-            if row(ui, p, icons::FOLDERS, p.text_dim, "All", Some(total), self.prefs.category_filter == GroupFilter::All).clicked() {
+            if row(
+                ui,
+                p,
+                icons::FOLDERS,
+                p.text_dim,
+                "All",
+                Some(total),
+                self.prefs.category_filter == GroupFilter::All,
+            )
+            .clicked()
+            {
                 self.prefs.category_filter = GroupFilter::All;
             }
-            if row(ui, p, icons::FOLDER_DASHED, p.text_dim, "Uncategorized", Some(self.counts.uncategorized), self.prefs.category_filter == GroupFilter::None).clicked() {
+            if row(
+                ui,
+                p,
+                icons::FOLDER_DASHED,
+                p.text_dim,
+                "Uncategorized",
+                Some(self.counts.uncategorized),
+                self.prefs.category_filter == GroupFilter::None,
+            )
+            .clicked()
+            {
                 self.prefs.category_filter = GroupFilter::None;
             }
             let cats: Vec<(String, usize)> = self.counts.categories.iter().map(|(k, v)| (k.clone(), *v)).collect();
@@ -210,10 +255,22 @@ impl CorrentApp {
             if section(ui, p, "Tags", Some("New tag…")) {
                 self.open_new_tag(None);
             }
-            if row(ui, p, icons::TAG, p.text_dim, "All", Some(total), self.prefs.tag_filter == GroupFilter::All).clicked() {
+            if row(ui, p, icons::TAG, p.text_dim, "All", Some(total), self.prefs.tag_filter == GroupFilter::All)
+                .clicked()
+            {
                 self.prefs.tag_filter = GroupFilter::All;
             }
-            if row(ui, p, icons::TAG_SIMPLE, p.text_dim, "Untagged", Some(self.counts.untagged), self.prefs.tag_filter == GroupFilter::None).clicked() {
+            if row(
+                ui,
+                p,
+                icons::TAG_SIMPLE,
+                p.text_dim,
+                "Untagged",
+                Some(self.counts.untagged),
+                self.prefs.tag_filter == GroupFilter::None,
+            )
+            .clicked()
+            {
                 self.prefs.tag_filter = GroupFilter::None;
             }
             let tags: Vec<(String, usize)> = self.counts.tags.iter().map(|(k, v)| (k.clone(), *v)).collect();

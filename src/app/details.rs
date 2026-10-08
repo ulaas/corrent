@@ -51,7 +51,10 @@ impl CorrentApp {
                 if sel {
                     let rect = r.rect;
                     ui.painter().rect_filled(
-                        egui::Rect::from_min_max(egui::pos2(rect.left() + 4.0, rect.bottom() - 2.0), egui::pos2(rect.right() - 4.0, rect.bottom())),
+                        egui::Rect::from_min_max(
+                            egui::pos2(rect.left() + 4.0, rect.bottom() - 2.0),
+                            egui::pos2(rect.right() - 4.0, rect.bottom()),
+                        ),
                         egui::CornerRadius::same(1),
                         p.accent,
                     );
@@ -62,7 +65,11 @@ impl CorrentApp {
                 ui.add_space(6.0);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new(RichText::new(icons::CARET_DOWN).color(p.text_dim)).frame(false)).on_hover_text("Hide details (Ctrl+I)").clicked() {
+                if ui
+                    .add(egui::Button::new(RichText::new(icons::CARET_DOWN).color(p.text_dim)).frame(false))
+                    .on_hover_text("Hide details (Ctrl+I)")
+                    .clicked()
+                {
                     self.prefs.show_details = false;
                 }
             });
@@ -73,9 +80,21 @@ impl CorrentApp {
             if self.selected.len() > 1 {
                 let n = self.selected.len();
                 let total: u64 = self.selected_views().iter().map(|t| t.size).sum();
-                widgets::empty_compact(ui, p, icons::STACK, &format!("{n} torrents selected"), &format!("{} in total", fmt_bytes(total)));
+                widgets::empty_compact(
+                    ui,
+                    p,
+                    icons::STACK,
+                    &format!("{n} torrents selected"),
+                    &format!("{} in total", fmt_bytes(total)),
+                );
             } else {
-                widgets::empty_compact(ui, p, icons::CURSOR_CLICK, "Nothing selected", "Select a torrent to see its details.");
+                widgets::empty_compact(
+                    ui,
+                    p,
+                    icons::CURSOR_CLICK,
+                    "Nothing selected",
+                    "Select a torrent to see its details.",
+                );
             }
             return;
         };
@@ -99,11 +118,25 @@ impl CorrentApp {
             // Progress + piece strip
             ui.horizontal(|ui| {
                 let color = p.state_color(t.state);
-                ui.label(RichText::new(format!("{:.1}%", t.progress * 100.0)).font(crate::ui::theme::bold(15.0)).color(color));
+                ui.label(
+                    RichText::new(format!("{:.1}%", t.progress * 100.0))
+                        .font(crate::ui::theme::bold(15.0))
+                        .color(color),
+                );
                 let w = ui.available_width();
                 ui.vertical(|ui| {
                     ui.add_space(4.0);
-                    widgets::progress_bar(ui, egui::Id::new(("dpb", t.hash)), t.progress, color, p.bg3, 6.0, w, false, true);
+                    widgets::progress_bar(
+                        ui,
+                        egui::Id::new(("dpb", t.hash)),
+                        t.progress,
+                        color,
+                        p.bg3,
+                        6.0,
+                        w,
+                        false,
+                        true,
+                    );
                     if let Some((bits, n)) = detail.and_then(|d| d.pieces.as_ref()) {
                         ui.add_space(4.0);
                         widgets::piece_bar(ui, p, bits, *n, 8.0);
@@ -122,9 +155,23 @@ impl CorrentApp {
                 ("Downloaded", fmt_bytes(t.downloaded)),
                 ("Uploaded", fmt_bytes(t.uploaded)),
                 ("Ratio", fmt_ratio(t.ratio)),
-                ("Peers", format!("{} connected · {} known · {} connecting", t.peers_live, t.peers_seen, t.peers_connecting)),
-                ("Seeding time", if t.seeding_secs > 0 { fmt_duration(Duration::from_secs(t.seeding_secs)) } else { "—".into() }),
-                ("Pieces", if t.piece_count > 0 { format!("{} × {}", t.piece_count, fmt_bytes(t.piece_size)) } else { "—".into() }),
+                (
+                    "Peers",
+                    format!("{} connected · {} known · {} connecting", t.peers_live, t.peers_seen, t.peers_connecting),
+                ),
+                (
+                    "Seeding time",
+                    if t.seeding_secs > 0 { fmt_duration(Duration::from_secs(t.seeding_secs)) } else { "—".into() },
+                ),
+                ("Files", if t.file_count > 0 { t.file_count.to_string() } else { "—".into() }),
+                (
+                    "Pieces",
+                    if t.piece_count > 0 {
+                        format!("{} × {}", t.piece_count, fmt_bytes(t.piece_size))
+                    } else {
+                        "—".into()
+                    },
+                ),
                 ("Added", fmt_date(t.added_at)),
                 ("Completed", t.completed_at.map(fmt_date).unwrap_or_else(|| "—".into())),
                 ("Created", t.creation_date.map(fmt_date).unwrap_or_else(|| "—".into())),
@@ -184,12 +231,19 @@ impl CorrentApp {
             return;
         };
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.file_filter).hint_text(format!("{}  Filter files", icons::FUNNEL)).desired_width(220.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.file_filter)
+                    .hint_text(format!("{}  Filter files", icons::FUNNEL))
+                    .desired_width(220.0),
+            );
             let n_sel = d.files.iter().filter(|f| f.included).count();
             ui.label(RichText::new(format!("{n_sel} of {} files selected", d.files.len())).small().color(p.text_dim));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.small_button("Select all").clicked() {
-                    self.engine.send(EngineCommand::SetFiles { hash: t.hash, included: d.files.iter().map(|f| f.index).collect() });
+                    self.engine.send(EngineCommand::SetFiles {
+                        hash: t.hash,
+                        included: d.files.iter().map(|f| f.index).collect(),
+                    });
                 }
             });
         });
@@ -199,10 +253,19 @@ impl CorrentApp {
             .iter()
             .map(|f| file_tree::Entry { index: f.index, components: &f.components, len: f.len, done: Some(f.done) })
             .collect();
-        let included: std::collections::HashSet<usize> = d.files.iter().filter(|f| f.included).map(|f| f.index).collect();
+        let included: std::collections::HashSet<usize> =
+            d.files.iter().filter(|f| f.included).map(|f| f.index).collect();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let filter = self.file_filter.clone();
-            if let Some(ch) = file_tree::show(ui, p, egui::Id::new(("files", t.hash)), &entries, &|i| included.contains(&i), &filter, true) {
+            if let Some(ch) = file_tree::show(
+                ui,
+                p,
+                egui::Id::new(("files", t.hash)),
+                &entries,
+                &|i| included.contains(&i),
+                &filter,
+                true,
+            ) {
                 let mut next = included.clone();
                 for (i, on) in ch.set {
                     if on {
@@ -225,7 +288,9 @@ impl CorrentApp {
             return;
         };
         let mut peers: Vec<_> = d.peers.iter().filter(|x| x.state == "live" || self.show_all_peers).collect();
-        peers.sort_by(|a, b| (b.down_bps + b.up_bps).cmp(&(a.down_bps + a.up_bps)).then_with(|| b.downloaded.cmp(&a.downloaded)));
+        peers.sort_by(|a, b| {
+            (b.down_bps + b.up_bps).cmp(&(a.down_bps + a.up_bps)).then_with(|| b.downloaded.cmp(&a.downloaded))
+        });
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} peers", peers.len())).small().color(p.text_dim));
             ui.checkbox(&mut self.show_all_peers, RichText::new("Show connecting and dead peers").small());
@@ -273,10 +338,20 @@ impl CorrentApp {
                         ui.label(RichText::new(&peer.state).small().color(p.text_dim));
                     });
                     row.col(|ui| {
-                        ui.label(RichText::new(fmt_speed(peer.down_bps, units)).monospace().color(if peer.down_bps > 0 { p.accent } else { p.text_mute }));
+                        ui.label(
+                            RichText::new(fmt_speed(peer.down_bps, units)).monospace().color(if peer.down_bps > 0 {
+                                p.accent
+                            } else {
+                                p.text_mute
+                            }),
+                        );
                     });
                     row.col(|ui| {
-                        ui.label(RichText::new(fmt_speed(peer.up_bps, units)).monospace().color(if peer.up_bps > 0 { p.success } else { p.text_mute }));
+                        ui.label(RichText::new(fmt_speed(peer.up_bps, units)).monospace().color(if peer.up_bps > 0 {
+                            p.success
+                        } else {
+                            p.text_mute
+                        }));
                     });
                     row.col(|ui| {
                         ui.label(RichText::new(fmt_bytes(peer.downloaded)).monospace());
@@ -414,9 +489,7 @@ impl CorrentApp {
         };
         let have: u32 = bits.iter().map(|b| b.count_ones()).sum();
         ui.label(
-            RichText::new(format!("{have} of {n} pieces · {} each", fmt_bytes(t.piece_size)))
-                .small()
-                .color(p.text_dim),
+            RichText::new(format!("{have} of {n} pieces · {} each", fmt_bytes(t.piece_size))).small().color(p.text_dim),
         );
         ui.add_space(6.0);
         // A grid of cells, one per bucket of pieces.
@@ -478,8 +551,10 @@ impl CorrentApp {
             widgets::empty_compact(ui, p, icons::CHART_LINE, "Collecting speed data…", "");
             return;
         }
-        let down: Vec<[f64; 2]> = hist.iter().enumerate().map(|(i, (d, _))| [(i as f64 - n as f64) * interval, *d as f64]).collect();
-        let up: Vec<[f64; 2]> = hist.iter().enumerate().map(|(i, (_, u))| [(i as f64 - n as f64) * interval, *u as f64]).collect();
+        let down: Vec<[f64; 2]> =
+            hist.iter().enumerate().map(|(i, (d, _))| [(i as f64 - n as f64) * interval, *d as f64]).collect();
+        let up: Vec<[f64; 2]> =
+            hist.iter().enumerate().map(|(i, (_, u))| [(i as f64 - n as f64) * interval, *u as f64]).collect();
         let _ = title;
         egui_plot::Plot::new("speed_plot")
             .allow_drag(false)

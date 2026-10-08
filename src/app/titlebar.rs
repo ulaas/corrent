@@ -1,7 +1,10 @@
 //! Custom window title bar: the toolbar doubles as the title bar (drag to move, double-click to
 //! maximize) with app-styled window controls. On macOS the native traffic lights are kept.
 
-use egui::{Align2, Color32, Context, CornerRadius, CursorIcon, FontId, Id, Rect, ResizeDirection, Sense, Ui, ViewportCommand, vec2};
+use egui::{
+    Align2, Color32, Context, CornerRadius, CursorIcon, FontId, Id, Rect, ResizeDirection, Sense, Ui, ViewportCommand,
+    vec2,
+};
 use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
@@ -72,17 +75,24 @@ impl CorrentApp {
         if !CUSTOM_DECORATIONS {
             return;
         }
-        let (maximized, fullscreen) = ctx.input(|i| (i.viewport().maximized.unwrap_or(false), i.viewport().fullscreen.unwrap_or(false)));
+        let (maximized, fullscreen) =
+            ctx.input(|i| (i.viewport().maximized.unwrap_or(false), i.viewport().fullscreen.unwrap_or(false)));
         if maximized || fullscreen {
             return;
         }
         let rect = ctx.content_rect();
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("window_border")));
-        painter.rect_stroke(rect.shrink(0.5), CornerRadius::ZERO, egui::Stroke::new(1.0, p.border_hi), egui::StrokeKind::Inside);
+        painter.rect_stroke(
+            rect.shrink(0.5),
+            CornerRadius::ZERO,
+            egui::Stroke::new(1.0, p.border_hi),
+            egui::StrokeKind::Inside,
+        );
 
         let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else { return };
         let m = 5.0;
-        let (l, r, t, b) = (pos.x - rect.left() < m, rect.right() - pos.x < m, pos.y - rect.top() < m, rect.bottom() - pos.y < m);
+        let (l, r, t, b) =
+            (pos.x - rect.left() < m, rect.right() - pos.x < m, pos.y - rect.top() < m, rect.bottom() - pos.y < m);
         let dir = match (l, r, t, b) {
             (true, _, true, _) => Some((ResizeDirection::NorthWest, CursorIcon::ResizeNorthWest)),
             (_, true, true, _) => Some((ResizeDirection::NorthEast, CursorIcon::ResizeNorthEast)),
@@ -111,7 +121,13 @@ fn control(ui: &mut Ui, p: &Palette, icon: &str, tip: &str, danger: bool) -> egu
         let fill = if danger { Color32::from_rgb(0xE8, 0x11, 0x23) } else { p.bg3 };
         ui.painter().rect_filled(Rect::from_min_max(rect.min, rect.max), CornerRadius::ZERO, fill.gamma_multiply(t));
     }
-    let color = if danger && hovered { Color32::WHITE } else if hovered { p.text } else { p.text_dim };
+    let color = if danger && hovered {
+        Color32::WHITE
+    } else if hovered {
+        p.text
+    } else {
+        p.text_dim
+    };
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(15.0), color);
     resp.on_hover_text(tip)
 }

@@ -201,11 +201,18 @@ fn style(s: &mut egui::Style, p: &Palette, a: &Appearance) {
     v.window_corner_radius = CornerRadius::same(12);
     v.menu_corner_radius = CornerRadius::same(8);
     v.window_stroke = Stroke::new(1.0, p.border);
-    v.window_shadow =
-        Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(if p.dark { 110 } else { 40 }) };
+    v.window_shadow = Shadow {
+        offset: [0, 10],
+        blur: 28,
+        spread: 0,
+        color: Color32::from_black_alpha(if p.dark { 110 } else { 40 }),
+    };
     v.popup_shadow =
         Shadow { offset: [0, 4], blur: 14, spread: 0, color: Color32::from_black_alpha(if p.dark { 80 } else { 30 }) };
-    v.selection = Selection { bg_fill: p.accent.gamma_multiply(if p.dark { 0.35 } else { 0.2 }), stroke: Stroke::new(1.0, p.text) };
+    v.selection = Selection {
+        bg_fill: p.accent.gamma_multiply(if p.dark { 0.35 } else { 0.2 }),
+        stroke: Stroke::new(1.0, p.text),
+    };
     v.striped = false;
     v.slider_trailing_fill = true;
     v.handle_shape = HandleShape::Circle;
@@ -276,7 +283,10 @@ mod tests {
 
     #[test]
     fn state_colors_are_distinct_where_it_matters() {
-        for p in [Palette::dark(accent_color(Accent::Blue, [0; 3], true)), Palette::light(accent_color(Accent::Blue, [0; 3], false))] {
+        for p in [
+            Palette::dark(accent_color(Accent::Blue, [0; 3], true)),
+            Palette::light(accent_color(Accent::Blue, [0; 3], false)),
+        ] {
             let c = |s| p.state_color(s);
             assert_ne!(c(TorrentState::Downloading), c(TorrentState::Seeding));
             assert_ne!(c(TorrentState::Error), c(TorrentState::Paused));

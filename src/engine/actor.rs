@@ -176,7 +176,8 @@ impl Actor {
             self.emit(EngineEvent::DataWarning(w));
         }
         self.start_session().await;
-        let mut tick = tokio::time::interval(Duration::from_millis(self.settings.advanced.refresh_interval_ms.clamp(200, 5000)));
+        let mut tick =
+            tokio::time::interval(Duration::from_millis(self.settings.advanced.refresh_interval_ms.clamp(200, 5000)));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
@@ -299,8 +300,12 @@ impl Actor {
             EngineCommand::Pause(h) => EngineCommand::Pause(self.not_busy(h)),
             EngineCommand::Resume(h) => EngineCommand::Resume(self.not_busy(h)),
             EngineCommand::ForceStart(h) => EngineCommand::ForceStart(self.not_busy(h)),
-            EngineCommand::Delete { hashes, with_data } => EngineCommand::Delete { hashes: self.not_busy(hashes), with_data },
-            EngineCommand::MoveStorage { hashes, to } => EngineCommand::MoveStorage { hashes: self.not_busy(hashes), to },
+            EngineCommand::Delete { hashes, with_data } => {
+                EngineCommand::Delete { hashes: self.not_busy(hashes), with_data }
+            }
+            EngineCommand::MoveStorage { hashes, to } => {
+                EngineCommand::MoveStorage { hashes: self.not_busy(hashes), to }
+            }
             EngineCommand::Recheck(h) => EngineCommand::Recheck(self.not_busy(h)),
             EngineCommand::SetFiles { hash, included } if self.busy.contains_key(&hash) => {
                 let _ = included;
@@ -609,10 +614,8 @@ impl Actor {
         self.busy.insert(hash, if with_data { "Deleting files…".into() } else { "Removing…".into() });
         let tx = self.internal_tx.clone();
         tokio::spawn(async move {
-            let result = sess
-                .delete(TorrentIdOrHash::Hash(Id20::new(hash.0)), with_data)
-                .await
-                .map_err(|e| format!("{e:#}"));
+            let result =
+                sess.delete(TorrentIdOrHash::Hash(Id20::new(hash.0)), with_data).await.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Internal::Deleted { hash, result });
         });
     }
@@ -653,7 +656,13 @@ impl Actor {
         };
         self.pending.insert(
             pending,
-            PendingAdd { name: req.source.describe(), hash, started: now_unix(), save_path: req.save_path.clone(), task: None },
+            PendingAdd {
+                name: req.source.describe(),
+                hash,
+                started: now_unix(),
+                save_path: req.save_path.clone(),
+                task: None,
+            },
         );
         let tx = self.internal_tx.clone();
         let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
@@ -666,7 +675,13 @@ impl Actor {
         }
     }
 
-    fn start_readd(&mut self, hash: InfoHash, move_to: Option<PathBuf>, trackers: Option<Vec<String>>, what: &'static str) {
+    fn start_readd(
+        &mut self,
+        hash: InfoHash,
+        move_to: Option<PathBuf>,
+        trackers: Option<Vec<String>>,
+        what: &'static str,
+    ) {
         let (Some(sess), Some(h)) = (self.session.clone(), self.handle_for(&hash)) else { return };
         if self.busy.contains_key(&hash) {
             return;
@@ -838,7 +853,11 @@ impl Actor {
                     let n = list.len();
                     self.toast(
                         ToastKind::Error,
-                        if n == 1 { "A torrent could not be loaded — see its error in the list.".to_string() } else { format!("{n} torrents could not be loaded — see their errors in the list.") },
+                        if n == 1 {
+                            "A torrent could not be loaded — see its error in the list.".to_string()
+                        } else {
+                            format!("{n} torrents could not be loaded — see their errors in the list.")
+                        },
                     );
                 }
                 self.failed = list.into_iter().map(|f| (f.hash, f)).collect();
@@ -869,7 +888,11 @@ impl Actor {
                 }
                 // librqbit forgets the torrent before touching files, so it may be gone despite an error.
                 if result.is_ok() || gone {
-                    let name = self.store.get(&hash).map(|m| m.display_name.clone().unwrap_or(m.name.clone())).unwrap_or_default();
+                    let name = self
+                        .store
+                        .get(&hash)
+                        .map(|m| m.display_name.clone().unwrap_or(m.name.clone()))
+                        .unwrap_or_default();
                     self.forget_hash(&hash);
                     self.store.maybe_save(true);
                     let undoable = match self.undo_pending.remove(&hash) {
@@ -918,7 +941,12 @@ impl Actor {
                     .folder
                     .save_path
                     .clone()
-                    .or_else(|| category.as_ref().and_then(|c| self.store.data.categories.get(c)).and_then(|c| c.save_path.clone()))
+                    .or_else(|| {
+                        category
+                            .as_ref()
+                            .and_then(|c| self.store.data.categories.get(c))
+                            .and_then(|c| c.save_path.clone())
+                    })
                     .unwrap_or_else(|| self.settings.downloads.save_path.clone());
                 tracing::info!("watch folder: adding {}", hit.source.describe());
                 self.start_add(Box::new(AddRequest {
@@ -931,6 +959,7 @@ impl Actor {
                     paused: hit.folder.start_paused,
                     only_files: None,
                     add_to_top: false,
+                    initial_peers: None,
                 }));
             }
         }
@@ -995,7 +1024,7 @@ impl Actor {
         self.session_down_total += total_dd;
         self.session_up_total += total_du;
 
-        if self.settings.queue.enabled && self.tick_count % 4 == 0 {
+        if self.settings.queue.enabled && self.tick_count.is_multiple_of(4) {
             self.run_queue(&views, &handles);
         }
         if self.tick_count % 4 == 2 {
@@ -1122,7 +1151,9 @@ impl Actor {
         if stats.finished && has_metadata {
             if m.completed_at.is_none() {
                 m.completed_at = Some(now);
-                completed_event = self.seen_unfinished.contains(&hash);
+                // Fast downloads can finish between two ticks, so also count torrents that
+                // transferred data; re-adding already-complete data (nothing fetched) stays silent.
+                completed_event = self.seen_unfinished.contains(&hash) || m.downloaded_total > 0;
                 structural = true;
             }
         } else if is_live && !stats.finished && m.completed_at.is_some() {
@@ -1167,7 +1198,8 @@ impl Actor {
         let done = stats.progress_bytes.min(size);
         let progress = if size > 0 { done as f32 / size as f32 } else { 0.0 };
         let remaining = size.saturating_sub(done);
-        let eta = (down_bps > 0 && remaining > 0 && !stats.finished).then(|| Duration::from_secs(remaining.div_ceil(down_bps)));
+        let eta = (down_bps > 0 && remaining > 0 && !stats.finished)
+            .then(|| Duration::from_secs(remaining.div_ceil(down_bps)));
         let full_size = si_total(h).unwrap_or(size);
         let ratio = if full_size > 0 { m.uploaded_total as f32 / full_size as f32 } else { 0.0 };
 
@@ -1175,10 +1207,7 @@ impl Actor {
         let (save_path, content_path) = if si.multi_file {
             (output.parent().map(Path::to_path_buf).unwrap_or_else(|| output.clone()), output.clone())
         } else {
-            let first = h
-                .with_metadata(|md| md.file_infos.first().map(|f| f.relative_filename.clone()))
-                .ok()
-                .flatten();
+            let first = h.with_metadata(|md| md.file_infos.first().map(|f| f.relative_filename.clone())).ok().flatten();
             (output.clone(), first.map(|f| output.join(f)).unwrap_or_else(|| output.clone()))
         };
 
@@ -1242,7 +1271,7 @@ impl Actor {
                 super::automation::run_on_complete(&b.run_on_complete, &view);
             }
             let save = view.save_path.clone();
-            self.emit(EngineEvent::Completed { hash, name, content_path, save_path: save, size });
+            self.emit(EngineEvent::Completed { name, content_path, save_path: save, size });
         }
         view
     }
@@ -1264,7 +1293,6 @@ impl Actor {
                             .collect();
                         FileView {
                             index: i,
-                            path: f.relative_filename.to_string_lossy().into_owned(),
                             components,
                             len: f.len,
                             done: stats.file_progress.get(i).copied().unwrap_or(0),
@@ -1281,7 +1309,8 @@ impl Actor {
             let snap = live.per_peer_stats_snapshot(Default::default());
             let mut next_prev = HashMap::with_capacity(snap.peers.len());
             for (addr, p) in snap.peers {
-                let (pf, pu) = self.prev_peer.get(&addr).copied().unwrap_or((p.counters.fetched_bytes, p.counters.uploaded_bytes));
+                let (pf, pu) =
+                    self.prev_peer.get(&addr).copied().unwrap_or((p.counters.fetched_bytes, p.counters.uploaded_bytes));
                 let down_bps = (p.counters.fetched_bytes.saturating_sub(pf) as f64 / interval) as u64;
                 let up_bps = (p.counters.uploaded_bytes.saturating_sub(pu) as f64 / interval) as u64;
                 next_prev.insert(addr.clone(), (p.counters.fetched_bytes, p.counters.uploaded_bytes));
@@ -1371,7 +1400,11 @@ impl Actor {
                 self.apply_rate_limits();
                 self.toast(
                     ToastKind::Info,
-                    if want { "Scheduled alternative speed limits enabled." } else { "Scheduled alternative speed limits ended." },
+                    if want {
+                        "Scheduled alternative speed limits enabled."
+                    } else {
+                        "Scheduled alternative speed limits ended."
+                    },
                 );
             }
         }
@@ -1577,10 +1610,7 @@ async fn fetch_torrent_bytes(sess: &Arc<Session>, source: &AddSource) -> anyhow:
 
 async fn list_only(sess: &Arc<Session>, bytes: Vec<u8>) -> anyhow::Result<librqbit::ListOnlyResponse> {
     match sess
-        .add_torrent(
-            AddTorrent::from_bytes(bytes),
-            Some(AddTorrentOptions { list_only: true, ..Default::default() }),
-        )
+        .add_torrent(AddTorrent::from_bytes(bytes), Some(AddTorrentOptions { list_only: true, ..Default::default() }))
         .await?
     {
         AddTorrentResponse::ListOnly(l) => Ok(l),
@@ -1593,13 +1623,12 @@ async fn preview(sess: &Arc<Session>, source: &AddSource) -> anyhow::Result<Prev
     let l = list_only(sess, bytes).await?;
     let info_hash = InfoHash(l.info_hash.0);
     let name = l.info.name().map(|n| n.into_owned()).unwrap_or_else(|| info_hash.to_hex());
-    let multi = l.info.info().files.is_some();
     let files: Vec<PreviewFile> = l
         .info
         .iter_file_details()
         .map(|f| {
             let components = f.filename.to_vec();
-            PreviewFile { path: components.join("/"), components, len: f.len }
+            PreviewFile { components, len: f.len }
         })
         .collect();
     let parsed = librqbit::torrent_from_bytes(&l.torrent_bytes).ok();
@@ -1615,17 +1644,22 @@ async fn preview(sess: &Arc<Session>, source: &AddSource) -> anyhow::Result<Prev
         piece_length: l.info.lengths().default_piece_length(),
         files,
         torrent_bytes: l.torrent_bytes.to_vec(),
-        multi_file: multi,
         already_added: sess.get(TorrentIdOrHash::Hash(l.info_hash)).is_some(),
         comment,
     })
 }
 
 pub fn sanitize_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control() { '_' } else { c })
-        .collect();
+    let cleaned: String =
+        name.chars()
+            .map(|c| {
+                if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control() {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
     let trimmed = cleaned.trim().trim_end_matches('.').to_string();
     if trimmed.is_empty() { "torrent".into() } else { trimmed }
 }
@@ -1647,7 +1681,8 @@ async fn add(sess: &Arc<Session>, req: &AddRequest, peer_limit: Option<usize>) -
         AddSource::Magnet(m) => librqbit::Magnet::parse(m).map(|m| m.trackers).unwrap_or_default(),
         _ => Vec::new(),
     };
-    let output = if multi && req.create_subfolder { req.save_path.join(sanitize_name(&name)) } else { req.save_path.clone() };
+    let output =
+        if multi && req.create_subfolder { req.save_path.join(sanitize_name(&name)) } else { req.save_path.clone() };
     tokio::fs::create_dir_all(&output).await.with_context(|| format!("creating {}", output.display()))?;
     let opts = AddTorrentOptions {
         paused: req.paused,
@@ -1656,6 +1691,7 @@ async fn add(sess: &Arc<Session>, req: &AddRequest, peer_limit: Option<usize>) -
         overwrite: true,
         peer_limit,
         trackers: (!magnet_trackers.is_empty()).then_some(magnet_trackers),
+        initial_peers: req.initial_peers.clone(),
         ..Default::default()
     };
     match sess.add_torrent(AddTorrent::from_bytes(bytes), Some(opts)).await? {
@@ -1698,7 +1734,8 @@ async fn readd(
     if move_to.is_some() && new_output == old_output {
         anyhow::bail!("the torrent is already in that folder");
     }
-    let file_list: Vec<PathBuf> = h.with_metadata(|m| m.file_infos.iter().map(|f| f.relative_filename.clone()).collect())?;
+    let file_list: Vec<PathBuf> =
+        h.with_metadata(|m| m.file_infos.iter().map(|f| f.relative_filename.clone()).collect())?;
     drop(h);
     // Keep a copy of the metainfo until the torrent is safely back in the session.
     let backup = backup_dir.join(format!("{}.torrent", hash.to_hex()));
@@ -1733,7 +1770,9 @@ async fn readd(
             let _ = std::fs::remove_file(&backup);
             return Err(e.context("could not use the new location; the torrent was kept where it was"));
         }
-        return Err(e.context(format!("the torrent could not be re-added; its metainfo is saved at {}", backup.display())));
+        return Err(
+            e.context(format!("the torrent could not be re-added; its metainfo is saved at {}", backup.display()))
+        );
     }
     let _ = std::fs::remove_file(&backup);
     if let Some(e) = move_err {
