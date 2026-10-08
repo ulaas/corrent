@@ -177,6 +177,7 @@ pub fn icon_button_sized(
         p.text_dim.lerp_to_gamma(p.text, 0.35)
     };
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(size * 0.56), color);
+    focus_ring(ui, &resp, p, 8);
     let label = tooltip.split(" (").next().unwrap_or(tooltip).trim_end_matches('…').to_string();
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &label));
     let resp = resp.on_hover_text(tooltip);
@@ -304,4 +305,32 @@ pub fn card(p: &Palette) -> egui::Frame {
 pub fn dashed_rect(painter: &egui::Painter, rect: Rect, color: Color32, width: f32) {
     let pts = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()];
     painter.extend(Shape::dashed_line(&pts, Stroke::new(width, color), 10.0, 7.0));
+}
+
+/// A visible keyboard-focus ring for custom-drawn widgets.
+pub fn focus_ring(ui: &Ui, resp: &Response, p: &Palette, radius: u8) {
+    if resp.has_focus() {
+        let color = if p.high_contrast { p.text } else { p.accent };
+        ui.painter().rect_stroke(
+            resp.rect.expand(1.0),
+            CornerRadius::same(radius),
+            Stroke::new(2.0, color),
+            egui::StrokeKind::Outside,
+        );
+    }
+}
+
+/// Tooltip + accessible name for icon-only widgets (screen readers would read the glyph).
+pub trait Labeled {
+    fn labeled(self, label: &str) -> Self;
+}
+
+impl Labeled for Response {
+    fn labeled(self, label: &str) -> Self {
+        let enabled = self.enabled();
+        // "Hide details (Ctrl+I)" → name "Hide details"; the tooltip keeps the shortcut.
+        let name = label.split(" (").next().unwrap_or(label).trim_end_matches('…');
+        self.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+        self.on_hover_text(label)
+    }
 }

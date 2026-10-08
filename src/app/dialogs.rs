@@ -1,5 +1,6 @@
 //! Modal dialogs.
 
+use crate::ui::widgets::Labeled;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -76,7 +77,7 @@ fn path_field(ui: &mut Ui, p: &Palette, path: &mut String, width: f32, busy: boo
         ui.add(egui::TextEdit::singleline(path).desired_width(width - 40.0));
         if busy {
             ui.add(egui::Spinner::new().color(p.accent));
-        } else if ui.button(icons::FOLDER_OPEN).on_hover_text("Browse…").clicked() {
+        } else if ui.button(icons::FOLDER_OPEN).labeled("Browse…").clicked() {
             browse = true;
         }
     });

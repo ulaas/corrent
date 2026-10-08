@@ -1,3 +1,4 @@
+use crate::ui::widgets::Labeled;
 use egui::{Align, Layout, RichText, Ui, vec2};
 use egui_phosphor::regular as icons;
 
@@ -111,7 +112,9 @@ impl CorrentApp {
                     self.search.clear();
                     resp.surrender_focus();
                 }
-                if !self.search.is_empty() && ui.add(egui::Button::new(icons::X).frame(false).small()).clicked() {
+                if !self.search.is_empty()
+                    && ui.add(egui::Button::new(icons::X).frame(false).small()).labeled("Clear search").clicked()
+                {
                     self.search.clear();
                 }
             });

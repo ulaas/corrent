@@ -1,3 +1,4 @@
+use crate::ui::widgets::Labeled;
 use std::collections::BTreeMap;
 
 use egui::{Align, Color32, CornerRadius, Layout, RichText, Sense, Ui, vec2};
@@ -81,6 +82,7 @@ pub(super) fn row(
     let h = 28.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label));
+    crate::ui::widgets::focus_ring(ui, &resp, p, 7);
     let hover = ui.ctx().animate_bool_with_time(resp.id.with("hov"), resp.hovered() || selected, 0.12);
     if selected {
         ui.painter().rect_filled(rect, CornerRadius::same(7), p.accent_soft());
@@ -156,7 +158,7 @@ fn section(ui: &mut Ui, p: &Palette, title: &str, add: Option<&str>, collapsed: 
                 ui.add_space(4.0);
                 if ui
                     .add(egui::Button::new(RichText::new(icons::PLUS).size(12.0).color(p.text_dim)).frame(false))
-                    .on_hover_text(tip)
+                    .labeled(tip)
                     .clicked()
                 {
                     clicked = true;

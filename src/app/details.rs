@@ -1,3 +1,4 @@
+use crate::ui::widgets::Labeled;
 use std::time::Duration;
 
 use egui::{Align, Layout, RichText, Ui, vec2};
@@ -71,7 +72,7 @@ impl CorrentApp {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
                     .add(egui::Button::new(RichText::new(icons::CARET_DOWN).color(p.text_dim)).frame(false))
-                    .on_hover_text("Hide details (Ctrl+I)")
+                    .labeled("Hide details (Ctrl+I)")
                     .clicked()
                 {
                     self.prefs.show_details = false;
@@ -199,7 +200,7 @@ impl CorrentApp {
                     ui.label(RichText::new("Save path").small().color(p.text_dim));
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(t.save_path.display().to_string()).color(p.text));
-                        if ui.small_button(icons::FOLDER_OPEN).on_hover_text("Open folder").clicked() {
+                        if ui.small_button(icons::FOLDER_OPEN).labeled("Open folder").clicked() {
                             super::open_path(&t.save_path);
                         }
                     });
@@ -207,7 +208,7 @@ impl CorrentApp {
                     ui.label(RichText::new("Info hash").small().color(p.text_dim));
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(t.hash.to_hex()).monospace().color(p.text));
-                        if ui.small_button(icons::COPY).on_hover_text("Copy").clicked() {
+                        if ui.small_button(icons::COPY).labeled("Copy").clicked() {
                             self.copy(t.hash.to_hex());
                         }
                     });
@@ -479,7 +480,7 @@ impl CorrentApp {
                             ui.label(RichText::new(&host).strong().color(p.text));
                             ui.label(RichText::new(format!("{port}{path}")).monospace().small().color(p.text_dim));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.small_button(icons::COPY).on_hover_text("Copy URL").clicked() {
+                                if ui.small_button(icons::COPY).labeled("Copy URL").clicked() {
                                     self.copy(url.clone());
                                 }
                             });

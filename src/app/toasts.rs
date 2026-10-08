@@ -124,7 +124,15 @@ impl Toasts {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(icon).font(FontId::proportional(18.0)).color(accent));
                             ui.vertical(|ui| {
-                                ui.add(egui::Label::new(RichText::new(&t.text).color(p.text)).wrap());
+                                let msg = ui.add(egui::Label::new(RichText::new(&t.text).color(p.text)).wrap());
+                                // Screen readers announce toasts as they appear.
+                                ui.ctx().accesskit_node_builder(msg.id, |n| {
+                                    n.set_live(if t.kind == ToastKind::Error {
+                                        egui::accesskit::Live::Assertive
+                                    } else {
+                                        egui::accesskit::Live::Polite
+                                    })
+                                });
                                 if !t.actions.is_empty() {
                                     ui.add_space(2.0);
                                     ui.horizontal(|ui| {

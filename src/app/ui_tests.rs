@@ -171,9 +171,20 @@ fn settings_window_navigation_and_search() {
     let mut h = harness(app);
     h.state_mut().open_settings();
     h.run_steps(3);
-    for page in
-        ["General", "Downloads", "Connection", "Speed", "BitTorrent", "Queue", "Seeding", "Appearance", "Advanced"]
-    {
+    for page in [
+        "General",
+        "Downloads",
+        "Connection",
+        "Speed",
+        "BitTorrent",
+        "Queue",
+        "Seeding",
+        "Feeds",
+        "Search",
+        "Remote control",
+        "Appearance",
+        "Advanced",
+    ] {
         assert!(h.query_all_by_label(page).next().is_some(), "settings page '{page}' listed");
     }
     h.get_by_label("Connection").click();
@@ -263,6 +274,34 @@ fn activity_column_and_queue_drag() {
     });
     h.run_steps(2);
     assert!(h.state().queue_drag.is_none(), "dropped");
+}
+
+#[test]
+fn high_contrast_preset_previews_live_and_reverts_on_cancel() {
+    let (_f, app) = app("contrast", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let mut h = harness(app);
+    h.state_mut().open_settings_at(super::settings_window::Page::Appearance);
+    h.run_steps(3);
+    assert!(!h.state().palette(&h.ctx).high_contrast);
+    h.get_by_label("High contrast").click();
+    h.run_steps(3);
+    assert!(h.state().palette(&h.ctx).high_contrast, "previewed before applying");
+    assert_eq!(h.state().settings.appearance.preset, crate::config::PalettePreset::Corrent, "not saved yet");
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(!h.state().palette(&h.ctx).high_contrast, "cancel restores the palette");
+}
+
+#[test]
+fn icon_buttons_have_accessible_names() {
+    let (_f, app) = app("a11y", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label("Alpha").click();
+    h.run_steps(3);
+    for name in ["Hide details", "Open folder", "Copy"] {
+        assert!(h.query_all_by_label(name).next().is_some(), "button '{name}' has a name");
+    }
 }
 
 /// Scale check (A9): 5,000 torrents. Run with

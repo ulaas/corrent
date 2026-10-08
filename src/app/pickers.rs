@@ -29,6 +29,8 @@ pub enum PickTarget {
     CreatorSource,
     CreatorOutput,
     RssRuleFolder,
+    ThemeImport,
+    ThemeExport,
 }
 
 type PickResult = (u64, PickTarget, Vec<PathBuf>);
@@ -55,6 +57,8 @@ pub enum PickKind {
     SaveTorrent(String),
     SaveZip(String),
     OpenZip,
+    SaveTheme(String),
+    OpenTheme,
 }
 
 impl CorrentApp {
@@ -95,6 +99,19 @@ impl CorrentApp {
                     .add_filter("Corrent backup", &["zip"])
                     .set_file_name(name)
                     .save_file()
+                    .await
+                    .map(|h| vec![h.path().to_path_buf()])
+                    .unwrap_or_default(),
+                PickKind::SaveTheme(name) => dialog
+                    .add_filter("Corrent theme", &["toml"])
+                    .set_file_name(name)
+                    .save_file()
+                    .await
+                    .map(|h| vec![h.path().to_path_buf()])
+                    .unwrap_or_default(),
+                PickKind::OpenTheme => dialog
+                    .add_filter("Corrent theme", &["toml"])
+                    .pick_file()
                     .await
                     .map(|h| vec![h.path().to_path_buf()])
                     .unwrap_or_default(),
@@ -179,6 +196,39 @@ impl CorrentApp {
                 }
                 PickTarget::BackupExport => self.export_backup(first),
                 PickTarget::BackupImport => self.import_backup(first),
+                PickTarget::ThemeImport => {
+                    let result = std::fs::read_to_string(&first)
+                        .map_err(|e| e.to_string())
+                        .and_then(|t| crate::ui::theme::PaletteDef::from_toml(&t));
+                    match (result, &mut self.settings_draft) {
+                        (Ok(def), Some(d)) => {
+                            self.toasts
+                                .push(crate::engine::ToastKind::Success, format!("Imported theme “{}”", def.name));
+                            d.settings.appearance.custom_palette = Some(def);
+                            d.settings.appearance.preset = crate::config::PalettePreset::Custom;
+                        }
+                        (Ok(_), None) => {}
+                        (Err(e), _) => {
+                            self.toasts.push(crate::engine::ToastKind::Error, format!("Couldn't import the theme: {e}"))
+                        }
+                    }
+                }
+                PickTarget::ThemeExport => {
+                    let def = self
+                        .settings_draft
+                        .as_ref()
+                        .and_then(|d| d.settings.appearance.custom_palette.clone())
+                        .or_else(|| self.settings.appearance.custom_palette.clone());
+                    if let Some(def) = def {
+                        match crate::util::write_atomic(&first, def.to_toml().as_bytes()) {
+                            Ok(()) => self.toasts.push(crate::engine::ToastKind::Success, "Theme exported"),
+                            Err(e) => self.toasts.push(
+                                crate::engine::ToastKind::Error,
+                                format!("Couldn't save the theme: {}", crate::util::explain_io(&format!("{e:#}"))),
+                            ),
+                        }
+                    }
+                }
             }
         }
     }

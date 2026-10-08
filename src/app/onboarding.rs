@@ -1,5 +1,6 @@
 //! First-run welcome: download folder, look, and opening magnet links with Corrent.
 
+use crate::ui::widgets::Labeled;
 use std::path::PathBuf;
 
 use egui::{Align, Context, Id, Layout, RichText, vec2};
@@ -60,7 +61,7 @@ impl CorrentApp {
                         if ui.add(egui::TextEdit::singleline(&mut s).desired_width(440.0)).changed() {
                             self.settings.downloads.save_path = PathBuf::from(s);
                         }
-                        if ui.button(icons::FOLDER_OPEN).on_hover_text("Browse…").clicked() {
+                        if ui.button(icons::FOLDER_OPEN).labeled("Browse…").clicked() {
                             browse = true;
                         }
                     });

@@ -1,6 +1,7 @@
 //! Feeds view (RSS/Atom): feed list, articles, and the download-rules editor with a live
 //! match preview.
 
+use crate::ui::widgets::Labeled;
 use egui::{Align, Context, Id, Layout, RichText, Sense, Ui, vec2};
 use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular as icons;
@@ -429,7 +430,7 @@ impl CorrentApp {
                         }
                         if ui
                             .add_enabled(!ed.rules.is_empty(), egui::Button::new(icons::TRASH))
-                            .on_hover_text("Delete rule")
+                            .labeled("Delete rule")
                             .clicked()
                         {
                             ed.rules.remove(ed.selected.min(ed.rules.len() - 1));
@@ -564,10 +565,10 @@ fn rule_form(ui: &mut Ui, p: &Palette, r: &mut RssRule, feeds: &[FeedView], cate
                 .map(|s| s.display().to_string())
                 .unwrap_or_else(|| "Category or default folder".into());
             ui.add(egui::Label::new(RichText::new(label).color(p.text_dim)).truncate());
-            if ui.button(icons::FOLDER_OPEN).on_hover_text("Choose folder").clicked() {
+            if ui.button(icons::FOLDER_OPEN).labeled("Choose folder").clicked() {
                 *pick = true;
             }
-            if r.save_path.is_some() && ui.button(icons::X).on_hover_text("Use the default").clicked() {
+            if r.save_path.is_some() && ui.button(icons::X).labeled("Use the default").clicked() {
                 r.save_path = None;
             }
         });

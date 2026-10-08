@@ -426,6 +426,41 @@ pub struct Appearance {
     pub show_sparklines: bool,
     pub state_colored_progress: bool,
     pub striped_rows: bool,
+    pub preset: PalettePreset,
+    /// The user's own palette (used with `PalettePreset::Custom`).
+    pub custom_palette: Option<crate::ui::theme::PaletteDef>,
+    /// Switch to the high-contrast palette while the OS high-contrast mode is on.
+    pub follow_os_high_contrast: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default, Hash)]
+pub enum PalettePreset {
+    #[default]
+    Corrent,
+    Nord,
+    Solarized,
+    HighContrast,
+    Custom,
+}
+
+impl PalettePreset {
+    pub const ALL: [PalettePreset; 5] = [
+        PalettePreset::Corrent,
+        PalettePreset::Nord,
+        PalettePreset::Solarized,
+        PalettePreset::HighContrast,
+        PalettePreset::Custom,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PalettePreset::Corrent => "Corrent",
+            PalettePreset::Nord => "Nord",
+            PalettePreset::Solarized => "Solarized",
+            PalettePreset::HighContrast => "High contrast",
+            PalettePreset::Custom => "Custom",
+        }
+    }
 }
 
 impl Default for Appearance {
@@ -441,6 +476,9 @@ impl Default for Appearance {
             show_sparklines: true,
             state_colored_progress: true,
             striped_rows: false,
+            preset: PalettePreset::Corrent,
+            custom_palette: None,
+            follow_os_high_contrast: true,
         }
     }
 }

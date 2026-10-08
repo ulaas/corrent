@@ -1,5 +1,6 @@
 //! The settings window: left navigation, searchable card sections, Apply/OK/Cancel.
 
+use crate::ui::widgets::Labeled;
 use std::path::PathBuf;
 
 use egui::{Align, Context, Id, Layout, RichText, Ui, vec2};
@@ -7,7 +8,7 @@ use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
 use super::pickers::{PickKind, PickTarget};
-use crate::config::{Accent, AfterAdd, ListenMode, SeedAction, Settings, SpeedUnits, ThemeMode};
+use crate::config::{Accent, AfterAdd, ListenMode, PalettePreset, SeedAction, Settings, SpeedUnits, ThemeMode};
 use crate::engine::{EngineCommand, ToastKind};
 use crate::integration::os_handler::{self, HandlerState};
 use crate::ui::theme::{self, Palette, accent_color};
@@ -122,7 +123,7 @@ impl Page {
             Page::Search => "search torznab jackett prowlarr indexer provider api key",
             Page::Feeds => "rss atom feeds refresh interval articles auto download rules automatic episodes",
             Page::Appearance => {
-                "theme dark light system accent color colour compact rows zoom scale units animations sparklines progress"
+                "theme dark light system accent color colour palette preset nord solarized high contrast custom import export compact rows zoom scale units animations sparklines progress"
             }
             Page::Advanced => "log level refresh interval checking concurrent data folder reset defaults",
         }
@@ -176,6 +177,7 @@ pub fn toggle_switch(ui: &mut Ui, p: &Palette, on: &mut bool) -> egui::Response 
     ui.painter().rect_filled(rect, egui::CornerRadius::same(10), bg);
     let x = egui::lerp((rect.left() + 10.0)..=(rect.right() - 10.0), t);
     ui.painter().circle_filled(egui::pos2(x, rect.center().y), 7.5, egui::Color32::WHITE);
+    crate::ui::widgets::focus_ring(ui, &resp, p, 10);
     resp
 }
 
@@ -204,7 +206,7 @@ fn kib(ui: &mut Ui, v: &mut u32) {
 
 /// Path field with a Browse button; returns true when Browse was clicked (right-to-left layout).
 fn path_input(ui: &mut Ui, path: &mut PathBuf) -> bool {
-    let browse = ui.button(icons::FOLDER_OPEN).on_hover_text("Browse…").clicked();
+    let browse = ui.button(icons::FOLDER_OPEN).labeled("Browse…").clicked();
     let mut s = path.display().to_string();
     if ui.add(egui::TextEdit::singleline(&mut s).desired_width(220.0)).changed() {
         *path = PathBuf::from(s);
@@ -440,7 +442,11 @@ impl CorrentApp {
             self.apply_settings(new, &text);
         }
         if !close {
+            self.appearance_preview =
+                (draft.settings.appearance != self.settings.appearance).then(|| draft.settings.appearance.clone());
             self.settings_draft = Some(draft);
+        } else {
+            self.appearance_preview = None;
         }
     }
 
@@ -460,6 +466,18 @@ impl CorrentApp {
                 self.pick(PickTarget::BackupExport, PickKind::SaveZip(name), None);
             }
             Some(1) => self.pick(PickTarget::BackupImport, PickKind::OpenZip, None),
+            Some(2) => self.pick(PickTarget::ThemeImport, PickKind::OpenTheme, None),
+            Some(3) => {
+                let name = d
+                    .settings
+                    .appearance
+                    .custom_palette
+                    .as_ref()
+                    .map(|t| t.name.clone())
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or_else(|| "corrent".into());
+                self.pick(PickTarget::ThemeExport, PickKind::SaveTheme(format!("{name}.theme.toml")), None);
+            }
             _ => {}
         }
     }
@@ -588,7 +606,7 @@ impl CorrentApp {
                                     ui.label(RichText::new(icons::FOLDER_SIMPLE).color(p.warn));
                                     ui.label(RichText::new(w.path.display().to_string()).strong().color(p.text));
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if ui.button(icons::TRASH).on_hover_text("Remove").clicked() {
+                                        if ui.button(icons::TRASH).labeled("Remove").clicked() {
                                             remove = Some(i);
                                         }
                                     });
@@ -649,7 +667,7 @@ impl CorrentApp {
                     ui.set_width(ui.available_width());
                     heading(ui, p, "Listening");
                     row(ui, p, "Incoming port", "Forward this port in your router if UPnP is off.", |ui| {
-                        if ui.button(icons::SHUFFLE).on_hover_text("Pick a random port").clicked() {
+                        if ui.button(icons::SHUFFLE).labeled("Pick a random port").clicked() {
                             s.connection.listen_port = 20000 + (crate::util::now_unix() % 40000) as u16;
                         }
                         ui.add_enabled(
@@ -1014,6 +1032,97 @@ impl CorrentApp {
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    heading(ui, p, "Palette");
+                    let a = &mut s.appearance;
+                    ui.horizontal_wrapped(|ui| {
+                        for preset in PalettePreset::ALL {
+                            let sel = a.preset == preset;
+                            let r = ui.add(
+                                egui::Button::new(RichText::new(preset.name()).color(if sel {
+                                    p.text
+                                } else {
+                                    p.text_dim
+                                }))
+                                .fill(if sel { p.accent_soft() } else { p.bg1 })
+                                .stroke(egui::Stroke::new(
+                                    if sel { 2.0 } else { 1.0 },
+                                    if sel { p.accent } else { p.border },
+                                ))
+                                .corner_radius(egui::CornerRadius::same(8))
+                                .min_size(vec2(96.0, 30.0)),
+                            );
+                            let r = r.on_hover_text(match preset {
+                                PalettePreset::HighContrast => {
+                                    "Maximum legibility: 7:1 text contrast and strong focus rings"
+                                }
+                                PalettePreset::Custom => "Your own colors; edit them below or import a theme file",
+                                _ => "Follows the Dark/Light choice above",
+                            });
+                            if r.clicked() {
+                                if preset == PalettePreset::Custom && a.custom_palette.is_none() {
+                                    a.custom_palette = Some(theme::PaletteDef::from_palette("Custom", p));
+                                }
+                                a.preset = preset;
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+                    if cfg!(windows) {
+                        toggle(
+                            ui,
+                            p,
+                            "Follow Windows contrast themes",
+                            "Use the high-contrast palette while a Windows contrast theme is on.",
+                            &mut a.follow_os_high_contrast,
+                        );
+                    }
+                    if a.preset == PalettePreset::Custom
+                        && let Some(def) = &mut a.custom_palette
+                    {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Name");
+                            ui.add(egui::TextEdit::singleline(&mut def.name).desired_width(180.0));
+                            ui.checkbox(&mut def.dark, "Dark palette");
+                        });
+                        ui.add_space(6.0);
+                        if let Ok(mut pal) = def.to_palette() {
+                            let mut changed = false;
+                            egui::Grid::new("palette_editor").num_columns(4).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
+                                for (i, (field, label)) in theme::PALETTE_FIELDS.iter().enumerate() {
+                                    if let Some(c) = pal.color_mut(field) {
+                                        changed |= ui.color_edit_button_srgba(c).labeled(label).changed();
+                                        ui.label(RichText::new(*label).color(p.text_dim));
+                                    }
+                                    if i % 2 == 1 {
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                            if changed {
+                                let (name, dark) = (def.name.clone(), def.dark);
+                                pal.dark = dark;
+                                *def = theme::PaletteDef::from_palette(&name, &pal);
+                            }
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button(format!("{}  Import…", icons::DOWNLOAD_SIMPLE)).clicked() {
+                                *pick_extra = Some(2);
+                            }
+                            if ui.button(format!("{}  Export…", icons::UPLOAD_SIMPLE)).clicked() {
+                                *pick_extra = Some(3);
+                            }
+                            if ui.button(format!("{}  Reset to Corrent", icons::ARROW_COUNTER_CLOCKWISE)).clicked() {
+                                let base = theme::Palette::preset(PalettePreset::Corrent, p.dark, p.accent);
+                                *def = theme::PaletteDef::from_palette(&def.name, &base);
+                            }
+                        });
+                    }
+                });
+                ui.add_space(10.0);
+                card(p).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
                     heading(ui, p, "Layout");
                     toggle(
                         ui,
@@ -1151,7 +1260,7 @@ impl CorrentApp {
                                             toggle_switch(ui, p, &mut pr.enabled).on_hover_text("Enabled");
                                             if ui
                                                 .button(RichText::new(icons::TRASH).color(p.error))
-                                                .on_hover_text("Remove")
+                                                .labeled("Remove")
                                                 .clicked()
                                             {
                                                 remove = Some(i);
@@ -1319,7 +1428,7 @@ impl CorrentApp {
             if cfg!(windows) && secondary_button(ui, "System settings…").clicked() {
                 os_handler::open_system_default_settings();
             }
-            if ui.button(icons::ARROWS_CLOCKWISE).on_hover_text("Refresh").clicked() {
+            if ui.button(icons::ARROWS_CLOCKWISE).labeled("Refresh").clicked() {
                 self.refresh_handler_status(false);
             }
         });

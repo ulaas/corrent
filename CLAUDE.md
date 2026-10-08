@@ -91,10 +91,10 @@ and backups, logic tests, toasts with actions/undo, CI config, loopback e2e test
 migrations, typed I/O errors, engine restart, batch add, kittest UI tests, typography/motion,
 onboarding, torrent creator (M16), streaming to a media player (M17), RSS feeds + rules (M18), Torznab
 search (M19), qBittorrent-compatible API (M20), 5k-torrent perf check + Activity sparklines +
-drag-to-reorder queue (M21).
+drag-to-reorder queue (M21), palettes/high contrast/theme editor/accessibility (M22).
 Fable reviews of M1–M15 were addressed. Default save folder: `Downloads/Corrent`.
 
-Next steps: M22 onward in `docs/ROADMAP.md`.
+Next steps: M23 onward in `docs/ROADMAP.md`.
 
 Known gaps: engine lacks encryption, per-file priorities, sequential mode and per-torrent speed
 limits; macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.

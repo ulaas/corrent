@@ -1,5 +1,6 @@
 //! "Add N torrents" dialog: one dialog for many sources with shared options.
 
+use crate::ui::widgets::Labeled;
 use std::path::PathBuf;
 
 use egui::{Align, Context, Id, Layout, RichText, vec2};
@@ -95,7 +96,7 @@ impl CorrentApp {
                     ui.add(egui::TextEdit::singleline(&mut b.save_path).desired_width(420.0));
                     if busy {
                         ui.add(egui::Spinner::new());
-                    } else if ui.button(icons::FOLDER_OPEN).on_hover_text("Browse…").clicked() {
+                    } else if ui.button(icons::FOLDER_OPEN).labeled("Browse…").clicked() {
                         browse = true;
                     }
                 });

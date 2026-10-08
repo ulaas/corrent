@@ -1,5 +1,6 @@
 //! "Create torrent" dialog.
 
+use crate::ui::widgets::Labeled;
 use std::path::PathBuf;
 
 use egui::{Align, Context, Id, Layout, RichText, vec2};
@@ -165,6 +166,7 @@ impl CorrentApp {
                     ui.add(egui::Label::new(RichText::new(label).color(p.text_dim)).truncate());
                     if ui
                         .add_enabled(!busy_picker && c.source.is_some(), egui::Button::new(icons::FOLDER_OPEN))
+                        .labeled("Choose where to save the .torrent file")
                         .clicked()
                     {
                         pick = Some((PickTarget::CreatorOutput, PickKind::SaveTorrent(format!("{}.torrent", c.name))));

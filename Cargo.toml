@@ -12,7 +12,7 @@ default = []
 [dependencies]
 librqbit = { version = "=9.0.1", default-features = false, features = ["rust-tls"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
-eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "glow", "persistence", "x11", "wayland"] }
+eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "x11", "wayland"] }
 egui = "=0.36.2"
 egui_extras = "=0.36.2"
 egui_plot = "0.37.0"

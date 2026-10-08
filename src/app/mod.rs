@@ -316,7 +316,9 @@ pub struct CorrentApp {
     /// First-run welcome flow (shown when no settings file existed).
     pub onboarding: Option<onboarding::Onboarding>,
     pub quitting: bool,
-    applied_appearance: Option<crate::config::Appearance>,
+    applied_appearance: Option<(crate::config::Appearance, bool)>,
+    /// Appearance being edited in the settings window (previewed live).
+    pub appearance_preview: Option<crate::config::Appearance>,
 
     // OS integration
     ipc: std::sync::mpsc::Receiver<crate::integration::single_instance::IpcMessage>,
@@ -434,6 +436,7 @@ impl CorrentApp {
             onboarding: first_run.then_some(onboarding::Onboarding { step: 0 }),
             quitting: false,
             applied_appearance: None,
+            appearance_preview: None,
             ipc,
             handler_status: Arc::new(std::sync::Mutex::new(None)),
             window_hidden: start_hidden,
@@ -622,7 +625,7 @@ impl CorrentApp {
     }
 
     pub fn palette(&self, ctx: &Context) -> Palette {
-        theme::palette(ctx, &self.settings.appearance)
+        theme::palette(ctx, self.appearance_preview.as_ref().unwrap_or(&self.settings.appearance))
     }
 
     pub fn save_settings(&mut self) {
@@ -782,9 +785,12 @@ impl CorrentApp {
     }
 
     fn apply_appearance_if_changed(&mut self, ctx: &Context) {
-        if self.applied_appearance.as_ref() != Some(&self.settings.appearance) {
-            theme::apply(ctx, &self.settings.appearance);
-            self.applied_appearance = Some(self.settings.appearance.clone());
+        let a = self.appearance_preview.as_ref().unwrap_or(&self.settings.appearance);
+        // Also re-apply when the OS high-contrast mode is switched.
+        let key = (a.clone(), a.follow_os_high_contrast && theme::os_high_contrast());
+        if self.applied_appearance.as_ref() != Some(&key) {
+            theme::apply(ctx, a);
+            self.applied_appearance = Some(key);
         }
     }
 
