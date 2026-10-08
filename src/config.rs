@@ -453,7 +453,9 @@ impl Default for Advanced {
 }
 
 impl Settings {
-    pub fn load(paths: &Paths) -> (Settings, bool) {
+    /// Load settings. Returns (settings, first_run, warning). A damaged file is kept as
+    /// `settings.toml.bad-<time>` and every section that still parses is salvaged.
+    pub fn load(paths: &Paths) -> (Settings, bool, Option<String>) {
         let file = paths.settings_file();
         match std::fs::read_to_string(&file) {
             Ok(text) => match toml::from_str::<Settings>(&text) {
@@ -463,16 +465,54 @@ impl Settings {
                         s.downloads.save_path = default_download_dir();
                         let _ = s.save(paths);
                     }
-                    (s, false)
+                    (s, false, None)
                 }
                 Err(e) => {
-                    tracing::error!("settings file is invalid ({e}); keeping a backup and using defaults");
-                    let _ = std::fs::copy(&file, file.with_extension("toml.bad"));
-                    (Settings::default(), false)
+                    tracing::error!("settings file is invalid ({e}); salvaging what parses");
+                    let bad = file.with_extension(format!("toml.bad-{}", crate::util::now_unix()));
+                    let _ = std::fs::copy(&file, &bad);
+                    let (s, lost) = Settings::salvage(&text);
+                    let _ = s.save(paths);
+                    let what = if lost.is_empty() {
+                        "Some settings could not be read".to_string()
+                    } else {
+                        format!("These settings were reset to defaults: {}", lost.join(", "))
+                    };
+                    (s, false, Some(format!("{what}. The damaged file was kept as {}.", bad.display())))
                 }
             },
-            Err(_) => (Settings::default(), true),
+            Err(_) => (Settings::default(), true, None),
         }
+    }
+
+    /// Recover every section of a damaged settings file that still deserializes.
+    pub fn salvage(text: &str) -> (Settings, Vec<String>) {
+        let mut s = Settings::default();
+        let Ok(table) = text.parse::<toml::Table>() else {
+            return (s, vec!["all (the file is not valid TOML)".into()]);
+        };
+        let mut lost = Vec::new();
+        macro_rules! section {
+            ($key:literal, $field:ident) => {
+                if let Some(v) = table.get($key) {
+                    match v.clone().try_into() {
+                        Ok(x) => s.$field = x,
+                        Err(_) => lost.push($key.to_string()),
+                    }
+                }
+            };
+        }
+        section!("behavior", behavior);
+        section!("downloads", downloads);
+        section!("connection", connection);
+        section!("speed", speed);
+        section!("bittorrent", bittorrent);
+        section!("queue", queue);
+        section!("seeding", seeding);
+        section!("watch", watch);
+        section!("appearance", appearance);
+        section!("advanced", advanced);
+        (s, lost)
     }
 
     pub fn save(&self, paths: &Paths) -> anyhow::Result<()> {
@@ -501,6 +541,16 @@ mod tests {
         let partial: Settings = toml::from_str("[speed]\ndownload_limit = 100\n").unwrap();
         assert_eq!(partial.speed.download_limit, 100);
         assert!(partial.bittorrent.dht);
+    }
+
+    #[test]
+    fn salvage_keeps_good_sections() {
+        let text = "[speed]\ndownload_limit = 42\n\n[queue]\nmax_active_downloads = \"lots\"\n";
+        let (s, lost) = Settings::salvage(text);
+        assert_eq!(s.speed.download_limit, 42);
+        assert_eq!(lost, vec!["queue".to_string()]);
+        let (_, lost) = Settings::salvage("this is [not toml");
+        assert_eq!(lost.len(), 1);
     }
 
     #[test]

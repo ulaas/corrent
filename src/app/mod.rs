@@ -294,6 +294,7 @@ pub struct CorrentApp {
     tray_failed: bool,
     pub ctx: egui::Context,
     previous_run: crate::crash::PreviousRun,
+    pub data_notes: Vec<String>,
     pub pickers: pickers::Pickers,
     pub extras: extras::Extras,
     icon_tex: Option<egui::TextureHandle>,
@@ -359,6 +360,7 @@ impl CorrentApp {
             tray_failed: false,
             ctx: cc.egui_ctx.clone(),
             previous_run: Default::default(),
+            data_notes: Vec::new(),
             pickers: Default::default(),
             extras: Default::default(),
             icon_tex: None,
@@ -367,6 +369,61 @@ impl CorrentApp {
         }
         .init_integration()
         .with_tray(&cc.egui_ctx)
+    }
+
+    pub fn with_data_notes(mut self, notes: Vec<String>) -> Self {
+        self.data_notes = notes;
+        self
+    }
+
+    /// Persistent notes about recovered/restored data.
+    fn data_banner(&mut self, ui: &mut Ui, p: &Palette) {
+        let mut dismiss = None;
+        for (i, note) in self.data_notes.iter().enumerate() {
+            egui::Frame::new()
+                .fill(p.warn.gamma_multiply(0.12))
+                .stroke(egui::Stroke::new(1.0, p.warn.gamma_multiply(0.5)))
+                .corner_radius(egui::CornerRadius::same(10))
+                .inner_margin(egui::Margin::symmetric(14, 10))
+                .outer_margin(egui::Margin { left: 10, right: 10, top: 8, bottom: 2 })
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(egui_phosphor::regular::FLOPPY_DISK).size(20.0).color(p.warn));
+                        let w = (ui.available_width() - 230.0).max(120.0);
+                        ui.allocate_ui(egui::vec2(w, 0.0), |ui| {
+                            ui.add(egui::Label::new(egui::RichText::new(note).color(p.text)).wrap());
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if crate::ui::widgets::secondary_button(ui, "Dismiss").clicked() {
+                                dismiss = Some(i);
+                            }
+                            if crate::ui::widgets::secondary_button(ui, "Open folder").clicked() {
+                                open_path(&self.paths.data_dir);
+                            }
+                        });
+                    });
+                });
+        }
+        if let Some(i) = dismiss {
+            self.data_notes.remove(i);
+        }
+    }
+
+    pub fn export_backup(&mut self, dest: std::path::PathBuf) {
+        let paths = self.paths.clone();
+        match crate::backup::export(&paths, &dest) {
+            Ok(n) => self.toasts.push(ToastKind::Success, format!("Backed up {n} files to {}", dest.display())),
+            Err(e) => self.toasts.push(ToastKind::Error, format!("Backup failed: {e:#}")),
+        }
+    }
+
+    pub fn import_backup(&mut self, src: std::path::PathBuf) {
+        match crate::backup::stage_import(&self.paths, &src) {
+            Ok(_) => self.data_notes.push(
+                "The backup will be restored the next time Corrent starts. Quit and reopen Corrent to finish.".into(),
+            ),
+            Err(e) => self.toasts.push(ToastKind::Error, format!("Can't restore: {e:#}")),
+        }
     }
 
     pub fn with_previous_run(mut self, p: crate::crash::PreviousRun) -> Self {
@@ -480,6 +537,7 @@ impl CorrentApp {
                         self.notify("Download complete", &format!("{name} ({})", crate::util::fmt_bytes(size)));
                     }
                 }
+                EngineEvent::DataWarning(w) => self.data_notes.push(w),
                 EngineEvent::Removed { hash } => {
                     self.selected.remove(&hash);
                 }
@@ -578,6 +636,7 @@ impl eframe::App for CorrentApp {
             .frame(egui::Frame::new().fill(p.bg0).inner_margin(egui::Margin::same(0)))
             .show(ui, |ui| {
                 self.crash_banner(ui, &p);
+                self.data_banner(ui, &p);
                 self.handler_banner(ui, &p);
                 self.torrent_table(ui, &p);
             });

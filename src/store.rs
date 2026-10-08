@@ -92,6 +92,8 @@ pub struct Store {
     /// Only transfer counters changed: saved at a relaxed pace (and always on shutdown).
     soft_dirty: bool,
     last_save: std::time::Instant,
+    /// Set when loading had to recover from a damaged file.
+    pub warning: Option<String>,
 }
 
 impl Store {
@@ -103,21 +105,39 @@ impl Store {
                 _ => break,
             }
         }
-        let data = std::fs::read(&path)
-            .ok()
-            .and_then(|b| match serde_json::from_slice::<StoreData>(&b) {
+        let mut warning = None;
+        let data = match std::fs::read(&path) {
+            Err(_) => None,
+            Ok(b) => match serde_json::from_slice::<StoreData>(&b) {
                 Ok(d) => Some(d),
                 Err(e) => {
                     tracing::error!("store.json is corrupt ({e}); trying backup");
-                    None
+                    let bad = path.with_extension(format!("json.bad-{}", crate::util::now_unix()));
+                    let _ = std::fs::copy(&path, &bad);
+                    let bak = path.with_extension("json.bak");
+                    match std::fs::read(&bak).ok().and_then(|b| serde_json::from_slice::<StoreData>(&b).ok()) {
+                        Some(d) => {
+                            warning = Some(format!(
+                                "Corrent's data file was damaged and was restored from its backup; the most recent changes \
+                                 (categories, tags, totals) may be missing. The damaged file was kept as {}.",
+                                bad.display()
+                            ));
+                            Some(d)
+                        }
+                        None => {
+                            warning = Some(format!(
+                                "Corrent's data file was damaged and no usable backup exists: categories, tags and totals were \
+                                 reset. Your torrents are unaffected. The damaged file was kept as {}.",
+                                bad.display()
+                            ));
+                            None
+                        }
+                    }
                 }
-            })
-            .or_else(|| {
-                let bak = path.with_extension("json.bak");
-                std::fs::read(bak).ok().and_then(|b| serde_json::from_slice(&b).ok())
-            })
-            .unwrap_or_default();
-        Store { data, path, dirty: false, soft_dirty: false, last_save: std::time::Instant::now() }
+            },
+        }
+        .unwrap_or_default();
+        Store { data, path, dirty: warning.is_some(), soft_dirty: false, last_save: std::time::Instant::now(), warning }
     }
 
     /// Mutable access that marks the store for a prompt save.

@@ -1,0 +1,158 @@
+//! Data backup (zip export) and restore (staged, applied at the next start).
+
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+use anyhow::Context as _;
+
+use crate::config::Paths;
+
+const RESTORE_DIR: &str = ".restore";
+
+/// Files and folders that make up a profile, relative to the data dir.
+fn entries(paths: &Paths) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for f in ["settings.toml", "store.json"] {
+        let p = paths.data_dir.join(f);
+        if p.is_file() {
+            out.push(PathBuf::from(f));
+        }
+    }
+    for dir in ["session", "torrents"] {
+        let d = paths.data_dir.join(dir);
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            for e in rd.flatten() {
+                if e.path().is_file() {
+                    out.push(PathBuf::from(dir).join(e.file_name()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Write a zip with settings, app data and the engine's session to `dest`.
+pub fn export(paths: &Paths, dest: &Path) -> anyhow::Result<usize> {
+    let tmp = dest.with_extension("zip.tmp");
+    let file = std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let list = entries(paths);
+    for rel in &list {
+        let mut buf = Vec::new();
+        std::fs::File::open(paths.data_dir.join(rel))?.read_to_end(&mut buf)?;
+        let name = rel.to_string_lossy().replace('\\', "/");
+        zip.start_file(name, opts)?;
+        zip.write_all(&buf)?;
+    }
+    zip.start_file("corrent-backup.txt", opts)?;
+    writeln!(zip, "Corrent {} backup, {}", env!("CARGO_PKG_VERSION"), crate::util::fmt_date(crate::util::now_unix()))?;
+    zip.finish()?;
+    std::fs::rename(&tmp, dest)?;
+    Ok(list.len())
+}
+
+/// Validate and unpack a backup into the staging folder; it is applied at the next start.
+pub fn stage_import(paths: &Paths, src: &Path) -> anyhow::Result<usize> {
+    let file = std::fs::File::open(src).with_context(|| format!("opening {}", src.display()))?;
+    let mut zip = zip::ZipArchive::new(file).context("not a valid backup file")?;
+    let names: Vec<String> = zip.file_names().map(String::from).collect();
+    anyhow::ensure!(
+        names.iter().any(|n| n == "settings.toml" || n == "store.json"),
+        "this zip is not a Corrent backup"
+    );
+    let stage = paths.data_dir.join(RESTORE_DIR);
+    let _ = std::fs::remove_dir_all(&stage);
+    std::fs::create_dir_all(&stage)?;
+    let mut count = 0;
+    for i in 0..zip.len() {
+        let mut f = zip.by_index(i)?;
+        // enclosed_name rejects absolute paths and `..` components.
+        let Some(rel) = f.enclosed_name() else { continue };
+        let allowed = rel == Path::new("settings.toml")
+            || rel == Path::new("store.json")
+            || rel.starts_with("session")
+            || rel.starts_with("torrents");
+        if !allowed || f.is_dir() {
+            continue;
+        }
+        let out = stage.join(&rel);
+        if let Some(p) = out.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf)?;
+        std::fs::write(out, buf)?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Apply a staged restore (call at startup before anything reads the data dir).
+/// The current data is moved to `pre-restore-<time>` first.
+pub fn apply_pending(paths: &Paths) -> Option<String> {
+    let stage = paths.data_dir.join(RESTORE_DIR);
+    if !stage.is_dir() {
+        return None;
+    }
+    let keep = paths.data_dir.join(format!("pre-restore-{}", crate::util::now_unix()));
+    let result = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(&keep)?;
+        for name in ["settings.toml", "store.json", "session", "torrents"] {
+            let cur = paths.data_dir.join(name);
+            if cur.exists() {
+                std::fs::rename(&cur, keep.join(name))?;
+            }
+            let staged = stage.join(name);
+            if staged.exists() {
+                std::fs::rename(&staged, &cur)?;
+            }
+        }
+        std::fs::remove_dir_all(&stage)
+    })();
+    Some(match result {
+        Ok(()) => format!("Restored your data from a backup. The previous data was kept in {}.", keep.display()),
+        Err(e) => format!("Restoring from the backup failed ({e}). Your previous data is in {}.", keep.display()),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_stage_apply_roundtrip() {
+        let base = std::env::temp_dir().join(format!("corrent-backup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let paths = Paths { data_dir: base.join("data"), portable: true };
+        std::fs::create_dir_all(paths.session_dir()).unwrap();
+        std::fs::write(paths.settings_file(), "[speed]\ndownload_limit = 5\n").unwrap();
+        std::fs::write(paths.store_file(), "{}").unwrap();
+        std::fs::write(paths.session_dir().join("session.json"), "{\"torrents\":{}}").unwrap();
+        let zip = base.join("b.zip");
+        assert_eq!(export(&paths, &zip).unwrap(), 3);
+
+        std::fs::write(paths.settings_file(), "changed").unwrap();
+        assert_eq!(stage_import(&paths, &zip).unwrap(), 3);
+        let msg = apply_pending(&paths).unwrap();
+        assert!(msg.starts_with("Restored"));
+        assert_eq!(std::fs::read_to_string(paths.settings_file()).unwrap(), "[speed]\ndownload_limit = 5\n");
+        assert!(apply_pending(&paths).is_none());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn rejects_non_backups() {
+        let base = std::env::temp_dir().join(format!("corrent-backup-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let paths = Paths { data_dir: base.join("data"), portable: true };
+        let zip_path = base.join("x.zip");
+        let mut z = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+        z.start_file("evil.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(b"x").unwrap();
+        z.finish().unwrap();
+        assert!(stage_import(&paths, &zip_path).is_err());
+        let _ = std::fs::remove_dir_all(base);
+    }
+}

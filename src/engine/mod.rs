@@ -68,6 +68,8 @@ pub enum EngineEvent {
     Added { hash: InfoHash, name: String },
     Completed { hash: InfoHash, name: String, content_path: PathBuf, save_path: PathBuf, size: u64 },
     Removed { hash: InfoHash },
+    /// Persistent problem with the user's data (shown as a banner until dismissed).
+    DataWarning(String),
 }
 
 #[derive(Debug)]

@@ -22,6 +22,8 @@ pub enum PickTarget {
     SettingsSaveFolder,
     WatchFolderAdd,
     WatchFolderSave(usize),
+    BackupExport,
+    BackupImport,
 }
 
 pub struct Pickers {
@@ -137,6 +139,8 @@ impl CorrentApp {
                         w.save_path = Some(first);
                     }
                 }
+                PickTarget::BackupExport => self.export_backup(first),
+                PickTarget::BackupImport => self.import_backup(first),
             }
         }
     }

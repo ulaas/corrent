@@ -340,13 +340,29 @@ impl CorrentApp {
 
     fn settings_page(&mut self, ui: &mut Ui, p: &Palette, d: &mut SettingsDraft) {
         let mut browse: Option<(PickTarget, PathBuf)> = None;
-        self.settings_page_inner(ui, p, d, &mut browse);
+        let mut pick_extra: Option<u8> = None;
+        self.settings_page_inner(ui, p, d, &mut browse, &mut pick_extra);
         if let Some((target, start)) = browse {
             self.pick(target, PickKind::Folder, Some(start));
         }
+        match pick_extra {
+            Some(0) => {
+                let name = format!("corrent-backup-{}.zip", crate::util::fmt_date(crate::util::now_unix()).replace([' ', ':'], "-"));
+                self.pick(PickTarget::BackupExport, PickKind::SaveZip(name), None);
+            }
+            Some(1) => self.pick(PickTarget::BackupImport, PickKind::OpenZip, None),
+            _ => {}
+        }
     }
 
-    fn settings_page_inner(&mut self, ui: &mut Ui, p: &Palette, d: &mut SettingsDraft, browse: &mut Option<(PickTarget, PathBuf)>) {
+    fn settings_page_inner(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        d: &mut SettingsDraft,
+        browse: &mut Option<(PickTarget, PathBuf)>,
+        pick_extra: &mut Option<u8>,
+    ) {
         let s = &mut d.settings;
         match d.page {
             Page::Behavior => {
@@ -788,6 +804,16 @@ impl CorrentApp {
                             super::open_path(&self.paths.log_dir());
                         }
                     });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(format!("{}  Back up data…", icons::DOWNLOAD_SIMPLE)).clicked() {
+                            *pick_extra = Some(0);
+                        }
+                        if ui.button(format!("{}  Restore from backup…", icons::UPLOAD_SIMPLE)).clicked() {
+                            *pick_extra = Some(1);
+                        }
+                    });
+                    ui.label(RichText::new("Backups contain settings, categories/tags and the list of torrents (not the downloaded files).").small().color(p.text_dim));
                     ui.add_space(8.0);
                     if ui.button(RichText::new(format!("{}  Reset all settings to defaults", icons::ARROW_COUNTER_CLOCKWISE)).color(p.warn)).clicked() {
                         let keep_behavior_handlers = (s.behavior.register_magnet_handler, s.behavior.register_torrent_handler);

@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod backup;
 mod crash;
 mod engine;
 mod integration;
@@ -65,7 +66,9 @@ fn main() -> eframe::Result {
     }
     let log_dir = paths.log_dir();
     std::thread::spawn(util::local_offset_secs);
-    let (settings, first_run) = Settings::load(&paths);
+    let restore_note = backup::apply_pending(&paths);
+    let (settings, first_run, settings_warning) = Settings::load(&paths);
+    let data_notes: Vec<String> = restore_note.into_iter().chain(settings_warning).collect();
     let launch: Vec<AddSource> = items.iter().filter_map(|a| AddSource::parse(a)).collect();
     let start_minimized = flag("--minimized") || settings.behavior.start_minimized;
 
@@ -113,7 +116,8 @@ fn main() -> eframe::Result {
             let _ = ctx_cell.set(cc.egui_ctx.clone());
             Ok(Box::new(
                 app::CorrentApp::new(cc, handle, paths, settings, first_run, launch, ipc_rx, start_minimized)
-                    .with_previous_run(previous_run),
+                    .with_previous_run(previous_run)
+                    .with_data_notes(data_notes),
             ))
         }),
     );

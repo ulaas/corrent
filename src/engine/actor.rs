@@ -154,6 +154,9 @@ impl Actor {
 
     pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<EngineCommand>) {
         let mut internal_rx = self.internal_rx.take().expect("run called once");
+        if let Some(w) = self.store.warning.take() {
+            self.emit(EngineEvent::DataWarning(w));
+        }
         self.start_session().await;
         let mut tick = tokio::time::interval(Duration::from_millis(self.settings.advanced.refresh_interval_ms.clamp(200, 5000)));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
