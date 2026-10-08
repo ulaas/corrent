@@ -160,6 +160,7 @@ mod tests {
         )
         .unwrap();
         let icon_label = regex::Regex::new(r#"format!\("\{\}\s+(\{\}\s+)?[A-Za-z]{2,}"#).unwrap();
+        let prose = regex::Regex::new(r#"format!\(\s*"[^"]*[A-Za-z]{3,} [A-Za-z]{2,}"#).unwrap();
         let mut found = Vec::new();
         for dir in ["src/app", "src/ui"] {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
@@ -178,7 +179,9 @@ mod tests {",
                     None => text.as_str(),
                 };
                 for (n, line) in code.lines().enumerate() {
-                    if calls.is_match(line) || icon_label.is_match(line) {
+                    // Sentences built with format! (the file header comment of exported themes is fine).
+                    let sentence = prose.is_match(line) && !line.contains("# Corrent theme");
+                    if calls.is_match(line) || icon_label.is_match(line) || sentence {
                         found.push(format!("{}:{}: {}", p.display(), n + 1, line.trim()));
                     }
                 }

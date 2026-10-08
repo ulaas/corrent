@@ -118,10 +118,38 @@ impl WebApiServer {
 fn router(state: Arc<ApiState>) -> Router {
     let api = qbt::routes()
         .layer(axum::middleware::from_fn_with_state(state.clone(), require_login))
-        .route("/api/v2/auth/login", axum::routing::post(login).get(login));
+        .route("/api/v2/auth/login", axum::routing::post(login).get(login))
+        // The web UI's static files are public; everything it does goes through the API.
+        .route("/", axum::routing::get(|| async { webui("text/html; charset=utf-8", WEBUI_HTML) }))
+        .route("/webui/app.js", axum::routing::get(|| async { webui("text/javascript; charset=utf-8", WEBUI_JS) }))
+        .route("/webui/style.css", axum::routing::get(|| async { webui("text/css; charset=utf-8", WEBUI_CSS) }));
     api.layer(axum::middleware::from_fn_with_state(state.clone(), check_origin))
         .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
         .with_state(state)
+}
+
+const WEBUI_HTML: &str = include_str!("../../assets/webui/index.html");
+const WEBUI_JS: &str = include_str!("../../assets/webui/app.js");
+const WEBUI_CSS: &str = include_str!("../../assets/webui/style.css");
+
+/// A web UI file with headers that keep it from being framed, sniffed or extended with
+/// scripts from elsewhere.
+fn webui(content_type: &'static str, body: &'static str) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self';                  form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+            ),
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::REFERRER_POLICY, "same-origin"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 fn host_of(v: &str) -> &str {

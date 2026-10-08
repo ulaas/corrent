@@ -573,6 +573,17 @@ async fn webapi_behaves_like_qbittorrent_for_sonarr() {
     let base = format!("http://127.0.0.1:{}/api/v2", server.addr.port());
     let http = reqwest::Client::new();
 
+    // The web UI is served without a session, with protective headers.
+    let root = format!("http://127.0.0.1:{}", server.addr.port());
+    let r = http.get(format!("{root}/")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(r.headers()["content-security-policy"].to_str().unwrap().contains("frame-ancestors 'none'"));
+    assert_eq!(r.headers()["x-frame-options"], "DENY");
+    assert!(r.text().await.unwrap().contains("/webui/app.js"));
+    let r = http.get(format!("{root}/webui/app.js")).send().await.unwrap();
+    assert!(r.headers()["content-type"].to_str().unwrap().starts_with("text/javascript"));
+    assert!(r.text().await.unwrap().contains("textContent"));
+
     // Wrong password, then no session.
     let r = http
         .post(format!("{base}/auth/login"))

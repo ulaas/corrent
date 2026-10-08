@@ -1361,7 +1361,7 @@ impl CorrentApp {
                         super::remote::RemoteStatus::Starting => (icons::CIRCLE_NOTCH, p.accent, t!("Starting…").to_string()),
                         super::remote::RemoteStatus::Running(a) => {
                             let host = if a.ip().is_unspecified() { t!("this computer's address").to_string() } else { a.ip().to_string() };
-                            (icons::CHECK_CIRCLE, p.success, format!("Running — host {host}, port {}", a.port()))
+                            (icons::CHECK_CIRCLE, p.success, t!("Running — host {host}, port {port}", host = host, port = a.port()))
                         }
                         super::remote::RemoteStatus::Failed(e) => (icons::WARNING_CIRCLE, p.error, e.clone()),
                     };
@@ -1369,6 +1369,17 @@ impl CorrentApp {
                         ui.label(RichText::new(icon).color(color));
                         ui.label(RichText::new(text).color(color));
                     });
+                    if let super::remote::RemoteStatus::Running(a) = status {
+                        ui.add_space(4.0);
+                        let url = format!("http://127.0.0.1:{}/", a.port());
+                        if ui
+                            .button(format!("{}  {}", icons::BROWSER, t!("Open the web interface")))
+                            .on_hover_text(t!("Control Corrent from a browser (sign in with the username and password above)."))
+                            .clicked()
+                        {
+                            let _ = open::that_detached(&url);
+                        }
+                    }
                 });
             }
             Page::Search => {

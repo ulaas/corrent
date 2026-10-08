@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Corrent</title>
+<link rel="stylesheet" href="/webui/style.css">
+<script src="/webui/app.js" defer></script>
+</head>
+<body>
+<div id="login" class="center" hidden>
+  <form id="login-form" class="card">
+    <div class="brand"><span class="logo">↓</span> Corrent</div>
+    <label>Username <input id="user" name="username" autocomplete="username" required></label>
+    <label>Password <input id="pass" name="password" type="password" autocomplete="current-password" required></label>
+    <p id="login-error" class="error" hidden></p>
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <div class="brand"><span class="logo">↓</span> Corrent</div>
+    <div class="speeds"><span id="down" class="down">↓ –</span><span id="up" class="up">↑ –</span></div>
+    <button id="logout" class="ghost">Sign out</button>
+  </header>
+  <section class="toolbar">
+    <form id="add-form">
+      <input id="add-url" placeholder="Magnet link or .torrent URL" autocomplete="off">
+      <select id="add-category"><option value="">No category</option></select>
+      <button type="submit" class="primary">Add</button>
+      <label class="file">Upload .torrent<input id="add-file" type="file" accept=".torrent,application/x-bittorrent" multiple></label>
+    </form>
+    <div class="filters">
+      <select id="filter">
+        <option value="all">All</option>
+        <option value="downloading">Downloading</option>
+        <option value="seeding">Seeding</option>
+        <option value="completed">Completed</option>
+        <option value="paused">Paused</option>
+        <option value="active">Active</option>
+        <option value="errored">Errored</option>
+      </select>
+      <input id="search" placeholder="Search" autocomplete="off">
+    </div>
+  </section>
+  <main>
+    <table>
+      <thead><tr><th>Name</th><th class="num">Size</th><th>Progress</th><th>Status</th><th class="num">Down</th><th class="num">Up</th><th class="num">Ratio</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p id="empty" class="muted center-text" hidden>No torrents.</p>
+  </main>
+  <div id="toast" class="toast" hidden></div>
+</div>
+</body>
+</html>
