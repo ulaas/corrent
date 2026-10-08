@@ -20,14 +20,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-wix (WiX 3 is preinstalled on the runner)
-        run: cargo install cargo-wix --locked
+      - name: Install WiX 3 and cargo-wix
+        run: |
+          choco install wixtoolset --version 3.14.1 -y --no-progress
+          echo "C:\Program Files (x86)\WiX Toolset v3.14\bin" >> $env:GITHUB_PATH
+          cargo install cargo-wix --locked
       - name: Portable zip and MSI
         run: powershell -File scripts/package-windows.ps1 -Msi
       - name: winget manifests
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
+          # Tag builds use the tag; manual runs use the version in Cargo.toml.
+          $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart('v') } else { (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value }
           $msi = Get-ChildItem dist/*.msi | Select-Object -First 1
           $sha = (Get-FileHash $msi -Algorithm SHA256).Hash
           $url = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$($msi.Name)"
@@ -66,15 +70,34 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    env:
+      # `secrets` can't be used in step conditions directly.
+      HAS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-bundle --locked
-      - name: App bundle and dmg (signed only when the owner adds the secrets)
+      - name: Import the signing certificate (only when the owner adds the secrets)
+        if: env.HAS_SIGNING == 'true'
+        env:
+          P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY_P8 }}
+        run: |
+          echo "$P12" | base64 --decode > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import cert.p12 -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          echo "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
+          echo "NOTARY_KEY_PATH=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
+      - name: App bundle and dmg
         env:
           CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
-          NOTARY_PROFILE: ${{ secrets.MACOS_NOTARY_PROFILE }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
         run: scripts/package-macos.sh
       - uses: actions/upload-artifact@v4
         with:

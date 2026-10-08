@@ -74,7 +74,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 # and .torrent document type declared, so Launch Services can route them to Corrent.
 [package.metadata.bundle]
 name = "Corrent"
-identifier = "app.corrent.Corrent"
+identifier = "io.github.ulaas.Corrent"
 icon = ["assets/icon/corrent-256.png", "assets/icon/corrent-512.png"]
 category = "public.app-category.utilities"
 short_description = "A beautiful, stable BitTorrent client"

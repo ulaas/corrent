@@ -51,10 +51,12 @@ other folders go through the file chooser portal.
 
 `cargo bundle --release` uses `[package.metadata.bundle]` in `Cargo.toml` (magnet URL scheme,
 `.torrent` document type from `packaging/macos/Info.plist.ext`). `scripts/package-macos.sh` wraps
-the app in a dmg. Signing and notarization need the owner's Developer ID: set
-`CODESIGN_IDENTITY` and `NOTARY_PROFILE` locally, or the `MACOS_CODESIGN_IDENTITY` /
-`MACOS_NOTARY_PROFILE` secrets plus a certificate import step in CI. Unsigned builds work after
-right-click › Open.
+the app in a dmg. The app is universal (Apple silicon and Intel).
+Signing and notarization need the owner's Developer ID: locally set `CODESIGN_IDENTITY` and
+`NOTARY_PROFILE` (a `notarytool store-credentials` profile); in CI add the secrets
+`MACOS_CERTIFICATE_P12` (base64), `MACOS_CERTIFICATE_PASSWORD`, `MACOS_CODESIGN_IDENTITY` and an
+App Store Connect API key (`MACOS_NOTARY_KEY_P8`, `MACOS_NOTARY_KEY_ID`, `MACOS_NOTARY_ISSUER`).
+Without them the dmg is unsigned and opens after right-click › Open.
 
 ## Checklist for a release
 
