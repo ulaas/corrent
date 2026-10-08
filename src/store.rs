@@ -43,6 +43,9 @@ pub struct TorrentMeta {
     pub seed_ratio_override: Option<f32>,
     pub seed_time_override_min: Option<u32>,
     pub source_magnet: Option<String>,
+    /// Per-torrent speed limits in KiB/s (0 = no limit).
+    pub down_limit_kib: u32,
+    pub up_limit_kib: u32,
 }
 
 impl TorrentMeta {

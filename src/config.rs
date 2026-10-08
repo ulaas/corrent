@@ -180,7 +180,12 @@ pub struct Connection {
     pub proxy_password: String,
     pub max_peers_global: usize,
     pub max_peers_per_torrent: usize,
+    /// Blocklist: http(s)/file URL or a local path; P2P format, plain or gzip.
     pub blocklist_url: String,
+    /// Only connect to peers in this list (empty = everyone not blocked).
+    pub allowlist_url: String,
+    /// The user's own blocked addresses: IPs, CIDR blocks or ranges, one per line.
+    pub custom_blocklist: String,
     pub connect_timeout_secs: u64,
 }
 
@@ -202,6 +207,8 @@ impl Default for Connection {
             max_peers_global: 500,
             max_peers_per_torrent: 0,
             blocklist_url: String::new(),
+            allowlist_url: String::new(),
+            custom_blocklist: String::new(),
             connect_timeout_secs: 10,
         }
     }

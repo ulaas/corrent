@@ -535,6 +535,27 @@ impl Actor {
                 self.store.meta_mut(hash).display_name = name.filter(|n| !n.trim().is_empty());
             }
             EngineCommand::QueuePlace { hashes, before } => self.store.queue_place(&hashes, before),
+            EngineCommand::SetTorrentLimits { hashes, down_kib, up_kib } => {
+                for h in &hashes {
+                    let m = self.store.meta_mut(*h);
+                    m.down_limit_kib = down_kib;
+                    m.up_limit_kib = up_kib;
+                    if let Some(t) = self.handle_for(h) {
+                        t.set_ratelimits(session::limits(down_kib, up_kib));
+                    }
+                }
+            }
+            EngineCommand::ReloadIpFilter => {
+                if self.busy.is_empty() {
+                    self.stop_session().await;
+                    self.start_session().await;
+                    if self.engine_state == EngineState::Running {
+                        self.toast(ToastKind::Success, "IP filter reloaded.");
+                    }
+                } else {
+                    self.toast(ToastKind::Info, "Try again once running operations finish.");
+                }
+            }
             EngineCommand::QueueMove { hashes, mv } => {
                 // Move in an order that keeps the relative order of a multi-selection.
                 let mut hs = hashes;
@@ -756,6 +777,9 @@ impl Actor {
         {
             self.toast(ToastKind::Error, format!("Could not resume: {e:#}"));
         }
+        // Going live resets the limiter to the add-time limits.
+        let m = self.store.get(&hash).map(|m| (m.down_limit_kib, m.up_limit_kib)).unwrap_or((0, 0));
+        h.set_ratelimits(session::limits(m.0, m.1));
     }
 
     fn delete(&mut self, hash: InfoHash, with_data: bool) {
@@ -924,6 +948,18 @@ impl Actor {
     /// Keep the engine in line with Corrent's records: a torrent that should be paused (by the
     /// user, the queue or a seeding limit) but is running gets paused again. librqbit ignores a
     /// pause sent while a torrent is still initializing, so this makes pauses stick.
+    /// librqbit resets a torrent's limiter whenever it goes live again: keep ours applied.
+    fn apply_torrent_limits(&self, handles: &[(usize, Arc<ManagedTorrent>)]) {
+        for (_, h) in handles {
+            let hash = InfoHash(h.info_hash().0);
+            let (down, up) = self.store.get(&hash).map(|m| (m.down_limit_kib, m.up_limit_kib)).unwrap_or((0, 0));
+            let want = session::limits(down, up);
+            if h.ratelimits().is_some_and(|cur| cur != want) {
+                h.set_ratelimits(want);
+            }
+        }
+    }
+
     fn enforce_pauses(&mut self, views: &[TorrentView], handles: &[(usize, Arc<ManagedTorrent>)]) {
         let Some(sess) = self.session.clone() else { return };
         let running = |s: TorrentState| {
@@ -1267,6 +1303,7 @@ impl Actor {
 
         if self.tick_count.is_multiple_of(2) {
             self.enforce_pauses(&views, &handles);
+            self.apply_torrent_limits(&handles);
         }
         if self.settings.queue.enabled && self.tick_count.is_multiple_of(4) {
             self.run_queue(&views, &handles);
@@ -1300,6 +1337,8 @@ impl Actor {
             session_downloaded: self.session_down_total,
             session_uploaded: self.session_up_total,
             stream: self.stream.as_ref().map(|s| (s.port, s.token.clone())),
+            blocked_ranges: sess.blocklist.len(),
+            allowed_ranges: sess.allowlist.as_ref().map(|a| a.len()),
         };
 
         // Activity sparklines: the last minute or so, refreshed every other tick.
@@ -1528,6 +1567,8 @@ impl Actor {
             busy,
             last_activity: m.last_activity,
             seeding_secs: m.seeding_seconds,
+            down_limit_kib: m.down_limit_kib,
+            up_limit_kib: m.up_limit_kib,
             pending: false,
             restore_failed: false,
         };
@@ -1724,13 +1765,20 @@ impl Actor {
         }
         let find = |hash: &InfoHash| handles.iter().find(|(_, h)| h.info_hash().0 == hash.0).map(|(_, h)| h.clone());
         let pause: Vec<_> = to_pause.iter().filter_map(find).collect();
-        let resume: Vec<_> = to_resume.iter().filter_map(find).collect();
+        let resume: Vec<_> = to_resume
+            .iter()
+            .filter_map(|hash| {
+                let m = self.store.get(hash).map(|m| (m.down_limit_kib, m.up_limit_kib)).unwrap_or((0, 0));
+                find(hash).map(|h| (h, session::limits(m.0, m.1)))
+            })
+            .collect();
         tokio::spawn(async move {
             for h in pause {
                 let _ = sess.pause(&h).await;
             }
-            for h in resume {
+            for (h, limits) in resume {
                 let _ = sess.unpause(&h).await;
+                h.set_ratelimits(limits);
             }
         });
     }
@@ -1807,6 +1855,8 @@ fn pending_view(p: &PendingAdd) -> TorrentView {
         busy: Some("Fetching metadata…".into()),
         last_activity: 0,
         seeding_secs: 0,
+        down_limit_kib: 0,
+        up_limit_kib: 0,
         pending: true,
         restore_failed: false,
     }

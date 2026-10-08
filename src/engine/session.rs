@@ -23,7 +23,13 @@ pub fn limits(down_kib: u32, up_kib: u32) -> LimitsConfig {
     LimitsConfig { download_bps: kib_limit(down_kib), upload_bps: kib_limit(up_kib) }
 }
 
-fn options(paths: &Paths, s: &Settings, port_override: Option<u16>, alt: bool) -> SessionOptions {
+fn options(
+    paths: &Paths,
+    s: &Settings,
+    port_override: Option<u16>,
+    alt: bool,
+    lists: &super::ipfilter::Prepared,
+) -> SessionOptions {
     let c = &s.connection;
     let bt = &s.bittorrent;
     let port = port_override.unwrap_or(if c.random_port { 0 } else { c.listen_port });
@@ -75,7 +81,9 @@ fn options(paths: &Paths, s: &Settings, port_override: Option<u16>, alt: bool) -
         }),
         concurrent_init_limit: Some(s.advanced.concurrent_init_limit.max(1)),
         ratelimits: limits(down, up),
-        blocklist_url: Some(c.blocklist_url.trim().to_string()).filter(|u| !u.is_empty()),
+        // Prepared local files (see ipfilter.rs); a URL here would make a dead server fatal.
+        blocklist_url: lists.blocklist.as_deref().and_then(super::ipfilter::file_url),
+        allowlist_url: lists.allowlist.as_deref().and_then(super::ipfilter::file_url),
         trackers,
         peer_limit: (c.max_peers_global > 0).then_some(c.max_peers_global),
         disable_local_service_discovery: !bt.lsd,
@@ -91,14 +99,16 @@ pub async fn create(paths: &Paths, s: &Settings, alt: bool) -> anyhow::Result<(A
     std::fs::create_dir_all(paths.session_dir())?;
     let out = s.downloads.save_path.clone();
     let _ = std::fs::create_dir_all(&out);
-    match Session::new_with_opts(out.clone(), options(paths, s, None, alt)).await {
-        Ok(sess) => Ok((sess, None)),
+    let lists = super::ipfilter::prepare(paths, &s.connection).await;
+    let list_warning = (!lists.warnings.is_empty()).then(|| lists.warnings.join(" "));
+    match Session::new_with_opts(out.clone(), options(paths, s, None, alt, &lists)).await {
+        Ok(sess) => Ok((sess, list_warning)),
         Err(e) if !s.connection.random_port => {
             tracing::warn!(
                 "could not start session on port {}: {e:#}; retrying on a random port",
                 s.connection.listen_port
             );
-            let sess = Session::new_with_opts(out, options(paths, s, Some(0), alt)).await?;
+            let sess = Session::new_with_opts(out, options(paths, s, Some(0), alt, &lists)).await?;
             Ok((
                 sess,
                 Some(format!("Port {} is unavailable ({e}). Using a random port instead.", s.connection.listen_port)),

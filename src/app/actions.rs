@@ -134,6 +134,9 @@ impl CorrentApp {
                 }
             }
         });
+        if item(ui, icons::GAUGE, "Speed limits…") {
+            self.open_speed_limits(hashes.clone());
+        }
         if item(ui, icons::SCALES, "Seeding limits…") {
             self.open_seed_limits(hashes.clone());
         }

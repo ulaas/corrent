@@ -24,6 +24,7 @@ pub enum Modal {
     Category { name: String, path: String, apply_to: Option<Vec<InfoHash>>, editing: Option<String> },
     Tag { name: String, apply_to: Option<Vec<InfoHash>> },
     SeedLimits { hashes: Vec<InfoHash>, ratio_on: bool, ratio: f32, time_on: bool, minutes: u32 },
+    SpeedLimits { hashes: Vec<InfoHash>, down: u32, up: u32 },
     Trackers { hash: InfoHash, text: String },
     ConfirmExit,
 }
@@ -176,6 +177,18 @@ impl CorrentApp {
             time_on: s.time_enabled,
             minutes: s.time_minutes,
         });
+    }
+
+    pub fn open_speed_limits(&mut self, hashes: Vec<InfoHash>) {
+        // Start from the first torrent's current limits.
+        let (down, up) = self
+            .snap
+            .torrents
+            .iter()
+            .find(|t| hashes.first() == Some(&t.hash))
+            .map(|t| (t.down_limit_kib, t.up_limit_kib))
+            .unwrap_or((0, 0));
+        self.modal = Some(Modal::SpeedLimits { hashes, down, up });
     }
 
     pub fn open_trackers_dialog(&mut self, hash: InfoHash) {
@@ -513,6 +526,64 @@ impl CorrentApp {
                                 hashes: hashes.clone(),
                                 ratio: None,
                                 minutes: None,
+                            });
+                            keep = false;
+                        }
+                        if secondary_button(ui, "Cancel").clicked() {
+                            keep = false;
+                        }
+                    });
+                }
+                Modal::SpeedLimits { hashes, down, up } => {
+                    ui.set_width(420.0);
+                    title(ui, p, icons::GAUGE, "Speed limits");
+                    let n = hashes.len();
+                    ui.label(
+                        RichText::new(if n == 1 {
+                            "Limits for this torrent, on top of the global limits.".to_string()
+                        } else {
+                            format!("Limits for each of the {n} selected torrents, on top of the global limits.")
+                        })
+                        .color(p.text_dim),
+                    );
+                    ui.add_space(8.0);
+                    egui::Grid::new("speed_limits").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
+                        for (label, v) in [("Download", &mut *down), ("Upload", &mut *up)] {
+                            ui.label(label);
+                            ui.add(
+                                egui::DragValue::new(v)
+                                    .range(0..=10_000_000)
+                                    .speed(16.0)
+                                    .custom_formatter(|n, _| {
+                                        if n <= 0.0 { "∞ Unlimited".into() } else { format!("{n:.0} KiB/s") }
+                                    })
+                                    .custom_parser(|s| {
+                                        let t = s.trim().trim_end_matches("KiB/s").trim();
+                                        if t.is_empty() || t == "∞" || t.eq_ignore_ascii_case("unlimited") {
+                                            Some(0.0)
+                                        } else {
+                                            t.parse().ok()
+                                        }
+                                    }),
+                            );
+                            ui.end_row();
+                        }
+                    });
+                    ui.add_space(14.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if primary_button(ui, p, "Apply").clicked() {
+                            self.engine.send(EngineCommand::SetTorrentLimits {
+                                hashes: hashes.clone(),
+                                down_kib: *down,
+                                up_kib: *up,
+                            });
+                            keep = false;
+                        }
+                        if secondary_button(ui, "No limits").clicked() {
+                            self.engine.send(EngineCommand::SetTorrentLimits {
+                                hashes: hashes.clone(),
+                                down_kib: 0,
+                                up_kib: 0,
                             });
                             keep = false;
                         }

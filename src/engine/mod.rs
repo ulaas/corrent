@@ -6,6 +6,7 @@ mod automation;
 pub mod creator;
 #[cfg(test)]
 mod e2e_tests;
+pub mod ipfilter;
 pub mod logic;
 mod restore;
 mod session;
@@ -154,6 +155,14 @@ pub enum EngineCommand {
         hash: InfoHash,
         name: Option<String>,
     },
+    /// Per-torrent speed limits in KiB/s (0 = no limit).
+    SetTorrentLimits {
+        hashes: Vec<InfoHash>,
+        down_kib: u32,
+        up_kib: u32,
+    },
+    /// Re-read the IP filter lists (restarts the session).
+    ReloadIpFilter,
     /// Drag & drop in the queue: put these before `before` (None = at the end).
     QueuePlace {
         hashes: Vec<InfoHash>,

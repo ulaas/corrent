@@ -691,3 +691,60 @@ async fn webapi_behaves_like_qbittorrent_for_sonarr() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Corrent seeds with a per-torrent upload limit (set while live, then kept across a pause and
+/// resume); a plain librqbit client downloads from it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn per_torrent_speed_limit_applies_and_survives_resume() {
+    let dir = temp_dir("limits");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    download(&l, &s, &dir).await;
+    let port = l.engine.snapshot().session.listen_port.expect("Corrent listens");
+    l.engine.send(EngineCommand::SetTorrentLimits { hashes: vec![s.hash], down_kib: 0, up_kib: 64 });
+    wait_for(&l, "limit stored", 10, |sn| find(sn, s.hash).is_some_and(|t| t.up_limit_kib == 64)).await;
+    l.engine.send(EngineCommand::Pause(vec![s.hash]));
+    wait_for(&l, "paused", 20, |sn| find(sn, s.hash).is_some_and(|t| t.state == TorrentState::Completed)).await;
+    l.engine.send(EngineCommand::Resume(vec![s.hash]));
+    wait_for(&l, "seeding again", 20, |sn| complete(sn, s.hash)).await;
+
+    // A second client that only knows Corrent as a peer.
+    let other = dir.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let opts = SessionOptions {
+        dht: None,
+        persistence: None,
+        disable_trackers: true,
+        disable_local_service_discovery: true,
+        listen: None,
+        ..Default::default()
+    };
+    let sess = Session::new_with_opts(other.clone(), opts).await.unwrap();
+    let resp = sess
+        .add_torrent(
+            librqbit::AddTorrent::from_bytes(s.bytes.clone()),
+            Some(librqbit::AddTorrentOptions {
+                initial_peers: Some(vec![SocketAddr::from(([127, 0, 0, 1], port))]),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let h = resp.into_handle().unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let got = h.stats().progress_bytes;
+    assert!(got > 0, "the client downloads from Corrent");
+    assert!(got < 1024 * 1024, "64 KiB/s upload limit holds after a resume: {got} bytes in 4 s");
+
+    // Lifting the limit lets it finish.
+    l.engine.send(EngineCommand::SetTorrentLimits { hashes: vec![s.hash], down_kib: 0, up_kib: 0 });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !h.stats().finished {
+        assert!(Instant::now() < deadline, "download didn't finish once unlimited");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    drop(h);
+    drop(sess);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -792,12 +792,57 @@ impl CorrentApp {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     heading(ui, p, "IP filtering");
-                    row(ui, p, "Blocklist URL", "A P2P/eMule-format blocklist downloaded at startup.", |ui| {
+                    row(
+                        ui,
+                        p,
+                        "Blocklist",
+                        "P2P-format list (plain or .gz): a web address or a file on this computer. Loaded when the \
+                         engine starts; the last download is reused if the server is unreachable.",
+                        |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut s.connection.blocklist_url)
+                                    .desired_width(250.0)
+                                    .hint_text("https://… or C:\\lists\\level1.gz"),
+                            );
+                        },
+                    );
+                    row(ui, p, "Allowlist", "If set, only peers in this list are used. Leave empty normally.", |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut s.connection.blocklist_url)
+                            egui::TextEdit::singleline(&mut s.connection.allowlist_url)
                                 .desired_width(250.0)
-                                .hint_text("https://…"),
+                                .hint_text("Not used"),
                         );
+                    });
+                    ui.label(RichText::new("Your own blocked addresses").color(p.text));
+                    ui.label(
+                        RichText::new("One per line: an IP, a CIDR block (10.0.0.0/8) or a range (1.2.3.4-1.2.3.9).")
+                            .small()
+                            .color(p.text_dim),
+                    );
+                    ui.add(
+                        egui::TextEdit::multiline(&mut s.connection.custom_blocklist)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                    for e in crate::engine::ipfilter::check_entries(&s.connection.custom_blocklist).iter().take(3) {
+                        ui.label(RichText::new(format!("{}  {e}", icons::WARNING)).small().color(p.warn));
+                    }
+                    ui.add_space(4.0);
+                    let sv = &self.snap.session;
+                    ui.horizontal(|ui| {
+                        let mut text = format!("{} blocked ranges loaded", sv.blocked_ranges);
+                        if let Some(a) = sv.allowed_ranges {
+                            text.push_str(&format!(" · {a} allowed"));
+                        }
+                        ui.label(RichText::new(text).small().color(p.text_dim));
+                        if ui
+                            .button(format!("{}  Reload lists", icons::ARROWS_CLOCKWISE))
+                            .on_hover_text("Download the lists again (reconnects all torrents)")
+                            .clicked()
+                        {
+                            self.engine.send(EngineCommand::ReloadIpFilter);
+                        }
                     });
                 });
             }

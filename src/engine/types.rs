@@ -124,6 +124,9 @@ pub struct TorrentView {
     pub busy: Option<String>,
     pub last_activity: i64,
     pub seeding_secs: u64,
+    /// Per-torrent limits in KiB/s (0 = none).
+    pub down_limit_kib: u32,
+    pub up_limit_kib: u32,
     pub pending: bool,
     /// The engine could not load this torrent at startup (see `error`).
     pub restore_failed: bool,
@@ -197,6 +200,9 @@ pub struct SessionView {
     pub session_uploaded: u64,
     /// Local streaming server (port, URL token) for playing files while they download.
     pub stream: Option<(u16, String)>,
+    /// Address ranges loaded from the IP filter (blocked, allowed).
+    pub blocked_ranges: usize,
+    pub allowed_ranges: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

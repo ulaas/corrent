@@ -52,6 +52,8 @@ pub(super) fn routes() -> Router<Arc<ApiState>> {
         .route("/api/v2/torrents/removeTags", post(remove_tags))
         .route("/api/v2/torrents/setShareLimits", post(share_limits))
         .route("/api/v2/torrents/setForceStart", post(force_start))
+        .route("/api/v2/torrents/setDownloadLimit", post(|s: St, r: Request| set_limit(s, r, true)))
+        .route("/api/v2/torrents/setUploadLimit", post(|s: St, r: Request| set_limit(s, r, false)))
         .route("/api/v2/torrents/topPrio", post(|s: St, r: Request| queue(s, r, crate::store::QueueMove::Top)))
         .route("/api/v2/torrents/bottomPrio", post(|s: St, r: Request| queue(s, r, crate::store::QueueMove::Bottom)))
         .route("/api/v2/torrents/increasePrio", post(|s: St, r: Request| queue(s, r, crate::store::QueueMove::Up)))
@@ -188,8 +190,8 @@ fn torrent_json(t: &TorrentView) -> Value {
         "inactive_seeding_time_limit": -2,
         "max_ratio": -1,
         "max_seeding_time": -1,
-        "dl_limit": -1,
-        "up_limit": -1,
+        "dl_limit": if t.down_limit_kib == 0 { -1 } else { t.down_limit_kib as i64 * 1024 },
+        "up_limit": if t.up_limit_kib == 0 { -1 } else { t.up_limit_kib as i64 * 1024 },
         "force_start": false,
         "seq_dl": false,
         "f_l_piece_prio": false,
@@ -638,6 +640,24 @@ async fn share_limits(State(st): St, req: Request) -> Response {
     let ratio = share_limit::<f32>(f.get("ratioLimit"));
     let minutes = share_limit::<u32>(f.get("seedingTimeLimit"));
     st.engine.send(EngineCommand::SetSeedLimits { hashes: hashes(&st, &f), ratio, minutes });
+    ok()
+}
+
+/// `limit` in bytes/s; 0 or -1 = none. The other direction keeps its current value.
+async fn set_limit(State(st): St, req: Request, download: bool) -> Response {
+    let f = read_form(req).await;
+    let kib = f
+        .get("limit")
+        .and_then(|l| l.trim().parse::<i64>().ok())
+        .filter(|l| *l > 0)
+        .map(|l| ((l + 1023) / 1024) as u32);
+    let snap = st.engine.snapshot();
+    for h in hashes(&st, &f) {
+        let Some(t) = snap.torrents.iter().find(|t| t.hash == h) else { continue };
+        let (down_kib, up_kib) =
+            if download { (kib.unwrap_or(0), t.up_limit_kib) } else { (t.down_limit_kib, kib.unwrap_or(0)) };
+        st.engine.send(EngineCommand::SetTorrentLimits { hashes: vec![h], down_kib, up_kib });
+    }
     ok()
 }
 

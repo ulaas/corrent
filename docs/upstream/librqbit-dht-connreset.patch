@@ -1,0 +1,31 @@
+diff -ru --strip-trailing-cr a/src/dht.rs src/dht.rs
+--- a/src/dht.rs	2006-07-24 04:21:28.000000000 +0300
++++ b/src/dht.rs	2026-10-08 01:24:50.253890600 +0300
+@@ -1183,7 +1183,26 @@
+         let reader = async {
+             let mut buf = vec![0u8; 16384];
+             loop {
+-                let (size, addr) = socket.recv_from(&mut buf).await.map_err(Error::Recv)?;
++                // CORRENT PATCH: on Windows an ICMP "port unreachable" for an earlier datagram
++                // surfaces as WSAECONNRESET on the next recv. That is per-remote noise, not a
++                // socket failure, so keep reading instead of killing the whole DHT.
++                let (size, addr) = match socket.recv_from(&mut buf).await {
++                    Ok(v) => v,
++                    Err(e)
++                        if matches!(
++                            e.kind(),
++                            std::io::ErrorKind::ConnectionReset
++                                | std::io::ErrorKind::ConnectionRefused
++                                | std::io::ErrorKind::ConnectionAborted
++                                | std::io::ErrorKind::HostUnreachable
++                                | std::io::ErrorKind::NetworkUnreachable
++                        ) || e.raw_os_error() == Some(10040) =>
++                    {
++                        trace!("ignoring transient DHT recv error: {e}");
++                        continue;
++                    }
++                    Err(e) => return Err(Error::Recv(e)),
++                };
+                 match bprotocol::deserialize_message::<ByteBufOwned>(&buf[..size]) {
+                     Ok(msg) => match output_tx.send((msg, addr)).await {
+                         Ok(_) => {}

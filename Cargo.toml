@@ -35,6 +35,7 @@ feed-rs = { version = "=3.0.0", default-features = false }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "form"] }
 regex = "1.13"
 quick-xml = "=0.42.0"
+flate2 = "1"
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "multipart", "json"] }
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
@@ -84,6 +85,7 @@ linux_mime_types = ["x-scheme-handler/magnet", "application/x-bittorrent"]
 [patch.crates-io]
 # Keeps the DHT alive on Windows; see vendor/librqbit-dht/CORRENT-PATCH.md.
 librqbit-dht = { path = "vendor/librqbit-dht" }
+librqbit = { path = "vendor/librqbit" }
 
 [build-dependencies]
 winresource = "0.1"

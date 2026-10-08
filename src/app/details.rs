@@ -161,6 +161,16 @@ impl CorrentApp {
                 ("Uploaded", fmt_bytes(t.uploaded)),
                 ("Ratio", fmt_ratio(t.ratio)),
                 (
+                    "Speed limits",
+                    match (t.down_limit_kib, t.up_limit_kib) {
+                        (0, 0) => "Global only".into(),
+                        (d, u) => {
+                            let f = |k: u32| if k == 0 { "∞".to_string() } else { fmt_speed(k as u64 * 1024, units) };
+                            format!("↓ {} · ↑ {}", f(d), f(u))
+                        }
+                    },
+                ),
+                (
                     "Peers",
                     format!("{} connected · {} known · {} connecting", t.peers_live, t.peers_seen, t.peers_connecting),
                 ),
