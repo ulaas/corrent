@@ -56,13 +56,13 @@ pub struct Matcher {
 
 impl Matcher {
     pub fn new(rule: &RssRule) -> Result<Matcher, String> {
-        let contain = compile(&rule.must_contain, rule.use_regex).map_err(|e| format!("“Must contain”: {e}"))?;
+        let contain = compile(&rule.must_contain, rule.use_regex).map_err(|e| t!("“Must contain”: {e}", e = e))?;
         let exclude =
-            compile(&rule.must_not_contain, rule.use_regex).map_err(|e| format!("“Must not contain”: {e}"))?;
+            compile(&rule.must_not_contain, rule.use_regex).map_err(|e| t!("“Must not contain”: {e}", e = e))?;
         let episodes = if rule.episode_filter.trim().is_empty() {
             None
         } else {
-            Some(EpisodeFilter::parse(&rule.episode_filter).map_err(|e| format!("Episode filter: {e}"))?)
+            Some(EpisodeFilter::parse(&rule.episode_filter).map_err(|e| t!("Episode filter: {e}", e = e))?)
         };
         Ok(Matcher { contain, exclude, episodes })
     }
@@ -126,33 +126,33 @@ pub struct EpisodeFilter {
 impl EpisodeFilter {
     pub fn parse(text: &str) -> Result<EpisodeFilter, String> {
         let t = text.trim().to_ascii_lowercase();
-        let (season, rest) = t.split_once('x').ok_or("expected SEASONxEPISODES, e.g. 1x1-5;8")?;
-        let season: u32 = season.trim().trim_start_matches('s').parse().map_err(|_| "invalid season number")?;
+        let (season, rest) = t.split_once('x').ok_or(t!("expected SEASONxEPISODES, e.g. 1x1-5;8"))?;
+        let season: u32 = season.trim().trim_start_matches('s').parse().map_err(|_| t!("invalid season number"))?;
         let mut ranges = Vec::new();
         for part in rest.split(';').map(str::trim).filter(|p| !p.is_empty()) {
             let r = match part.split_once('-') {
                 Some((a, b)) => {
-                    let a: u32 = a.trim().parse().map_err(|_| format!("invalid range “{part}”"))?;
+                    let a: u32 = a.trim().parse().map_err(|_| t!("invalid range “{part}”", part = part))?;
                     let b = b.trim();
                     let b = if b.is_empty() {
                         None
                     } else {
-                        Some(b.parse().map_err(|_| format!("invalid range “{part}”"))?)
+                        Some(b.parse().map_err(|_| t!("invalid range “{part}”", part = part))?)
                     };
                     if b.is_some_and(|b| b < a) {
-                        return Err(format!("range “{part}” ends before it starts"));
+                        return Err(t!("range “{part}” ends before it starts", part = part));
                     }
                     (a, b)
                 }
                 None => {
-                    let n: u32 = part.parse().map_err(|_| format!("invalid episode “{part}”"))?;
+                    let n: u32 = part.parse().map_err(|_| t!("invalid episode “{part}”", part = part))?;
                     (n, Some(n))
                 }
             };
             ranges.push(r);
         }
         if ranges.is_empty() {
-            return Err("no episodes given".into());
+            return Err(t!("no episodes given").into());
         }
         Ok(EpisodeFilter { season, ranges })
     }

@@ -523,9 +523,10 @@ impl Settings {
                         return (
                             s,
                             false,
-                            Some(format!(
+                            Some(t!(
                                 "Your settings were saved by a newer version of Corrent (format {from}). They are used as-is \
-                                 but won't be saved, so the newer version keeps working. Update Corrent to change settings."
+                                 but won't be saved, so the newer version keeps working. Update Corrent to change settings.",
+                                from = from
                             )),
                         );
                     }
@@ -547,25 +548,51 @@ impl Settings {
                     (
                         s,
                         false,
-                        Some("Your settings were saved by a newer version of Corrent and couldn't be fully read. Defaults are used for the rest of this session; the file is left untouched.".into()),
+                        Some(t!("Your settings were saved by a newer version of Corrent and couldn't be fully read. Defaults are used for the rest of this session; the file is left untouched.").into()),
                     )
                 }
                 Err(e) => {
                     tracing::error!("settings file is invalid ({e}); salvaging what parses");
                     let bad = file.with_extension(format!("toml.bad-{}", crate::util::now_unix()));
-                    let _ = std::fs::copy(&file, &bad);
+                    let kept = std::fs::copy(&file, &bad).is_ok();
                     let (mut s, lost) = Settings::salvage(&text);
                     crate::migrate::migrate_settings(&mut s, crate::migrate::toml_version(&text));
-                    let _ = s.save(paths);
-                    let what = if lost.is_empty() {
-                        "Some settings could not be read".to_string()
+                    if kept {
+                        let _ = s.save(paths);
                     } else {
-                        format!("These settings were reset to defaults: {}", lost.join(", "))
+                        // No copy of the original: don't overwrite it.
+                        crate::migrate::SETTINGS_READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    let what = if lost.is_empty() {
+                        t!("Some settings could not be read").to_string()
+                    } else {
+                        t!("These settings were reset to defaults: {list}", list = lost.join(", "))
                     };
-                    (s, false, Some(format!("{what}. The damaged file was kept as {}.", bad.display())))
+                    let tail = if kept {
+                        t!("The damaged file was kept as {path}.", path = bad.display())
+                    } else {
+                        t!("Changes won't be saved this session, so the file stays as it is.").to_string()
+                    };
+                    (s, false, Some(format!("{what}. {tail}")))
                 }
             },
-            Err(_) => (Settings { schema_version: crate::migrate::SETTINGS_VERSION, ..Default::default() }, true, None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                (Settings { schema_version: crate::migrate::SETTINGS_VERSION, ..Default::default() }, true, None)
+            }
+            Err(e) => {
+                // Exists but unreadable (lock, permissions, not UTF-8): never treat it as a first run.
+                tracing::error!("settings file can't be read ({e})");
+                crate::migrate::SETTINGS_READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+                (
+                    Settings { schema_version: crate::migrate::SETTINGS_VERSION, ..Default::default() },
+                    false,
+                    Some(t!(
+                        "Your settings file couldn't be read ({e}). Defaults are used and nothing is saved this \
+                         session, so the file stays as it is.",
+                        e = e
+                    )),
+                )
+            }
         }
     }
 

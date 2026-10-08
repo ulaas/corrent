@@ -1388,10 +1388,10 @@ impl CorrentApp {
                     heading(ui, p, t!("Torznab providers"));
                     ui.add(
                         egui::Label::new(
-                            RichText::new(
+                            RichText::new(t!(
                                 "Corrent searches only providers you add here, such as a Jackett or Prowlarr you run. \
-                                 Jackett: copy an indexer's “Torznab Feed” address and the API key from its dashboard.",
-                            )
+                                 Jackett: copy an indexer's “Torznab Feed” address and the API key from its dashboard."
+                            ))
                             .small()
                             .color(p.text_dim),
                         )

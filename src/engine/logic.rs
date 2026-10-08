@@ -136,13 +136,13 @@ pub fn seed_limit_reason(v: &TorrentView, m: &TorrentMeta, s: &Seeding) -> Optio
         && r > 0.0
         && v.ratio >= r
     {
-        return Some(format!("reached ratio {r:.2}"));
+        return Some(t!("reached ratio {r}", r = format!("{r:.2}")));
     }
     if let Some(t) = time_limit
         && t > 0
         && m.seeding_seconds >= t as u64 * 60
     {
-        return Some(format!("seeded for {}", crate::util::fmt_duration(Duration::from_secs(t as u64 * 60))));
+        return Some(t!("seeded for {time}", time = crate::util::fmt_duration(Duration::from_secs(t as u64 * 60))));
     }
     if s.inactive_enabled && s.inactive_minutes > 0 && m.inactive_seeding_secs >= s.inactive_minutes as u64 * 60 {
         return Some("was inactive".to_string());

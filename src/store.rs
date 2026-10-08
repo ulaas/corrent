@@ -137,8 +137,20 @@ impl Store {
         }
         let mut warning = None;
         let mut newer_unreadable = false;
+        // Exists but can't be read (lock, permissions): run read-only so it is never overwritten.
+        let mut unreadable = false;
         let data = match std::fs::read(&path) {
-            Err(_) => None,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                tracing::error!("store.json can't be read ({e}); running without saving it");
+                unreadable = true;
+                warning = Some(t!(
+                    "Corrent couldn't read its data file ({e}). Categories, tags and totals are hidden and nothing is \
+                     saved this session, so the file stays intact. Your torrents are unaffected.",
+                    e = e
+                ));
+                None
+            }
             Ok(b) => match serde_json::from_slice::<StoreData>(&b) {
                 Ok(d) => Some(d),
                 Err(e) if crate::migrate::json_version(&b) > crate::migrate::STORE_VERSION => {
@@ -150,7 +162,7 @@ impl Store {
                 Err(e) => {
                     tracing::error!("store.json is corrupt ({e}); trying backup");
                     let bad = path.with_extension(format!("json.bad-{}", crate::util::now_unix()));
-                    let _ = std::fs::copy(&path, &bad);
+                    let kept = std::fs::copy(&path, &bad).is_ok();
                     let bak = path.with_extension("json.bak");
                     match std::fs::read(&bak).ok().and_then(|b| serde_json::from_slice::<StoreData>(&b).ok()) {
                         Some(d) => {
@@ -163,6 +175,15 @@ impl Store {
                                 path = bad.display()
                             ));
                             Some(d)
+                        }
+                        None if !kept => {
+                            // Couldn't keep a copy of the damaged file: leave it alone, save nothing.
+                            unreadable = true;
+                            warning = Some(t!(
+                                "Corrent's data file is damaged and couldn't be backed up. Categories, tags and totals \
+                                 are hidden and nothing is saved this session; the file is left as it is."
+                            ).into());
+                            None
                         }
                         None => {
                             let _ = std::fs::remove_file(&path);
@@ -179,7 +200,7 @@ impl Store {
         }
         .unwrap_or_default();
         let mut data = data;
-        let mut read_only = newer_unreadable;
+        let mut read_only = newer_unreadable || unreadable;
         if newer_unreadable {
             warning = Some(
                 t!("Corrent's data was saved by a newer version and can't be read by this one. Categories and tags are hidden and nothing is saved until you update Corrent; your torrents are unaffected.")
@@ -502,6 +523,23 @@ mod schema_tests {
 #[cfg(test)]
 mod save_error_tests {
     use super::*;
+
+    #[test]
+    fn unreadable_store_is_never_overwritten() {
+        // A directory where the file should be: exists, but can't be read as a file.
+        let base = std::env::temp_dir().join(format!("corrent-store-unreadable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let path = base.join("store.json");
+        std::fs::create_dir_all(&path).unwrap();
+        let mut s = Store::load(path.clone());
+        assert!(s.warning.is_some());
+        s.meta_mut(InfoHash([1; 20]));
+        s.maybe_save(true);
+        assert!(path.is_dir(), "left as it was");
+        assert!(!base.join("store.json.bak").exists());
+        s.discard();
+        let _ = std::fs::remove_dir_all(base);
+    }
 
     #[test]
     fn save_failures_are_reported_once() {

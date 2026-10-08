@@ -156,18 +156,24 @@ mod tests {
     #[test]
     fn no_hard_coded_ui_strings() {
         let calls = regex::Regex::new(
-            r#"(RichText::new|\.label|\.button|\.small_button|\.on_hover_text|\.on_disabled_hover_text|\.hint_text|\.labeled|\.menu_button|\.selected_text|primary_button\(ui, p,|secondary_button\(ui,|danger_button\(ui, p,|heading\(ui, p,|ToastKind::[A-Za-z]+,)\(?\s*"[^"]*[A-Za-z]{2,}[^"]*""#,
+            r#"(RichText::new|\.label|\.button|\.small_button|\.on_hover_text|\.on_disabled_hover_text|\.hint_text|\.labeled|\.menu_button|\.selected_text|primary_button\(ui, p,|secondary_button\(ui,|danger_button\(ui, p,|heading\(ui, p,|ToastKind::[A-Za-z]+,|busy\.insert\([a-z_]+,|busy: Some\()\(?\s*"[^"]*[A-Za-z]{2,}[^"]*""#,
         )
         .unwrap();
         let icon_label = regex::Regex::new(r#"format!\("\{\}\s+(\{\}\s+)?[A-Za-z]{2,}"#).unwrap();
         let prose = regex::Regex::new(r#"format!\(\s*"[^"]*[A-Za-z]{3,} [A-Za-z]{2,}"#).unwrap();
         let open_paren = regex::Regex::new(r#"\(\s*\n\s*""#).unwrap();
+        let continuation = regex::Regex::new(r"\\\n\s*").unwrap();
         let mut found = Vec::new();
-        for dir in ["src/app", "src/ui"] {
-            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
-            for e in std::fs::read_dir(&dir).unwrap().flatten() {
-                let p = e.path();
-                if p.extension().is_none_or(|x| x != "rs") || p.ends_with("ui_tests.rs") {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        for dir in ["src/app", "src/ui", "src/engine", "src/rss"] {
+            files.extend(std::fs::read_dir(root.join(dir)).unwrap().flatten().map(|e| e.path()));
+        }
+        files.extend(["src/util.rs", "src/config.rs", "src/store.rs", "src/backup.rs"].map(|f| root.join(f)));
+        {
+            for p in files {
+                if p.extension().is_none_or(|x| x != "rs") || p.ends_with("ui_tests.rs") || p.ends_with("e2e_tests.rs")
+                {
                     continue;
                 }
                 let text = std::fs::read_to_string(&p).unwrap();
@@ -179,6 +185,8 @@ mod tests {
                 };
                 // `call(\n    "literal"` → `call("literal"`, so multi-line calls are checked too.
                 let joined = open_paren.replace_all(code, "(\"");
+                // "text \ ⏎   more" string continuations: one line, so the closing quote is found.
+                let joined = continuation.replace_all(&joined, "");
                 for (n, line) in joined.lines().enumerate() {
                     // Sentences built with format! (the file header comment of exported themes is fine).
                     let sentence = prose.is_match(line) && !line.contains("# Corrent theme");

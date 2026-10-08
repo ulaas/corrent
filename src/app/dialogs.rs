@@ -81,8 +81,6 @@ pub struct AddDialog {
     pub filter: String,
     pub started: Instant,
     pub tag_input: String,
-    /// (path, measured at, free bytes) — refreshed at most every two seconds.
-    pub free_cache: Option<(String, Instant, Option<u64>)>,
 }
 
 fn modal_frame(p: &Palette) -> egui::Frame {
@@ -136,16 +134,27 @@ impl CorrentApp {
     }
 
     /// Free space for a path typed in a dialog, refreshed at most every two seconds.
+    /// Free space for a folder typed in a dialog. Measured in the background (a sleeping disk or
+    /// network path can take seconds) and refreshed every two seconds; None until known.
     pub fn cached_free_space(&mut self, path: &str) -> Option<u64> {
-        let stale = self
-            .free_cache
-            .as_ref()
-            .is_none_or(|(p, t, _)| p != path || t.elapsed() >= std::time::Duration::from_secs(2));
-        if stale {
-            let free = crate::engine::free_space_for(&PathBuf::from(path));
-            self.free_cache = Some((path.to_string(), Instant::now(), free));
+        let entry = self.free_cache.lock().unwrap_or_else(|e| e.into_inner()).get(path).copied();
+        let stale = entry.is_none_or(|(t, _)| t.elapsed() >= std::time::Duration::from_secs(2));
+        if stale && !self.free_inflight.lock().unwrap_or_else(|e| e.into_inner()).contains(path) {
+            self.free_inflight.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_string());
+            let (cache, inflight, ctx, key) =
+                (self.free_cache.clone(), self.free_inflight.clone(), self.ctx.clone(), path.to_string());
+            self.rt.spawn_blocking(move || {
+                let free = crate::engine::free_space_for(&PathBuf::from(&key));
+                let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+                if c.len() > 64 {
+                    c.clear();
+                }
+                c.insert(key.clone(), (Instant::now(), free));
+                inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+                ctx.request_repaint();
+            });
         }
-        self.free_cache.as_ref().and_then(|c| c.2)
+        entry.and_then(|(_, f)| f)
     }
 
     pub fn open_magnet_dialog(&mut self) {
@@ -266,7 +275,6 @@ impl CorrentApp {
             filter: String::new(),
             started: Instant::now(),
             tag_input: String::new(),
-            free_cache: None,
         });
     }
 
@@ -399,6 +407,7 @@ impl CorrentApp {
                     let need: u64 =
                         self.snap.torrents.iter().filter(|t| hashes.contains(&t.hash)).map(|t| t.done).sum();
                     let free = self.cached_free_space(path);
+                    let short = free.is_some_and(|f| need > f);
                     if let Some(free) = free {
                         let short = need > free;
                         ui.label(
@@ -422,7 +431,7 @@ impl CorrentApp {
                     ui.add_space(14.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add_enabled_ui(!path.trim().is_empty(), |ui| primary_button(ui, p, t!("Move")))
+                            .add_enabled_ui(!path.trim().is_empty() && !short, |ui| primary_button(ui, p, t!("Move")))
                             .inner
                             .clicked()
                         {
@@ -778,13 +787,7 @@ impl CorrentApp {
                                 }
                             });
                     }
-                    let stale =
-                        d.free_cache.as_ref().is_none_or(|(p, t, _)| *p != d.save_path || t.elapsed().as_secs() >= 2);
-                    if stale {
-                        let free = crate::engine::free_space_for(&PathBuf::from(&d.save_path));
-                        d.free_cache = Some((d.save_path.clone(), Instant::now(), free));
-                    }
-                    if let Some(free) = d.free_cache.as_ref().and_then(|c| c.2) {
+                    if let Some(free) = self.cached_free_space(&d.save_path) {
                         let need: u64 = d.preview.as_ref().map(|pv| selected_size(pv, &d.checked)).unwrap_or(0);
                         let color = if need > free { p.error } else { p.text_dim };
                         ui.label(RichText::new(t!("{free} free", free = fmt_bytes(free))).small().color(color));

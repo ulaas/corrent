@@ -264,9 +264,18 @@ impl EngineHandle {
         snapshot: &Arc<ArcSwap<Snapshot>>,
     ) -> (mpsc::UnboundedSender<EngineCommand>, tokio::task::JoinHandle<()>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let actor =
-            actor::Actor::new(paths.clone(), settings, ctx.clone(), events.clone(), snapshot.clone(), tx.clone());
-        let task = rt.spawn(actor.run(rx));
+        let (paths, ctx, events, snapshot, self_tx) =
+            (paths.clone(), ctx.clone(), events.clone(), snapshot.clone(), tx.clone());
+        // Loading the store and feed history does file I/O (with retries): not on the UI thread.
+        let task = rt.spawn(async move {
+            let actor =
+                tokio::task::spawn_blocking(move || actor::Actor::new(paths, settings, ctx, events, snapshot, self_tx))
+                    .await;
+            match actor {
+                Ok(actor) => actor.run(rx).await,
+                Err(e) => std::panic::resume_unwind(e.into_panic()),
+            }
+        });
         (tx, task)
     }
 

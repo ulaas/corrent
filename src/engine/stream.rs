@@ -40,7 +40,9 @@ impl StreamServer {
             session: Mutex::new(None),
             streams: Arc::new(tokio::sync::Semaphore::new(MAX_STREAMS)),
         });
-        let s = server.clone();
+        // Weak: the server (and the session it points to) must not outlive the engine that owns
+        // it, or a restarted engine would run next to the old session.
+        let weak = Arc::downgrade(&server);
         tokio::spawn(async move {
             loop {
                 let conn = match listener.accept().await {
@@ -52,7 +54,7 @@ impl StreamServer {
                         continue;
                     }
                 };
-                let s = s.clone();
+                let Some(s) = weak.upgrade() else { break };
                 tokio::spawn(async move {
                     if let Err(e) = s.handle(conn).await {
                         tracing::debug!("stream request failed: {e:#}");

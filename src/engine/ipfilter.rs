@@ -27,7 +27,7 @@ pub fn parse_entry(line: &str) -> Result<Option<(IpAddr, IpAddr)>, String> {
     if line.is_empty() || line.starts_with('#') {
         return Ok(None);
     }
-    let bad = || format!("“{line}” is not an IP address, CIDR block or range");
+    let bad = || t!("“{line}” is not an IP address, CIDR block or range", line = line);
     if let Ok(ip) = line.parse::<IpAddr>() {
         return Ok(Some((ip, ip)));
     }

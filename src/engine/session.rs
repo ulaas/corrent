@@ -111,7 +111,11 @@ pub async fn create(paths: &Paths, s: &Settings, alt: bool) -> anyhow::Result<(A
             let sess = Session::new_with_opts(out, options(paths, s, Some(0), alt, &lists)).await?;
             Ok((
                 sess,
-                Some(format!("Port {} is unavailable ({e}). Using a random port instead.", s.connection.listen_port)),
+                Some(t!(
+                    "Port {port} is unavailable ({e}). Using a random port instead.",
+                    port = s.connection.listen_port,
+                    e = e
+                )),
             ))
         }
         Err(e) => Err(e),

@@ -22,14 +22,39 @@ const HISTORY_LEN: usize = 600;
 const STALL_AFTER: Duration = Duration::from_secs(30);
 
 enum Internal {
-    AddFinished { pending: u64, req: Box<AddRequest>, result: Result<(InfoHash, String), String> },
-    PreviewFinished { req: u64 },
-    OpFinished { hash: InfoHash, what: &'static str, result: Result<(), String> },
-    Deleted { hash: InfoHash, result: Result<(), String> },
+    AddFinished {
+        pending: u64,
+        req: Box<AddRequest>,
+        result: Result<(InfoHash, String), String>,
+    },
+    PreviewFinished {
+        req: u64,
+    },
+    OpFinished {
+        hash: InfoHash,
+        what: &'static str,
+        result: Result<(), String>,
+    },
+    Deleted {
+        hash: InfoHash,
+        result: Result<(), String>,
+    },
     RestoreReport(Vec<super::restore::FailedRestore>),
-    UndoFinished { hash: InfoHash, meta: Box<crate::store::TorrentMeta>, result: Result<(), String> },
-    RestoreRetried { hash: InfoHash, result: Result<(), String>, quiet: bool },
-    RssFetched { url: String, result: Result<crate::rss::ParsedFeed, String> },
+    /// `Ok(true)` = re-added; `Ok(false)` = the torrent was already back in the list.
+    UndoFinished {
+        hash: InfoHash,
+        entry: Box<UndoEntry>,
+        result: Result<bool, String>,
+    },
+    RestoreRetried {
+        hash: InfoHash,
+        result: Result<(), String>,
+        quiet: bool,
+    },
+    RssFetched {
+        url: String,
+        result: Result<crate::rss::ParsedFeed, String>,
+    },
 }
 
 /// What is needed to re-add a torrent that was just removed (Undo).
@@ -214,9 +239,9 @@ impl Actor {
         loop {
             tokio::select! {
                 cmd = rx.recv() => match cmd {
-                    None => { self.shutdown().await; break; }
+                    None => { self.shutdown(&mut internal_rx).await; break; }
                     Some(EngineCommand::Shutdown(done)) => {
-                        self.shutdown().await;
+                        self.shutdown(&mut internal_rx).await;
                         let _ = done.send(());
                         break;
                     }
@@ -259,6 +284,7 @@ impl Actor {
                     self.apply_rate_limits();
                     tracing::info!("engine session started");
                     self.detect_failed_restores();
+                    self.recover_interrupted_readds();
                     self.publish();
                     return;
                 }
@@ -289,8 +315,16 @@ impl Actor {
         }
     }
 
-    async fn shutdown(&mut self) {
+    async fn shutdown(&mut self, internal: &mut mpsc::UnboundedReceiver<Internal>) {
         tracing::info!("engine shutting down");
+        // Let moves/rechecks finish (bounded): a torrent is out of the session while it is
+        // re-added. Anything still running is recovered from its backup at the next start.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !self.busy.is_empty() && Instant::now() < deadline {
+            if let Ok(Some(msg)) = tokio::time::timeout(Duration::from_millis(200), internal.recv()).await {
+                self.handle_internal(msg);
+            }
+        }
         for (_, h) in self.previews.drain() {
             h.abort();
         }
@@ -408,11 +442,16 @@ impl Actor {
                     if e.at.elapsed() > UNDO_WINDOW {
                         continue;
                     }
-                    let Some(sess) = self.session.clone() else { continue };
+                    let Some(sess) = self.session.clone() else {
+                        self.undo.insert(hash, e);
+                        continue;
+                    };
                     let tx = self.internal_tx.clone();
-                    self.busy.insert(hash, "Restoring…".into());
+                    let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
+                    self.busy.insert(hash, t!("Restoring…").into());
                     tokio::spawn(async move {
                         let opts = AddTorrentOptions {
+                            peer_limit,
                             paused: e.paused,
                             only_files: e.only_files.clone(),
                             output_folder: Some(e.output.to_string_lossy().into_owned()),
@@ -420,12 +459,13 @@ impl Actor {
                             trackers: (!e.trackers.is_empty()).then(|| e.trackers.clone()),
                             ..Default::default()
                         };
-                        let result = sess
-                            .add_torrent(AddTorrent::from_bytes(e.bytes), Some(opts))
-                            .await
-                            .map(|_| ())
-                            .map_err(|err| format!("{err:#}"));
-                        let _ = tx.send(Internal::UndoFinished { hash, meta: Box::new(e.meta), result });
+                        let result = match sess.add_torrent(AddTorrent::from_bytes(e.bytes.clone()), Some(opts)).await {
+                            Ok(AddTorrentResponse::Added(..)) => Ok(true),
+                            Ok(AddTorrentResponse::AlreadyManaged(..)) => Ok(false),
+                            Ok(AddTorrentResponse::ListOnly(_)) => Err("unexpected response from engine".to_string()),
+                            Err(err) => Err(format!("{err:#}")),
+                        };
+                        let _ = tx.send(Internal::UndoFinished { hash, entry: Box::new(e), result });
                     });
                 }
             }
@@ -823,7 +863,7 @@ impl Actor {
                 },
             );
         }
-        self.busy.insert(hash, if with_data { "Deleting files…".into() } else { "Removing…".into() });
+        self.busy.insert(hash, if with_data { t!("Deleting files…").into() } else { t!("Removing…").into() });
         let tx = self.internal_tx.clone();
         tokio::spawn(async move {
             let result =
@@ -836,7 +876,7 @@ impl Actor {
 
     fn start_preview(&mut self, req: u64, source: AddSource) {
         let Some(sess) = self.session.clone() else {
-            self.emit(EngineEvent::PreviewReady { req, result: Err("The engine is not running.".into()) });
+            self.emit(EngineEvent::PreviewReady { req, result: Err(t!("The engine is not running.").into()) });
             return;
         };
         let events = self.events.clone();
@@ -901,21 +941,81 @@ impl Actor {
             return;
         }
         let label = match what {
-            "move" => "Moving files…",
-            "recheck" => "Preparing check…",
-            _ => "Updating trackers…",
+            "move" => t!("Moving files…"),
+            "recheck" => t!("Preparing check…"),
+            _ => t!("Updating trackers…"),
         };
         self.busy.insert(hash, label.into());
         let multi = self.static_info.get(&hash).map(|s| s.multi_file).unwrap_or(false);
         let backup_dir = self.paths.torrents_dir();
         let tx = self.internal_tx.clone();
+        let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
         tokio::spawn(async move {
-            let result = readd(&sess, h, multi, move_to, trackers, backup_dir).await.map_err(|e| format!("{e:#}"));
+            let result =
+                readd(&sess, h, multi, move_to, trackers, backup_dir, peer_limit).await.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Internal::OpFinished { hash, what, result });
         });
     }
 
     /// Drop queued entries from the engine database. Only call while no session is running.
+    /// Torrents whose move/recheck was cut off (quit, crash) after they left the session: their
+    /// metainfo backup and a small note are in `torrents/`; add them back where their data is.
+    fn recover_interrupted_readds(&mut self) {
+        let Some(sess) = self.session.clone() else { return };
+        let dir = self.paths.torrents_dir();
+        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().is_none_or(|x| x != "torrent") {
+                continue;
+            }
+            let Some(hash) = p.file_stem().and_then(|s| s.to_str()).and_then(InfoHash::from_hex) else { continue };
+            let note = p.with_extension("json");
+            if self.handle_for(&hash).is_some() {
+                // Finished after all; the leftovers are stale.
+                let _ = std::fs::remove_file(&p);
+                let _ = std::fs::remove_file(&note);
+                continue;
+            }
+            let (Ok(bytes), Some(info)) = (
+                std::fs::read(&p),
+                std::fs::read(&note).ok().and_then(|b| serde_json::from_slice::<ReaddNote>(&b).ok()),
+            ) else {
+                continue;
+            };
+            tracing::warn!("recovering {} after an interrupted re-add", hash.to_hex());
+            self.busy.insert(hash, t!("Recovering…").into());
+            let tx = self.internal_tx.clone();
+            let sess = sess.clone();
+            tokio::spawn(async move {
+                // Where the data is now: the new folder if the move got that far, else the old one.
+                let output = if info.first_file.as_ref().is_some_and(|f| info.new_output.join(f).exists()) {
+                    info.new_output.clone()
+                } else {
+                    info.old_output.clone()
+                };
+                let opts = AddTorrentOptions {
+                    paused: info.paused,
+                    only_files: info.only_files.clone(),
+                    output_folder: Some(output.to_string_lossy().into_owned()),
+                    overwrite: true,
+                    trackers: Some(info.trackers.clone()),
+                    ..Default::default()
+                };
+                let result = sess
+                    .add_torrent(AddTorrent::from_bytes(bytes), Some(opts))
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| format!("{e:#}"));
+                if result.is_ok() {
+                    let _ = std::fs::remove_file(&p);
+                    let _ = std::fs::remove_file(&note);
+                }
+                let _ = tx.send(Internal::OpFinished { hash, what: "recover", result });
+            });
+        }
+    }
+
     fn purge_pending(&mut self) {
         if self.store.data.purge.is_empty() {
             return;
@@ -960,7 +1060,7 @@ impl Actor {
         let (Some(sess), Some(f)) = (self.session.clone(), self.failed.get(&hash).cloned()) else { return };
         let dir = self.paths.session_dir();
         let tx = self.internal_tx.clone();
-        self.busy.insert(hash, "Retrying…".into());
+        self.busy.insert(hash, t!("Retrying…").into());
         tokio::spawn(async move {
             let result = super::restore::retry(&sess, &dir, &f).await;
             let _ = tx.send(Internal::RestoreRetried { hash, result, quiet });
@@ -1161,6 +1261,7 @@ impl Actor {
                         let msg = match what {
                             "move" => t!("Files moved. Verifying data…"),
                             "recheck" => t!("Re-checking data…"),
+                            "recover" => t!("A torrent interrupted while being moved or re-checked was restored."),
                             _ => t!("Trackers added. Verifying data…"),
                         };
                         self.toast(ToastKind::Info, msg);
@@ -1168,13 +1269,18 @@ impl Actor {
                     Err(e) => self.toast(ToastKind::Error, t!("Operation failed: {e}", e = e)),
                 }
             }
-            Internal::UndoFinished { hash, meta, result } => {
+            Internal::UndoFinished { hash, entry, result } => {
                 self.busy.remove(&hash);
                 match result {
-                    Ok(()) => {
+                    Ok(false) => {
+                        // Added again in the meantime: keep what the user set up then.
+                        self.toast(ToastKind::Info, t!("That torrent is already back in your list."));
+                    }
+                    Ok(true) => {
+                        let meta = entry.meta;
                         let name = meta.display_name.clone().unwrap_or(meta.name.clone());
                         // Bring back category, tags, dates, queue position and totals.
-                        let mut meta = *meta;
+                        let mut meta = meta;
                         if meta.pause_reason == Some(PauseReason::Queue) && !self.settings.queue.enabled {
                             meta.pause_reason = None;
                         }
@@ -1183,7 +1289,11 @@ impl Actor {
                         self.store.maybe_save(true);
                         self.emit(EngineEvent::Restored { hash, name });
                     }
-                    Err(e) => self.toast(ToastKind::Error, t!("Undo failed: {e}", e = e)),
+                    Err(e) => {
+                        // Keep the undo available (within its window) for another try.
+                        self.undo.insert(hash, *entry);
+                        self.toast(ToastKind::Error, t!("Undo failed: {e}", e = e));
+                    }
                 }
             }
             Internal::RestoreReport(list) => {
@@ -1924,7 +2034,7 @@ fn pending_view(p: &PendingAdd) -> TorrentView {
         comment: None,
         created_by: None,
         creation_date: None,
-        busy: Some("Fetching metadata…".into()),
+        busy: Some(t!("Fetching metadata…").into()),
         last_activity: 0,
         seeding_secs: 0,
         down_limit_kib: 0,
@@ -2113,6 +2223,7 @@ async fn readd(
     move_to: Option<PathBuf>,
     extra_trackers: Option<Vec<String>>,
     backup_dir: PathBuf,
+    peer_limit: Option<usize>,
 ) -> anyhow::Result<()> {
     let id = h.id();
     let hash = InfoHash(h.info_hash().0);
@@ -2144,6 +2255,16 @@ async fn readd(
     let backup = backup_dir.join(format!("{}.torrent", hash.to_hex()));
     std::fs::create_dir_all(&backup_dir).with_context(|| format!("creating {}", backup_dir.display()))?;
     crate::util::write_atomic(&backup, &bytes).context("saving a copy of the torrent before re-adding it")?;
+    let note = backup.with_extension("json");
+    let info = ReaddNote {
+        old_output: old_output.clone(),
+        new_output: new_output.clone(),
+        first_file: file_list.first().cloned(),
+        only_files: only_files.clone(),
+        paused,
+        trackers: trackers.clone(),
+    };
+    crate::util::write_atomic(&note, &serde_json::to_vec(&info)?).context("saving re-add details")?;
     sess.delete(TorrentIdOrHash::Id(id), false).await?;
 
     let mut move_err = None;
@@ -2161,25 +2282,37 @@ async fn readd(
             only_files: only_files.clone(),
             output_folder: Some(output.to_string_lossy().into_owned()),
             overwrite: true,
-            preferred_id: Some(id),
+            // No preferred id: another add during the gap may have been given the old one, and
+            // librqbit would then report *that* torrent as "already managed".
             trackers: Some(trackers.clone()),
+            peer_limit,
             ..Default::default()
         };
-        sess.add_torrent(AddTorrent::from_bytes(bytes.clone()), Some(opts))
+        let (sess, bytes) = (sess.clone(), bytes.clone());
+        async move {
+            match sess.add_torrent(AddTorrent::from_bytes(bytes), Some(opts)).await? {
+                AddTorrentResponse::Added(..) => Ok(()),
+                AddTorrentResponse::AlreadyManaged(_, other) if InfoHash(other.info_hash().0) == hash => Ok(()),
+                _ => anyhow::bail!("the engine didn't take the torrent back"),
+            }
+        }
     };
     if let Err(e) = add_at(&target).await {
         // Never lose the torrent: fall back to its previous location.
         if target != old_output && add_at(&old_output).await.is_ok() {
             let _ = std::fs::remove_file(&backup);
-            return Err(e.context("could not use the new location; the torrent was kept where it was"));
+            let _ = std::fs::remove_file(&note);
+            return Err(e.context(t!("could not use the new location; the torrent was kept where it was")));
         }
-        return Err(
-            e.context(format!("the torrent could not be re-added; its metainfo is saved at {}", backup.display()))
-        );
+        return Err(e.context(t!(
+            "the torrent could not be re-added; its metainfo is saved at {path}",
+            path = backup.display()
+        )));
     }
     let _ = std::fs::remove_file(&backup);
+    let _ = std::fs::remove_file(&note);
     if let Some(e) = move_err {
-        return Err(e.context("moving files failed; the torrent was kept at its old location"));
+        return Err(e.context(t!("moving files failed; the torrent was kept at its old location")));
     }
     Ok(())
 }
@@ -2189,6 +2322,9 @@ fn move_files(from: &Path, to: &Path, files: &[PathBuf]) -> anyhow::Result<()> {
     fn move_one(src: &Path, dst: &Path) -> anyhow::Result<()> {
         if let Some(p) = dst.parent() {
             std::fs::create_dir_all(p)?;
+        }
+        if dst.exists() {
+            anyhow::bail!("{} already exists at the destination", dst.display());
         }
         if std::fs::rename(src, dst).is_err() {
             // Different volume: copy then remove.
@@ -2287,4 +2423,15 @@ fn file_order(h: &ManagedTorrent, priority: &std::collections::BTreeMap<usize, i
     let names: Vec<PathBuf> =
         h.with_metadata(|m| m.file_infos.iter().map(|f| f.relative_filename.clone()).collect()).unwrap_or_default();
     super::logic::file_order(&names, priority)
+}
+
+/// Written next to a re-add backup so an interrupted move/recheck can be recovered.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ReaddNote {
+    old_output: PathBuf,
+    new_output: PathBuf,
+    first_file: Option<PathBuf>,
+    only_files: Option<Vec<usize>>,
+    paused: bool,
+    trackers: Vec<String>,
 }

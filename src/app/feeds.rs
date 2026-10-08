@@ -409,10 +409,10 @@ impl CorrentApp {
                 ui.label(RichText::new(t!("Download rules")).font(theme::title()).color(p.text));
             });
             ui.label(
-                RichText::new(
+                RichText::new(t!(
                     "New feed articles that match a rule are added automatically. Words must all appear (any order); \
-                     | separates alternatives; * and ? are wildcards.",
-                )
+                     | separates alternatives; * and ? are wildcards."
+                ))
                 .small()
                 .color(p.text_dim),
             );

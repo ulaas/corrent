@@ -287,6 +287,9 @@ pub enum DetailsTab {
     Speed,
 }
 
+/// Free space per folder: (measured at, bytes).
+pub type FreeSpaceCache = std::collections::HashMap<String, (std::time::Instant, Option<u64>)>;
+
 pub struct CorrentApp {
     pub paths: Paths,
     pub settings: Settings,
@@ -339,7 +342,9 @@ pub struct CorrentApp {
     pub ctx: egui::Context,
     previous_run: crate::crash::PreviousRun,
     pub data_notes: Vec<String>,
-    pub free_cache: Option<(String, std::time::Instant, Option<u64>)>,
+    /// Free space per folder typed in a dialog: (measured at, bytes), filled in the background.
+    pub free_cache: Arc<std::sync::Mutex<FreeSpaceCache>>,
+    free_inflight: Arc<std::sync::Mutex<HashSet<String>>>,
     pub batch: Option<batch::BatchDialog>,
     pub creator: Option<creator::CreatorState>,
     pub import: Option<import_dialog::ImportDialog>,
@@ -460,7 +465,8 @@ impl CorrentApp {
             ctx: ctx.clone(),
             previous_run: Default::default(),
             data_notes: Vec::new(),
-            free_cache: None,
+            free_cache: Default::default(),
+            free_inflight: Default::default(),
             batch: None,
             creator: None,
             import: None,

@@ -70,13 +70,13 @@ pub fn classify_io(msg: &str) -> IoKind {
 /// A plain-language explanation for an I/O error, followed by the original message.
 pub fn explain_io(msg: &str) -> String {
     let hint = match classify_io(msg) {
-        IoKind::DiskFull => "The disk is full. Free up space or move the download to another drive.",
+        IoKind::DiskFull => t!("The disk is full. Free up space or move the download to another drive."),
         IoKind::Permission => {
-            "Access was denied. The file may be blocked or quarantined by antivirus software, read-only, or in a \
-             folder Corrent may not write to."
+            t!("Access was denied. The file may be blocked or quarantined by antivirus software, read-only, or in a \
+             folder Corrent may not write to.")
         }
-        IoKind::Locked => "A file is in use by another program. Close it and retry.",
-        IoKind::NotFound => "A file or folder is missing (for example, a disconnected drive).",
+        IoKind::Locked => t!("A file is in use by another program. Close it and retry."),
+        IoKind::NotFound => t!("A file or folder is missing (for example, a disconnected drive)."),
         IoKind::Other => return msg.to_string(),
     };
     format!("{hint}\n\n{msg}")

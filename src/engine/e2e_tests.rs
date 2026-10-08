@@ -817,3 +817,29 @@ async fn file_priority_is_stored_and_shown() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A move/recheck cut off after the torrent left the session is recovered at the next start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interrupted_readd_is_recovered_at_start() {
+    let dir = temp_dir("recover");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    let t = download(&l, &s, &dir).await;
+    l.engine.send(EngineCommand::Delete { hashes: vec![s.hash], with_data: false });
+    wait_for(&l, "removed", 20, |sn| find(sn, s.hash).is_none()).await;
+    let paths = stop(l).await;
+    // What readd leaves behind when it is interrupted.
+    let tdir = paths.torrents_dir();
+    std::fs::create_dir_all(&tdir).unwrap();
+    std::fs::write(tdir.join(format!("{}.torrent", s.hash.to_hex())), &s.bytes).unwrap();
+    let note = serde_json::json!({
+        "old_output": t.save_path, "new_output": dir.join("elsewhere"), "first_file": null,
+        "only_files": null, "paused": false, "trackers": []
+    });
+    std::fs::write(tdir.join(format!("{}.json", s.hash.to_hex())), note.to_string()).unwrap();
+    let l = start(&dir);
+    wait_for(&l, "recovered and complete", 30, |sn| complete(sn, s.hash)).await;
+    assert!(!tdir.join(format!("{}.torrent", s.hash.to_hex())).exists(), "backup removed after recovery");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
