@@ -326,6 +326,8 @@ pub struct CorrentApp {
     pub data_notes: Vec<String>,
     pub free_cache: Option<(String, std::time::Instant, Option<u64>)>,
     pub batch: Option<batch::BatchDialog>,
+    row_first_seen: std::collections::HashMap<InfoHash, std::time::Instant>,
+    rows_seen_once: bool,
     /// Windows 11 draws a native rounded border, so ours is skipped.
     pub native_frame: bool,
     pub pickers: pickers::Pickers,
@@ -429,6 +431,8 @@ impl CorrentApp {
             data_notes: Vec::new(),
             free_cache: None,
             batch: None,
+            row_first_seen: Default::default(),
+            rows_seen_once: false,
             native_frame,
             pickers: Default::default(),
             extras: Default::default(),
@@ -878,34 +882,24 @@ impl CorrentApp {
             .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin::symmetric(12, 4)))
             .show(ui, |ui| self.status_bar(ui, &p));
 
-        if self.prefs.show_sidebar {
-            egui::Panel::left("sidebar")
-                .resizable(true)
-                .default_size(220.0)
-                .size_range(170.0..=360.0)
-                .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin {
-                    left: 8,
-                    right: 8,
-                    top: 6,
-                    bottom: 6,
-                }))
-                .show(ui, |ui| self.sidebar(ui, &p));
-        }
+        let mut show_sidebar = self.prefs.show_sidebar;
+        egui::Panel::left("sidebar")
+            .resizable(true)
+            .default_size(220.0)
+            .size_range(170.0..=360.0)
+            .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 6 }))
+            .show_collapsible(ui, &mut show_sidebar, |ui| self.sidebar(ui, &p));
+        self.prefs.show_sidebar = show_sidebar;
 
         self.sync_detail_target();
-        if self.prefs.show_details {
-            egui::Panel::bottom("details")
-                .resizable(true)
-                .default_size(280.0)
-                .size_range(160.0..=700.0)
-                .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin {
-                    left: 14,
-                    right: 14,
-                    top: 6,
-                    bottom: 8,
-                }))
-                .show(ui, |ui| self.details_panel(ui, &p));
-        }
+        let mut show_details = self.prefs.show_details;
+        egui::Panel::bottom("details")
+            .resizable(true)
+            .default_size(280.0)
+            .size_range(160.0..=700.0)
+            .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin { left: 14, right: 14, top: 6, bottom: 8 }))
+            .show_collapsible(ui, &mut show_details, |ui| self.details_panel(ui, &p));
+        self.prefs.show_details = show_details;
 
         egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg0).inner_margin(egui::Margin::same(0))).show(
             ui,

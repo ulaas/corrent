@@ -93,7 +93,7 @@ impl CorrentApp {
                 let tex = self.app_icon_texture(ctx);
                 ui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(72.0, 72.0)));
                 ui.add_space(8.0);
-                ui.label(RichText::new("Corrent").font(theme::bold(22.0)).color(p.text));
+                ui.label(RichText::new("Corrent").font(theme::bold(theme::type_scale::DISPLAY)).color(p.text));
                 ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(p.text_dim));
                 ui.add_space(8.0);
                 ui.label(RichText::new("A beautiful, stable BitTorrent client.").color(p.text));

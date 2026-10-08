@@ -141,7 +141,7 @@ pub fn toggle_switch(ui: &mut Ui, p: &Palette, on: &mut bool) -> egui::Response 
 
 fn heading(ui: &mut Ui, p: &Palette, title: &str) {
     ui.add_space(4.0);
-    ui.label(RichText::new(title).font(theme::bold(14.0)).color(p.text));
+    ui.label(RichText::new(title).font(theme::heading()).color(p.text));
     ui.add_space(6.0);
 }
 
@@ -252,7 +252,7 @@ impl CorrentApp {
                                 ui.set_width(196.0);
                                 ui.set_min_height(size.y - 24.0);
                                 ui.spacing_mut().item_spacing.y = 4.0;
-                                ui.label(RichText::new("Settings").font(theme::bold(18.0)).color(p.text));
+                                ui.label(RichText::new("Settings").font(theme::title()).color(p.text));
                                 ui.add_space(6.0);
                                 ui.add(
                                     egui::TextEdit::singleline(&mut draft.search)
@@ -303,7 +303,7 @@ impl CorrentApp {
                             |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new(draft.page.icon()).size(20.0).color(p.accent));
-                                    ui.label(RichText::new(draft.page.label()).font(theme::bold(18.0)).color(p.text));
+                                    ui.label(RichText::new(draft.page.label()).font(theme::title()).color(p.text));
                                 });
                                 ui.add_space(8.0);
                                 egui::ScrollArea::vertical()

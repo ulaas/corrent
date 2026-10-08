@@ -58,7 +58,7 @@ impl CorrentApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icons::STACK_PLUS).size(20.0).color(p.accent));
                 let n = b.items.iter().filter(|(_, on)| *on).count();
-                ui.label(RichText::new(format!("Add {n} torrents")).font(theme::bold(18.0)).color(p.text));
+                ui.label(RichText::new(format!("Add {n} torrents")).font(theme::title()).color(p.text));
             });
             ui.add_space(8.0);
             egui::Frame::new()

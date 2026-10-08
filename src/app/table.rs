@@ -207,6 +207,7 @@ impl CorrentApp {
             None
         };
 
+        let seen_before = self.rows_seen_once;
         egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 0 }).show(ui, |ui| {
             let mut tb = TableBuilder::new(ui)
                 .id_salt("torrents")
@@ -266,11 +267,15 @@ impl CorrentApp {
                 body.rows(row_h, rows.len(), |mut row| {
                     let t = &snap.torrents[rows[row.index()]];
                     let selected = self.selected.contains(&t.hash);
+                    let fade = self.row_fade(t.hash);
                     row.set_selected(selected);
                     let color = if state_colors { p.state_color(t.state) } else { p.accent };
                     let dim = t.state.is_paused_like() && t.state != TorrentState::Queued;
                     for c in &cols {
                         row.col(|ui| {
+                            if fade < 1.0 {
+                                ui.multiply_opacity(fade);
+                            }
                             self.cell(ui, p, t, *c, compact, show_bar_in_name, color, dim, units, animate);
                         });
                     }
@@ -297,6 +302,9 @@ impl CorrentApp {
             });
         });
 
+        if !seen_before && !snap.torrents.is_empty() {
+            self.rows_seen_once = true;
+        }
         if let Some(c) = sort_clicked {
             if self.prefs.sort == c {
                 self.prefs.sort_asc = !self.prefs.sort_asc;
@@ -330,6 +338,26 @@ impl CorrentApp {
                 self.click_row(h, mods, &rows);
             }
         }
+    }
+
+    /// Opacity for a row: new rows fade in over 250 ms (rows present at startup don't).
+    fn row_fade(&mut self, h: InfoHash) -> f32 {
+        if !self.settings.appearance.animations {
+            return 1.0;
+        }
+        let first = !self.rows_seen_once;
+        let since = *self.row_first_seen.entry(h).or_insert_with(|| {
+            if first {
+                std::time::Instant::now() - std::time::Duration::from_secs(1)
+            } else {
+                std::time::Instant::now()
+            }
+        });
+        let t = (since.elapsed().as_secs_f32() / 0.25).min(1.0);
+        if t < 1.0 {
+            self.ctx.request_repaint();
+        }
+        t
     }
 
     fn click_row(&mut self, h: InfoHash, mods: egui::Modifiers, rows: &[usize]) {

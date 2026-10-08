@@ -8,7 +8,7 @@ use super::{CorrentApp, DetailsTab};
 use crate::engine::EngineCommand;
 use crate::engine::types::{TorrentDetail, TorrentView};
 use crate::ui::file_tree;
-use crate::ui::theme::Palette;
+use crate::ui::theme::{self, Palette};
 use crate::ui::widgets::{self, card};
 use crate::util::{fmt_bytes, fmt_date, fmt_duration, fmt_ratio, fmt_speed};
 
@@ -44,25 +44,29 @@ impl CorrentApp {
         // Tab strip
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
+            let mut underline: Option<egui::Rect> = None;
             for (tab, icon, label) in TABS {
                 let sel = self.prefs.details_tab == tab;
                 let text = RichText::new(format!("{icon}  {label}")).color(if sel { p.text } else { p.text_dim });
                 let r = ui.add(egui::Button::new(text).frame(false).min_size(vec2(0.0, 28.0)));
                 if sel {
-                    let rect = r.rect;
-                    ui.painter().rect_filled(
-                        egui::Rect::from_min_max(
-                            egui::pos2(rect.left() + 4.0, rect.bottom() - 2.0),
-                            egui::pos2(rect.right() - 4.0, rect.bottom()),
-                        ),
-                        egui::CornerRadius::same(1),
-                        p.accent,
-                    );
+                    underline = Some(r.rect);
                 }
                 if r.clicked() {
                     self.prefs.details_tab = tab;
                 }
                 ui.add_space(6.0);
+            }
+            if let Some(rect) = underline {
+                // Slide the indicator to the selected tab.
+                let id = egui::Id::new("details_tab_underline");
+                let left = ui.ctx().animate_value_with_time(id.with("l"), rect.left() + 4.0, 0.18);
+                let right = ui.ctx().animate_value_with_time(id.with("r"), rect.right() - 4.0, 0.18);
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(left, rect.bottom() - 2.0), egui::pos2(right, rect.bottom())),
+                    egui::CornerRadius::same(1),
+                    p.accent,
+                );
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
@@ -179,7 +183,10 @@ impl CorrentApp {
             egui::Grid::new("general_grid").num_columns(cols * 2).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
                 for (i, (k, v)) in kv.iter().enumerate() {
                     ui.label(RichText::new(*k).small().color(p.text_dim));
-                    ui.label(RichText::new(v).color(p.text));
+                    // Numbers in the monospace face so they don't shift as they update.
+                    let numeric = v.chars().next().is_some_and(|c| c.is_ascii_digit());
+                    let text = if numeric { RichText::new(v).font(theme::mono()) } else { RichText::new(v) };
+                    ui.label(text.color(p.text));
                     if i % cols == cols - 1 {
                         ui.end_row();
                     }

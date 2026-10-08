@@ -63,7 +63,7 @@ fn modal_frame(p: &Palette) -> egui::Frame {
 fn title(ui: &mut Ui, p: &Palette, icon: &str, text: &str) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(icon).size(20.0).color(p.accent));
-        ui.label(RichText::new(text).font(theme::bold(18.0)).color(p.text));
+        ui.label(RichText::new(text).font(theme::title()).color(p.text));
     });
     ui.add_space(10.0);
 }
@@ -594,7 +594,7 @@ impl CorrentApp {
             ui.set_width(820.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icons::DOWNLOAD_SIMPLE).size(20.0).color(p.accent));
-                ui.label(RichText::new("Add torrent").font(theme::bold(18.0)).color(p.text));
+                ui.label(RichText::new("Add torrent").font(theme::title()).color(p.text));
                 if queued > 0 {
                     crate::ui::widgets::badge(ui, &format!("+{queued} more"), p.accent);
                 }

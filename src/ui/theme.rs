@@ -170,6 +170,29 @@ pub fn install_fonts(ctx: &Context) {
     ctx.set_fonts(fonts);
 }
 
+/// Type scale used across the app.
+pub mod type_scale {
+    pub const DISPLAY: f32 = 22.0;
+    pub const TITLE: f32 = 18.0;
+    pub const HEADING: f32 = 15.0;
+    pub const BODY: f32 = 13.5;
+    pub const CAPTION: f32 = 11.5;
+    pub const MONO: f32 = 12.5;
+}
+
+pub fn title() -> FontId {
+    bold(type_scale::TITLE)
+}
+
+pub fn heading() -> FontId {
+    bold(type_scale::HEADING)
+}
+
+/// Monospace for numbers so values don't jitter as they change.
+pub fn mono() -> FontId {
+    FontId::monospace(type_scale::MONO)
+}
+
 pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("bold".into()))
 }
@@ -274,11 +297,11 @@ fn style(s: &mut egui::Style, p: &Palette, a: &Appearance) {
     s.interaction.selectable_labels = false;
     s.interaction.tooltip_delay = 0.35;
     s.text_styles = [
-        (TextStyle::Heading, bold(17.0)),
-        (TextStyle::Body, FontId::proportional(13.5)),
-        (TextStyle::Button, FontId::proportional(13.5)),
-        (TextStyle::Small, FontId::proportional(11.5)),
-        (TextStyle::Monospace, FontId::monospace(12.5)),
+        (TextStyle::Heading, bold(type_scale::HEADING + 2.0)),
+        (TextStyle::Body, FontId::proportional(type_scale::BODY)),
+        (TextStyle::Button, FontId::proportional(type_scale::BODY)),
+        (TextStyle::Small, FontId::proportional(type_scale::CAPTION)),
+        (TextStyle::Monospace, FontId::monospace(type_scale::MONO)),
     ]
     .into();
 }
