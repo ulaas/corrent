@@ -144,10 +144,11 @@ pub enum Col {
     Tracker,
     SeedTime,
     LastActivity,
+    Activity,
 }
 
 impl Col {
-    pub const ALL: [Col; 20] = [
+    pub const ALL: [Col; 21] = [
         Col::Queue,
         Col::Name,
         Col::Size,
@@ -168,6 +169,7 @@ impl Col {
         Col::Tracker,
         Col::SeedTime,
         Col::LastActivity,
+        Col::Activity,
     ];
 
     pub fn title(self) -> &'static str {
@@ -192,6 +194,7 @@ impl Col {
             Col::Tracker => "Tracker",
             Col::SeedTime => "Seeding time",
             Col::LastActivity => "Last activity",
+            Col::Activity => "Activity",
         }
     }
 
@@ -205,6 +208,7 @@ impl Col {
             Col::Tracker => 160.0,
             Col::Tags | Col::Category => 110.0,
             Col::Added | Col::Completed | Col::LastActivity => 130.0,
+            Col::Activity => 100.0,
             _ => 86.0,
         }
     }
@@ -340,6 +344,8 @@ pub struct CorrentApp {
     pub remote: remote::RemoteCtl,
     row_first_seen: std::collections::HashMap<InfoHash, std::time::Instant>,
     rows_seen_once: bool,
+    /// Rows being dragged to a new queue position.
+    queue_drag: Option<Vec<InfoHash>>,
     /// Windows 11 draws a native rounded border, so ours is skipped.
     pub native_frame: bool,
     pub pickers: pickers::Pickers,
@@ -451,6 +457,7 @@ impl CorrentApp {
             remote,
             row_first_seen: Default::default(),
             rows_seen_once: false,
+            queue_drag: None,
             native_frame,
             pickers: Default::default(),
             extras: Default::default(),

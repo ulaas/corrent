@@ -93,6 +93,7 @@ pub fn compute_rows(snap: &Snapshot, prefs: &UiPrefs, search: &str) -> Vec<usize
             Col::Status => state_rank(a.state).cmp(&state_rank(b.state)),
             Col::Peers => a.peers_live.cmp(&b.peers_live),
             Col::Down => a.down_bps.cmp(&b.down_bps),
+            Col::Activity => (a.down_bps + a.up_bps).cmp(&(b.down_bps + b.up_bps)),
             Col::Up => a.up_bps.cmp(&b.up_bps),
             Col::Eta => a.eta.unwrap_or(Duration::MAX).cmp(&b.eta.unwrap_or(Duration::MAX)),
             Col::Ratio => f(a.ratio as f64, b.ratio as f64),
@@ -208,12 +209,17 @@ impl CorrentApp {
         };
 
         let seen_before = self.rows_seen_once;
+        // Drag rows to reorder the queue (only while the list is sorted by queue position).
+        let reorder = self.prefs.sort == Col::Queue && self.prefs.sort_asc;
+        let mut drag_start: Option<InfoHash> = None;
+        let mut drop_before: Option<Option<InfoHash>> = None;
+        let pointer = ui.ctx().pointer_interact_pos();
         egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 0 }).show(ui, |ui| {
             let mut tb = TableBuilder::new(ui)
                 .id_salt("torrents")
                 .striped(self.settings.appearance.striped_rows)
                 .resizable(true)
-                .sense(Sense::click())
+                .sense(if reorder { Sense::click_and_drag() } else { Sense::click() })
                 .cell_layout(Layout::left_to_right(Align::Center))
                 .min_scrolled_height(0.0)
                 .auto_shrink([false, false]);
@@ -280,6 +286,26 @@ impl CorrentApp {
                         });
                     }
                     let resp = row.response();
+                    if reorder && resp.drag_started() && !t.pending {
+                        drag_start = Some(t.hash);
+                    }
+                    if let (Some(drag), Some(pos)) = (&self.queue_drag, pointer)
+                        && resp.rect.y_range().contains(pos.y)
+                    {
+                        let upper = pos.y < resp.rect.center().y;
+                        let before = if upper {
+                            Some(t.hash)
+                        } else {
+                            rows.get(row.index() + 1).map(|&i| snap.torrents[i].hash)
+                        };
+                        if before.is_none_or(|b| !drag.contains(&b)) || drag.contains(&t.hash) {
+                            drop_before = Some(before);
+                            let y = if upper { resp.rect.top() } else { resp.rect.bottom() };
+                            resp.ctx
+                                .layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::new("queue_drop")))
+                                .hline(resp.rect.x_range(), y, egui::Stroke::new(2.0, p.accent));
+                        }
+                    }
                     if resp.clicked() {
                         clicked = Some((t.hash, resp.ctx.input(|i| i.modifiers), false));
                     }
@@ -304,6 +330,22 @@ impl CorrentApp {
 
         if !seen_before && !snap.torrents.is_empty() {
             self.rows_seen_once = true;
+        }
+        if let Some(h) = drag_start {
+            // Dragging a selected row moves the whole selection.
+            let hashes = if self.selected.contains(&h) { self.selected.iter().copied().collect() } else { vec![h] };
+            self.queue_drag = Some(hashes);
+        }
+        if let Some(drag) = &self.queue_drag {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            if !ui.input(|i| i.pointer.primary_down()) {
+                if let Some(before) = drop_before
+                    && !before.is_some_and(|b| drag.contains(&b))
+                {
+                    self.engine.send(crate::engine::EngineCommand::QueuePlace { hashes: drag.clone(), before });
+                }
+                self.queue_drag = None;
+            }
         }
         if self.row_first_seen.len() > snap.torrents.len() + 64 {
             let live: std::collections::HashSet<InfoHash> = snap.torrents.iter().map(|t| t.hash).collect();
@@ -495,6 +537,27 @@ impl CorrentApp {
                     "{} connected · {} connecting · {} known\nA torrent with few seeders may only have a handful of connections.",
                     t.peers_live, t.peers_connecting, t.peers_seen
                 ));
+            }
+            Col::Activity => {
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), Sense::hover());
+                let hist = self.snap.row_history.get(&t.hash).map(Vec::as_slice).unwrap_or(&[]);
+                if hist.iter().all(|(d, u)| *d == 0 && *u == 0) {
+                    ui.painter().line_segment(
+                        [rect.left_center(), rect.right_center()],
+                        egui::Stroke::new(1.0, p.text_mute.gamma_multiply(0.4)),
+                    );
+                } else {
+                    let downs: Vec<f32> = hist.iter().map(|(d, _)| *d as f32).collect();
+                    let ups: Vec<f32> = hist.iter().map(|(_, u)| *u as f32).collect();
+                    let max = downs.iter().chain(&ups).fold(1.0f32, |m, v| m.max(*v));
+                    widgets::paint_series(ui.painter(), rect, &ups, p.success, Some(max), false);
+                    widgets::paint_series(ui.painter(), rect, &downs, p.accent, Some(max), true);
+                    resp.on_hover_text(format!(
+                        "Last minute — down {} · up {}",
+                        fmt_speed(t.down_bps, units),
+                        fmt_speed(t.up_bps, units)
+                    ));
+                }
             }
             Col::Down => right(
                 ui,

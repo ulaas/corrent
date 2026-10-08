@@ -226,6 +226,8 @@ pub struct Snapshot {
     /// Recently removed torrents that can still be restored (hash, name).
     pub undoable: Vec<(InfoHash, String)>,
     pub rss: Arc<crate::rss::RssView>,
+    /// Recent (down, up) KiB/s per torrent, oldest first, for the Activity column.
+    pub row_history: Arc<std::collections::HashMap<InfoHash, Vec<(u32, u32)>>>,
 }
 
 /// Where a torrent to be added comes from.

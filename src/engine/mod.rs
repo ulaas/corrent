@@ -149,6 +149,11 @@ pub enum EngineCommand {
         hash: InfoHash,
         name: Option<String>,
     },
+    /// Drag & drop in the queue: put these before `before` (None = at the end).
+    QueuePlace {
+        hashes: Vec<InfoHash>,
+        before: Option<InfoHash>,
+    },
     QueueMove {
         hashes: Vec<InfoHash>,
         mv: QueueMove,

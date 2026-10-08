@@ -225,3 +225,128 @@ fn sidebar_sections_collapse() {
     assert!(h.query_by_label("Uncategorized").is_none());
     assert!(h.state().prefs.collapsed.contains(&"categories".to_string()));
 }
+
+#[test]
+fn activity_column_and_queue_drag() {
+    let (_f, mut app) =
+        app("drag", vec![torrent(1, "Alpha", TorrentState::Downloading), torrent(2, "Beta", TorrentState::Queued)]);
+    app.prefs.columns.push(super::Col::Activity);
+    app.prefs.sort = super::Col::Queue;
+    app.prefs.sort_asc = true;
+    let hist: std::collections::HashMap<InfoHash, Vec<(u32, u32)>> =
+        [(InfoHash([1; 20]), (0..40).map(|i| (i * 10, i)).collect())].into_iter().collect();
+    let snap = Snapshot { row_history: Arc::new(hist), ..(*app.snap).clone() };
+    app.snap = Arc::new(snap);
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label("Activity");
+    let from = h.get_by_label("Beta").rect().center();
+    let to = h.get_by_label("Alpha").rect().center() - egui::vec2(0.0, 8.0);
+    h.event(egui::Event::PointerMoved(from));
+    h.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Default::default(),
+    });
+    h.run_steps(2);
+    for i in 1..=5 {
+        h.event(egui::Event::PointerMoved(from + (to - from) * (i as f32 / 5.0)));
+        h.run_steps(1);
+    }
+    assert_eq!(h.state().queue_drag.as_deref(), Some(&[InfoHash([2; 20])][..]), "dragging Beta");
+    h.event(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Default::default(),
+    });
+    h.run_steps(2);
+    assert!(h.state().queue_drag.is_none(), "dropped");
+}
+
+/// Scale check (A9): 5,000 torrents. Run with
+/// `cargo test --release perf_5000 -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn perf_5000_torrents() {
+    use std::time::Instant;
+    let states = [
+        TorrentState::Downloading,
+        TorrentState::Seeding,
+        TorrentState::Paused,
+        TorrentState::Stalled,
+        TorrentState::Queued,
+    ];
+    let views: Vec<TorrentView> = (0..5000u32)
+        .map(|i| {
+            let mut h = [0u8; 20];
+            h[..4].copy_from_slice(&i.to_le_bytes());
+            TorrentView {
+                hash: InfoHash(h),
+                name: format!("Some.Linux.Distro.{i}.amd64.iso"),
+                state: states[i as usize % states.len()],
+                size: 1 << 30,
+                done: (i as u64 * 7919) % (1 << 30),
+                progress: (i % 100) as f32 / 100.0,
+                down_bps: (i as u64 % 13) * 1000,
+                up_bps: (i as u64 % 7) * 1000,
+                category: (i % 3 == 0).then(|| format!("cat{}", i % 10)),
+                tags: if i % 4 == 0 { vec!["a".into(), "b".into()] } else { vec![] },
+                trackers: vec![format!("udp://tracker{}.example.org:1337/announce", i % 20)],
+                save_path: PathBuf::from("C:/Downloads/Corrent"),
+                content_path: PathBuf::from(format!("C:/Downloads/Corrent/file{i}")),
+                added_at: i as i64,
+                queue_pos: i,
+                has_metadata: true,
+                ..Default::default()
+            }
+        })
+        .collect();
+    let snap = Snapshot { torrents: views, generation: 1, ..Default::default() };
+
+    let t = Instant::now();
+    for _ in 0..20 {
+        std::hint::black_box(snap.clone());
+    }
+    println!("snapshot clone: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+
+    let (_fx, mut a) = app("perf", Vec::new());
+    a.snap = Arc::new(snap.clone());
+    let t = Instant::now();
+    for g in 0..20 {
+        let mut s = (*a.snap).clone();
+        s.generation = 100 + g;
+        a.snap = Arc::new(s);
+        std::hint::black_box(a.visible_rows().len());
+    }
+    println!("snapshot clone + visible_rows: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+    let t = Instant::now();
+    for _ in 0..20 {
+        a.counts.update(&a.snap);
+    }
+    println!("sidebar counts: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+
+    let mut h = harness(a);
+    for _ in 0..3 {
+        h.step();
+    }
+    let frames = 30;
+    let t = Instant::now();
+    for g in 0..frames {
+        let app = h.state_mut();
+        let mut s = (*app.snap).clone();
+        s.generation = 1000 + g;
+        app.snap = Arc::new(s);
+        h.step();
+    }
+    println!(
+        "frame with a new snapshot (incl. kittest/AccessKit overhead): {:.2} ms",
+        t.elapsed().as_secs_f64() * 1000.0 / frames as f64
+    );
+    let t = Instant::now();
+    for _ in 0..frames {
+        h.step();
+    }
+    println!("frame, unchanged snapshot: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / frames as f64);
+}

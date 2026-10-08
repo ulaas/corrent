@@ -86,6 +86,7 @@ pub struct Actor {
     detail_target: Option<InfoHash>,
     history: VecDeque<(u64, u64)>,
     torrent_history: HashMap<InfoHash, VecDeque<(u64, u64)>>,
+    row_history: Arc<HashMap<InfoHash, Vec<(u32, u32)>>>,
     prev_peer: HashMap<String, (u64, u64)>,
     pieces_cache: Option<(Instant, InfoHash, (Vec<u8>, u32))>,
     static_info: HashMap<InfoHash, StaticInfo>,
@@ -152,6 +153,7 @@ impl Actor {
             detail_target: None,
             history: VecDeque::with_capacity(HISTORY_LEN),
             torrent_history: HashMap::new(),
+            row_history: Default::default(),
             prev_peer: HashMap::new(),
             pieces_cache: None,
             static_info: HashMap::new(),
@@ -515,6 +517,7 @@ impl Actor {
             EngineCommand::Rename { hash, name } => {
                 self.store.meta_mut(hash).display_name = name.filter(|n| !n.trim().is_empty());
             }
+            EngineCommand::QueuePlace { hashes, before } => self.store.queue_place(&hashes, before),
             EngineCommand::QueueMove { hashes, mv } => {
                 // Move in an order that keeps the relative order of a multi-selection.
                 let mut hs = hashes;
@@ -1258,8 +1261,24 @@ impl Actor {
             stream: self.stream.as_ref().map(|s| (s.port, s.token.clone())),
         };
 
+        // Activity sparklines: the last minute or so, refreshed every other tick.
+        if self.tick_count % 2 == 0 {
+            const ROW_SAMPLES: usize = 40;
+            let kib = |b: u64| (b / 1024).min(u32::MAX as u64) as u32;
+            self.row_history = Arc::new(
+                self.torrent_history
+                    .iter()
+                    .map(|(h, v)| {
+                        let skip = v.len().saturating_sub(ROW_SAMPLES);
+                        (*h, v.iter().skip(skip).map(|(d, u)| (kib(*d), kib(*u))).collect())
+                    })
+                    .collect(),
+            );
+        }
+
         self.generation += 1;
         let snap = Snapshot {
+            row_history: self.row_history.clone(),
             torrents: views,
             detail,
             session: session_view,

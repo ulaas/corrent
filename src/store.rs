@@ -262,6 +262,27 @@ impl Store {
         self.dirty = true;
     }
 
+    /// Move `hashes` (keeping their relative order) right before `before`, or to the end.
+    pub fn queue_place(&mut self, hashes: &[InfoHash], before: Option<InfoHash>) {
+        self.normalize_queue();
+        let mut order: Vec<(InfoHash, u32)> = self.data.torrents.iter().map(|(h, m)| (*h, m.queue_pos)).collect();
+        order.sort_by_key(|(_, p)| *p);
+        let mut order: Vec<InfoHash> = order.into_iter().map(|(h, _)| h).collect();
+        let moving: Vec<InfoHash> = order.iter().filter(|h| hashes.contains(h)).copied().collect();
+        if moving.is_empty() || before.is_some_and(|b| moving.contains(&b)) {
+            return;
+        }
+        order.retain(|h| !moving.contains(h));
+        let at = before.and_then(|b| order.iter().position(|h| *h == b)).unwrap_or(order.len());
+        order.splice(at..at, moving);
+        for (i, h) in order.iter().enumerate() {
+            if let Some(m) = self.data.torrents.get_mut(h) {
+                m.queue_pos = i as u32;
+            }
+        }
+        self.dirty = true;
+    }
+
     pub fn queue_move(&mut self, hash: InfoHash, mv: QueueMove) {
         self.normalize_queue();
         let n = self.data.torrents.len() as i64;
@@ -360,6 +381,14 @@ mod tests {
         let mut ps: Vec<u32> = s.data.torrents.values().map(|m| m.queue_pos).collect();
         ps.sort();
         assert_eq!(ps, vec![0, 1, 2, 3]);
+        // Drag & drop: [3,1,2,0] → move {1,0} before 3 → [1,0,3,2]
+        s.queue_place(&[hs[0], hs[1]], Some(hs[3]));
+        let pos = |s: &Store, i: usize| s.get(&hs[i]).unwrap().queue_pos;
+        assert_eq!((pos(&s, 1), pos(&s, 0), pos(&s, 3), pos(&s, 2)), (0, 1, 2, 3));
+        s.queue_place(&[hs[1]], None);
+        assert_eq!(pos(&s, 1), 3, "to the end");
+        s.queue_place(&[hs[0]], Some(hs[0]));
+        assert_eq!(pos(&s, 0), 0, "dropping onto itself is a no-op");
         s.discard();
     }
 }

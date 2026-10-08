@@ -314,6 +314,7 @@ async fn locked_file_shows_as_failed_restore_and_recovers() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[cfg(debug_assertions)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn engine_restart_after_panic_replays_commands() {
     let dir = temp_dir("panic");
