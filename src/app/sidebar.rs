@@ -81,6 +81,7 @@ pub(super) fn row(
 ) -> egui::Response {
     let h = 28.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label));
     let hover = ui.ctx().animate_bool_with_time(resp.id.with("hov"), resp.hovered() || selected, 0.12);
     if selected {
         ui.painter().rect_filled(rect, CornerRadius::same(7), p.accent_soft());

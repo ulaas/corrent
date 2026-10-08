@@ -18,6 +18,8 @@ mod titlebar;
 mod toasts;
 mod toolbar;
 mod tray;
+#[cfg(test)]
+mod ui_tests;
 mod win_chrome;
 mod window;
 
@@ -344,13 +346,44 @@ impl CorrentApp {
         ipc: std::sync::mpsc::Receiver<crate::integration::single_instance::IpcMessage>,
         start_hidden: bool,
     ) -> Self {
-        theme::install_fonts(&cc.egui_ctx);
-        egui_extras::install_image_loaders(&cc.egui_ctx);
-        let mut prefs: UiPrefs = cc.storage.and_then(|s| eframe::get_value(s, "ui_prefs")).unwrap_or_default();
+        let prefs: Option<UiPrefs> = cc.storage.and_then(|s| eframe::get_value(s, "ui_prefs"));
+        Self::build(
+            &cc.egui_ctx,
+            prefs,
+            rt,
+            paths,
+            settings,
+            first_run,
+            launch,
+            ipc,
+            start_hidden,
+            win_chrome::round_corners(cc),
+        )
+        .init_integration()
+        .with_tray(&cc.egui_ctx)
+    }
+
+    /// Construct the app state without OS integration (used by `new` and by UI tests).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build(
+        ctx: &Context,
+        prefs: Option<UiPrefs>,
+        rt: tokio::runtime::Handle,
+        paths: Paths,
+        settings: Settings,
+        first_run: bool,
+        launch: Vec<AddSource>,
+        ipc: std::sync::mpsc::Receiver<crate::integration::single_instance::IpcMessage>,
+        start_hidden: bool,
+        native_frame: bool,
+    ) -> Self {
+        theme::install_fonts(ctx);
+        egui_extras::install_image_loaders(ctx);
+        let mut prefs = prefs.unwrap_or_default();
         prefs.tracker_filter = GroupFilter::All;
         let (tx, rx) = std::sync::mpsc::channel();
         let ui_events_tx = tx.clone();
-        let engine = EngineHandle::start(&rt, paths.clone(), settings.clone(), cc.egui_ctx.clone(), tx);
+        let engine = EngineHandle::start(&rt, paths.clone(), settings.clone(), ctx.clone(), tx);
         if first_run {
             let _ = settings.save(&paths);
         }
@@ -391,20 +424,18 @@ impl CorrentApp {
             speed_scope_torrent: true,
             tray: None,
             tray_failed: false,
-            ctx: cc.egui_ctx.clone(),
+            ctx: ctx.clone(),
             previous_run: Default::default(),
             data_notes: Vec::new(),
             free_cache: None,
             batch: None,
-            native_frame: win_chrome::round_corners(cc),
+            native_frame,
             pickers: Default::default(),
             extras: Default::default(),
             icon_tex: None,
             #[cfg(debug_assertions)]
             dev_done: false,
         }
-        .init_integration()
-        .with_tray(&cc.egui_ctx)
     }
 
     pub fn with_data_notes(mut self, notes: Vec<String>) -> Self {
@@ -758,6 +789,81 @@ impl eframe::App for CorrentApp {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.frame_ui(ui);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, "ui_prefs", &self.prefs);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.engine.shutdown_blocking(std::time::Duration::from_secs(8));
+    }
+}
+
+#[cfg(debug_assertions)]
+impl CorrentApp {
+    /// Debug-only hooks for screenshot testing: CORRENT_DEV_SELECT=<n> selects the n-th row,
+    /// CORRENT_DEV_TAB=<files|peers|trackers|pieces|speed> picks the details tab,
+    /// CORRENT_DEV_OPEN=<settings|magnet|about|log> opens a window.
+    fn dev_hooks(&mut self, ctx: &Context) {
+        if self.dev_done || self.snap.torrents.is_empty() {
+            return;
+        }
+        self.dev_done = true;
+        if let Ok(n) = std::env::var("CORRENT_DEV_SELECT").map(|v| v.parse::<usize>().unwrap_or(0)) {
+            let rows = self.visible_rows().to_vec();
+            if let Some(&i) = rows.get(n) {
+                let h = self.snap.torrents[i].hash;
+                self.selected.insert(h);
+                self.focus = Some(h);
+            }
+        }
+        if let Ok(tab) = std::env::var("CORRENT_DEV_TAB") {
+            self.prefs.details_tab = match tab.as_str() {
+                "files" => DetailsTab::Files,
+                "peers" => DetailsTab::Peers,
+                "trackers" => DetailsTab::Trackers,
+                "pieces" => DetailsTab::Pieces,
+                "speed" => DetailsTab::Speed,
+                _ => DetailsTab::General,
+            };
+        }
+        if let Ok(w) = std::env::var("CORRENT_DEV_OPEN") {
+            match w.as_str() {
+                "settings" => self.open_settings(),
+                "magnet" => self.open_magnet_dialog(),
+                "about" => self.extras.about = true,
+                "log" => self.extras.log = true,
+                "stats" => self.extras.stats = true,
+                "remove" | "remove-undo" => {
+                    let h = self.snap.torrents[0].hash;
+                    self.engine.send(crate::engine::EngineCommand::Delete { hashes: vec![h], with_data: false });
+                }
+                _ => {}
+            }
+        }
+        match std::env::var("CORRENT_DEV_PANIC").as_deref() {
+            Ok("ui") => panic!("CORRENT_DEV_PANIC=ui"),
+            Ok("engine") => self.engine.send(crate::engine::EngineCommand::DevPanic),
+            _ => {}
+        }
+        if std::env::var("CORRENT_DEV_LIGHT").is_ok() {
+            ctx.set_theme(egui::ThemePreference::Light);
+        }
+    }
+}
+
+impl CorrentApp {
+    /// Lay out one frame of the whole window (eframe `ui` and UI tests).
+    pub(crate) fn frame_ui(&mut self, ui: &mut Ui) {
+        // A context without our fonts (e.g. a test harness) can't lay out bold text yet:
+        // install them and draw from the next frame on.
+        if !theme::fonts_installed(ui.ctx()) {
+            theme::install_fonts(ui.ctx());
+            ui.ctx().request_repaint();
+            return;
+        }
         let ctx = ui.ctx().clone();
         self.apply_appearance_if_changed(&ctx);
         let p = self.palette(&ctx);
@@ -821,67 +927,6 @@ impl eframe::App for CorrentApp {
         self.shortcuts(&ctx);
         let actions = self.toasts.show(&ctx, &p);
         self.run_toast_actions(&ctx, actions);
-    }
-
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, "ui_prefs", &self.prefs);
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.engine.shutdown_blocking(std::time::Duration::from_secs(8));
-    }
-}
-
-#[cfg(debug_assertions)]
-impl CorrentApp {
-    /// Debug-only hooks for screenshot testing: CORRENT_DEV_SELECT=<n> selects the n-th row,
-    /// CORRENT_DEV_TAB=<files|peers|trackers|pieces|speed> picks the details tab,
-    /// CORRENT_DEV_OPEN=<settings|magnet|about|log> opens a window.
-    fn dev_hooks(&mut self, ctx: &Context) {
-        if self.dev_done || self.snap.torrents.is_empty() {
-            return;
-        }
-        self.dev_done = true;
-        if let Ok(n) = std::env::var("CORRENT_DEV_SELECT").map(|v| v.parse::<usize>().unwrap_or(0)) {
-            let rows = self.visible_rows().to_vec();
-            if let Some(&i) = rows.get(n) {
-                let h = self.snap.torrents[i].hash;
-                self.selected.insert(h);
-                self.focus = Some(h);
-            }
-        }
-        if let Ok(tab) = std::env::var("CORRENT_DEV_TAB") {
-            self.prefs.details_tab = match tab.as_str() {
-                "files" => DetailsTab::Files,
-                "peers" => DetailsTab::Peers,
-                "trackers" => DetailsTab::Trackers,
-                "pieces" => DetailsTab::Pieces,
-                "speed" => DetailsTab::Speed,
-                _ => DetailsTab::General,
-            };
-        }
-        if let Ok(w) = std::env::var("CORRENT_DEV_OPEN") {
-            match w.as_str() {
-                "settings" => self.open_settings(),
-                "magnet" => self.open_magnet_dialog(),
-                "about" => self.extras.about = true,
-                "log" => self.extras.log = true,
-                "stats" => self.extras.stats = true,
-                "remove" | "remove-undo" => {
-                    let h = self.snap.torrents[0].hash;
-                    self.engine.send(crate::engine::EngineCommand::Delete { hashes: vec![h], with_data: false });
-                }
-                _ => {}
-            }
-        }
-        match std::env::var("CORRENT_DEV_PANIC").as_deref() {
-            Ok("ui") => panic!("CORRENT_DEV_PANIC=ui"),
-            Ok("engine") => self.engine.send(crate::engine::EngineCommand::DevPanic),
-            _ => {}
-        }
-        if std::env::var("CORRENT_DEV_LIGHT").is_ok() {
-            ctx.set_theme(egui::ThemePreference::Light);
-        }
     }
 }
 

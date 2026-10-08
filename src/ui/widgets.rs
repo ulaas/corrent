@@ -177,6 +177,8 @@ pub fn icon_button_sized(
         p.text_dim.lerp_to_gamma(p.text, 0.35)
     };
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(size * 0.56), color);
+    let label = tooltip.split(" (").next().unwrap_or(tooltip).trim_end_matches('…').to_string();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &label));
     let resp = resp.on_hover_text(tooltip);
     if enabled { resp } else { resp.on_disabled_hover_text(tooltip) }
 }

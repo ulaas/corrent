@@ -79,3 +79,6 @@ librqbit-dht = { path = "vendor/librqbit-dht" }
 
 [build-dependencies]
 winresource = "0.1"
+
+[dev-dependencies]
+egui_kittest = "=0.36.2"

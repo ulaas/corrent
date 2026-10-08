@@ -140,7 +140,13 @@ pub fn palette(ctx: &Context, a: &Appearance) -> Palette {
     if dark { Palette::dark(accent) } else { Palette::light(accent) }
 }
 
+/// Whether `install_fonts` ran for this context (fonts apply from the next frame on).
+pub fn fonts_installed(ctx: &Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(egui::Id::new("corrent_fonts_installed"))).unwrap_or(false)
+}
+
 pub fn install_fonts(ctx: &Context) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("corrent_fonts_installed"), true));
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
         "Inter".into(),
