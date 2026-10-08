@@ -23,6 +23,15 @@ pub fn settings_read_only() -> bool {
 /// Keep a copy of `file` before migrating it from `from`.
 pub fn backup_before_migration(file: &Path, from: u32) -> Option<PathBuf> {
     let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+    // One backup per source version is enough: if saving the migrated file keeps failing, don't
+    // pile up a copy on every start.
+    let prefix = format!("{}.{ext}.v{from}-", file.file_stem()?.to_string_lossy());
+    if let Some(dir) = file.parent()
+        && let Ok(rd) = std::fs::read_dir(dir)
+        && let Some(existing) = rd.flatten().find(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+    {
+        return Some(existing.path());
+    }
     let copy = file.with_extension(format!("{ext}.v{from}-{}", crate::util::now_unix()));
     std::fs::copy(file, &copy).ok().map(|_| copy)
 }

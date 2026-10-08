@@ -650,6 +650,24 @@ impl CorrentApp {
                                     .desired_width(200.0)
                                     .hint_text("All addresses"),
                             );
+                            let addr = s.connection.listen_address.trim();
+                            if !addr.is_empty() {
+                                match addr.parse::<std::net::IpAddr>() {
+                                    Err(_) => {
+                                        ui.label(
+                                            RichText::new("Not an IP address; all addresses are used")
+                                                .small()
+                                                .color(p.warn),
+                                        );
+                                    }
+                                    Ok(ip) if ip.is_ipv6() && s.connection.ipv4_only => {
+                                        ui.label(
+                                            RichText::new("IPv6 address, but “IPv4 only” is on").small().color(p.warn),
+                                        );
+                                    }
+                                    Ok(_) => {}
+                                }
+                            }
                         },
                     );
                     row(ui, p, "Bind to network interface", "e.g. a VPN adapter name. Leave empty for any.", |ui| {

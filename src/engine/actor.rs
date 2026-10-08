@@ -104,6 +104,9 @@ pub struct Actor {
     watch: super::automation::WatchState,
     slow_since: HashMap<InfoHash, Instant>,
     resumed_at: HashMap<InfoHash, Instant>,
+    /// Bumped on every resume; spawned pause tasks stop when it changes, so a pause queued just
+    /// before a Resume can't undo it.
+    resume_epoch: Arc<std::sync::atomic::AtomicU64>,
     deferred_settings: Option<Box<Settings>>,
     failed: HashMap<InfoHash, super::restore::FailedRestore>,
     undo_pending: HashMap<InfoHash, UndoEntry>,
@@ -164,6 +167,7 @@ impl Actor {
             watch: Default::default(),
             slow_since: HashMap::new(),
             resumed_at: HashMap::new(),
+            resume_epoch: Default::default(),
             deferred_settings: None,
             failed: HashMap::new(),
             undo_pending: HashMap::new(),
@@ -644,6 +648,7 @@ impl Actor {
         m.force_started = force;
         m.inactive_seeding_secs = 0;
         self.resumed_at.insert(hash, Instant::now());
+        self.resume_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if matches!(h.stats().state, TorrentStatsState::Paused)
             && let Err(e) = sess.unpause(&h).await
         {
@@ -826,14 +831,20 @@ impl Actor {
         let to_pause: Vec<Arc<ManagedTorrent>> = views
             .iter()
             .filter(|v| running(v.state) && v.busy.is_none())
+            .filter(|v| self.resumed_at.get(&v.hash).is_none_or(|t| t.elapsed() > Duration::from_secs(3)))
             .filter(|v| self.store.get(&v.hash).is_some_and(|m| m.pause_reason.is_some() && !m.force_started))
             .filter_map(|v| handles.iter().find(|(_, h)| h.info_hash().0 == v.hash.0).map(|(_, h)| h.clone()))
             .collect();
         if to_pause.is_empty() {
             return;
         }
+        let epoch = self.resume_epoch.clone();
+        let started = epoch.load(std::sync::atomic::Ordering::SeqCst);
         tokio::spawn(async move {
             for h in to_pause {
+                if epoch.load(std::sync::atomic::Ordering::SeqCst) != started {
+                    return; // something was resumed meanwhile; the next tick re-evaluates
+                }
                 if matches!(h.stats().state, TorrentStatsState::Live) {
                     let _ = sess.pause(&h).await;
                 }
@@ -1252,6 +1263,10 @@ impl Actor {
             *total_du += du;
             *total_dd += dd;
             counters = du > 0 || dd > 0;
+            if dd > 0 {
+                // Data arrived this session: a completion right after is a real download.
+                self.seen_unfinished.insert(hash);
+            }
         }
         if let Some(n) = &name_engine
             && m.name != *n
@@ -1269,9 +1284,9 @@ impl Actor {
         if stats.finished && has_metadata {
             if m.completed_at.is_none() {
                 m.completed_at = Some(now);
-                // Fast downloads can finish between two ticks, so also count torrents that
-                // transferred data; re-adding already-complete data (nothing fetched) stays silent.
-                completed_event = self.seen_unfinished.contains(&hash) || m.downloaded_total > 0;
+                // Only torrents seen unfinished (or receiving data) this session: fast downloads
+                // finishing between two ticks still count, restarts and re-adds stay silent.
+                completed_event = self.seen_unfinished.contains(&hash);
                 structural = true;
             }
         } else if is_live && !stats.finished && m.completed_at.is_some() {
@@ -1562,6 +1577,9 @@ impl Actor {
         for hash in &to_resume {
             self.store.meta_mut(*hash).pause_reason = None;
             self.resumed_at.insert(*hash, Instant::now());
+        }
+        if !to_resume.is_empty() {
+            self.resume_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         let find = |hash: &InfoHash| handles.iter().find(|(_, h)| h.info_hash().0 == hash.0).map(|(_, h)| h.clone());
         let pause: Vec<_> = to_pause.iter().filter_map(find).collect();

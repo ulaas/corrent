@@ -8,6 +8,11 @@ pub const APP_ID: &str = "Corrent.Corrent";
 pub fn ensure(paths: &crate::config::Paths) -> Option<&'static str> {
     use std::sync::OnceLock;
     static OK: OnceLock<bool> = OnceLock::new();
+    // Portable/test profiles must not touch the per-user registry (and would point the icon
+    // at a folder that may disappear); they use the plain notification identity.
+    if paths.portable {
+        return None;
+    }
     let ok = *OK.get_or_init(|| {
         let icon = paths.data_dir.join("corrent-notify.png");
         if !icon.exists() {

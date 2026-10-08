@@ -499,7 +499,8 @@ impl Settings {
                     tracing::error!("settings file is invalid ({e}); salvaging what parses");
                     let bad = file.with_extension(format!("toml.bad-{}", crate::util::now_unix()));
                     let _ = std::fs::copy(&file, &bad);
-                    let (s, lost) = Settings::salvage(&text);
+                    let (mut s, lost) = Settings::salvage(&text);
+                    crate::migrate::migrate_settings(&mut s, crate::migrate::toml_version(&text));
                     let _ = s.save(paths);
                     let what = if lost.is_empty() {
                         "Some settings could not be read".to_string()

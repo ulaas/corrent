@@ -102,7 +102,21 @@ pub struct Store {
     pending_error: Option<String>,
 }
 
+impl Drop for Store {
+    /// Flush pending changes, also when the engine task unwinds after a panic.
+    fn drop(&mut self) {
+        self.maybe_save(true);
+    }
+}
+
 impl Store {
+    /// Tests: drop without flushing to disk.
+    #[cfg(test)]
+    fn discard(mut self) {
+        self.dirty = false;
+        self.soft_dirty = false;
+    }
+
     pub fn load(path: PathBuf) -> Store {
         // A transient read failure (e.g. a lock) must not be mistaken for "no data".
         for _ in 0..5 {
@@ -160,7 +174,7 @@ impl Store {
         let mut read_only = newer_unreadable;
         if newer_unreadable {
             warning = Some(
-                "Corrent's data was saved by a newer version and can't be read by this one. Categories and tags are                  hidden and nothing is saved until you update Corrent; your torrents are unaffected."
+                "Corrent's data was saved by a newer version and can't be read by this one. Categories and tags are hidden and nothing is saved until you update Corrent; your torrents are unaffected."
                     .into(),
             );
         }
@@ -174,7 +188,7 @@ impl Store {
                  totals won't be saved until you update Corrent."
             ));
         } else if from < STORE_VERSION {
-            if path.exists() {
+            if path.exists() && !newer_unreadable {
                 let _ = crate::migrate::backup_before_migration(&path, from);
             }
             migrate_store(&mut data, from);
@@ -333,7 +347,7 @@ mod tests {
 
     #[test]
     fn queue_moves() {
-        let mut s = Store::load(std::env::temp_dir().join("corrent-nonexistent-store.json"));
+        let mut s = Store::load(std::env::temp_dir().join(format!("corrent-store-moves-{}.json", std::process::id())));
         let hs: Vec<InfoHash> = (0..4u8).map(|i| InfoHash([i; 20])).collect();
         for h in &hs {
             s.meta_mut(*h);
@@ -346,6 +360,7 @@ mod tests {
         let mut ps: Vec<u32> = s.data.torrents.values().map(|m| m.queue_pos).collect();
         ps.sort();
         assert_eq!(ps, vec![0, 1, 2, 3]);
+        s.discard();
     }
 }
 
@@ -366,6 +381,7 @@ mod more_tests {
         assert!(!s.dirty);
         s.meta_quiet(InfoHash([2; 20]));
         assert!(s.dirty, "new entries are always saved");
+        s.discard();
     }
 
     #[test]
@@ -378,6 +394,7 @@ mod more_tests {
         let mut ps: Vec<u32> = s.data.torrents.values().map(|m| m.queue_pos).collect();
         ps.sort();
         assert_eq!(ps, vec![0, 1]);
+        s.discard();
     }
 
     #[test]
@@ -389,6 +406,7 @@ mod more_tests {
         let back = Store::load(p.clone());
         assert_eq!(back.get(&InfoHash([9; 20])).unwrap().category.as_deref(), Some("Movies"));
         assert!(back.warning.is_none());
+        drop((s, back));
         let _ = std::fs::remove_file(&p);
         let _ = std::fs::remove_file(p.with_extension("json.bak"));
     }
@@ -405,6 +423,8 @@ mod more_tests {
         let back = Store::load(p.clone());
         assert!(back.warning.as_deref().unwrap_or("").contains("restored from its backup"));
         assert!(back.get(&InfoHash([3; 20])).is_some());
+        s.discard();
+        back.discard();
         for f in std::fs::read_dir(std::env::temp_dir()).unwrap().flatten() {
             let n = f.file_name().to_string_lossy().into_owned();
             if n.starts_with(&format!("corrent-store-c-{}", std::process::id())) {
@@ -435,6 +455,8 @@ mod schema_tests {
         s.meta_mut(InfoHash([1; 20]));
         s.maybe_save(true);
         assert_eq!(std::fs::read_to_string(&p).unwrap(), future);
+        drop(s);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), future, "not even on drop");
         let _ = std::fs::remove_file(&p);
     }
 }
@@ -458,6 +480,7 @@ mod save_error_tests {
         s.maybe_save(true);
         assert!(s.take_save_error().is_none(), "the same failure isn't repeated");
         assert!(s.dirty, "data stays marked for a later retry");
+        s.discard();
         let _ = std::fs::remove_dir_all(base);
     }
 }

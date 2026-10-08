@@ -11,13 +11,23 @@ use crate::config::{Paths, Settings};
 use crate::engine::types::{InfoHash, Snapshot, TorrentState, TorrentView};
 
 struct Fixture {
-    _rt: tokio::runtime::Runtime,
+    rt: Option<tokio::runtime::Runtime>,
     dir: PathBuf,
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        // Stop the engine's tasks (closing its files) before deleting; Windows refuses to remove
+        // open files, so retry briefly.
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_timeout(std::time::Duration::from_secs(2));
+        }
+        for _ in 0..10 {
+            if std::fs::remove_dir_all(&self.dir).is_ok() || !self.dir.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 }
 
@@ -59,7 +69,7 @@ fn app(name: &str, torrents: Vec<TorrentView>) -> (Fixture, CorrentApp) {
     let mut app =
         CorrentApp::build(&ctx, None, rt.handle().clone(), paths, settings(&dir), false, Vec::new(), ipc, false, false);
     app.snap = Arc::new(Snapshot { torrents, generation: 1, ..Default::default() });
-    (Fixture { _rt: rt, dir }, app)
+    (Fixture { rt: Some(rt), dir }, app)
 }
 
 fn harness(app: CorrentApp) -> Harness<'static, CorrentApp> {

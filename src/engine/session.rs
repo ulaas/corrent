@@ -29,6 +29,10 @@ fn options(paths: &Paths, s: &Settings, port_override: Option<u16>, alt: bool) -
     let port = port_override.unwrap_or(if c.random_port { 0 } else { c.listen_port });
     let listen_addr: SocketAddr = match c.listen_address.trim().parse::<std::net::IpAddr>() {
         Ok(ip) => (ip, port).into(),
+        Err(_) if !c.listen_address.trim().is_empty() => {
+            tracing::warn!("listen address {:?} is not an IP address; listening on all", c.listen_address);
+            if c.ipv4_only { (Ipv4Addr::UNSPECIFIED, port).into() } else { (Ipv6Addr::UNSPECIFIED, port).into() }
+        }
         Err(_) if c.ipv4_only => (Ipv4Addr::UNSPECIFIED, port).into(),
         Err(_) => (Ipv6Addr::UNSPECIFIED, port).into(),
     };

@@ -305,6 +305,10 @@ impl CorrentApp {
         if !seen_before && !snap.torrents.is_empty() {
             self.rows_seen_once = true;
         }
+        if self.row_first_seen.len() > snap.torrents.len() + 64 {
+            let live: std::collections::HashSet<InfoHash> = snap.torrents.iter().map(|t| t.hash).collect();
+            self.row_first_seen.retain(|h, _| live.contains(h));
+        }
         if let Some(c) = sort_clicked {
             if self.prefs.sort == c {
                 self.prefs.sort_asc = !self.prefs.sort_asc;

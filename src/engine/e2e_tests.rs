@@ -430,3 +430,28 @@ async fn streaming_server_serves_ranges() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restart_does_not_repeat_completion() {
+    let dir = temp_dir("norepeat");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    download(&l, &s, &dir).await;
+    let paths = stop(l).await;
+    // Simulate a crash before `completed_at` was saved: lifetime counters say data was fetched.
+    let file = paths.store_file();
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    for (_, m) in v["torrents"].as_object_mut().unwrap() {
+        m["completed_at"] = serde_json::Value::Null;
+        assert!(m["downloaded_total"].as_u64().unwrap() > 0);
+    }
+    std::fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
+    let l = start(&dir);
+    wait_for(&l, "restored as complete", 30, |sn| complete(sn, s.hash)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    while let Ok(ev) = l.events.try_recv() {
+        assert!(!matches!(ev, EngineEvent::Completed { .. }), "no second Completed event after a restart");
+    }
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -788,6 +788,10 @@ impl CorrentApp {
         if self.launch_queue.is_empty() {
             return;
         }
+        if !self.settings.behavior.skip_add_dialog && !self.add_dialogs.is_empty() && self.batch.is_none() {
+            // Wait for the open add dialog; a batch modal would stack behind it.
+            return;
+        }
         let sources: Vec<AddSource> = self.launch_queue.drain(..).collect();
         if self.settings.behavior.skip_add_dialog {
             for src in sources {
