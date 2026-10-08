@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use librqbit::{CreateTorrentOptions, ListenerMode, ListenerOptions, Session, SessionOptions};
+use librqbit::{CreateTorrentOptions, ListenerMode, ListenerOptions, ManagedTorrent, Session, SessionOptions};
 
 use super::types::{AddSource, InfoHash, Snapshot, TorrentState, TorrentView};
 use super::{AddRequest, EngineCommand, EngineEvent, EngineHandle};
@@ -692,6 +692,32 @@ async fn webapi_behaves_like_qbittorrent_for_sonarr() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A plain librqbit client that only knows Corrent (at `port`) as a peer.
+async fn client_of(dir: &Path, s: &Seeder, port: u16) -> (Arc<Session>, Arc<ManagedTorrent>) {
+    let other = dir.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let opts = SessionOptions {
+        dht: None,
+        persistence: None,
+        disable_trackers: true,
+        disable_local_service_discovery: true,
+        listen: None,
+        ..Default::default()
+    };
+    let sess = Session::new_with_opts(other, opts).await.unwrap();
+    let resp = sess
+        .add_torrent(
+            librqbit::AddTorrent::from_bytes(s.bytes.clone()),
+            Some(librqbit::AddTorrentOptions {
+                initial_peers: Some(vec![SocketAddr::from(([127, 0, 0, 1], port))]),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    (sess, resp.into_handle().unwrap())
+}
+
 /// Corrent seeds with a per-torrent upload limit (set while live, then kept across a pause and
 /// resume); a plain librqbit client downloads from it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -708,29 +734,7 @@ async fn per_torrent_speed_limit_applies_and_survives_resume() {
     l.engine.send(EngineCommand::Resume(vec![s.hash]));
     wait_for(&l, "seeding again", 20, |sn| complete(sn, s.hash)).await;
 
-    // A second client that only knows Corrent as a peer.
-    let other = dir.join("other");
-    std::fs::create_dir_all(&other).unwrap();
-    let opts = SessionOptions {
-        dht: None,
-        persistence: None,
-        disable_trackers: true,
-        disable_local_service_discovery: true,
-        listen: None,
-        ..Default::default()
-    };
-    let sess = Session::new_with_opts(other.clone(), opts).await.unwrap();
-    let resp = sess
-        .add_torrent(
-            librqbit::AddTorrent::from_bytes(s.bytes.clone()),
-            Some(librqbit::AddTorrentOptions {
-                initial_peers: Some(vec![SocketAddr::from(([127, 0, 0, 1], port))]),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
-    let h = resp.into_handle().unwrap();
+    let (_sess, h) = client_of(&dir, &s, port).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     let got = h.stats().progress_bytes;
     assert!(got > 0, "the client downloads from Corrent");
@@ -744,7 +748,49 @@ async fn per_torrent_speed_limit_applies_and_survives_resume() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     drop(h);
-    drop(sess);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A category speed limit is shared by the category's torrents.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn category_speed_limit_applies() {
+    let dir = temp_dir("catlimit");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    download(&l, &s, &dir).await; // category "Tests"
+    let port = l.engine.snapshot().session.listen_port.expect("Corrent listens");
+    let mut cats = l.engine.snapshot().categories.clone();
+    cats.insert("Tests".into(), crate::store::CategoryInfo { save_path: None, down_limit_kib: 0, up_limit_kib: 64 });
+    l.engine.send(EngineCommand::SetCategories(cats));
+    wait_for(&l, "category limit stored", 10, |sn| sn.categories.get("Tests").is_some_and(|c| c.up_limit_kib == 64))
+        .await;
+    tokio::time::sleep(Duration::from_millis(600)).await; // applied within two ticks
+    let (_sess, h) = client_of(&dir, &s, port).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let got = h.stats().progress_bytes;
+    assert!(got > 0 && got < 1024 * 1024, "64 KiB/s category limit: {got} bytes in 4 s");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_priority_is_stored_and_shown() {
+    let dir = temp_dir("filepri");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    download(&l, &s, &dir).await;
+    l.engine.send(EngineCommand::SetDetailTarget(Some(s.hash)));
+    l.engine.send(EngineCommand::SetFilePriority { hash: s.hash, files: vec![0], priority: 1 });
+    wait_for(&l, "priority in details", 10, |sn| {
+        sn.detail.as_ref().is_some_and(|d| d.hash == s.hash && d.files.first().is_some_and(|f| f.priority == 1))
+    })
+    .await;
+    l.engine.send(EngineCommand::SetFilePriority { hash: s.hash, files: vec![0], priority: 0 });
+    wait_for(&l, "back to normal", 10, |sn| {
+        sn.detail.as_ref().is_some_and(|d| d.files.first().is_some_and(|f| f.priority == 0))
+    })
+    .await;
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -69,7 +69,7 @@ src/app/                    eframe App: titlebar/toolbar, sidebar, table, detail
                             window, tray, window lifecycle, toasts, extras (about/log/stats)
 src/ui/                     theme (palettes, fonts), widgets (progress bar, sparkline, badges…), file tree
 vendor/librqbit-dht/        Patched DHT (keeps running on Windows WSAECONNRESET) — see CORRENT-PATCH.md
-vendor/librqbit/            librqbit 9.0.1 + runtime per-torrent speed limits — see CORRENT-PATCH.md;
+vendor/librqbit/            librqbit 9.0.1 + runtime limits/group limiter/file order — see CORRENT-PATCH.md;
                             diffs for upstream PRs in docs/upstream/
 docs/                       research.md, PLAN.md (v1 plan + review), ROADMAP.md (future)
 ```
@@ -94,9 +94,9 @@ migrations, typed I/O errors, engine restart, batch add, kittest UI tests, typog
 onboarding, torrent creator (M16), streaming to a media player (M17), RSS feeds + rules (M18), Torznab
 search (M19), qBittorrent-compatible API (M20), 5k-torrent perf check + Activity sparklines +
 drag-to-reorder queue (M21), palettes/high contrast/theme editor/accessibility (M22),
-per-torrent speed limits + IP filter (M23).
+per-torrent speed limits + IP filter (M23), per-file priorities + category limits (M24).
 Fable reviews of M1–M15 were addressed. Default save folder: `Downloads/Corrent`.
 
-Next steps: M24 onward in `docs/ROADMAP.md`.
+Next steps: M25 onward in `docs/ROADMAP.md`.
 
-Known gaps: engine lacks encryption, per-file priorities and sequential mode; macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.
+Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.

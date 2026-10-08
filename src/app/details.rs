@@ -278,7 +278,13 @@ impl CorrentApp {
         let entries: Vec<file_tree::Entry<'_>> = d
             .files
             .iter()
-            .map(|f| file_tree::Entry { index: f.index, components: &f.components, len: f.len, done: Some(f.done) })
+            .map(|f| file_tree::Entry {
+                index: f.index,
+                components: &f.components,
+                len: f.len,
+                done: Some(f.done),
+                priority: Some(f.priority),
+            })
             .collect();
         let included: std::collections::HashSet<usize> =
             d.files.iter().filter(|f| f.included).map(|f| f.index).collect();
@@ -293,6 +299,16 @@ impl CorrentApp {
                 &filter,
                 true,
             ) {
+                let mut by_pri: std::collections::BTreeMap<i8, Vec<usize>> = Default::default();
+                for (i, v) in ch.priority {
+                    by_pri.entry(v).or_default().push(i);
+                }
+                for (priority, files) in by_pri {
+                    self.engine.send(EngineCommand::SetFilePriority { hash: t.hash, files, priority });
+                }
+                if ch.set.is_empty() {
+                    return;
+                }
                 let mut next = included.clone();
                 for (i, on) in ch.set {
                     if on {

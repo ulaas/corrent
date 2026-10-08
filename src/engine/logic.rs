@@ -150,6 +150,15 @@ pub fn seed_limit_reason(v: &TorrentView, m: &TorrentMeta, s: &Seeding) -> Optio
     None
 }
 
+/// Download order for files: by name (librqbit's default), then high-priority files first and
+/// low-priority files last (stable within a priority).
+pub fn file_order(names: &[std::path::PathBuf], priority: &std::collections::BTreeMap<usize, i8>) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..names.len()).collect();
+    order.sort_by(|a, b| names[*a].cmp(&names[*b]));
+    order.sort_by_key(|i| std::cmp::Reverse(priority.get(i).copied().unwrap_or(0)));
+    order
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -341,5 +350,14 @@ pub mod tests {
         assert_eq!(seed_limit_reason(&v, &m, &s).as_deref(), Some("was inactive"));
         v.state = TorrentState::Paused;
         assert_eq!(seed_limit_reason(&v, &m, &s), None, "only seeding torrents");
+    }
+
+    #[test]
+    fn file_order_by_priority() {
+        let names: Vec<std::path::PathBuf> = ["c.mkv", "a.nfo", "b.srt"].iter().map(Into::into).collect();
+        let none = Default::default();
+        assert_eq!(file_order(&names, &none), vec![1, 2, 0], "by name like librqbit");
+        let pri: std::collections::BTreeMap<usize, i8> = [(0, 1), (1, -1)].into_iter().collect();
+        assert_eq!(file_order(&names, &pri), vec![0, 2, 1], "high first, low last");
     }
 }

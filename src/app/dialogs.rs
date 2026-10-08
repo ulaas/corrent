@@ -17,15 +17,52 @@ use crate::ui::widgets::{danger_button, primary_button, secondary_button};
 use crate::util::fmt_bytes;
 
 pub enum Modal {
-    Magnet { text: String },
-    Delete { hashes: Vec<InfoHash>, with_data: bool, names: Vec<String>, total: u64 },
-    Move { hashes: Vec<InfoHash>, path: String },
-    Rename { hash: InfoHash, name: String },
-    Category { name: String, path: String, apply_to: Option<Vec<InfoHash>>, editing: Option<String> },
-    Tag { name: String, apply_to: Option<Vec<InfoHash>> },
-    SeedLimits { hashes: Vec<InfoHash>, ratio_on: bool, ratio: f32, time_on: bool, minutes: u32 },
-    SpeedLimits { hashes: Vec<InfoHash>, down: u32, up: u32 },
-    Trackers { hash: InfoHash, text: String },
+    Magnet {
+        text: String,
+    },
+    Delete {
+        hashes: Vec<InfoHash>,
+        with_data: bool,
+        names: Vec<String>,
+        total: u64,
+    },
+    Move {
+        hashes: Vec<InfoHash>,
+        path: String,
+    },
+    Rename {
+        hash: InfoHash,
+        name: String,
+    },
+    Category {
+        name: String,
+        path: String,
+        apply_to: Option<Vec<InfoHash>>,
+        editing: Option<String>,
+        /// Shared speed limits in KiB/s (0 = none).
+        down: u32,
+        up: u32,
+    },
+    Tag {
+        name: String,
+        apply_to: Option<Vec<InfoHash>>,
+    },
+    SeedLimits {
+        hashes: Vec<InfoHash>,
+        ratio_on: bool,
+        ratio: f32,
+        time_on: bool,
+        minutes: u32,
+    },
+    SpeedLimits {
+        hashes: Vec<InfoHash>,
+        down: u32,
+        up: u32,
+    },
+    Trackers {
+        hash: InfoHash,
+        text: String,
+    },
     ConfirmExit,
 }
 
@@ -150,18 +187,21 @@ impl CorrentApp {
     }
 
     pub fn open_new_category(&mut self, apply_to: Option<Vec<InfoHash>>) {
-        self.modal = Some(Modal::Category { name: String::new(), path: String::new(), apply_to, editing: None });
+        self.modal =
+            Some(Modal::Category { name: String::new(), path: String::new(), apply_to, editing: None, down: 0, up: 0 });
     }
 
     pub fn open_edit_category(&mut self, name: String) {
-        let path = self
-            .snap
-            .categories
-            .get(&name)
-            .and_then(|c| c.save_path.as_ref())
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-        self.modal = Some(Modal::Category { name: name.clone(), path, apply_to: None, editing: Some(name) });
+        let info = self.snap.categories.get(&name).cloned().unwrap_or_default();
+        let path = info.save_path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+        self.modal = Some(Modal::Category {
+            name: name.clone(),
+            path,
+            apply_to: None,
+            editing: Some(name),
+            down: info.down_limit_kib,
+            up: info.up_limit_kib,
+        });
     }
 
     pub fn open_new_tag(&mut self, apply_to: Option<Vec<InfoHash>>) {
@@ -412,7 +452,7 @@ impl CorrentApp {
                         }
                     });
                 }
-                Modal::Category { name, path, apply_to, editing } => {
+                Modal::Category { name, path, apply_to, editing, down, up } => {
                     ui.set_width(480.0);
                     title(
                         ui,
@@ -432,6 +472,16 @@ impl CorrentApp {
                             self.pick(PickTarget::CategoryFolder, PickKind::Folder, Some(PathBuf::from(path.as_str())));
                         }
                         ui.end_row();
+                        for (label, v) in [("Download limit", &mut *down), ("Upload limit", &mut *up)] {
+                            ui.label(label);
+                            ui.add(egui::DragValue::new(v).range(0..=10_000_000).speed(16.0).custom_formatter(
+                                |n, _| {
+                                    if n <= 0.0 { "∞ Unlimited".into() } else { format!("{n:.0} KiB/s") }
+                                },
+                            ))
+                            .on_hover_text("Shared by all torrents in this category");
+                            ui.end_row();
+                        }
                     });
                     ui.label(
                         RichText::new("Torrents added to this category are saved here (leave empty for the default).")
@@ -448,6 +498,8 @@ impl CorrentApp {
                                 name.trim().to_string(),
                                 crate::store::CategoryInfo {
                                     save_path: (!path.is_empty()).then(|| PathBuf::from(path)),
+                                    down_limit_kib: *down,
+                                    up_limit_kib: *up,
                                 },
                             );
                             self.engine.send(EngineCommand::SetCategories(cats));
@@ -835,6 +887,7 @@ impl CorrentApp {
                                                     components: &f.components,
                                                     len: f.len,
                                                     done: None,
+                                                    priority: None,
                                                 })
                                                 .collect();
                                             let checked = d.checked.clone();

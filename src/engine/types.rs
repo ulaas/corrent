@@ -163,6 +163,7 @@ pub struct FileView {
     pub len: u64,
     pub done: u64,
     pub included: bool,
+    pub priority: i8,
 }
 
 #[derive(Clone, Debug)]

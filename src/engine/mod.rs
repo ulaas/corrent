@@ -161,6 +161,12 @@ pub enum EngineCommand {
         down_kib: u32,
         up_kib: u32,
     },
+    /// Download priority for files of a torrent (1 high, 0 normal, -1 low).
+    SetFilePriority {
+        hash: InfoHash,
+        files: Vec<usize>,
+        priority: i8,
+    },
     /// Re-read the IP filter lists (restarts the session).
     ReloadIpFilter,
     /// Drag & drop in the queue: put these before `before` (None = at the end).

@@ -46,6 +46,8 @@ pub struct TorrentMeta {
     /// Per-torrent speed limits in KiB/s (0 = no limit).
     pub down_limit_kib: u32,
     pub up_limit_kib: u32,
+    /// Per-file download priority (1 high, -1 low); files not listed are normal.
+    pub file_priority: BTreeMap<usize, i8>,
 }
 
 impl TorrentMeta {
@@ -65,6 +67,9 @@ impl TorrentMeta {
 #[serde(default)]
 pub struct CategoryInfo {
     pub save_path: Option<PathBuf>,
+    /// Shared by all torrents in the category, in KiB/s (0 = no limit).
+    pub down_limit_kib: u32,
+    pub up_limit_kib: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]

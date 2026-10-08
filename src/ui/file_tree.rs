@@ -13,6 +13,16 @@ pub struct Entry<'a> {
     pub components: &'a [String],
     pub len: u64,
     pub done: Option<u64>,
+    /// Download priority (1 high, 0 normal, -1 low); None hides priorities (add dialog).
+    pub priority: Option<i8>,
+}
+
+pub fn priority_label(p: i8) -> &'static str {
+    match p {
+        1.. => "High",
+        0 => "Normal",
+        _ => "Low",
+    }
 }
 
 #[derive(Default)]
@@ -41,6 +51,21 @@ impl Node {
 /// Result of user interaction: the new checked state per entry index (if changed).
 pub struct TreeChange {
     pub set: Vec<(usize, bool)>,
+    /// New download priority per entry index.
+    pub priority: Vec<(usize, i8)>,
+}
+
+/// "Priority" submenu for a set of files.
+fn priority_menu(ui: &mut Ui, files: &[usize], current: Option<i8>, change: &mut TreeChange) {
+    ui.menu_button(format!("{}  Priority", icons::FLAG), |ui| {
+        for (v, icon) in [(1i8, icons::ARROW_FAT_UP), (0, icons::MINUS), (-1, icons::ARROW_FAT_DOWN)] {
+            let label = format!("{icon}  {}", priority_label(v));
+            if ui.add(egui::Button::selectable(current == Some(v), label)).clicked() {
+                change.priority.extend(files.iter().map(|&i| (i, v)));
+                ui.close();
+            }
+        }
+    });
 }
 
 pub fn file_icon(name: &str) -> &'static str {
@@ -76,7 +101,7 @@ pub fn show(
         }
         root.insert(e.components, i);
     }
-    let mut change = TreeChange { set: Vec::new() };
+    let mut change = TreeChange { set: Vec::new(), priority: Vec::new() };
     show_node(ui, p, id, &root, entries, checked, editable, !filter.is_empty(), &mut change);
     (!change.set.is_empty()).then_some(change)
 }
@@ -105,31 +130,34 @@ fn show_node(
         if force_open {
             state.set_open(true);
         }
-        state
-            .show_header(ui, |ui| {
-                let mut on = n_on == all.len() && !all.is_empty();
-                let cb = ui.add_enabled(
-                    editable,
-                    egui::Checkbox::new(&mut on, "").indeterminate(n_on > 0 && n_on < all.len()),
-                );
-                if cb.changed() {
-                    let target = n_on < all.len();
-                    for &i in &all {
-                        change.set.push((entries[i].index, target));
-                    }
+        let header = state.show_header(ui, |ui| {
+            let mut on = n_on == all.len() && !all.is_empty();
+            let cb =
+                ui.add_enabled(editable, egui::Checkbox::new(&mut on, "").indeterminate(n_on > 0 && n_on < all.len()));
+            if cb.changed() {
+                let target = n_on < all.len();
+                for &i in &all {
+                    change.set.push((entries[i].index, target));
                 }
-                ui.label(RichText::new(icons::FOLDER).color(p.warn));
-                ui.label(RichText::new(name).color(p.text));
-                row_tail(ui, p, total, done);
-            })
-            .body(|ui| {
-                show_node(ui, p, dir_id, dir, entries, checked, editable, force_open, change);
-            });
+            }
+            ui.label(RichText::new(icons::FOLDER).color(p.warn));
+            ui.label(RichText::new(name).color(p.text));
+            row_tail(ui, p, total, done, None);
+        });
+        let (_, header_resp, _) = header.body(|ui| {
+            show_node(ui, p, dir_id, dir, entries, checked, editable, force_open, change);
+        });
+        if editable && entries.first().is_some_and(|e| e.priority.is_some()) {
+            let ids: Vec<usize> = all.iter().map(|&i| entries[i].index).collect();
+            let first = all.first().and_then(|&i| entries[i].priority);
+            let same = all.iter().all(|&i| entries[i].priority == first);
+            header_resp.response.context_menu(|ui| priority_menu(ui, &ids, first.filter(|_| same), change));
+        }
     }
     for &i in &node.files {
         let e = &entries[i];
         let name = e.components.last().map(String::as_str).unwrap_or("");
-        ui.horizontal(|ui| {
+        let row = ui.horizontal(|ui| {
             ui.add_space(18.0);
             let mut on = checked(e.index);
             if ui.add_enabled(editable, egui::Checkbox::new(&mut on, "")).changed() {
@@ -137,12 +165,16 @@ fn show_node(
             }
             ui.label(RichText::new(file_icon(name)).color(p.text_dim));
             ui.add(egui::Label::new(RichText::new(name).color(if on { p.text } else { p.text_mute })).truncate());
-            row_tail(ui, p, e.len, e.done);
+            row_tail(ui, p, e.len, e.done, e.priority);
         });
+        if editable && e.priority.is_some() {
+            let resp = row.response.interact(egui::Sense::click());
+            resp.context_menu(|ui| priority_menu(ui, &[e.index], e.priority, change));
+        }
     }
 }
 
-fn row_tail(ui: &mut Ui, p: &Palette, len: u64, done: Option<u64>) {
+fn row_tail(ui: &mut Ui, p: &Palette, len: u64, done: Option<u64>, priority: Option<i8>) {
     // Fixed-width cells so sizes, percentages and bars line up across rows.
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let cell = |ui: &mut Ui, w: f32, text: RichText| {
@@ -169,6 +201,12 @@ fn row_tail(ui: &mut Ui, p: &Palette, len: u64, done: Option<u64>) {
                 false,
                 false,
             );
+        }
+        if let Some(pr) = priority.filter(|v| *v != 0) {
+            let (icon, color) =
+                if pr > 0 { (icons::ARROW_FAT_UP, p.accent) } else { (icons::ARROW_FAT_DOWN, p.text_mute) };
+            ui.label(RichText::new(format!("{icon} {}", priority_label(pr))).small().color(color))
+                .on_hover_text("Download priority (right-click to change)");
         }
     });
 }

@@ -56,6 +56,8 @@ impl Limit {
 pub struct Limits {
     down: Limit,
     up: Limit,
+    // CORRENT PATCH: an optional shared limiter (e.g. per category) consulted after this one.
+    group: ArcSwapOption<Limits>,
 }
 
 impl Limits {
@@ -63,15 +65,35 @@ impl Limits {
         Self {
             down: Limit::new(config.download_bps),
             up: Limit::new(config.upload_bps),
+            group: ArcSwapOption::empty(),
         }
     }
 
     pub async fn prepare_for_upload(&self, len: NonZeroU32) -> crate::Result<()> {
-        self.up.acquire(len).await
+        self.up.acquire(len).await?;
+        if let Some(g) = self.group.load_full() {
+            g.up.acquire(len).await?;
+        }
+        Ok(())
     }
 
     pub async fn prepare_for_download(&self, len: NonZeroU32) -> crate::Result<()> {
-        self.down.acquire(len).await
+        self.down.acquire(len).await?;
+        if let Some(g) = self.group.load_full() {
+            g.down.acquire(len).await?;
+        }
+        Ok(())
+    }
+
+    // CORRENT PATCH: shared group limiter.
+    /// Also take bandwidth from `group` (shared by several torrents). One level only: a group's
+    /// own group is ignored.
+    pub fn set_group(&self, group: Option<Arc<Limits>>) {
+        self.group.store(group);
+    }
+
+    pub fn group(&self) -> Option<Arc<Limits>> {
+        self.group.load_full()
     }
 
     pub fn set_upload_bps(&self, bps: Option<NonZeroU32>) {

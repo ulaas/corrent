@@ -306,6 +306,40 @@ impl ManagedTorrent {
         self.live().map(|l| l.ratelimits.get_config())
     }
 
+    // CORRENT PATCH: shared (e.g. per-category) limiter.
+    /// Make this live torrent also draw from a shared limiter. Reset when it goes live again.
+    pub fn set_ratelimit_group(&self, group: Option<Arc<crate::limits::Limits>>) -> bool {
+        match self.live() {
+            Some(live) => {
+                live.ratelimits.set_group(group);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn ratelimit_group(&self) -> Option<Arc<crate::limits::Limits>> {
+        self.live().and_then(|l| l.ratelimits.group())
+    }
+
+    // CORRENT PATCH: per-file download order.
+    /// Download files in this order (file indices; must be a permutation of all files).
+    /// Returns false if not live or the order is invalid. Reset when the torrent goes live again.
+    pub fn set_file_priorities(&self, order: Vec<usize>) -> bool {
+        let Some(live) = self.live() else { return false };
+        let Ok(n) = self.with_metadata(|m| m.file_infos.len()) else { return false };
+        let mut seen = vec![false; n];
+        if order.len() != n || !order.iter().all(|&i| i < n && !std::mem::replace(&mut seen[i], true)) {
+            return false;
+        }
+        live.lock_write("set_file_priorities").file_priorities = order;
+        true
+    }
+
+    pub fn file_priorities(&self) -> Option<Vec<usize>> {
+        self.live().map(|l| l.lock_read("file_priorities").file_priorities.clone())
+    }
+
     // Get live torrent but wait a bit until it's initialized if it is
     pub(crate) async fn live_wait_initializing(
         &self,

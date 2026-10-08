@@ -585,7 +585,10 @@ async fn create_category(State(st): St, req: Request) -> Response {
     };
     let mut cats = st.engine.snapshot().categories.clone();
     let path = f.get("savePath").filter(|p| !p.trim().is_empty()).map(std::path::PathBuf::from);
-    cats.insert(name, crate::store::CategoryInfo { save_path: path });
+    // Keep the category's speed limits when its path is edited.
+    let mut info = cats.get(&name).cloned().unwrap_or_default();
+    info.save_path = path;
+    cats.insert(name, info);
     st.engine.send(EngineCommand::SetCategories(cats));
     ok()
 }

@@ -128,7 +128,7 @@ pub(crate) struct TorrentStateLocked {
     pub(crate) pieces: Option<PieceTracker>,
 
     // The sorted file list in which order to download them.
-    file_priorities: FilePriorities,
+    pub(crate) file_priorities: FilePriorities, // CORRENT PATCH: was private
 
     // If this is None, then it was already used
     fatal_errors_tx: Option<tokio::sync::oneshot::Sender<anyhow::Error>>,

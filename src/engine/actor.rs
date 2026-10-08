@@ -121,6 +121,8 @@ pub struct Actor {
     /// Adds started by feed rules (pending id → article), so a failed add can be retried.
     rss_adds: HashMap<u64, crate::rss::Download>,
     rss_failures: HashMap<String, u32>,
+    /// Shared limiters for categories with speed limits.
+    category_limits: HashMap<String, Arc<librqbit::limits::Limits>>,
     rss_client: Option<(Option<String>, reqwest::Client)>,
 }
 
@@ -188,6 +190,7 @@ impl Actor {
             rss,
             rss_adds: HashMap::new(),
             rss_failures: HashMap::new(),
+            category_limits: HashMap::new(),
             rss_client: None,
         }
     }
@@ -535,6 +538,21 @@ impl Actor {
                 self.store.meta_mut(hash).display_name = name.filter(|n| !n.trim().is_empty());
             }
             EngineCommand::QueuePlace { hashes, before } => self.store.queue_place(&hashes, before),
+            EngineCommand::SetFilePriority { hash, files, priority } => {
+                let m = self.store.meta_mut(hash);
+                for f in files {
+                    if priority == 0 {
+                        m.file_priority.remove(&f);
+                    } else {
+                        m.file_priority.insert(f, priority.clamp(-1, 1));
+                    }
+                }
+                let pri = m.file_priority.clone();
+                if let Some(h) = self.handle_for(&hash) {
+                    h.set_file_priorities(file_order(&h, &pri));
+                }
+                self.pieces_cache = None;
+            }
             EngineCommand::SetTorrentLimits { hashes, down_kib, up_kib } => {
                 for h in &hashes {
                     let m = self.store.meta_mut(*h);
@@ -948,14 +966,51 @@ impl Actor {
     /// Keep the engine in line with Corrent's records: a torrent that should be paused (by the
     /// user, the queue or a seeding limit) but is running gets paused again. librqbit ignores a
     /// pause sent while a torrent is still initializing, so this makes pauses stick.
-    /// librqbit resets a torrent's limiter whenever it goes live again: keep ours applied.
-    fn apply_torrent_limits(&self, handles: &[(usize, Arc<ManagedTorrent>)]) {
+    /// librqbit resets a torrent's limiter and file order whenever it goes live again: keep
+    /// Corrent's per-torrent limits, category limits and file priorities applied.
+    fn apply_torrent_limits(&mut self, handles: &[(usize, Arc<ManagedTorrent>)]) {
+        // Category limiters: one shared limiter per limited category, updated in place.
+        let cats = &self.store.data.categories;
+        self.category_limits
+            .retain(|name, _| cats.get(name).is_some_and(|c| c.down_limit_kib > 0 || c.up_limit_kib > 0));
+        for (name, c) in cats {
+            if c.down_limit_kib == 0 && c.up_limit_kib == 0 {
+                continue;
+            }
+            let want = session::limits(c.down_limit_kib, c.up_limit_kib);
+            let l = self
+                .category_limits
+                .entry(name.clone())
+                .or_insert_with(|| Arc::new(librqbit::limits::Limits::new(want)));
+            if l.get_config() != want {
+                l.set_download_bps(want.download_bps);
+                l.set_upload_bps(want.upload_bps);
+            }
+        }
         for (_, h) in handles {
             let hash = InfoHash(h.info_hash().0);
-            let (down, up) = self.store.get(&hash).map(|m| (m.down_limit_kib, m.up_limit_kib)).unwrap_or((0, 0));
-            let want = session::limits(down, up);
+            let Some(m) = self.store.get(&hash) else { continue };
+            let want = session::limits(m.down_limit_kib, m.up_limit_kib);
             if h.ratelimits().is_some_and(|cur| cur != want) {
                 h.set_ratelimits(want);
+            }
+            let group = m.category.as_ref().and_then(|c| self.category_limits.get(c)).cloned();
+            let current = h.ratelimit_group();
+            let same = match (&group, &current) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            };
+            if !same {
+                h.set_ratelimit_group(group);
+            }
+            if !m.file_priority.is_empty()
+                && let Some(cur) = h.file_priorities()
+            {
+                let want = file_order(h, &m.file_priority);
+                if cur != want {
+                    h.set_file_priorities(want);
+                }
             }
         }
     }
@@ -1593,6 +1648,7 @@ impl Actor {
     fn build_detail(&mut self, id: usize, h: &Arc<ManagedTorrent>, hash: InfoHash) -> TorrentDetail {
         let stats = h.stats();
         let only: Option<HashSet<usize>> = h.only_files().map(|v| v.into_iter().collect());
+        let file_priority = self.store.get(&hash).map(|m| m.file_priority.clone()).unwrap_or_default();
         let files = h
             .with_metadata(|md| {
                 md.file_infos
@@ -1611,6 +1667,7 @@ impl Actor {
                             len: f.len,
                             done: stats.file_progress.get(i).copied().unwrap_or(0),
                             included: only.as_ref().map(|s| s.contains(&i)).unwrap_or(true),
+                            priority: file_priority.get(&i).copied().unwrap_or(0),
                         }
                     })
                     .collect::<Vec<_>>()
@@ -2208,4 +2265,11 @@ mod more_tests {
         let l = super::super::session::limits(1, 0);
         assert!(l.download_bps.is_some() && l.upload_bps.is_none());
     }
+}
+
+/// Download order of a torrent's files: librqbit's default (by file name), then by priority.
+fn file_order(h: &ManagedTorrent, priority: &std::collections::BTreeMap<usize, i8>) -> Vec<usize> {
+    let names: Vec<PathBuf> =
+        h.with_metadata(|m| m.file_infos.iter().map(|f| f.relative_filename.clone()).collect()).unwrap_or_default();
+    super::logic::file_order(&names, priority)
 }

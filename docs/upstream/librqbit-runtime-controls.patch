@@ -1,0 +1,136 @@
+diff -ru --strip-trailing-cr a/src/limits.rs src/limits.rs
+--- a/src/limits.rs	2006-07-24 04:21:28.000000000 +0300
++++ b/src/limits.rs	2026-10-08 05:17:42.028755000 +0300
+@@ -56,6 +56,8 @@
+ pub struct Limits {
+     down: Limit,
+     up: Limit,
++    // CORRENT PATCH: an optional shared limiter (e.g. per category) consulted after this one.
++    group: ArcSwapOption<Limits>,
+ }
+ 
+ impl Limits {
+@@ -63,15 +65,35 @@
+         Self {
+             down: Limit::new(config.download_bps),
+             up: Limit::new(config.upload_bps),
++            group: ArcSwapOption::empty(),
+         }
+     }
+ 
+     pub async fn prepare_for_upload(&self, len: NonZeroU32) -> crate::Result<()> {
+-        self.up.acquire(len).await
++        self.up.acquire(len).await?;
++        if let Some(g) = self.group.load_full() {
++            g.up.acquire(len).await?;
++        }
++        Ok(())
+     }
+ 
+     pub async fn prepare_for_download(&self, len: NonZeroU32) -> crate::Result<()> {
+-        self.down.acquire(len).await
++        self.down.acquire(len).await?;
++        if let Some(g) = self.group.load_full() {
++            g.down.acquire(len).await?;
++        }
++        Ok(())
++    }
++
++    // CORRENT PATCH: shared group limiter.
++    /// Also take bandwidth from `group` (shared by several torrents). One level only: a group's
++    /// own group is ignored.
++    pub fn set_group(&self, group: Option<Arc<Limits>>) {
++        self.group.store(group);
++    }
++
++    pub fn group(&self) -> Option<Arc<Limits>> {
++        self.group.load_full()
+     }
+ 
+     pub fn set_upload_bps(&self, bps: Option<NonZeroU32>) {
+diff -ru --strip-trailing-cr a/src/torrent_state/live/mod.rs src/torrent_state/live/mod.rs
+--- a/src/torrent_state/live/mod.rs	2006-07-24 04:21:28.000000000 +0300
++++ b/src/torrent_state/live/mod.rs	2026-10-08 05:17:42.028755000 +0300
+@@ -128,7 +128,7 @@
+     pub(crate) pieces: Option<PieceTracker>,
+ 
+     // The sorted file list in which order to download them.
+-    file_priorities: FilePriorities,
++    pub(crate) file_priorities: FilePriorities, // CORRENT PATCH: was private
+ 
+     // If this is None, then it was already used
+     fatal_errors_tx: Option<tokio::sync::oneshot::Sender<anyhow::Error>>,
+@@ -213,7 +213,7 @@
+         tokio::sync::mpsc::UnboundedSender<WriterRequest>,
+         ChunkInfo,
+     )>,
+-    ratelimits: Limits,
++    pub(crate) ratelimits: Limits, // CORRENT PATCH: was private
+ }
+ 
+ impl TorrentStateLive {
+diff -ru --strip-trailing-cr a/src/torrent_state/mod.rs src/torrent_state/mod.rs
+--- a/src/torrent_state/mod.rs	2006-07-24 04:21:28.000000000 +0300
++++ b/src/torrent_state/mod.rs	2026-10-08 05:17:50.522528200 +0300
+@@ -285,6 +285,61 @@
+         }
+     }
+ 
++    // CORRENT PATCH: runtime per-torrent speed limits.
++    /// Change this torrent's speed limits while it runs. Returns false if it isn't live; the
++    /// limits configured when the torrent was added apply again after a pause/resume, so callers
++    /// re-apply theirs.
++    pub fn set_ratelimits(&self, limits: LimitsConfig) -> bool {
++        match self.live() {
++            Some(live) => {
++                live.ratelimits.set_download_bps(limits.download_bps);
++                live.ratelimits.set_upload_bps(limits.upload_bps);
++                true
++            }
++            None => false,
++        }
++    }
++
++    // CORRENT PATCH: runtime per-torrent speed limits.
++    /// The limits in effect while live.
++    pub fn ratelimits(&self) -> Option<LimitsConfig> {
++        self.live().map(|l| l.ratelimits.get_config())
++    }
++
++    // CORRENT PATCH: shared (e.g. per-category) limiter.
++    /// Make this live torrent also draw from a shared limiter. Reset when it goes live again.
++    pub fn set_ratelimit_group(&self, group: Option<Arc<crate::limits::Limits>>) -> bool {
++        match self.live() {
++            Some(live) => {
++                live.ratelimits.set_group(group);
++                true
++            }
++            None => false,
++        }
++    }
++
++    pub fn ratelimit_group(&self) -> Option<Arc<crate::limits::Limits>> {
++        self.live().and_then(|l| l.ratelimits.group())
++    }
++
++    // CORRENT PATCH: per-file download order.
++    /// Download files in this order (file indices; must be a permutation of all files).
++    /// Returns false if not live or the order is invalid. Reset when the torrent goes live again.
++    pub fn set_file_priorities(&self, order: Vec<usize>) -> bool {
++        let Some(live) = self.live() else { return false };
++        let Ok(n) = self.with_metadata(|m| m.file_infos.len()) else { return false };
++        let mut seen = vec![false; n];
++        if order.len() != n || !order.iter().all(|&i| i < n && !std::mem::replace(&mut seen[i], true)) {
++            return false;
++        }
++        live.lock_write("set_file_priorities").file_priorities = order;
++        true
++    }
++
++    pub fn file_priorities(&self) -> Option<Vec<usize>> {
++        self.live().map(|l| l.lock_read("file_priorities").file_priorities.clone())
++    }
++
+     // Get live torrent but wait a bit until it's initialized if it is
+     pub(crate) async fn live_wait_initializing(
+         &self,
