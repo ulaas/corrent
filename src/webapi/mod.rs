@@ -170,11 +170,9 @@ async fn check_origin(State(st): State<Arc<ApiState>>, headers: HeaderMap, req: 
         let Some(v) = headers.get(&h) else { continue };
         // A present but opaque/garbled origin ("null" from sandboxed frames) is not ours.
         let same = v.to_str().ok().and_then(|v| url::Url::parse(v).ok()).is_some_and(|u| {
-            let origin_host = match u.port() {
-                Some(p) => format!("{}:{p}", u.host_str().unwrap_or("")),
-                None => u.host_str().unwrap_or("").to_string(),
-            };
-            origin_host.eq_ignore_ascii_case(host)
+            // Compare host and port, filling in default ports (":80" may or may not be written).
+            let origin = (u.host_str().unwrap_or("").to_ascii_lowercase(), u.port_or_known_default());
+            origin == host_and_port(host)
         });
         if !same {
             return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
@@ -194,6 +192,17 @@ fn host_allowed(host: &str, allow_lan: bool) -> bool {
         Ok(ip) => allow_lan || ip.is_loopback(),
         Err(_) => false,
     }
+}
+
+/// `Host` header → (host, port); no port means 80. IPv6 brackets kept as `url` writes them.
+fn host_and_port(host: &str) -> (String, Option<u16>) {
+    let (h, port) = match host.rsplit_once(':') {
+        Some((h, p)) if !h.is_empty() && !p.contains(']') && (!h.contains(':') || h.ends_with(']')) => {
+            (h, p.parse().ok())
+        }
+        _ => (host, Some(80)),
+    };
+    (h.to_ascii_lowercase(), port)
 }
 
 fn sid_from(headers: &HeaderMap) -> Option<String> {
@@ -227,6 +236,10 @@ async fn login(State(st): State<Arc<ApiState>>, ConnectInfo(peer): ConnectInfo<S
     let cfg = st.cfg.clone();
     let user_ok = user == cfg.username;
     let pass = pass.to_string();
+    // PBKDF2 is deliberately slow: at most two checks at a time, so a flood of attempts from the
+    // network can't keep every core busy.
+    static VERIFY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let Ok(_permit) = VERIFY.acquire().await else { return (StatusCode::SERVICE_UNAVAILABLE, "").into_response() };
     let pass_ok =
         tokio::task::spawn_blocking(move || verify_password(&cfg.password_hash, &pass)).await.unwrap_or(false);
     let mut sessions = st.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -250,6 +263,9 @@ mod tests {
         assert_eq!(host_of("[::1]:8080"), "::1");
         assert_eq!(host_of("127.0.0.1"), "127.0.0.1");
         assert!(host_allowed("localhost:8080", false));
+        assert_eq!(host_and_port("127.0.0.1"), ("127.0.0.1".into(), Some(80)));
+        assert_eq!(host_and_port("LOCALHOST:8080"), ("localhost".into(), Some(8080)));
+        assert_eq!(host_and_port("[::1]:8080"), ("[::1]".into(), Some(8080)));
         assert!(host_allowed("[::1]:8080", false));
         assert!(!host_allowed("192.168.1.5:8080", false));
         assert!(host_allowed("192.168.1.5:8080", true));

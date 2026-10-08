@@ -7,8 +7,9 @@
   1. read the changelogs; 2. back up a real profile (`Settings → Advanced → Back up data…`);
   3. run the full test suite and the manual checklist in `docs/PLATFORM-TESTING.md`;
   4. for librqbit, also confirm an existing profile restores without re-checking.
-- **Vendored patch:** `vendor/librqbit-dht` must match the pinned librqbit version; re-apply or drop
-  the patch on every librqbit upgrade (see `vendor/librqbit-dht/CORRENT-PATCH.md`).
+- **Vendored patches:** `vendor/librqbit-dht` and `vendor/librqbit` must match the pinned librqbit
+  version; re-apply or drop the patches on every librqbit upgrade (see each `CORRENT-PATCH.md` and
+  the diffs in `docs/upstream/`).
 - **Everything else:** semver ranges; Dependabot proposes weekly updates (UI and engine crates are
   excluded, see `.github/dependabot.yml`).
 - **Licenses and advisories:** `cargo deny check` (policy in `deny.toml`) runs in CI. Allowed licenses

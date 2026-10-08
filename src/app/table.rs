@@ -8,7 +8,7 @@ use egui_phosphor::regular as icons;
 use super::{Col, CorrentApp, GroupFilter, UiPrefs};
 use crate::engine::types::{InfoHash, Snapshot, TorrentState, TorrentView};
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{self, badge, chip};
+use crate::ui::widgets::{self, Labeled, badge, chip};
 use crate::util::{fmt_bytes, fmt_date, fmt_duration, fmt_ratio, fmt_speed};
 
 pub fn tracker_host(url: &str) -> String {
@@ -733,21 +733,51 @@ impl CorrentApp {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.label(RichText::new(t!("Columns")).strong().color(p.text));
                 ui.separator();
-                for c in Col::ALL {
-                    if c == Col::Name {
-                        continue;
-                    }
-                    let mut on = self.prefs.columns.contains(&c);
-                    if ui.checkbox(&mut on, c.title()).changed() {
-                        if on {
-                            // Insert keeping the canonical order.
-                            let order = |x: &Col| Col::ALL.iter().position(|y| y == x).unwrap_or(0);
-                            self.prefs.columns.push(c);
-                            self.prefs.columns.sort_by_key(order);
-                        } else {
-                            self.prefs.columns.retain(|x| *x != c);
+                // Shown columns in their order (with move buttons), then the hidden ones.
+                let shown: Vec<Col> = self.prefs.columns.clone();
+                let mut hidden: Vec<Col> = Col::ALL.into_iter().filter(|c| !shown.contains(c)).collect();
+                hidden.retain(|c| *c != Col::Name);
+                let mut moved: Option<(usize, usize)> = None;
+                let mut toggled: Option<(Col, bool)> = None;
+                for (i, c) in shown.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let mut on = true;
+                        let fixed = *c == Col::Name; // the name column always stays
+                        if ui.add_enabled(!fixed, egui::Checkbox::new(&mut on, c.title())).changed() {
+                            toggled = Some((*c, false));
                         }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let last = i + 1 == shown.len();
+                            if ui
+                                .add_enabled(!last, egui::Button::new(icons::CARET_DOWN).small())
+                                .labeled(t!("Move right"))
+                                .clicked()
+                            {
+                                moved = Some((i, i + 1));
+                            }
+                            if ui
+                                .add_enabled(i > 0, egui::Button::new(icons::CARET_UP).small())
+                                .labeled(t!("Move left"))
+                                .clicked()
+                            {
+                                moved = Some((i, i - 1));
+                            }
+                        });
+                    });
+                }
+                for c in hidden {
+                    let mut on = false;
+                    if ui.checkbox(&mut on, c.title()).changed() {
+                        toggled = Some((c, true));
                     }
+                }
+                if let Some((a, b)) = moved {
+                    self.prefs.columns.swap(a, b);
+                }
+                match toggled {
+                    Some((c, true)) => self.prefs.columns.push(c),
+                    Some((c, false)) => self.prefs.columns.retain(|x| *x != c),
+                    None => {}
                 }
                 ui.separator();
                 if ui.button(t!("Reset to defaults")).clicked() {

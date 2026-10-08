@@ -380,6 +380,8 @@
 "Move data to another folder" = "Verileri başka bir klasöre taşı"
 "Move down" = "Aşağı taşı"
 "Move down in queue" = "Kuyrukta aşağı taşı"
+"Move left" = "Sola taşı"
+"Move right" = "Sağa taşı"
 "Move to bottom" = "En alta taşı"
 "Move to bottom of queue" = "Kuyruğun sonuna taşı"
 "Move to top" = "En üste taşı"

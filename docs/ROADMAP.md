@@ -187,36 +187,55 @@ upstream feature we don't enable yet.
 Ordered so visible improvements land early while the safety net grows. CI can only run once the
 owner pushes the repo, so nothing local is gated on it.
 
-| M | Content | Depends | Upstream |
-|---|---|---|---|
-| M1 | Async file dialogs (A10) — known bug, small | – | – |
-| M2 | Panic hook, crash logs, "closed unexpectedly" banner (A5) | – | – |
-| M3 | Corrupt-file recovery, data backup/export (A7 recovery part) | – | – |
-| M4 | Pure-logic extraction + 80+ unit tests (A1) | – | – |
-| M5 | Empty states + toasts with actions (B2, B12) | – | – |
-| M6 | First real run on Linux (VM/WSLg) and macOS: portal file dialogs, KSNI tray, IPC, MIME registration, Apple Events | – | – |
-| M7 | CI config, fmt/clippy gates, cargo-deny, MSRV job (A4, A12) — owner pushes | – | – |
-| M8 | Loopback engine integration tests (A2) | M4 | [u] |
-| M9 | Schema versioning + migrations (A7) | M3 | – |
-| M10 | Typed I/O errors, disk-full/permission handling (A8) | M5, M9 | – |
-| M11 | Engine health banner + restart (A6) | M2 | – |
-| M12 | Batch add dialog, Windows 11 corners (B14, B5a) | M1 | – |
-| M13 | kittest snapshot tests, Linux-only comparison (A3) | M4 | – |
-| M14 | Typography, motion (B3, B4) | M13 | – |
-| M15 | Onboarding + per-panel polish (B1, B13), notification identity (B15) | M14 | – |
-| M16 | Torrent creator (C3) | M1, M8 | [u], small [U] |
-| M17 | Streaming + open in player (C4) | M8 | [u] |
-| M18 | RSS feeds and rules (C1) | M9, M10 | – |
-| M19 | Torznab search (C2) | M18 | – |
-| M20 | qBittorrent-compatible API (C5a) | M8, M11 | – |
-| M21 | Scale pass with benchmarks; row sparklines; drag to reorder (A9, B10, B11) | M8 | – |
-| M22 | High contrast, theme editor, accessibility (B7, B6, B8) | M13 | – |
-| M23 | Per-torrent limits, IP filter UI (C6 partial, C7) | M9 | [U] runtime limits |
-| M24 | Sequential + per-file priorities; per-category limits (C6) | M23 | [U] |
-| M25 | Import from other clients (C8); shutdown when done; update checks (C9, C10) | M9, M1 | – |
-| M26 | Packaging: MSI/winget, portable zip, dmg, AppImage/Flatpak (C11) | M7 | – |
-| M27 | i18n string table → Fluent, Turkish (B9); web UI (C5b); Mica spike (B5b) | M15, M20 | – |
-| — | DHT patch upstream package (A11), any time | – | [U] |
+| M | Content | Depends | Upstream | Status |
+|---|---|---|---|---|
+| M1 | Async file dialogs (A10) — known bug, small | – | – | Done |
+| M2 | Panic hook, crash logs, "closed unexpectedly" banner (A5) | – | – | Done |
+| M3 | Corrupt-file recovery, data backup/export (A7 recovery part) | – | – | Done |
+| M4 | Pure-logic extraction + 80+ unit tests (A1) | – | – | Done |
+| M5 | Empty states + toasts with actions (B2, B12) | – | – | Done |
+| M6 | First real run on Linux (VM/WSLg) and macOS: portal file dialogs, KSNI tray, IPC, MIME registration, Apple Events | – | – | Prepared — needs real hardware (`docs/PLATFORM-TESTING.md`); Linux cross-builds, macOS type-checks |
+| M7 | CI config, fmt/clippy gates, cargo-deny, MSRV job (A4, A12) — owner pushes | – | – | Done — runs once pushed |
+| M8 | Loopback engine integration tests (A2) | M4 | [u] | Done |
+| M9 | Schema versioning + migrations (A7) | M3 | – | Done |
+| M10 | Typed I/O errors, disk-full/permission handling (A8) | M5, M9 | – | Done |
+| M11 | Engine health banner + restart (A6) | M2 | – | Done |
+| M12 | Batch add dialog, Windows 11 corners (B14, B5a) | M1 | – | Done |
+| M13 | kittest snapshot tests, Linux-only comparison (A3) | M4 | – | Done (deviation, see below) |
+| M14 | Typography, motion (B3, B4) | M13 | – | Done |
+| M15 | Onboarding + per-panel polish (B1, B13), notification identity (B15) | M14 | – | Done |
+| M16 | Torrent creator (C3) | M1, M8 | [u], small [U] | Done |
+| M17 | Streaming + open in player (C4) | M8 | [u] | Done |
+| M18 | RSS feeds and rules (C1) | M9, M10 | – | Done |
+| M19 | Torznab search (C2) | M18 | – | Done |
+| M20 | qBittorrent-compatible API (C5a) | M8, M11 | – | Done |
+| M21 | Scale pass with benchmarks; row sparklines; drag to reorder (A9, B10, B11) | M8 | – | Done (deviation) |
+| M22 | High contrast, theme editor, accessibility (B7, B6, B8) | M13 | – | Done |
+| M23 | Per-torrent limits, IP filter UI (C6 partial, C7) | M9 | [U] runtime limits | Done |
+| M24 | Sequential + per-file priorities; per-category limits (C6) | M23 | [U] | Done |
+| M25 | Import from other clients (C8); shutdown when done; update checks (C9, C10) | M9, M1 | – | Done |
+| M26 | Packaging: MSI/winget, portable zip, dmg, AppImage/Flatpak (C11) | M7 | – | Prepared — first build on CI with a tag |
+| M27 | i18n string table → Fluent, Turkish (B9); web UI (C5b); Mica spike (B5b) | M15, M20 | – | Done (Turkish, gettext-style; web UI; Mica no-go) |
+| — | DHT patch upstream package (A11), any time | – | [U] | Patches ready in `docs/upstream/` — owner opens the PRs |
+
+## Deviations from this plan (recorded at completion)
+
+- **A3/M13:** UI tests are headless egui_kittest tests that assert behaviour and the AccessKit
+  tree (15 tests) rather than PNG snapshots: rendering images needs kittest's wgpu feature and a
+  GPU, which CI runners don't reliably have.
+- **A5:** the store is flushed by its `Drop` (engine panics and normal unwinding) rather than by
+  the panic hook itself; with `panic = "abort"` it would not be, so the profile keeps unwinding.
+- **A7:** migration fixtures are inline constants in the tests, not files under `tests/fixtures/`.
+- **A9/M21:** an ignored, explicitly run perf test (`perf_5000_torrents`, results in
+  `docs/PERFORMANCE.md`) instead of Criterion benchmarks.
+- **A11:** the DHT patch has no automated regression test (the failure needs Windows ICMP
+  port-unreachable traffic); it is documented in `vendor/librqbit-dht/CORRENT-PATCH.md`.
+- **B9/M27:** gettext-style catalog (English text is the key) instead of Fluent; the CI gate is a
+  unit test (`i18n::tests::no_hard_coded_ui_strings`).
+- **B11:** columns are shown, hidden and moved left/right in the column chooser (right-click the
+  header), not by dragging headers (egui_extras tables don't support header drag).
+- **C6:** "sequential download" is not offered because librqbit already downloads each file in
+  piece order; per-file priorities control the file order instead.
 
 ## Risks
 

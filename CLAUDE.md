@@ -37,7 +37,8 @@ corrent --status | --register | --unregister | --write-icons <dir> | --help
 
 Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_TAB=general|files|peers|trackers|pieces|speed`,
-`CORRENT_DEV_OPEN=settings|remote|magnet|about|log|stats|creator|import|feeds|rules`, `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
+`CORRENT_DEV_OPEN=settings|remote|magnet|about|log|stats|creator|import|feeds|rules|remove|remove-undo`,
+`CORRENT_DEV_PANIC=ui|engine`, `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
 To pre-configure the test profile, write `target/debug/corrent-data/settings.toml`
 (e.g. `skip_add_dialog = true`, a scratch `save_path`).
 
@@ -61,18 +62,24 @@ src/rss/                    Feeds (fetch/parse), download rules, persisted state
 src/search.rs               Torznab client (user-configured providers only)
 src/webapi/                 qBittorrent-compatible Web API (axum) for Sonarr/Radarr
 src/i18n.rs + assets/i18n/  Translations: t!("English text", name = x) / tk! in consts; tr.toml catalog
+                            (the source of truth — edit it directly)
+src/import.rs, updates.rs   Import from other clients; opt-in GitHub release check
+src/backup.rs, crash.rs, migrate.rs
+                            Backup/restore, panic hook + crash reports, schema migrations
+assets/webui/               Web interface served by src/webapi at /
 src/store.rs                App-side per-torrent data (categories, tags, dates, queue, pause reasons,
                             cumulative counters) — atomic JSON with .bak
 src/config.rs               Settings (TOML, serde defaults), paths (portable vs OS dirs)
 src/integration/            single_instance (local socket IPC), os_handler(+_windows) magnet/.torrent
-                            registration, macos_events (Apple Events)
+                            registration, macos_events (Apple Events), app_identity, power (when done)
 src/app/                    eframe App: titlebar/toolbar, sidebar, table, details, dialogs, settings
                             window, tray, window lifecycle, toasts, extras (about/log/stats)
 src/ui/                     theme (palettes, fonts), widgets (progress bar, sparkline, badges…), file tree
 vendor/librqbit-dht/        Patched DHT (keeps running on Windows WSAECONNRESET) — see CORRENT-PATCH.md
 vendor/librqbit/            librqbit 9.0.1 + runtime limits/group limiter/file order — see CORRENT-PATCH.md;
                             diffs for upstream PRs in docs/upstream/
-docs/                       research.md, PLAN.md (v1 plan + review), ROADMAP.md (future)
+docs/                       research.md, PLAN.md, ROADMAP.md (with status), PACKAGING.md, PERFORMANCE.md,
+                            PLATFORM-TESTING.md, DEPENDENCIES.md, upstream/
 ```
 
 Key invariants:
@@ -102,9 +109,9 @@ per-torrent speed limits + IP filter (M23), per-file priorities + category limit
 qBittorrent/Transmission/Deluge, when-done actions, opt-in update checks (M25), packaging (M26:
 MSI/portable zip/winget, AppImage/Flatpak, dmg; release workflow — see docs/PACKAGING.md), Turkish
 translation + language setting, web interface, Mica spike (no-go) (M27).
-Fable reviews of M1–M15 were addressed. Default save folder: `Downloads/Corrent`.
+Fable reviews of every milestone range and a final roadmap audit were addressed. Default save folder: `Downloads/Corrent`.
 
 Next steps: the roadmap is implemented; next are real Linux/macOS runs (docs/PLATFORM-TESTING.md),
-upstreaming the librqbit patches (docs/upstream/) and a first tagged release. in `docs/ROADMAP.md`.
+upstreaming the librqbit patches (docs/upstream/) and a first tagged release.
 
 Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.
