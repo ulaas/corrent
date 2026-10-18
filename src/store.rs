@@ -140,7 +140,8 @@ impl Store {
         // Exists but can't be read (lock, permissions): run read-only so it is never overwritten.
         let mut unreadable = false;
         let data = match std::fs::read(&path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            // A file in place of a parent folder (ENOTDIR on Unix) also means "no store yet".
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => None,
             Err(e) => {
                 tracing::error!("store.json can't be read ({e}); running without saving it");
                 unreadable = true;
