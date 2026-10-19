@@ -149,6 +149,9 @@ pub struct Actor {
     restore_checked: bool,
     /// Size of the last refused prune (see `logic::prune_allowed`), so it is reported once.
     prune_refused: Option<usize>,
+    /// The engine's list was restored from an older copy this run: torrents added since are
+    /// missing from it, so nothing is pruned (their records and metainfo are kept).
+    prune_suspended: bool,
     low_space_warned: bool,
     stream: Option<Arc<super::stream::StreamServer>>,
     /// Per stream session: last sample (time, bytes served) and smoothed rate.
@@ -231,6 +234,7 @@ impl Actor {
             undo: HashMap::new(),
             restore_checked: false,
             prune_refused: None,
+            prune_suspended: false,
             low_space_warned: false,
             stream: None,
             stream_rates: HashMap::new(),
@@ -291,6 +295,8 @@ impl Actor {
     async fn start_session(&mut self) {
         self.engine_state = if self.session.is_some() { EngineState::Restarting } else { EngineState::Starting };
         self.publish();
+        self.recover_session_db();
+        super::session_db::snapshot(&self.paths.session_dir());
         self.purge_pending();
         let mut last_err = String::new();
         for attempt in 0..3 {
@@ -364,6 +370,8 @@ impl Actor {
         self.store.flush();
         self.stop_session().await;
         self.purge_pending();
+        // The freshest good copy of the engine's list (the start-time copy covers a crash).
+        super::session_db::snapshot(&self.paths.session_dir());
         self.store.flush();
         self.rss.flush();
     }
@@ -1111,6 +1119,33 @@ impl Actor {
         }
     }
 
+    /// D6a: a damaged (or lost) `session.json` comes back from its newest good copy, before
+    /// librqbit reads it.
+    fn recover_session_db(&mut self) {
+        let known: HashSet<InfoHash> = self.store.data.torrents.keys().copied().collect();
+        match super::session_db::recover(&self.paths.session_dir(), &known) {
+            None => {}
+            Some(Ok(r)) => {
+                self.prune_suspended = true;
+                self.emit(EngineEvent::DataWarning(t!(
+                    "The engine's torrent list was damaged and was restored from a copy saved {date}. Its {n} \
+                     torrents are paused, because their folders may have changed since; resume them after a look. \
+                     Torrents added after that copy are missing, but their categories and tags were kept. The \
+                     damaged file was kept next to it.",
+                    date = crate::util::fmt_date(r.saved_at),
+                    n = r.torrents
+                )));
+            }
+            Some(Err(path)) => {
+                self.emit(EngineEvent::DataWarning(t!(
+                    "The engine's torrent list ({path}) is damaged and no usable copy was found. The torrent \
+                     engine can't start until the file is repaired or removed.",
+                    path = path
+                )));
+            }
+        }
+    }
+
     fn purge_pending(&mut self) {
         if self.store.data.purge.is_empty() {
             return;
@@ -1584,8 +1619,8 @@ impl Actor {
             let total = self.store.data.torrents.len();
             if orphans.is_empty() {
                 self.prune_refused = None;
-            } else if !super::logic::prune_allowed(total, orphans.len()) {
-                if self.prune_refused.replace(orphans.len()) != Some(orphans.len()) {
+            } else if self.prune_suspended || !super::logic::prune_allowed(total, orphans.len()) {
+                if self.prune_refused.replace(orphans.len()) != Some(orphans.len()) && !self.prune_suspended {
                     tracing::warn!(
                         "{} of {total} store entries have no torrent in the engine; not pruning",
                         orphans.len()

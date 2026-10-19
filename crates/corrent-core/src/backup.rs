@@ -26,9 +26,12 @@ fn entries(paths: &Paths) -> Vec<PathBuf> {
         let d = paths.data_dir.join(dir);
         if let Ok(rd) = std::fs::read_dir(&d) {
             for e in rd.flatten() {
-                // Skip temp files the engine may be writing right now.
+                // Skip temp files the engine may be writing right now, and the engine list's
+                // good and damaged copies (session_db).
                 let is_tmp = e.path().extension().is_some_and(|x| x == "tmp");
-                if e.path().is_file() && !is_tmp {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let is_copy = name.starts_with("session.json.good-") || name.starts_with("session.json.bad-");
+                if e.path().is_file() && !is_tmp && !is_copy {
                     out.push(PathBuf::from(dir).join(e.file_name()));
                 }
             }

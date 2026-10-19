@@ -1009,3 +1009,100 @@ async fn a_damaged_session_database_is_not_blamed_on_the_port() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_damaged_session_database_comes_back_from_its_last_good_copy() {
+    let dir = temp_dir("db-restore");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    let mut hashes = add_tiny_torrents(&l, &dir, 1).await;
+    download(&l, &s, &dir).await;
+    hashes.push(s.hash);
+    let paths = stop(l).await;
+    let db = paths.session_dir().join("session.json");
+    let good = std::fs::read(&db).unwrap();
+    let damage: [(&str, Option<Vec<u8>>); 5] = [
+        ("cut off", Some(good[..good.len() / 2].to_vec())),
+        ("empty", Some(Vec::new())),
+        ("garbage", Some(b"not json".to_vec())),
+        ("wrong types", Some(br#"{"torrents":{"0":{"info_hash":5}}}"#.to_vec())),
+        ("missing", None),
+    ];
+    for (what, bytes) in damage {
+        match bytes {
+            Some(b) => std::fs::write(&db, b).unwrap(),
+            None => std::fs::remove_file(&db).unwrap(),
+        }
+        let l = start(&dir);
+        let notices = notices_until(&l, 30, |sn| hashes.iter().all(|h| find(sn, *h).is_some_and(|t| !t.pending))).await;
+        assert!(notices.iter().any(|n| n.contains("restored from a copy")), "{what}: {notices:?}");
+        let snap = l.engine.snapshot();
+        for h in &hashes {
+            // Paused (a finished torrent that is paused shows as Completed, not Seeding).
+            let state = find(&snap, *h).map(|t| t.state);
+            assert!(matches!(state, Some(TorrentState::Paused | TorrentState::Completed)), "{what}: {state:?}");
+        }
+        stop(l).await;
+    }
+    assert!(!crate::util::generations(&db, "bad").is_empty());
+    assert!(crate::util::generations(&db, "good").len() <= 3);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn torrents_added_after_the_good_copy_keep_their_records() {
+    let dir = temp_dir("db-newer");
+    let l = start(&dir);
+    let first = add_tiny_torrents(&l, &dir, 1).await;
+    let paths = stop(l).await;
+    let db = paths.session_dir().join("session.json");
+    let older = crate::util::generations(&db, "good");
+    assert_eq!(older.len(), 1);
+    // A second torrent is added in a later run, and that run's copies are lost.
+    let l = start(&dir);
+    l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        source: AddSource::Bytes { name: "later.torrent".into(), bytes: multi_file_torrent_any("later") },
+        torrent_bytes: None,
+        save_path: dir.join("dl"),
+        create_subfolder: true,
+        category: Some("Later".into()),
+        tags: Vec::new(),
+        paused: true,
+        only_files: None,
+        add_to_top: false,
+        initial_peers: None,
+        added_by: None,
+    })));
+    let snap =
+        wait_for(&l, "the later torrent", 30, |sn| sn.torrents.iter().any(|t| t.category.as_deref() == Some("Later")))
+            .await;
+    let later = snap.torrents.iter().find(|t| t.category.as_deref() == Some("Later")).unwrap().hash;
+    let paths = stop(l).await;
+    for (_, p) in crate::util::generations(&db, "good") {
+        if !older.iter().any(|(_, o)| *o == p) {
+            std::fs::remove_file(p).unwrap();
+        }
+    }
+    std::fs::remove_file(paths.session_dir().join(format!("{}.torrent", later.to_hex()))).unwrap();
+    std::fs::write(&db, b"{").unwrap();
+    let l = start(&dir);
+    wait_for(&l, "the first torrent", 30, |sn| find(sn, first[0]).is_some_and(|t| !t.pending)).await;
+    // Pruning runs every 20 ticks (4 s here): wait it out.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert!(find(&l.engine.snapshot(), later).is_none(), "not in the older list");
+    let paths = stop(l).await;
+    let store = read_store(&paths);
+    assert_eq!(store.torrents.get(&later).and_then(|m| m.category.as_deref()), Some("Later"), "record kept");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A small valid torrent with one 16 KiB file (any platform).
+fn multi_file_torrent_any(name: &str) -> Vec<u8> {
+    let mut info = format!("d6:lengthi16384e4:name{}:{name}12:piece lengthi16384e6:pieces20:", name.len()).into_bytes();
+    info.extend_from_slice(&[9; 20]);
+    info.push(b'e');
+    let mut bytes = b"d4:info".to_vec();
+    bytes.extend_from_slice(&info);
+    bytes.push(b'e');
+    bytes
+}

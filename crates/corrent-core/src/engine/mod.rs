@@ -12,6 +12,7 @@ mod moves;
 pub mod paths;
 mod restore;
 mod session;
+mod session_db;
 pub mod stream;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
