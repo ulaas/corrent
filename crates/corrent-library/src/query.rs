@@ -20,7 +20,7 @@ const ITEM_SELECT: &str = "SELECT i.id, i.library_id, i.kind, i.parent_id, i.tit
        WHEN 'show' THEN (SELECT count(*) FROM items e JOIN items s ON e.parent_id = s.id WHERE s.parent_id = i.id AND NOT EXISTS \
             (SELECT 1 FROM watch_state w WHERE w.item_id = e.id AND w.user_id = ?1 AND w.played = 1)) \
        ELSE NULL END, \
-     p.parent_id \
+     p.parent_id, p.index_no \
      FROM items i LEFT JOIN items p ON p.id = i.parent_id LEFT JOIN items gp ON gp.id = p.parent_id \
      LEFT JOIN watch_state ws ON ws.item_id = i.id AND ws.user_id = ?1";
 
@@ -64,6 +64,8 @@ fn item_row(r: &Row) -> rusqlite::Result<RawItem> {
             },
             child_count: Some(r.get::<_, i64>(17)?).filter(|n| *n > 0),
             partial: false,
+            grandparent_id: r.get(19)?,
+            parent_index: r.get(20)?,
         },
         parent,
         grandparent: r.get(19)?,
@@ -87,7 +89,14 @@ fn attach_images(c: &Connection, raws: Vec<RawItem>) -> rusqlite::Result<Vec<Ite
         let rows = st.query_map(params_from_iter(chunk.iter()), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
-                ImageRef { kind: r.get(1)?, sha: r.get(2)?, width: r.get(3)?, height: r.get(4)?, blurhash: r.get(5)? },
+                ImageRef {
+                    kind: r.get(1)?,
+                    sha: r.get(2)?,
+                    width: r.get(3)?,
+                    height: r.get(4)?,
+                    blurhash: r.get(5)?,
+                    inherited: false,
+                },
             ))
         })?;
         for row in rows {
@@ -103,7 +112,7 @@ fn attach_images(c: &Connection, raws: Vec<RawItem>) -> rusqlite::Result<Vec<Ite
             for fallback in [r.parent, r.grandparent].into_iter().flatten() {
                 for img in by_owner.get(&fallback).into_iter().flatten() {
                     if !item.images.iter().any(|i| i.kind == img.kind) {
-                        item.images.push(img.clone());
+                        item.images.push(ImageRef { inherited: true, ..img.clone() });
                     }
                 }
             }
@@ -139,13 +148,48 @@ fn query_items(c: &Connection, user: i64, q: &ItemQuery) -> rusqlite::Result<Pag
     }
     match q.parent_id {
         Some(p) => where_.push(format!("i.parent_id = {}", arg(p.into()))),
-        None if q.kind.is_none() && q.genre.is_none() && q.person_id.is_none() && q.favorite.is_none() => {
+        None if q.kind.is_none()
+            && q.kinds.is_empty()
+            && q.ids.is_none()
+            && q.ancestor_id.is_none()
+            && q.resumable.is_none()
+            && q.title_contains.is_none()
+            && q.genre.is_none()
+            && q.person_id.is_none()
+            && q.favorite.is_none() =>
+        {
             where_.push("i.parent_id IS NULL".into())
         }
         None => {}
     }
     if let Some(k) = q.kind {
         where_.push(format!("i.kind = {}", arg(k.as_str().to_string().into())));
+    }
+    if !q.kinds.is_empty() {
+        let list: Vec<String> = q.kinds.iter().map(|k| format!("'{}'", k.as_str())).collect();
+        where_.push(format!("i.kind IN ({})", list.join(",")));
+    }
+    if let Some(ids) = &q.ids {
+        let list: Vec<String> = ids.iter().take(1000).map(|i| i.to_string()).collect();
+        where_.push(if list.is_empty() { "0 = 1".into() } else { format!("i.id IN ({})", list.join(",")) });
+    }
+    if let Some(a) = q.ancestor_id {
+        where_.push(format!(
+            "i.id IN (WITH RECURSIVE d(id) AS (SELECT id FROM items WHERE parent_id = {a} \
+             UNION ALL SELECT x.id FROM items x JOIN d ON x.parent_id = d.id) SELECT id FROM d)",
+            a = arg(a.into())
+        ));
+    }
+    if let Some(r) = q.resumable {
+        where_.push(if r {
+            "coalesce(ws.position_ms, 0) > 0 AND coalesce(ws.played, 0) = 0".into()
+        } else {
+            "NOT (coalesce(ws.position_ms, 0) > 0 AND coalesce(ws.played, 0) = 0)".into()
+        });
+    }
+    if let Some(t) = q.title_contains.as_ref().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        let esc = t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        where_.push(format!("i.title LIKE '%' || {} || '%' ESCAPE '\\'", arg(esc.into())));
     }
     if let Some(g) = &q.genre {
         where_.push(format!(
@@ -173,6 +217,7 @@ fn query_items(c: &Connection, user: i64, q: &ItemQuery) -> rusqlite::Result<Pag
         SortBy::Year => format!("i.year {dir}, i.sort_title"),
         SortBy::Played => format!("ws.last_played_at {dir}, i.id"),
         SortBy::Index => format!("i.index2 {dir}, i.index_no {dir}, i.sort_title"),
+        SortBy::Random => "random()".into(),
     };
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
     let offset = q.offset.max(0);

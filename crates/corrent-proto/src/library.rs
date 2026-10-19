@@ -187,6 +187,9 @@ pub struct ImageRef {
     pub height: u32,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub blurhash: String,
+    /// Taken from the parent or grandparent (an episode showing its show's poster).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inherited: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -231,6 +234,12 @@ pub struct Item {
     /// Children count for containers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_count: Option<i64>,
+    /// Grandparent (episode: the show; track: the album artist).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grandparent_id: Option<i64>,
+    /// Parent's index (episode: its season number).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_index: Option<i64>,
     /// Some files still downloading (torrent not complete).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
@@ -333,6 +342,7 @@ pub enum SortBy {
     Year,
     Played,
     Index,
+    Random,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -349,6 +359,21 @@ pub struct ItemQuery {
     pub desc: bool,
     pub offset: i64,
     pub limit: Option<i64>,
+    /// Any of these kinds (with `kind`, both apply).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<ItemKind>,
+    /// Only these items.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ids: Option<Vec<i64>>,
+    /// Anywhere below this item (children, grandchildren, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ancestor_id: Option<i64>,
+    /// Started but not finished.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resumable: Option<bool>,
+    /// Titles containing this text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_contains: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -166,6 +166,26 @@ async fn scans_movies_shows_and_music() {
         lib.items(user, ItemQuery { parent_id: Some(albums.items[0].id), ..Default::default() }).await.unwrap();
     assert_eq!(tracks.items.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), vec!["One", "Two"]);
 
+    // Query filters: kinds, everything below a show, ids, titles, parent fields.
+    let below = lib
+        .items(user, ItemQuery { ancestor_id: Some(show.id), kinds: vec![ItemKind::Episode], sort: SortBy::Index, ..Default::default() })
+        .await
+        .unwrap();
+    assert_eq!(below.total, 2);
+    assert_eq!((below.items[0].grandparent_id, below.items[0].parent_index), (Some(show.id), Some(1)));
+    assert!(below.items[0].images.iter().all(|i| i.inherited || !i.sha.is_empty()));
+    let some = lib.items(user, ItemQuery { ids: Some(vec![sintel.id, bbb.id]), ..Default::default() }).await.unwrap();
+    assert_eq!(some.total, 2);
+    let none = lib.items(user, ItemQuery { ids: Some(vec![]), ..Default::default() }).await.unwrap();
+    assert_eq!(none.total, 0);
+    let named = lib
+        .items(user, ItemQuery { title_contains: Some("bunny".into()), kinds: vec![ItemKind::Movie], ..Default::default() })
+        .await
+        .unwrap();
+    assert_eq!(named.items.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(), vec!["Big Buck Bunny"]);
+    let weird = lib.items(user, ItemQuery { title_contains: Some("50%_'".into()), ..Default::default() }).await.unwrap();
+    assert_eq!(weird.total, 0);
+
     // Search.
     let r = lib.search(user, "sint").await.unwrap();
     assert_eq!(r.items.first().map(|i| i.title.as_str()), Some("Sintel"));

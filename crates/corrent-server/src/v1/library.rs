@@ -204,6 +204,7 @@ async fn items(State(st): State<Arc<AppState>>, auth: Auth, Query(q): Query<Item
         "year" => SortBy::Year,
         "played" => SortBy::Played,
         "index" => SortBy::Index,
+        "random" => SortBy::Random,
         _ => return Err(err(ErrorCode::BadRequest, "unknown sort")),
     };
     let query = ItemQuery {
@@ -218,6 +219,7 @@ async fn items(State(st): State<Arc<AppState>>, auth: Auth, Query(q): Query<Item
         desc: q.desc,
         offset: q.offset,
         limit: q.limit,
+        ..Default::default()
     };
     Ok(Json(st.library.items(auth.0.user.id, query).await.map_err(lib_err)?))
 }
