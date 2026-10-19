@@ -259,7 +259,7 @@ impl CorrentApp {
         self.next_req += 1;
         let req = self.next_req;
         self.engine.send(EngineCommand::Preview { req, source: source.clone() });
-        let d = &self.settings.downloads;
+        let d = &self.download_defaults();
         self.add_dialogs.push_back(AddDialog {
             req,
             source,
@@ -1007,9 +1007,9 @@ impl CorrentApp {
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let can_add =
-                        d.preview.as_ref().is_some_and(|pv| !pv.already_added && d.checked.iter().any(|c| *c))
-                            && !d.save_path.trim().is_empty();
+                    let can_add = d.preview.as_ref().is_some_and(|pv| !pv.already_added && d.checked.iter().any(|c| *c))
+                            // A server picks its own default folder for an empty path.
+                            && (self.server.is_some() || !d.save_path.trim().is_empty());
                     if ui
                         .add_enabled_ui(can_add, |ui| {
                             primary_button(ui, p, &format!("{}  {}", icons::DOWNLOAD_SIMPLE, t!("Add torrent")))

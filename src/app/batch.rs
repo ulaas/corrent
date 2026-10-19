@@ -35,7 +35,7 @@ impl CorrentApp {
             return;
         }
         self.next_req += 1;
-        let d = &self.settings.downloads;
+        let d = &self.download_defaults();
         self.batch = Some(BatchDialog {
             req: self.next_req,
             items: sources.into_iter().map(|s| (s, true)).collect(),

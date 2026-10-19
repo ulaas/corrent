@@ -41,6 +41,10 @@ Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_OPEN=settings|remote|magnet|about|log|stats|streams|creator|import|feeds|rules|remove|remove-undo`,
 `CORRENT_DEV_STREAM_URL=<file>` (writes the first torrent's stream URL prefix; play it with `curl`),
 `CORRENT_DEV_PANIC=ui|engine`, `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
+Media/server hooks (run without torrents): `CORRENT_DEV_VIEW=media`, `CORRENT_DEV_ITEM=<id>`, `CORRENT_DEV_PLAY=<id>`,
+`CORRENT_DEV_SHOT=<png>` (+ `CORRENT_DEV_SHOT_DELAY=<s>`, `CORRENT_DEV_EXIT=1`; works on Linux too),
+`CORRENT_DEV_CONNECT=<pairing link>` (fills the Connect dialog), `CORRENT_DEV_PAIR=<pairing link>` (pairs and switches —
+writes `servers.toml` into the test profile; delete it afterwards). `CORRENT_DEV_OPEN` also takes `connect`.
 To pre-configure the test profile, write `target/debug/corrent-data/settings.toml`
 (e.g. `skip_add_dialog = true`, a scratch `save_path`). The hooks run once, on the first frame
 that has at least one torrent in the list.

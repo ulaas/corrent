@@ -219,7 +219,9 @@ impl CorrentApp {
                     ui.label(RichText::new(t!("Save path")).small().color(p.text_dim));
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(t.save_path.display().to_string()).color(p.text));
-                        if ui.small_button(icons::FOLDER_OPEN).labeled(t!("Open folder")).clicked() {
+                        if self.server.is_none()
+                            && ui.small_button(icons::FOLDER_OPEN).labeled(t!("Open folder")).clicked()
+                        {
                             super::open_path(&t.save_path);
                         }
                     });

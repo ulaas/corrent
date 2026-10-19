@@ -10,6 +10,8 @@ pub struct MediaClient {
     http: reqwest::Client,
     base: String,
     token: String,
+    /// The server's CA as a file, for mpv (`tls-ca-file`).
+    ca_file: Option<std::path::PathBuf>,
 }
 
 impl MediaClient {
@@ -24,7 +26,17 @@ impl MediaClient {
             http: b.build().map_err(|e| e.to_string())?,
             base: base.trim_end_matches('/').to_string(),
             token: token.to_string(),
+            ca_file: None,
         })
+    }
+
+    pub fn with_ca_file(mut self, path: Option<std::path::PathBuf>) -> MediaClient {
+        self.ca_file = path;
+        self
+    }
+
+    pub fn ca_file(&self) -> Option<&std::path::Path> {
+        self.ca_file.as_deref()
     }
 
     /// Absolute URL of an API path (for mpv and image requests).
@@ -71,6 +83,22 @@ impl MediaClient {
             .bearer_auth(&self.token)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        Self::decode(res).await
+    }
+
+    pub async fn multipart<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        form: reqwest::multipart::Form,
+    ) -> Result<T, String> {
+        let res = self
+            .http
+            .post(self.url(path))
+            .bearer_auth(&self.token)
+            .multipart(form)
             .send()
             .await
             .map_err(|e| e.to_string())?;

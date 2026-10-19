@@ -45,6 +45,7 @@ pub struct ServerParts {
     pub cfg: ServerConfig,
     pub hub: Arc<Hub>,
     pub tls_fingerprint: Option<String>,
+    pub ca_pem: Option<String>,
     pub library: corrent_library::Library,
 }
 
@@ -89,6 +90,8 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         identity: p.identity,
         server_id,
         tls_fingerprint: p.tls_fingerprint,
+        ca_pem: p.ca_pem,
+        previews: Default::default(),
         http: corrent_core::rss::feed::client(proxy),
         limiter: Default::default(),
         settings_lock: Default::default(),
@@ -105,6 +108,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         trickplay_slot: Default::default(),
         plugins: plugin_host,
         metadata_slot: Default::default(),
+        stopping: tokio::sync::watch::Sender::new(false),
     });
     metadata::start(state.clone());
     // Find a working H.264 encoder in the background (hardware first).

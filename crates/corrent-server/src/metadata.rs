@@ -204,8 +204,14 @@ pub async fn refresh_library(st: Arc<AppState>, library_id: i64) {
 pub fn start(st: Arc<AppState>) {
     let mut rx = st.library.subscribe();
     tokio::spawn(async move {
+        let stopped = st.stopped();
+        tokio::pin!(stopped);
         loop {
-            match rx.recv().await {
+            let ev = tokio::select! {
+                ev = rx.recv() => ev,
+                _ = &mut stopped => break,
+            };
+            match ev {
                 Ok(corrent_library::LibraryEvent::Scan(s)) if !s.running && s.error.is_none() => {
                     tokio::spawn(refresh_library(st.clone(), s.library_id));
                 }

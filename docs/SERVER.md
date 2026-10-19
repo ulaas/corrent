@@ -80,8 +80,8 @@ All JSON; errors are `{ "code": "...", "message": "...", "params": {...} }` with
 |---|---|
 | Auth | `POST auth/login`, `auth/logout`, `GET auth/me`, `POST auth/setup`, `auth/pair`, `auth/pair/code` |
 | Users, devices | `GET/POST users`, `GET/PATCH/DELETE users/{id}`, `GET devices`, `DELETE devices/{id}` |
-| Server | `GET server/info` (public), `GET/PUT server/settings` (secrets masked), `GET server/audit`, `GET server/log`, `GET server/fs?path=`, `POST server/fs/mkdir`, `POST server/alt-speed` |
-| Torrents | `GET/POST torrents` (JSON or multipart), `GET/PATCH torrents/{hash}`, `GET torrents/{hash}/detail`, `POST torrents/{hash}/files`, `POST torrents/{hash}/trackers`, `POST torrents/actions`, `POST torrents/move`, `GET/PUT torrents/categories`, `PUT torrents/tags` |
+| Server | `GET server/info` (public), `GET server/ca` (public: the CA clients pin), `GET/PUT server/settings` (secrets masked), `GET server/audit`, `GET server/log`, `GET server/fs?path=`, `POST server/fs/mkdir`, `POST server/alt-speed` |
+| Torrents | `GET/POST torrents` (JSON or multipart), `GET/PATCH torrents/{hash}`, `GET torrents/{hash}/detail`, `POST torrents/{hash}/files`, `POST torrents/{hash}/trackers`, `POST torrents/preview` (magnet/URL/.torrent → name and files), `POST torrents/actions`, `POST torrents/queue` (drag and drop), `POST torrents/move`, `GET/PUT torrents/categories`, `PUT torrents/tags` |
 | RSS, search | `GET rss`, `GET/PUT rss/config`, `POST rss/refresh`, `POST rss/download`, `GET search?q=` |
 | Library | `GET/POST libraries`, `GET/PATCH/DELETE libraries/{id}`, `GET/POST/DELETE libraries/{id}/scan`, `GET items?library_id=&parent_id=&kind=&genre=&person_id=&favorite=&played=&sort=title\|added\|year\|played\|index&desc=&offset=&limit=`, `GET/PATCH items/{id}`, `PUT items/{id}/state`, `GET items/{id}/file` and `GET files/{id}` (Range), `GET images/{sha}?w=`, `GET home`, `GET library/search?q=`, `GET/PUT users/{id}/libraries` |
 | Playback | `POST playback/{item}` `{profile: "web"\|"safari"\|"native", audio_track?, burn_subtitle?, max_bitrate?, max_height?, force_transcode?, file_id?}` → `{method: "direct"\|"hls", url, session_id?, subtitles[{url?}], trickplay?, reasons}`, `GET hls/{session}/index.m3u8`, `GET hls/{session}/{n}.ts`, `GET/DELETE playback/sessions[/{id}]`, `GET files/{id}/subtitles/{idx}.vtt`, `GET files/{id}/trickplay/index.vtt` |
@@ -167,3 +167,14 @@ WantedBy=multi-user.target
 ```
 
 `correntd` reports readiness and shutdown through `sd_notify`; SIGTERM shuts it down gracefully.
+
+## The desktop app as a client
+
+The desktop app can use a server's engine instead of its own: **⋮ → Connect to a server…**,
+paste the pairing link from the web interface (Settings → Devices → Pair a device) or type the
+address and sign in. The app checks the server's CA against the fingerprint in the link (or shows
+it for you to compare), then keeps a device token and the CA in `servers.toml` (owner-only) in
+its data folder. The torrent list, details, add dialog, categories, tags, queue, RSS and media
+pages then work against the server; creating torrents, importing from other clients, the
+streaming window and "open folder" are hidden (the files are on the server). **⋮ → Use this
+computer's engine** switches back.

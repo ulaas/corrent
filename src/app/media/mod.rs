@@ -69,6 +69,12 @@ impl MediaState {
         self.local.as_ref()
     }
 
+    /// Forgets the server and everything loaded from it (after switching servers).
+    pub fn reset(&mut self) {
+        let gl = self.gl.take();
+        *self = MediaState { gl, ..Default::default() };
+    }
+
     fn invalidate(&mut self) {
         self.home = None;
         self.libraries = None;
@@ -131,6 +137,30 @@ impl CorrentApp {
                 self.main_view = super::feeds::MainView::Media;
                 self.open(Page::Item(id));
             }
+            // A pairing link: fill in the Connect dialog (CORRENT_DEV_CONNECT) or pair right away
+            // (CORRENT_DEV_PAIR).
+            if let Ok(link) = std::env::var("CORRENT_DEV_CONNECT") {
+                self.open_connect();
+                if let Some(d) = &mut self.connect {
+                    d.dev_fill(&link);
+                }
+            }
+            if let Ok(link) = std::env::var("CORRENT_DEV_PAIR")
+                && let Some(l) = crate::link::pair::parse_link(&link)
+                && let Some(url) = crate::link::pair::base_url(&l.host)
+            {
+                self.media_dev_pair = Some(fetch(&self.rt, ctx, async move {
+                    let t = crate::link::pair::trust(&url, Some(l.fingerprint.as_str())).await?;
+                    crate::link::pair::pair(&t, crate::link::pair::Credentials::Code(l.code)).await
+                }));
+            }
+        }
+        if let Some(r) = self.media_dev_pair.as_ref().and_then(ready) {
+            self.media_dev_pair = None;
+            match r {
+                Ok(e) => self.use_server(Some(e)),
+                Err(e) => tracing::warn!("CORRENT_DEV_PAIR: {e}"),
+            }
         }
         if let Some(id) = std::env::var("CORRENT_DEV_PLAY").ok().and_then(|v| v.parse::<i64>().ok())
             && self.media.player.is_none()
@@ -175,6 +205,21 @@ impl CorrentApp {
     pub fn ensure_media_server(&mut self) {
         let m = &mut self.media;
         if m.client.is_some() || m.starting.is_some() || m.error.is_some() {
+            return;
+        }
+        // Connected to a server: its media library, not this computer's.
+        if let Some(s) = &self.server {
+            // mpv reads the CA from a file (written off the UI thread, well before any playback).
+            let ca_file = s.entry.ca().map(|pem| {
+                let path = self.paths.data_dir.join(format!("server-{}-ca.pem", s.entry.id));
+                let (p2, pem) = (path.clone(), pem.to_string());
+                self.rt.spawn_blocking(move || std::fs::write(p2, pem));
+                path
+            });
+            match MediaClient::new(&s.entry.url, &s.entry.token, s.entry.ca()) {
+                Ok(c) => m.client = Some(c.with_ca_file(ca_file)),
+                Err(e) => m.error = Some(e),
+            }
             return;
         }
         let (engine, settings, paths) = (self.engine.clone(), self.remote.shared.clone(), self.paths.clone());

@@ -261,6 +261,20 @@ impl Wake {
     }
 }
 
+/// What an engine backend gets: its commands, where to publish snapshots, how to wake the
+/// reader, and where to send events.
+pub struct BackendIo {
+    pub commands: mpsc::UnboundedReceiver<EngineCommand>,
+    pub snapshot: Arc<ArcSwap<Snapshot>>,
+    pub wake: Wake,
+    pub events: std::sync::mpsc::Sender<EngineEvent>,
+}
+
+/// Something other than the local librqbit session answering engine commands (a remote
+/// server). Called again on every restart.
+pub type Backend =
+    Arc<dyn Fn(BackendIo) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+
 /// Cheap, cloneable handle used by the UI. Survives engine restarts.
 #[derive(Clone)]
 pub struct EngineHandle {
@@ -270,6 +284,7 @@ pub struct EngineHandle {
     paths: Paths,
     wake: Wake,
     events: std::sync::mpsc::Sender<EngineEvent>,
+    backend: Option<Backend>,
 }
 
 impl EngineHandle {
@@ -289,7 +304,46 @@ impl EngineHandle {
             paths,
             wake,
             events,
+            backend: None,
         }
+    }
+
+    /// A handle whose commands go to `backend` instead of a local session.
+    pub fn with_backend(
+        rt: &tokio::runtime::Handle,
+        paths: Paths,
+        wake: Wake,
+        events: std::sync::mpsc::Sender<EngineEvent>,
+        backend: Backend,
+    ) -> EngineHandle {
+        let snapshot = Arc::new(ArcSwap::from_pointee(Snapshot::default()));
+        let (tx, task) = Self::spawn_backend(rt, &backend, &wake, &events, &snapshot);
+        EngineHandle {
+            inner: Arc::new(std::sync::Mutex::new(Inner { tx, task, backlog: Default::default(), stopping: false })),
+            snapshot,
+            rt: rt.clone(),
+            paths,
+            wake,
+            events,
+            backend: Some(backend),
+        }
+    }
+
+    /// True when a backend other than the local session answers (see [`Self::with_backend`]).
+    pub fn is_remote(&self) -> bool {
+        self.backend.is_some()
+    }
+
+    fn spawn_backend(
+        rt: &tokio::runtime::Handle,
+        backend: &Backend,
+        wake: &Wake,
+        events: &std::sync::mpsc::Sender<EngineEvent>,
+        snapshot: &Arc<ArcSwap<Snapshot>>,
+    ) -> (mpsc::UnboundedSender<EngineCommand>, tokio::task::JoinHandle<()>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let io = BackendIo { commands: rx, snapshot: snapshot.clone(), wake: wake.clone(), events: events.clone() };
+        (tx, rt.spawn(backend(io)))
     }
 
     fn spawn(
@@ -352,7 +406,10 @@ impl EngineHandle {
         if !inner.task.is_finished() {
             return;
         }
-        let (tx, task) = Self::spawn(&self.rt, &self.paths, settings, &self.wake, &self.events, &self.snapshot);
+        let (tx, task) = match &self.backend {
+            Some(b) => Self::spawn_backend(&self.rt, b, &self.wake, &self.events, &self.snapshot),
+            None => Self::spawn(&self.rt, &self.paths, settings, &self.wake, &self.events, &self.snapshot),
+        };
         for cmd in inner.backlog.drain(..) {
             let _ = tx.send(cmd);
         }

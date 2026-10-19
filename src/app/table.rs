@@ -382,7 +382,9 @@ impl CorrentApp {
         }
         if let Some((h, mods, double)) = clicked {
             if double {
-                if let Some(t) = snap.torrents.iter().find(|t| t.hash == h) {
+                if self.server.is_none()
+                    && let Some(t) = snap.torrents.iter().find(|t| t.hash == h)
+                {
                     super::open_path(&t.content_path);
                 }
             } else {

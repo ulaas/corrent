@@ -27,6 +27,12 @@ impl LocalServer {
     }
 }
 
+impl Drop for LocalServer {
+    fn drop(&mut self) {
+        self.state.stop();
+    }
+}
+
 /// Starts the in-process server on the app's engine and profile.
 pub async fn start(
     engine: EngineHandle,
@@ -55,6 +61,7 @@ pub async fn start(
         cfg,
         hub: Default::default(),
         tls_fingerprint: None,
+        ca_pem: None,
         library,
     })
     .await?;

@@ -29,6 +29,15 @@ pub fn forward_engine_events(rx: std::sync::mpsc::Receiver<EngineEvent>, st: Arc
 /// Handles one engine event (for hosts that read the engine's events themselves, like the
 /// desktop app hosting the server in-process).
 pub fn on_engine_event(st: &Arc<AppState>, rt: &tokio::runtime::Handle, ev: EngineEvent) {
+    if let EngineEvent::PreviewReady { req, .. } = &ev
+        && *req >= crate::v1::torrents::PREVIEW_IDS
+    {
+        let waiting = st.previews.lock().unwrap_or_else(|e| e.into_inner()).remove(req);
+        if let (Some(tx), EngineEvent::PreviewReady { result, .. }) = (waiting, ev) {
+            let _ = tx.send(result);
+        }
+        return;
+    }
     match &ev {
         EngineEvent::Completed { hash, category, content_path, .. } => {
             rt.spawn(on_completed(st.clone(), *hash, category.clone(), content_path.clone()));
@@ -284,8 +293,13 @@ pub async fn run_wanted(st: &AppState) -> usize {
 pub fn start_wanted_scheduler(st: Arc<AppState>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(15 * 60));
+        let stopped = st.stopped();
+        tokio::pin!(stopped);
         loop {
-            tick.tick().await;
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = &mut stopped => break,
+            }
             if st.settings.load().search.providers.iter().any(|p| p.enabled) {
                 let n = run_wanted(&st).await;
                 if n > 0 {

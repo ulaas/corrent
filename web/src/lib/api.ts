@@ -29,6 +29,7 @@ const CODE_TEXT: Record<string, string> = {
   account_locked: tk('Too many failed sign-ins. The account is locked for a while.'),
   pairing_code_invalid: tk('The pairing code is wrong or has expired.'),
   engine_unavailable: tk("The torrent engine isn't running."),
+  timeout: tk('That took too long. Try again later.'),
   internal: tk('Something went wrong on the server.'),
 };
 

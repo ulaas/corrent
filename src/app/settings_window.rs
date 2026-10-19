@@ -385,6 +385,17 @@ impl CorrentApp {
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {
                                         ui.set_width(content_w - 50.0);
+                                        if let Some(s) = &self.server {
+                                            ui.label(
+                                                RichText::new(t!(
+                                                    "Connected to “{name}”: its downloads, connection and queue settings are changed in its web interface. The settings here apply to this computer.",
+                                                    name = s.entry.name
+                                                ))
+                                                .small()
+                                                .color(p.warn),
+                                            );
+                                            ui.add_space(8.0);
+                                        }
                                         self.settings_page(ui, p, &mut draft);
                                         ui.add_space(12.0);
                                     });

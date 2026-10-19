@@ -22,6 +22,8 @@ pub enum ErrorCode {
     AccountLocked,
     PairingCodeInvalid,
     EngineUnavailable,
+    /// Waiting for something (magnet metadata, the engine) took too long.
+    Timeout,
     Internal,
 }
 
@@ -36,6 +38,7 @@ impl ErrorCode {
             ErrorCode::PayloadTooLarge => 413,
             ErrorCode::TooManyRequests | ErrorCode::AccountLocked => 429,
             ErrorCode::EngineUnavailable => 503,
+            ErrorCode::Timeout => 504,
             ErrorCode::Internal => 500,
         }
     }
@@ -55,6 +58,7 @@ impl ErrorCode {
             ErrorCode::AccountLocked => t!("Too many failed sign-ins. The account is locked for a while."),
             ErrorCode::PairingCodeInvalid => t!("The pairing code is wrong or has expired."),
             ErrorCode::EngineUnavailable => t!("The torrent engine isn't running."),
+            ErrorCode::Timeout => t!("That took too long. Try again later."),
             ErrorCode::Internal => t!("Something went wrong on the server."),
         }
     }

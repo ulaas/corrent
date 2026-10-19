@@ -25,6 +25,8 @@ use crate::state::AppState;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/torrents", get(list).post(add).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)))
+        .route("/torrents/preview", post(preview).layer(axum::extract::DefaultBodyLimit::max(24 * 1024 * 1024)))
+        .route("/torrents/queue", post(queue_place))
         .route("/torrents/actions", post(action))
         .route("/torrents/move", post(move_storage))
         .route("/torrents/categories", get(labels).put(set_categories))
@@ -120,6 +122,8 @@ pub struct AddOptions {
     pub paused: Option<bool>,
     pub create_subfolder: Option<bool>,
     pub add_to_top: bool,
+    /// Download only these files (indexes in the torrent).
+    pub only_files: Option<Vec<usize>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -200,7 +204,7 @@ async fn add(State(st): State<Arc<AppState>>, auth: Auth, ip: ClientIp, req: Req
             category: category.clone(),
             tags: opts.tags.clone(),
             paused: opts.paused.unwrap_or(settings.downloads.start_paused),
-            only_files: None,
+            only_files: opts.only_files.clone(),
             add_to_top: opts.add_to_top,
             initial_peers: None,
             added_by: Some(auth.name().to_string()),
@@ -208,6 +212,81 @@ async fn add(State(st): State<Arc<AppState>>, auth: Auth, ip: ClientIp, req: Req
     }
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "torrent_add", &format!("{count}"), true, "").await;
     Ok(Json(Added { count }))
+}
+
+/// Engine request ids of API previews (the desktop app's own previews count up from 0).
+pub const PREVIEW_IDS: u64 = 1 << 62;
+static NEXT_PREVIEW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(PREVIEW_IDS);
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct PreviewRequest {
+    /// A magnet link, http(s) URL of a .torrent file, or bare info hash…
+    url: String,
+    /// …or a .torrent file (base64).
+    torrent: Option<String>,
+}
+
+/// Resolves a magnet link or .torrent URL into its name and files (magnets can take a while:
+/// up to two minutes).
+async fn preview(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Json(r): Json<PreviewRequest>,
+) -> ApiResult<corrent_proto::torrent::TorrentPreview> {
+    use base64::Engine as _;
+    auth.require(Perms::TORRENTS_ADD)?;
+    let u = r.url.trim();
+    let source = if let Some(b64) = &r.torrent {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64.trim())
+            .map_err(|_| err(ErrorCode::BadRequest, "not base64"))?;
+        if bytes.len() > MAX_TORRENT_FILE {
+            return Err(err(ErrorCode::PayloadTooLarge, "torrent file too large"));
+        }
+        AddSource::Bytes { name: "preview.torrent".into(), bytes }
+    } else if u.starts_with("magnet:") {
+        AddSource::Magnet(u.to_string())
+    } else if u.starts_with("http://") || u.starts_with("https://") {
+        if !crate::paths::unconfined(&auth) {
+            crate::net::check_public_url(u).await.map_err(|e| err(ErrorCode::Forbidden, e).with_text("url", u))?;
+        }
+        AddSource::Url(u.to_string())
+    } else if let Some(h) = InfoHash::from_hex(u) {
+        AddSource::Magnet(format!("magnet:?xt=urn:btih:{}", h.to_hex()))
+    } else {
+        return Err(err(ErrorCode::BadRequest, "not a magnet link, URL or info hash").with_text("url", u));
+    };
+    let req = NEXT_PREVIEW.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    st.previews.lock().unwrap_or_else(|e| e.into_inner()).insert(req, tx);
+    st.engine.send(EngineCommand::Preview { req, source });
+    let res = tokio::time::timeout(std::time::Duration::from_secs(120), rx).await;
+    st.previews.lock().unwrap_or_else(|e| e.into_inner()).remove(&req);
+    let p = match res {
+        Ok(Ok(Ok(p))) => p,
+        Ok(Ok(Err(e))) => return Err(err(ErrorCode::BadRequest, e)),
+        Ok(Err(_)) => return Err(err(ErrorCode::EngineUnavailable, "engine stopped")),
+        Err(_) => {
+            st.engine.send(EngineCommand::CancelPreview(req));
+            return Err(err(ErrorCode::Timeout, "no metadata yet"));
+        }
+    };
+    Ok(Json(corrent_proto::torrent::TorrentPreview {
+        info_hash: p.info_hash,
+        name: p.name,
+        files: p
+            .files
+            .into_iter()
+            .map(|f| corrent_proto::torrent::PreviewFile { path: f.components, len: f.len })
+            .collect(),
+        total_size: p.total_size,
+        piece_count: p.piece_count,
+        piece_length: p.piece_length,
+        already_added: p.already_added,
+        comment: p.comment,
+        torrent: base64::engine::general_purpose::STANDARD.encode(&p.torrent_bytes),
+    }))
 }
 
 trait WithText {
@@ -407,6 +486,25 @@ async fn trackers(
         return Err(err(ErrorCode::BadRequest, "not a tracker URL"));
     }
     st.engine.send(EngineCommand::AddTrackers { hash: h, trackers: list });
+    ok()
+}
+
+#[derive(Deserialize)]
+struct QueuePlace {
+    hashes: Vec<InfoHash>,
+    /// Put them before this torrent (absent: at the end of the queue).
+    #[serde(default)]
+    before: Option<InfoHash>,
+}
+
+/// Drag and drop in the queue.
+async fn queue_place(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Json(r): Json<QueuePlace>,
+) -> ApiResult<serde_json::Value> {
+    auth.require(Perms::TORRENTS_MANAGE_ALL)?;
+    st.engine.send(EngineCommand::QueuePlace { hashes: r.hashes, before: r.before });
     ok()
 }
 

@@ -14,6 +14,9 @@ use crate::events::Hub;
 use crate::identity::Identity;
 use crate::net::Cidr;
 
+/// Where an API preview's answer goes.
+pub type PreviewReply = tokio::sync::oneshot::Sender<Result<Box<corrent_core::engine::Preview>, String>>;
+
 pub struct AppState {
     pub engine: EngineHandle,
     pub settings: Arc<ArcSwap<Settings>>,
@@ -24,6 +27,10 @@ pub struct AppState {
     pub nets: ArcSwap<Nets>,
     pub server_id: String,
     pub tls_fingerprint: Option<String>,
+    /// The server's own CA (PEM), served to clients that pin `tls_fingerprint`.
+    pub ca_pem: Option<String>,
+    /// Torrent previews asked for through the API, by engine request id.
+    pub previews: Mutex<HashMap<u64, PreviewReply>>,
     /// Cookies get `Secure` when the browser talks HTTPS to us.
     pub tls: bool,
     pub http: reqwest::Client,
@@ -46,6 +53,23 @@ pub struct AppState {
     pub plugins: Option<Arc<corrent_plugins::PluginHost>>,
     /// One metadata refresh at a time.
     pub metadata_slot: tokio::sync::Mutex<()>,
+    /// Set when a hosted server stops: its background tasks end (they hold the state).
+    pub stopping: tokio::sync::watch::Sender<bool>,
+}
+
+impl AppState {
+    /// Ends the background tasks (scheduler, metadata) so the state can be dropped.
+    pub fn stop(&self) {
+        self.stopping.send_replace(true);
+    }
+
+    /// Resolves when [`Self::stop`] was called.
+    pub fn stopped(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let mut rx = self.stopping.subscribe();
+        async move {
+            let _ = rx.wait_for(|s| *s).await;
+        }
+    }
 }
 
 #[derive(Default)]

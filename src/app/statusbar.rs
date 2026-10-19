@@ -18,6 +18,9 @@ impl CorrentApp {
                 EngineState::Starting => (p.warn, t!("Starting…").to_string()),
                 EngineState::Restarting => (p.warn, t!("Reconnecting…").to_string()),
                 EngineState::Failed(e) => (p.error, t!("Engine error: {e}", e = e)),
+                EngineState::Running if let Some(srv) = &self.server => {
+                    (p.success, t!("Server: {name}", name = srv.entry.name))
+                }
                 EngineState::Running => match s.dht_nodes {
                     Some(n) if n > 0 => (p.success, t!("DHT: {n} nodes", n = n)),
                     Some(_) => (p.warn, t!("DHT: bootstrapping").into()),

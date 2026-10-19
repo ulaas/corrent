@@ -553,4 +553,125 @@ pub mod wire {
             piece_count: d.pieces.as_ref().map(|(_, n)| *n).unwrap_or(0),
         }
     }
+
+    /// The view of a torrent received from a server (`id` is the row's position there).
+    pub fn torrent_view(t: &p::Torrent, id: usize) -> TorrentView {
+        TorrentView {
+            id,
+            hash: t.hash,
+            name: t.name.clone(),
+            state: t.state,
+            error: t.error.clone(),
+            size: t.size,
+            done: t.done,
+            progress: t.progress,
+            uploaded: t.uploaded,
+            downloaded: t.downloaded,
+            down_bps: t.down_bps,
+            up_bps: t.up_bps,
+            eta: t.eta_secs.map(std::time::Duration::from_secs),
+            ratio: t.ratio,
+            peers_live: t.peers_live,
+            peers_seen: t.peers_seen,
+            peers_connecting: t.peers_connecting,
+            save_path: t.save_path.clone().into(),
+            content_path: t.content_path.clone().into(),
+            category: t.category.clone(),
+            tags: t.tags.clone(),
+            added_by: t.added_by.clone(),
+            added_at: t.added_at,
+            completed_at: t.completed_at,
+            queue_pos: t.queue_pos,
+            trackers: t.trackers.clone(),
+            has_metadata: t.has_metadata,
+            file_count: t.file_count,
+            piece_count: t.piece_count,
+            piece_size: t.piece_size,
+            comment: t.comment.clone(),
+            created_by: t.created_by.clone(),
+            creation_date: t.creation_date,
+            busy: t.busy.clone(),
+            last_activity: t.last_activity,
+            seeding_secs: t.seeding_secs,
+            down_limit_kib: t.down_limit_kib,
+            up_limit_kib: t.up_limit_kib,
+            pending: t.pending,
+            restore_failed: t.restore_failed,
+        }
+    }
+
+    pub fn categories(l: &p::Labels) -> std::collections::BTreeMap<String, crate::store::CategoryInfo> {
+        l.categories
+            .iter()
+            .map(|(k, c)| {
+                (
+                    k.clone(),
+                    crate::store::CategoryInfo {
+                        save_path: c.save_path.as_ref().map(Into::into),
+                        down_limit_kib: c.down_limit_kib,
+                        up_limit_kib: c.up_limit_kib,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Fills the session part of a snapshot from a server's statistics.
+    pub fn apply_session(s: &mut Snapshot, v: &p::SessionStats) {
+        s.engine_state = match &v.engine {
+            p::EngineStatus::Starting => EngineState::Starting,
+            p::EngineStatus::Running => EngineState::Running,
+            p::EngineStatus::Restarting => EngineState::Restarting,
+            p::EngineStatus::Failed(e) => EngineState::Failed(e.clone()),
+        };
+        let x = &mut s.session;
+        x.down_bps = v.down_bps;
+        x.up_bps = v.up_bps;
+        x.dht_nodes = v.dht_nodes;
+        x.listen_port = v.listen_port;
+        x.peers_live = v.peers_live;
+        x.alt_speed = v.alt_speed;
+        x.uptime_secs = v.uptime_secs;
+        x.session_downloaded = v.session_downloaded;
+        x.session_uploaded = v.session_uploaded;
+        s.all_time_downloaded = v.all_time_downloaded;
+        s.all_time_uploaded = v.all_time_uploaded;
+        s.free_space = v.free_space;
+        s.warning = v.warning.clone();
+        s.busy_ops = v.busy_ops;
+    }
+
+    pub fn detail_view(d: &p::TorrentDetail) -> TorrentDetail {
+        TorrentDetail {
+            hash: d.hash,
+            files: d
+                .files
+                .iter()
+                .map(|f| super::FileView {
+                    index: f.index,
+                    components: f.path.clone(),
+                    len: f.len,
+                    done: f.done,
+                    included: f.included,
+                    priority: f.priority,
+                })
+                .collect(),
+            peers: d
+                .peers
+                .iter()
+                .map(|x| super::PeerView {
+                    addr: x.addr.clone(),
+                    client: x.client.clone(),
+                    kind: x.kind.clone(),
+                    state: x.state.clone(),
+                    downloaded: x.downloaded,
+                    uploaded: x.uploaded,
+                    down_bps: x.down_bps,
+                    up_bps: x.up_bps,
+                })
+                .collect(),
+            pieces: d.pieces.as_ref().map(|b| (b.clone(), d.piece_count)),
+            history: Default::default(),
+        }
+    }
 }

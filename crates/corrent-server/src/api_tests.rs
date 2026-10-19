@@ -41,6 +41,7 @@ async fn harness(name: &str, cfg: ServerConfig) -> H {
         cfg,
         hub: Default::default(),
         tls_fingerprint: None,
+        ca_pem: None,
         library,
     })
     .await

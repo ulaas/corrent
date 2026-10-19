@@ -258,6 +258,7 @@ fn run(args: Args) -> anyhow::Result<()> {
             cfg,
             hub,
             tls_fingerprint: fingerprint,
+            ca_pem: tls_material.as_ref().map(|t| t.ca_pem.clone()).filter(|p| !p.is_empty()),
             library: corrent_library::Library::new(
                 db,
                 &paths.data_dir,

@@ -2,6 +2,7 @@
 
 mod actions;
 mod batch;
+pub mod connect;
 mod creator;
 mod details;
 mod dialogs;
@@ -376,7 +377,13 @@ pub struct CorrentApp {
     media_dev_played: bool,
     media_dev_shot_sent: bool,
     media_dev_started: Option<std::time::Instant>,
+    media_dev_pair: Option<media::client::Slot<crate::link::ServerEntry>>,
     pub media: media::MediaState,
+    /// The server used instead of the local engine (None: local).
+    pub server: Option<connect::ServerLink>,
+    pub connect: Option<connect::ConnectDialog>,
+    /// A local engine stopping after a switch to a server (joined before starting a new one).
+    local_stopping: Option<std::thread::JoinHandle<()>>,
 }
 
 impl CorrentApp {
@@ -429,10 +436,10 @@ impl CorrentApp {
         prefs.tracker_filter = GroupFilter::All;
         let (tx, rx) = std::sync::mpsc::channel();
         let ui_events_tx = tx.clone();
-        let engine = EngineHandle::start(
+        let (engine, server) = connect::start_engine(
             &rt,
-            paths.clone(),
-            settings.clone(),
+            &paths,
+            &settings,
             {
                 let ctx = ctx.clone();
                 crate::engine::Wake::new(move || ctx.request_repaint())
@@ -511,6 +518,10 @@ impl CorrentApp {
             media_dev_shot_sent: false,
             media_dev_started: None,
             media: Default::default(),
+            server,
+            connect: None,
+            media_dev_pair: None,
+            local_stopping: None,
         }
     }
 
@@ -592,6 +603,7 @@ impl CorrentApp {
     fn engine_banner(&mut self, ui: &mut Ui, p: &Palette) {
         // The engine publishes a snapshot every tick; none for a long time means it is stuck.
         let stalled = self.engine.is_alive()
+            && !self.engine.is_remote()
             && !self.quitting
             && self.snap.engine_state == crate::engine::types::EngineState::Running
             && self.last_snapshot.1.elapsed() > std::time::Duration::from_secs(30);
@@ -793,14 +805,15 @@ impl CorrentApp {
                     }
                 }
                 EngineEvent::Completed { name, size, content_path, save_path, .. } => {
-                    self.toasts.push_with(
-                        ToastKind::Success,
-                        t!("Download complete: “{name}”", name = name),
+                    let actions = if self.server.is_none() {
                         vec![
                             (t!("Open").into(), toasts::ToastAction::OpenFile(content_path)),
                             (t!("Show in folder").into(), toasts::ToastAction::OpenFolder(save_path)),
-                        ],
-                    );
+                        ]
+                    } else {
+                        Vec::new()
+                    };
+                    self.toasts.push_with(ToastKind::Success, t!("Download complete: “{name}”", name = name), actions);
                     if self.settings.behavior.notify_on_complete {
                         self.notify(t!("Download complete"), &format!("{name} ({})", crate::util::fmt_bytes(size)));
                     }
@@ -908,14 +921,15 @@ impl CorrentApp {
 
     /// Add a source: either opens the add dialog or adds directly with defaults.
     pub fn add_source(&mut self, source: AddSource) {
+        let d = self.download_defaults();
         let req = crate::engine::AddRequest {
             source,
             torrent_bytes: None,
-            save_path: self.settings.downloads.save_path.clone(),
-            create_subfolder: self.settings.downloads.create_subfolder,
+            save_path: d.save_path,
+            create_subfolder: d.create_subfolder,
             category: None,
             tags: Vec::new(),
-            paused: self.settings.downloads.start_paused,
+            paused: d.start_paused,
             only_files: None,
             add_to_top: false,
             initial_peers: None,
@@ -1032,6 +1046,7 @@ impl CorrentApp {
                 "magnet" => self.open_magnet_dialog(),
                 "about" => self.extras.about = true,
                 "creator" => self.open_creator(),
+                "connect" => self.open_connect(),
                 "import" => self.open_import(),
                 "feeds" => self.main_view = feeds::MainView::Feeds,
                 "search" => self.main_view = feeds::MainView::Search,
@@ -1141,6 +1156,7 @@ impl CorrentApp {
             ui,
             |ui| {
                 self.engine_banner(ui, &p);
+                self.server_banner(ui, &p);
                 self.crash_banner(ui, &p);
                 self.data_banner(ui, &p);
                 self.handler_banner(ui, &p);
@@ -1156,6 +1172,7 @@ impl CorrentApp {
         self.drag_and_drop(&ctx, &p);
         self.window_frame(&ctx, &p);
         self.extra_windows(&ctx, &p);
+        self.connect_dialog(&ctx, &p);
         self.onboarding(&ctx, &p);
         self.creator_dialog(&ctx, &p);
         self.rules_dialog(&ctx, &p);

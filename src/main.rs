@@ -8,6 +8,7 @@ use corrent_i18n as i18n;
 use corrent_server::webapi;
 mod app;
 mod integration;
+mod link;
 mod ui;
 
 use std::sync::Arc;

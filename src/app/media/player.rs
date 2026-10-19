@@ -174,6 +174,7 @@ impl Player {
     ) -> Result<Player, String> {
         let lib = corrent_mpv::Library::get().map_err(|e| e.to_string())?;
         let header = client.auth_header();
+        let ca = client.ca_file().map(|p| p.display().to_string());
         let mut opts: Vec<(&str, &str)> = corrent_mpv::HEADLESS.to_vec();
         opts.retain(|(k, _)| *k != "idle");
         opts.extend([
@@ -186,6 +187,10 @@ impl Player {
             ("audio-display", "no"),
         ]);
         opts.push(if audio_only { ("vid", "no") } else { ("vo", "libmpv") });
+        // A server with its own CA: mpv checks the certificate against it (the token is sent).
+        if let Some(ca) = &ca {
+            opts.extend([("tls-ca-file", ca.as_str()), ("tls-verify", "yes")]);
+        }
         let mpv = Arc::new(Mpv::new(lib, &opts).map_err(|e| e.to_string())?);
         let force_sw = std::env::var_os("CORRENT_SW_VIDEO").is_some();
         let video = if audio_only {

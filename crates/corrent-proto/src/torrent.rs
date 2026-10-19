@@ -395,6 +395,28 @@ pub struct SessionStats {
     pub torrent_count: usize,
 }
 
+/// What a magnet link or .torrent URL holds, before adding it (`POST /torrents/preview`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TorrentPreview {
+    pub info_hash: InfoHash,
+    pub name: String,
+    pub files: Vec<PreviewFile>,
+    pub total_size: u64,
+    pub piece_count: u32,
+    pub piece_length: u32,
+    pub already_added: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    /// The .torrent file, base64 (upload it when adding so the magnet isn't resolved again).
+    pub torrent: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PreviewFile {
+    pub path: Vec<String>,
+    pub len: u64,
+}
+
 /// Categories and tags (sent on change).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

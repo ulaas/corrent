@@ -53,10 +53,12 @@ impl CorrentApp {
             }
         }
         ui.separator();
-        if single && item(ui, icons::FOLDER_OPEN, t!("Open folder")) {
+        // A server's files aren't on this computer.
+        let local = self.server.is_none();
+        if single && local && item(ui, icons::FOLDER_OPEN, t!("Open folder")) {
             super::open_path(&first.save_path);
         }
-        if single && first.progress >= 1.0 && item(ui, icons::ARROW_SQUARE_OUT, t!("Open")) {
+        if single && local && first.progress >= 1.0 && item(ui, icons::ARROW_SQUARE_OUT, t!("Open")) {
             super::open_path(&first.content_path);
         }
         if single {
@@ -303,7 +305,7 @@ impl CorrentApp {
         }
         if consume(sc(Modifiers::NONE, Key::Enter)) {
             let sel = self.selected_views();
-            if sel.len() == 1 {
+            if sel.len() == 1 && self.server.is_none() {
                 super::open_path(&sel[0].content_path.clone());
             }
         }

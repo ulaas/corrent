@@ -13,7 +13,7 @@ mod plugins;
 mod rss;
 pub mod search;
 mod server;
-mod torrents;
+pub(crate) mod torrents;
 mod users;
 mod wanted;
 

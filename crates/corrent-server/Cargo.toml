@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
+base64 = "0.22"
 corrent-core = { path = "../corrent-core" }
 corrent-proto = { path = "../corrent-proto" }
 corrent-db = { path = "../corrent-db" }

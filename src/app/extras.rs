@@ -64,7 +64,10 @@ impl CorrentApp {
                 self.save_settings();
             }
             ui.separator();
-            if ui.button(format!("{}  {}", icons::FILE_PLUS, t!("Create torrent…  (Ctrl+N)"))).clicked() {
+            self.server_menu(ui);
+            ui.separator();
+            let local = self.server.is_none();
+            if local && ui.button(format!("{}  {}", icons::FILE_PLUS, t!("Create torrent…  (Ctrl+N)"))).clicked() {
                 self.open_creator();
             }
             ui.menu_button(format!("{}  {}", icons::POWER, t!("When downloads finish")), |ui| {
@@ -78,13 +81,15 @@ impl CorrentApp {
             if ui.button(format!("{}  {}", icons::ARROW_CIRCLE_UP, t!("Check for updates"))).clicked() {
                 self.check_for_updates(true);
             }
-            if ui.button(format!("{}  {}", icons::ARROW_SQUARE_IN, t!("Import from another client…"))).clicked() {
+            if local
+                && ui.button(format!("{}  {}", icons::ARROW_SQUARE_IN, t!("Import from another client…"))).clicked()
+            {
                 self.open_import();
             }
             if ui.button(format!("{}  {}", icons::CHART_BAR, t!("Statistics"))).clicked() {
                 self.extras.stats = true;
             }
-            if ui.button(format!("{}  {}", icons::PLAY_CIRCLE, t!("Streaming"))).clicked() {
+            if local && ui.button(format!("{}  {}", icons::PLAY_CIRCLE, t!("Streaming"))).clicked() {
                 self.extras.streams = true;
             }
             if ui.button(format!("{}  {}", icons::SCROLL, t!("Log"))).clicked() {

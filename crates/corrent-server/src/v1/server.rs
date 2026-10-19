@@ -23,6 +23,7 @@ pub const SECRET_MASK: &str = "••••••••";
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/server/info", get(info))
+        .route("/server/ca", get(ca))
         .route(
             "/server/settings",
             get(get_settings).put(put_settings).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
@@ -45,6 +46,16 @@ async fn info(State(st): State<Arc<AppState>>) -> ApiResult<ServerInfo> {
         setup_required: st.identity.user_count().await? == 0,
         features: vec!["torrents".into(), "rss".into(), "search".into(), "events".into()],
     }))
+}
+
+/// Public: the server's own CA certificate. Clients check its fingerprint against the one from
+/// pairing before trusting it.
+async fn ca(State(st): State<Arc<AppState>>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match &st.ca_pem {
+        Some(pem) => ([(axum::http::header::CONTENT_TYPE, "application/x-pem-file")], pem.clone()).into_response(),
+        None => err(ErrorCode::NotFound, "this server uses its own certificate").into_response(),
+    }
 }
 
 fn mask(s: &mut String) {
