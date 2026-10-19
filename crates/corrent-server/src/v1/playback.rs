@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Path, Request, State};
-use axum::http::{HeaderValue, header};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -153,7 +153,12 @@ pub(crate) async fn prepare(
     let remux = match (&decision, remux_ok && downloading.is_none(), decide::remux(&facts, &profile, &play)) {
         (Decision::Transcode { .. }, true, Some(audio)) => {
             let (cache_st, path) = (st.clone(), PathBuf::from(&file.path));
-            let ready = tokio::task::spawn_blocking(move || cache_st.remux.get(&path, audio)).await;
+            let slot = st.remux.slot().await;
+            let ready = tokio::task::spawn_blocking(move || {
+                let _slot = slot;
+                cache_st.remux.get(&path, audio)
+            })
+            .await;
             match ready {
                 Ok(Ok(_)) => Some(audio),
                 Ok(Err(e)) => {
@@ -294,31 +299,52 @@ async fn segment(
 
 /// Direct stream files: `index.m3u8`, `init.mp4` and `<n>.m4s` of a file's copied streams
 /// (`audio` 0 = without audio). Built on request from the cached index; nothing is written.
+/// The playlist names the others with the file's version (`?v=`), and they carry it as their
+/// ETag, so a replaced file is never served from a cache.
 async fn remux_file(
     State(st): State<Arc<AppState>>,
     auth: Auth,
     Path((file, audio, name)): Path<(i64, i64, String)>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Response, ApiErr> {
     // The user must be allowed to see the file.
     let path = PathBuf::from(st.library.file_path(auth.0.user.id, file).await.map_err(lib_err)?);
     let audio = (audio > 0).then_some(audio);
+    let if_none_match = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).map(str::to_string);
     let st2 = st.clone();
-    let res = tokio::task::spawn_blocking(move || -> Result<(&'static str, Vec<u8>), String> {
+    // Held by the blocking task, so a request that goes away doesn't free the slot early.
+    let slot = st.remux.slot().await;
+    type Built = (String, Option<(&'static str, Vec<u8>)>);
+    let res = tokio::task::spawn_blocking(move || -> Result<Built, String> {
+        let _slot = slot;
         let r = st2.remux.get(&path, audio).map_err(|e| e.to_string())?;
-        Ok(match name.as_str() {
-            "index.m3u8" => ("application/vnd.apple.mpegurl", r.playlist().into_bytes()),
+        let etag = format!("\"{}\"", r.version);
+        if name != "index.m3u8" && if_none_match.as_deref() == Some(etag.as_str()) {
+            return Ok((etag, None));
+        }
+        let body = match name.as_str() {
+            "index.m3u8" => ("application/vnd.apple.mpegurl", r.playlist(&format!("?v={}", r.version)).into_bytes()),
             "init.mp4" => ("video/mp4", r.init()),
             n => {
                 let i: usize = n.strip_suffix(".m4s").and_then(|x| x.parse().ok()).ok_or("no such segment")?;
                 ("video/iso.segment", r.segment(i).map_err(|e| e.to_string())?)
             }
-        })
+        };
+        Ok((etag, Some(body)))
     })
     .await
     .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
-    let (ctype, body) = res.map_err(|e| err(ErrorCode::NotFound, e))?;
-    let cache = if ctype.ends_with("mpegurl") { "no-store" } else { "private, max-age=3600" };
-    Ok(([(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, cache)], body).into_response())
+    let (etag, built) = res.map_err(|e| err(ErrorCode::NotFound, e))?;
+    let etag = HeaderValue::from_str(&etag).map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+    let Some((ctype, body)) = built else {
+        return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
+    };
+    if ctype.ends_with("mpegurl") {
+        return Ok(([(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, "no-store")], body).into_response());
+    }
+    let ctype = HeaderValue::from_static(ctype);
+    let cache = HeaderValue::from_static("private, max-age=3600");
+    Ok(([(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, cache), (header::ETAG, etag)], body).into_response())
 }
 
 async fn stop(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<String>) -> ApiResult<serde_json::Value> {

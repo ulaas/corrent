@@ -2270,26 +2270,31 @@ async fn playback_direct_and_hls() {
     let (s, pl, _) = get(app, &rurl, &admin).await;
     assert_eq!(s, StatusCode::OK);
     let pl = pl.as_str().unwrap().to_string();
-    assert!(pl.contains("#EXT-X-MAP:URI=\"init.mp4\"") && pl.contains("0.m4s"), "{pl}");
+    // Segment URLs carry the file's version, which is also their ETag.
+    let version = pl.split("init.mp4?v=").nth(1).and_then(|r| r.split('"').next()).unwrap_or_default().to_string();
+    assert!(!version.is_empty() && pl.contains(&format!("\n0.m4s?v={version}\n")), "{pl}");
+    let fetch = |name: String, etag: Option<String>| {
+        let mut r = Request::builder()
+            .uri(rurl.replace("index.m3u8", &name))
+            .header(header::HOST, "127.0.0.1:8443")
+            .header(header::AUTHORIZATION, format!("Bearer {admin}"));
+        if let Some(e) = etag {
+            r = r.header(header::IF_NONE_MATCH, e);
+        }
+        let mut r = r.body(Body::empty()).unwrap();
+        r.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+        h.app.clone().oneshot(r)
+    };
     for name in ["init.mp4", "0.m4s"] {
-        let res = h
-            .app
-            .clone()
-            .oneshot({
-                let mut r = Request::builder()
-                    .uri(rurl.replace("index.m3u8", name))
-                    .header(header::HOST, "127.0.0.1:8443")
-                    .header(header::AUTHORIZATION, format!("Bearer {admin}"))
-                    .body(Body::empty())
-                    .unwrap();
-                r.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
-                r
-            })
-            .await
-            .unwrap();
+        let res = fetch(format!("{name}?v={version}"), None).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK, "{name}");
+        assert_eq!(res.headers()[header::ETAG], format!("\"{version}\"").as_str());
         let b = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&b[4..8], if name == "init.mp4" { b"ftyp" } else { b"moof" }, "{name}");
+        let res = fetch(name.to_string(), Some(format!("\"{version}\""))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED, "{name}");
+        let res = fetch(name.to_string(), Some("\"stale\"".into())).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{name}");
     }
     let (s, _, _) = get(app, &rurl.replace("index.m3u8", "999.m4s"), &admin).await;
     assert_eq!(s, StatusCode::NOT_FOUND);

@@ -1561,6 +1561,7 @@ dependencies = [
 name = "corrent-transcode"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "corrent-fuzz",
  "corrent-mpv",
  "fs4",

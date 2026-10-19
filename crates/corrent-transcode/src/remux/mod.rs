@@ -19,6 +19,9 @@ const TARGET_NS: i64 = 4_000_000_000;
 const MAX_SEGMENT_BYTES: u64 = 192 * 1024 * 1024;
 /// At most this much of a file is read to find keyframes the index doesn't give.
 const MAX_SCAN_BYTES: u64 = 512 * 1024 * 1024;
+/// Remux work (indexing, segments) at the same time: each segment holds its clusters and the
+/// output in memory, so many parallel requests for big segments must wait their turn.
+const SLOTS: usize = 4;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
@@ -29,12 +32,31 @@ pub struct Segment {
     pub duration_ns: i64,
 }
 
+/// What a file's remuxes share, whichever audio track they take.
 #[derive(Debug)]
-pub struct Remux {
+pub struct Index {
     pub path: PathBuf,
     pub header: Header,
-    pub tracks: Vec<OutTrack>,
     pub segments: Vec<Segment>,
+    /// Added to every timestamp so the first (a B-frame shown before 0) isn't negative.
+    pub shift_ns: i64,
+    /// Changes when the file does (size and modification time): goes into segment URLs and
+    /// ETags so a replaced file isn't served from caches.
+    pub version: String,
+}
+
+/// A file's index with the tracks of one audio choice.
+#[derive(Debug)]
+pub struct Remux {
+    pub index: Arc<Index>,
+    pub tracks: Vec<OutTrack>,
+}
+
+impl std::ops::Deref for Remux {
+    type Target = Index;
+    fn deref(&self) -> &Index {
+        &self.index
+    }
 }
 
 /// The codecs [`prepare`] can copy, as the library names them (mpv/ffprobe codec names).
@@ -46,7 +68,41 @@ pub const AUDIO_CODECS: &[&str] = &["aac", "ac3", "eac3", "opus"];
 /// Indexes `path` for remuxing its video and audio track `audio` (the n-th audio track,
 /// 1-based as mpv counts; `None` = no audio).
 pub fn prepare(path: &Path, audio: Option<i64>) -> Result<Remux, MkvError> {
+    let index = Arc::new(index(path)?);
+    let tracks = tracks(&index, audio)?;
+    Ok(Remux { index, tracks })
+}
+
+fn version(meta: &std::fs::Metadata) -> String {
+    let modified =
+        meta.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+    format!("{:x}-{modified:x}", meta.len())
+}
+
+/// Reads the header, finds the keyframes and plans the segments.
+pub fn index(path: &Path) -> Result<Index, MkvError> {
+    let version = version(&std::fs::metadata(path)?);
     let header = mkv::open(path)?;
+    if !header.tracks.iter().any(|t| t.kind == 1) {
+        return Err(MkvError::Unsupported("no video".into()));
+    }
+    let segments = plan(&header, &cuts(path, &header)?)?;
+    let shift_ns = shift(path, &header);
+    Ok(Index { path: path.to_path_buf(), header, segments, shift_ns, version })
+}
+
+/// How far the earliest timestamp of the first cluster lies before 0 (B-frames shown before
+/// the first keyframe). One offset for the whole file keeps the segments back to back.
+fn shift(path: &Path, h: &Header) -> i64 {
+    let tracks: Vec<u64> = h.tracks.iter().filter(|t| t.kind == 1 || t.kind == 2).map(|t| t.number).collect();
+    let first = mkv::frames(path, h, (0, 0), (1, 0), &tracks).unwrap_or_default();
+    first.iter().map(|f| f.pts_ns).min().map_or(0, |m| m.saturating_neg().max(0))
+}
+
+/// The output tracks for `audio` (see [`prepare`]). Reads at most the first frames of an
+/// AC-3/E-AC-3 track.
+pub fn tracks(index: &Index, audio: Option<i64>) -> Result<Vec<OutTrack>, MkvError> {
+    let header = &index.header;
     let video = header.tracks.iter().find(|t| t.kind == 1).ok_or_else(|| MkvError::Unsupported("no video".into()))?;
     let mut tracks = vec![mp4::out_track(video, 1, None).map_err(MkvError::Unsupported)?];
     if let Some(n) = audio {
@@ -57,16 +113,15 @@ pub fn prepare(path: &Path, audio: Option<i64>) -> Result<Remux, MkvError> {
             .nth((n.max(1) - 1) as usize)
             .ok_or_else(|| MkvError::Unsupported(format!("no audio track {n}")))?;
         // AC-3 and E-AC-3 are described from their first frame.
-        let first = if ["A_AC3", "A_EAC3", "A_MPEG/L3"].contains(&a.codec.as_str()) {
+        let first = if a.unsupported.is_none() && ["A_AC3", "A_EAC3", "A_MPEG/L3"].contains(&a.codec.as_str()) {
             let n = header.clusters.len().min(4);
-            mkv::frames(path, &header, (0, 0), (n, 0), &[a.number])?.into_iter().next().map(|f| f.data)
+            mkv::frames(&index.path, header, (0, 0), (n, 0), &[a.number])?.into_iter().next().map(|f| f.data)
         } else {
             None
         };
         tracks.push(mp4::out_track(a, 2, first.as_deref()).map_err(MkvError::Unsupported)?);
     }
-    let segments = plan(&header, &cuts(path, &header)?)?;
-    Ok(Remux { path: path.to_path_buf(), header, tracks, segments })
+    Ok(tracks)
 }
 
 /// Every place the video can start: (position, timestamp), in file order.
@@ -83,7 +138,7 @@ fn cuts(path: &Path, h: &Header) -> Result<Vec<(mkv::Pos, i64)>, MkvError> {
     // Looking inside clusters reads them: give up (and transcode) rather than read a whole film.
     let mut scanned = 0u64;
     let mut scan = |i: usize| -> Result<Vec<(mkv::Pos, i64)>, MkvError> {
-        scanned += h.clusters[i].size;
+        scanned = scanned.saturating_add(h.clusters[i].size);
         if scanned > MAX_SCAN_BYTES {
             return Err(MkvError::Unsupported("no keyframe index (no Cues, clusters don't start at keyframes)".into()));
         }
@@ -120,7 +175,7 @@ fn plan(h: &Header, cuts: &[(mkv::Pos, i64)]) -> Result<Vec<Segment>, MkvError> 
     }];
     for &(pos, t) in cuts {
         let cur = out.last().expect("one segment");
-        if pos == (0, 0) || t - cur.start_ns < TARGET_NS {
+        if pos == (0, 0) || t.saturating_sub(cur.start_ns) < TARGET_NS {
             continue;
         }
         out.last_mut().expect("one segment").to = pos;
@@ -135,10 +190,11 @@ fn plan(h: &Header, cuts: &[(mkv::Pos, i64)]) -> Result<Vec<Segment>, MkvError> 
             return Err(MkvError::Unsupported("keyframes too far apart".into()));
         }
     }
-    let end = h.duration_ns.filter(|d| *d > out[n - 1].start_ns).unwrap_or(out[n - 1].start_ns + TARGET_NS);
+    let last_start = out[n - 1].start_ns;
+    let end = h.duration_ns.filter(|d| *d > last_start).unwrap_or(last_start.saturating_add(TARGET_NS));
     for i in 0..n {
         let next = if i + 1 < n { out[i + 1].start_ns } else { end };
-        out[i].duration_ns = (next - out[i].start_ns).max(1_000_000);
+        out[i].duration_ns = next.saturating_sub(out[i].start_ns).max(1_000_000);
     }
     Ok(out)
 }
@@ -149,15 +205,16 @@ impl Remux {
         self.tracks.iter().map(|t| t.codec_string()).collect::<Vec<_>>().join(",")
     }
 
-    /// A VOD playlist naming `init.mp4` and `<n>.m4s`.
-    pub fn playlist(&self) -> String {
+    /// A VOD playlist naming `init.mp4` and `<n>.m4s`, each followed by `query` (the server
+    /// passes `?v=<version>`; a folder of files on disk takes `""`).
+    pub fn playlist(&self, query: &str) -> String {
         let target = self.segments.iter().map(|s| s.duration_ns).max().unwrap_or(TARGET_NS);
         let mut p = format!(
-            "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:{}\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4\"\n",
+            "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:{}\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"init.mp4{query}\"\n",
             (target as f64 / 1e9).ceil() as u64
         );
         for (i, s) in self.segments.iter().enumerate() {
-            p.push_str(&format!("#EXTINF:{:.3},\n{i}.m4s\n", s.duration_ns as f64 / 1e9));
+            p.push_str(&format!("#EXTINF:{:.3},\n{i}.m4s{query}\n", s.duration_ns as f64 / 1e9));
         }
         p.push_str("#EXT-X-ENDLIST\n");
         p
@@ -172,45 +229,85 @@ impl Remux {
         let s = self.segments.get(n).ok_or(MkvError::Invalid("no such segment"))?;
         let wanted: Vec<u64> = self.tracks.iter().map(|t| t.source).collect();
         let frames = mkv::frames(&self.path, &self.header, s.from, s.to, &wanted)?;
-        Ok(mp4::media_segment(n as u32 + 1, &self.tracks, &frames))
+        let end = s.start_ns.saturating_add(s.duration_ns);
+        Ok(mp4::media_segment(n as u32 + 1, &self.tracks, &frames, self.shift_ns, end))
     }
 }
 
-/// Recently prepared files (index building reads every cluster header once).
-#[derive(Default)]
-pub struct Cache(Mutex<Vec<(Key, Arc<Remux>)>>);
+/// Recently prepared files: the index once per file (it reads every cluster header), the
+/// tracks per audio choice.
+pub struct Cache {
+    files: Mutex<Vec<(FileKey, Arc<Index>)>>,
+    remuxes: Mutex<Vec<(RemuxKey, Arc<Remux>)>>,
+    slots: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Cache {
+            files: Mutex::default(),
+            remuxes: Mutex::default(),
+            slots: Arc::new(tokio::sync::Semaphore::new(SLOTS)),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
-struct Key {
+struct FileKey {
     path: PathBuf,
-    audio: Option<i64>,
     len: u64,
     modified: Option<std::time::SystemTime>,
 }
 
+/// A file and its audio choice.
+type RemuxKey = (FileKey, Option<i64>);
+
 const CACHE_SIZE: usize = 16;
 
+/// Most recently used last; the oldest goes when full.
+fn lookup<K: PartialEq, V: Clone>(list: &Mutex<Vec<(K, V)>>, key: &K) -> Option<V> {
+    let mut c = list.lock().unwrap_or_else(|e| e.into_inner());
+    let i = c.iter().position(|(k, _)| k == key)?;
+    let hit = c.remove(i);
+    let v = hit.1.clone();
+    c.push(hit);
+    Some(v)
+}
+
+fn remember<K, V>(list: &Mutex<Vec<(K, V)>>, key: K, value: V, same: impl Fn(&K) -> bool, size: usize) {
+    let mut c = list.lock().unwrap_or_else(|e| e.into_inner());
+    c.retain(|(k, _)| !same(k));
+    c.push((key, value));
+    if c.len() > size {
+        c.remove(0);
+    }
+}
+
 impl Cache {
+    /// Waits for a turn at remux work; hold it (into the blocking task) while calling
+    /// [`Cache::get`] and [`Remux::segment`].
+    pub async fn slot(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.slots.clone().acquire_owned().await.expect("never closed")
+    }
+
     /// The prepared remux of `path` (blocking: call off the async threads).
     pub fn get(&self, path: &Path, audio: Option<i64>) -> Result<Arc<Remux>, MkvError> {
         let meta = std::fs::metadata(path)?;
-        let key = Key { path: path.to_path_buf(), audio, len: meta.len(), modified: meta.modified().ok() };
-        {
-            let mut c = self.0.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(i) = c.iter().position(|(k, _)| *k == key) {
-                let hit = c.remove(i);
-                let r = hit.1.clone();
-                c.push(hit);
-                return Ok(r);
+        let file = FileKey { path: path.to_path_buf(), len: meta.len(), modified: meta.modified().ok() };
+        let key = (file.clone(), audio);
+        if let Some(r) = lookup(&self.remuxes, &key) {
+            return Ok(r);
+        }
+        let index = match lookup(&self.files, &file) {
+            Some(i) => i,
+            None => {
+                let i = Arc::new(index(path)?);
+                remember(&self.files, file.clone(), i.clone(), |k| k.path == file.path, CACHE_SIZE);
+                i
             }
-        }
-        let r = Arc::new(prepare(path, audio)?);
-        let mut c = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        c.retain(|(k, _)| k.path != key.path || k.audio != key.audio);
-        c.push((key, r.clone()));
-        if c.len() > CACHE_SIZE {
-            c.remove(0);
-        }
+        };
+        let r = Arc::new(Remux { tracks: tracks(&index, audio)?, index });
+        remember(&self.remuxes, key, r.clone(), |(k, a)| k.path == file.path && *a == audio, CACHE_SIZE * 2);
         Ok(r)
     }
 }
@@ -230,22 +327,39 @@ mod tests {
         );
         assert_eq!(r.segments.iter().map(|s| s.duration_ns / 1_000_000).collect::<Vec<_>>(), vec![4000, 4000, 2000]);
         assert_eq!(r.codecs(), "avc1.64001f,mp4a.40.2");
-        let pl = r.playlist();
+        let pl = r.playlist("");
         assert!(
             pl.contains("#EXT-X-MAP:URI=\"init.mp4\"")
-                && pl.contains("#EXTINF:2.000,\n2.m4s")
+                && pl.contains("#EXTINF:2.000,\n2.m4s\n")
                 && pl.ends_with("#EXT-X-ENDLIST\n")
         );
+        let pl = r.playlist("?v=1");
+        assert!(pl.contains("URI=\"init.mp4?v=1\"") && pl.contains("\n2.m4s?v=1\n"), "{pl}");
         let seg = r.segment(1).unwrap();
         assert_eq!(&seg[4..8], b"moof");
+        // The video samples of a segment fill it exactly: the last frame runs to the next
+        // segment (frames at 2000, 2040 and 2080 ms, then 4000).
+        let seg0 = r.segment(0).unwrap();
+        let traf = mp4::tests::boxes(mp4::tests::boxes(mp4::tests::boxes(&seg0)[0].1)[1].1);
+        let trun = traf[2].1;
+        let count = u32::from_be_bytes(trun[4..8].try_into().unwrap()) as usize;
+        let total: u64 =
+            (0..count).map(|i| u32::from_be_bytes(trun[12 + i * 16..16 + i * 16].try_into().unwrap()) as u64).sum();
+        assert_eq!(total, 4 * mp4::VIDEO_TIMESCALE as u64);
         assert!(r.segment(9).is_err());
         // No audio track 2; and video only works.
         assert!(prepare(&p, Some(2)).is_err());
         assert_eq!(prepare(&p, None).unwrap().tracks.len(), 1);
+        // One index per file, whatever the audio choice (bogus ones included).
         let cache = Cache::default();
         let a = cache.get(&p, Some(1)).unwrap();
         let b = cache.get(&p, Some(1)).unwrap();
         assert!(Arc::ptr_eq(&a, &b));
+        assert!(cache.get(&p, Some(7)).is_err());
+        let c = cache.get(&p, None).unwrap();
+        assert!(Arc::ptr_eq(&a.index, &c.index) && !Arc::ptr_eq(&a, &c));
+        assert_eq!(cache.files.lock().unwrap().len(), 1);
+        assert!(!a.version.is_empty());
         let _ = std::fs::remove_file(p);
     }
 
@@ -271,6 +385,31 @@ mod tests {
             n += f.len();
         }
         assert_eq!(n, all.len());
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn odd_files_still_remux() {
+        use mkv::tests::Sample;
+        // A zlib-compressed subtitle track doesn't stop the film; a compressed audio track does
+        // when it is chosen.
+        let p = Sample { compressed_subtitles: true, ..Sample::new(3) }.write("subs");
+        let r = prepare(&p, Some(1)).unwrap();
+        assert_eq!(r.tracks.len(), 2);
+        let _ = std::fs::remove_file(p);
+        let p = Sample { compressed_audio: true, ..Sample::new(3) }.write("zaudio");
+        assert!(matches!(prepare(&p, Some(1)), Err(MkvError::Unsupported(_))));
+        assert!(prepare(&p, None).is_ok());
+        let _ = std::fs::remove_file(p);
+        // B-frames before the first keyframe's time: everything moves by 40 ms.
+        let p = Sample { first_rel: -40, ..Sample::new(3) }.write("negative");
+        assert_eq!(prepare(&p, Some(1)).unwrap().shift_ns, 40_000_000);
+        let _ = std::fs::remove_file(p);
+        // Absurd timestamp scales neither panic nor wrap.
+        let p = Sample { scale: u64::MAX, ..Sample::new(3) }.write("scale");
+        let h = mkv::open(&p).unwrap();
+        assert_eq!(h.timecode_scale, 1_000_000_000);
+        let _ = prepare(&p, Some(1)).map(|r| r.segment(0));
         let _ = std::fs::remove_file(p);
     }
 }

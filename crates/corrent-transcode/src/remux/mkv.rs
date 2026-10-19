@@ -53,6 +53,14 @@ const CRC32: u32 = 0xBF;
 
 /// Elements larger than this aren't read into memory (header parts, a cluster).
 const MAX_ELEMENT: u64 = 256 * 1024 * 1024;
+/// Timestamp ticks of at most a second; anything larger is damage (and would overflow).
+const MAX_SCALE: u64 = 1_000_000_000;
+
+/// Nanoseconds of `ticks` timestamp units. Values come from the file: saturate instead of
+/// wrapping (release builds) or panicking (debug builds).
+fn ns(ticks: i64, scale: u64) -> i64 {
+    ticks.saturating_mul(scale.min(MAX_SCALE) as i64)
+}
 
 #[derive(Debug)]
 pub enum MkvError {
@@ -93,6 +101,9 @@ pub struct Track {
     pub channels: u32,
     /// Header-stripping compression: bytes removed from the start of every frame.
     pub strip_prefix: Vec<u8>,
+    /// Why the frames can't be copied (other compression, encryption). Only matters for the
+    /// tracks that are remuxed: a VobSub track compressed with zlib doesn't stop the film.
+    pub unsupported: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -137,7 +148,8 @@ pub struct Frame {
     pub track: u64,
     pub pts_ns: i64,
     pub key: bool,
-    pub data: Vec<u8>,
+    /// A slice of the cluster read from the file (not copied), unless a prefix was put back.
+    pub data: bytes::Bytes,
 }
 
 /// A variable-length integer: (value, length). `keep_marker` for element ids.
@@ -241,13 +253,14 @@ fn track(b: &[u8]) -> Result<Track> {
                     }
                     for (id, c) in children(enc)? {
                         match id {
-                            CONTENT_ENCRYPTION => return Err(MkvError::Unsupported("encrypted track".into())),
+                            CONTENT_ENCRYPTION => t.unsupported = Some("encrypted track".into()),
                             CONTENT_COMPRESSION => {
                                 let parts = children(c)?;
                                 let algo =
                                     parts.iter().find(|(i, _)| *i == CONTENT_COMP_ALGO).map_or(0, |(_, v)| uint(v));
                                 if algo != 3 {
-                                    return Err(MkvError::Unsupported(format!("compressed track (algorithm {algo})")));
+                                    t.unsupported = Some(format!("compressed track (algorithm {algo})"));
+                                    continue;
                                 }
                                 t.strip_prefix = parts
                                     .iter()
@@ -350,7 +363,10 @@ fn unlace(flags: u8, b: &[u8]) -> Result<Vec<&[u8]>> {
 
 /// Reads the header and indexes every cluster (one small read each; the frames aren't read).
 pub fn open(path: &Path) -> Result<Header> {
-    let mut r = BufReader::with_capacity(64 * 1024, File::open(path)?);
+    // Every cluster seeks, which drops the buffer: keep it small (one read per cluster).
+    let file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let mut r = BufReader::with_capacity(8 * 1024, file);
     let (id, size, _) = element(&mut r)?.ok_or(MkvError::Invalid("empty file"))?;
     if id != EBML {
         return Err(MkvError::Invalid("no EBML header"));
@@ -365,7 +381,7 @@ pub fn open(path: &Path) -> Result<Header> {
         return Err(MkvError::Invalid("no segment"));
     }
     let seg_start = r.stream_position()?;
-    let seg_end = seg_size.map(|s| seg_start + s);
+    let seg_end = seg_size.map(|s| seg_start.saturating_add(s));
     let mut h = Header {
         timecode_scale: 1_000_000,
         duration_ns: None,
@@ -399,7 +415,7 @@ pub fn open(path: &Path) -> Result<Header> {
                 let b = read_body(&mut r, size.ok_or(MkvError::Invalid("info size"))?)?;
                 for (id, v) in children(&b)? {
                     match id {
-                        TIMECODE_SCALE => h.timecode_scale = uint(v).max(1),
+                        TIMECODE_SCALE => h.timecode_scale = uint(v).clamp(1, MAX_SCALE),
                         DURATION => duration_ticks = Some(float(v)),
                         _ => {}
                     }
@@ -418,9 +434,21 @@ pub fn open(path: &Path) -> Result<Header> {
                 let size =
                     size.ok_or_else(|| MkvError::Unsupported("clusters of unknown size (a live recording)".into()))?;
                 let offset = r.stream_position()?;
-                let (time, key) = cluster_start(&mut r, size, video, h.timecode_scale)?;
-                h.clusters.push(Cluster { start: pos, offset, size, time_ns: time, key });
-                r.seek(SeekFrom::Start(offset + size))?;
+                // A cut-off file: the last cluster ends where the file does.
+                let size = size.min(file_len.saturating_sub(offset));
+                match cluster_start(&mut r, size, video, h.timecode_scale) {
+                    Ok((time, key)) => {
+                        h.clusters.push(Cluster { start: pos, offset, size, time_ns: time, key });
+                        r.seek(SeekFrom::Start(offset + size))?;
+                    }
+                    // A damaged cluster is left out; carry on at the next one.
+                    Err(e) if is_damage(&e) => {
+                        if !resync(&mut r, pos + 1)? {
+                            break;
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             CUES => {
                 let b = read_body(&mut r, size.ok_or(MkvError::Invalid("cues size"))?)?;
@@ -466,14 +494,23 @@ pub fn open(path: &Path) -> Result<Header> {
             .into_iter()
             .filter(|c| c.1 == v)
             .map(|(time, _, cluster, relative)| Cue {
-                time_ns: (time * h.timecode_scale) as i64,
-                cluster_start: seg_start + cluster,
+                time_ns: ns(time.min(i64::MAX as u64) as i64, h.timecode_scale),
+                cluster_start: seg_start.saturating_add(cluster),
                 relative,
             })
             .collect();
         h.cues.sort_by_key(|c| (c.cluster_start, c.relative));
     }
     Ok(h)
+}
+
+/// Errors that mean damaged data (rather than a failing disk).
+fn is_damage(e: &MkvError) -> bool {
+    match e {
+        MkvError::Invalid(_) => true,
+        MkvError::Io(e) => e.kind() == std::io::ErrorKind::UnexpectedEof,
+        MkvError::Unsupported(_) => false,
+    }
 }
 
 /// Moves to the next cluster id at or after `from`; false at the end of the file.
@@ -512,7 +549,7 @@ pub fn keyframes(path: &Path, h: &Header, i: usize) -> Result<Vec<(u64, i64)>> {
     for (off, id, v) in children_at(&body) {
         let (blk, group_key) = match id {
             TIMECODE => {
-                time = uint(v) as i64;
+                time = uint(v).min(i64::MAX as u64) as i64;
                 continue;
             }
             SIMPLE_BLOCK => (v, None),
@@ -525,7 +562,7 @@ pub fn keyframes(path: &Path, h: &Header, i: usize) -> Result<Vec<(u64, i64)>> {
         };
         let (track, rel, flags, _) = block_header(blk)?;
         if track == video && group_key.unwrap_or(flags & 0x80 != 0) {
-            out.push((off as u64, (time + rel as i64) * h.timecode_scale as i64));
+            out.push((off as u64, ns(time.saturating_add(rel as i64), h.timecode_scale)));
         }
     }
     Ok(out)
@@ -539,27 +576,22 @@ fn cluster_start(r: &mut BufReader<File>, size: u64, video: Option<u64>, scale: 
         let Some((id, s, _)) = element(r)? else { break };
         let s = s.ok_or(MkvError::Invalid("unknown size in a cluster"))?;
         match id {
-            TIMECODE => time = Some(uint(&read_body(r, s.min(8))?) as i64),
+            TIMECODE => time = Some(uint(&read_body(r, s.min(8))?).min(i64::MAX as u64) as i64),
             SIMPLE_BLOCK | BLOCK_GROUP => {
                 let Some(t) = time else { return Err(MkvError::Invalid("block before the cluster timestamp")) };
-                // Enough of the block to see its track and flags; a block group's children are
-                // small apart from the block itself, so read it whole up to a limit.
-                let peek = s.min(if id == SIMPLE_BLOCK { 16 } else { 1 << 20 });
-                let b = read_body(r, peek)?;
-                if peek < s {
-                    r.seek_relative((s - peek) as i64)?;
-                }
                 let (track, key) = if id == SIMPLE_BLOCK {
+                    // Enough of the block to see its track and flags.
+                    let peek = s.min(16);
+                    let b = read_body(r, peek)?;
+                    r.seek_relative((s - peek) as i64)?;
                     let (tr, _, flags, _) = block_header(&b)?;
                     (tr, flags & 0x80 != 0)
                 } else {
-                    let kids = children_lenient(&b);
-                    let Some((_, blk)) = kids.iter().find(|(i, _)| *i == BLOCK) else { continue };
-                    let (tr, ..) = block_header(blk)?;
-                    (tr, !kids.iter().any(|(i, _)| *i == REFERENCE_BLOCK))
+                    let Some(found) = group_start(r, s)? else { continue };
+                    found
                 };
                 if Some(track) == video || video.is_none() {
-                    return Ok((t * scale as i64, key));
+                    return Ok((ns(t, scale), key));
                 }
             }
             _ => {
@@ -567,7 +599,31 @@ fn cluster_start(r: &mut BufReader<File>, size: u64, video: Option<u64>, scale: 
             }
         }
     }
-    Ok((time.unwrap_or(0) * scale as i64, video.is_none()))
+    Ok((ns(time.unwrap_or(0), scale), video.is_none()))
+}
+
+/// A block group's track and whether it is a keyframe (no `ReferenceBlock`), reading only the
+/// headers of its children: the block can be megabytes with the reference after it.
+fn group_start(r: &mut BufReader<File>, size: u64) -> Result<Option<(u64, bool)>> {
+    let end = r.stream_position()? + size;
+    let (mut track, mut reference) = (None, false);
+    while r.stream_position()? < end {
+        let Some((id, s, _)) = element(r)? else { break };
+        let s = s.ok_or(MkvError::Invalid("unknown size in a block group"))?;
+        let mut skip = s;
+        match id {
+            BLOCK => {
+                let peek = s.min(16);
+                track = Some(block_header(&read_body(r, peek)?)?.0);
+                skip = s - peek;
+            }
+            REFERENCE_BLOCK => reference = true,
+            _ => {}
+        }
+        r.seek_relative(skip.min(i64::MAX as u64) as i64)?;
+    }
+    r.seek(SeekFrom::Start(end))?;
+    Ok(track.map(|t| (t, !reference)))
 }
 
 /// Children of a possibly cut-off body (the last one may be partial: it's dropped).
@@ -599,7 +655,8 @@ pub fn frames(path: &Path, h: &Header, from: Pos, to: Pos, tracks: &[u64]) -> Re
     for (k, c) in clusters.iter().enumerate() {
         let ci = from.0 + k;
         f.seek(SeekFrom::Start(c.offset))?;
-        let body = read_body(&mut f, c.size)?;
+        // Frames are slices of this buffer, so they are copied only once more (into the segment).
+        let body = bytes::Bytes::from(read_body(&mut f, c.size)?);
         let mut time: i64 = c.time_ns / h.timecode_scale as i64;
         for (off, id, v) in children_at(&body) {
             // The cluster timestamp counts wherever it is; blocks only inside the range.
@@ -609,7 +666,7 @@ pub fn frames(path: &Path, h: &Header, from: Pos, to: Pos, tracks: &[u64]) -> Re
             }
             let (blk, group_key) = match id {
                 TIMECODE => {
-                    time = uint(v) as i64;
+                    time = uint(v).min(i64::MAX as u64) as i64;
                     continue;
                 }
                 SIMPLE_BLOCK => (v, None),
@@ -626,13 +683,12 @@ pub fn frames(path: &Path, h: &Header, from: Pos, to: Pos, tracks: &[u64]) -> Re
             }
             let key = group_key.unwrap_or(flags & 0x80 != 0);
             let prefix = h.tracks.iter().find(|t| t.number == track).map(|t| t.strip_prefix.as_slice()).unwrap_or(&[]);
-            let pts_ns = (time + rel as i64) * h.timecode_scale as i64;
+            let pts_ns = ns(time.saturating_add(rel as i64), h.timecode_scale);
             for (i, data) in unlace(flags, &blk[hl..])?.into_iter().enumerate() {
-                let mut d = Vec::with_capacity(prefix.len() + data.len());
-                d.extend_from_slice(prefix);
-                d.extend_from_slice(data);
+                let data =
+                    if prefix.is_empty() { body.slice_ref(data) } else { bytes::Bytes::from([prefix, data].concat()) };
                 // Laced frames share the block's timestamp; the muxer spaces audio by frame size.
-                out.push(Frame { track, pts_ns, key: key && i == 0, data: d });
+                out.push(Frame { track, pts_ns, key: key && i == 0, data });
             }
         }
     }
@@ -661,73 +717,170 @@ pub(crate) mod tests {
         el(id, &x.to_be_bytes())
     }
 
+    fn simple_block(track: u8, rel: i16, flags: u8, data: &[u8]) -> Vec<u8> {
+        let mut b = vec![0x80 | track];
+        b.extend_from_slice(&rel.to_be_bytes());
+        b.push(flags);
+        b.extend_from_slice(data);
+        el(SIMPLE_BLOCK, &b)
+    }
+
     /// A small Matroska file: one H.264 track and one AAC track, `clusters` clusters of a
     /// keyframe + two frames of video and two audio frames (one of them a Xiph lace of two).
-    /// With `mid_key`, every cluster after the first opens with two frames of the previous
-    /// picture group and the keyframe comes after them (no Cues).
-    pub fn sample_file_with(clusters: usize, mid_key: bool) -> Vec<u8> {
-        let mut out = el(EBML, &el(DOC_TYPE, b"matroska"));
-        let mut seg =
-            el(INFO, &[u(TIMECODE_SCALE, 1_000_000), el(DURATION, &(clusters as f64 * 2000.0).to_be_bytes())].concat());
-        let avcc = [1u8, 0x64, 0, 0x1f, 0xff, 0xe1, 0, 4, 0x67, 0x64, 0, 0x1f, 1, 0, 4, 0x68, 0xee, 0x3c, 0x80];
-        let video = el(
-            TRACK_ENTRY,
-            &[
-                u(TRACK_NUMBER, 1),
-                u(TRACK_TYPE, 1),
-                el(CODEC_ID, b"V_MPEG4/ISO/AVC"),
-                el(CODEC_PRIVATE, &avcc),
-                u(DEFAULT_DURATION, 40_000_000),
-                el(VIDEO, &[u(PIXEL_WIDTH, 320), u(PIXEL_HEIGHT, 240)].concat()),
-            ]
-            .concat(),
-        );
-        let audio = el(
-            TRACK_ENTRY,
-            &[
+    pub struct Sample {
+        pub clusters: usize,
+        /// Every cluster after the first opens with two frames of the previous picture group
+        /// and the keyframe comes after them (no Cues).
+        pub mid_key: bool,
+        pub scale: u64,
+        /// Relative timestamp of the first cluster's keyframe.
+        pub first_rel: i16,
+        /// Adds a zlib-compressed subtitle track.
+        pub compressed_subtitles: bool,
+        /// Marks the audio track zlib-compressed.
+        pub compressed_audio: bool,
+        /// Cluster bodies added after the generated ones.
+        pub extra: Vec<Vec<u8>>,
+    }
+
+    impl Sample {
+        pub fn new(clusters: usize) -> Sample {
+            Sample {
+                clusters,
+                mid_key: false,
+                scale: 1_000_000,
+                first_rel: 0,
+                compressed_subtitles: false,
+                compressed_audio: false,
+                extra: Vec::new(),
+            }
+        }
+
+        pub fn bytes(&self) -> Vec<u8> {
+            let mut out = el(EBML, &el(DOC_TYPE, b"matroska"));
+            let mut seg = el(
+                INFO,
+                &[u(TIMECODE_SCALE, self.scale), el(DURATION, &(self.clusters as f64 * 2000.0).to_be_bytes())].concat(),
+            );
+            let avcc = [1u8, 0x64, 0, 0x1f, 0xff, 0xe1, 0, 4, 0x67, 0x64, 0, 0x1f, 1, 0, 4, 0x68, 0xee, 0x3c, 0x80];
+            let zlib = el(CONTENT_ENCODINGS, &el(CONTENT_ENCODING, &el(CONTENT_COMPRESSION, &u(CONTENT_COMP_ALGO, 0))));
+            let video = el(
+                TRACK_ENTRY,
+                &[
+                    u(TRACK_NUMBER, 1),
+                    u(TRACK_TYPE, 1),
+                    el(CODEC_ID, b"V_MPEG4/ISO/AVC"),
+                    el(CODEC_PRIVATE, &avcc),
+                    u(DEFAULT_DURATION, 40_000_000),
+                    el(VIDEO, &[u(PIXEL_WIDTH, 320), u(PIXEL_HEIGHT, 240)].concat()),
+                ]
+                .concat(),
+            );
+            let mut audio = [
                 u(TRACK_NUMBER, 2),
                 u(TRACK_TYPE, 2),
                 el(CODEC_ID, b"A_AAC"),
                 el(CODEC_PRIVATE, &[0x11, 0x90]),
                 el(AUDIO, &[el(SAMPLING_FREQUENCY, &48000f64.to_be_bytes()), u(CHANNELS, 2)].concat()),
             ]
-            .concat(),
-        );
-        seg.extend(el(TRACKS, &[video, audio].concat()));
-        for c in 0..clusters {
-            let mut body = u(TIMECODE, c as u64 * 2000);
-            let sb = |track: u8, rel: i16, flags: u8, data: &[u8]| {
-                let mut b = vec![0x80 | track];
-                b.extend_from_slice(&rel.to_be_bytes());
-                b.push(flags);
-                b.extend_from_slice(data);
-                el(SIMPLE_BLOCK, &b)
-            };
-            if mid_key && c > 0 {
-                body.extend(sb(1, -40, 0, &[0, 0, 0, 2, 0x41, 9]));
-                body.extend(sb(2, -21, 0, &[0xDD; 3]));
+            .concat();
+            if self.compressed_audio {
+                audio.extend(&zlib);
             }
-            // Decode order I P B: presentation 0, 80, 40 ms.
-            body.extend(sb(1, 0, 0x80, &[0, 0, 0, 2, 0x65, c as u8]));
-            body.extend(sb(2, 0, 0, &[0xAA; 6]));
-            body.extend(sb(1, 80, 0, &[0, 0, 0, 2, 0x41, 1]));
-            body.extend(sb(1, 40, 0, &[0, 0, 0, 2, 0x01, 2]));
-            // A Xiph lace of two audio frames (3 + 4 bytes).
-            body.extend(sb(2, 21, 0x02, &[1, 3, 0xB1, 0xB2, 0xB3, 0xC1, 0xC2, 0xC3, 0xC4]));
-            seg.extend(el(CLUSTER, &body));
+            let mut tracks = [video, el(TRACK_ENTRY, &audio)].concat();
+            if self.compressed_subtitles {
+                tracks.extend(el(
+                    TRACK_ENTRY,
+                    &[u(TRACK_NUMBER, 3), u(TRACK_TYPE, 17), el(CODEC_ID, b"S_VOBSUB"), zlib.clone()].concat(),
+                ));
+            }
+            seg.extend(el(TRACKS, &tracks));
+            for c in 0..self.clusters {
+                let mut body = u(TIMECODE, c as u64 * 2000);
+                let sb = simple_block;
+                if self.mid_key && c > 0 {
+                    body.extend(sb(1, -40, 0, &[0, 0, 0, 2, 0x41, 9]));
+                    body.extend(sb(2, -21, 0, &[0xDD; 3]));
+                }
+                // Decode order I P B: presentation 0, 80, 40 ms.
+                let rel = if c == 0 { self.first_rel } else { 0 };
+                body.extend(sb(1, rel, 0x80, &[0, 0, 0, 2, 0x65, c as u8]));
+                body.extend(sb(2, 0, 0, &[0xAA; 6]));
+                body.extend(sb(1, 80, 0, &[0, 0, 0, 2, 0x41, 1]));
+                body.extend(sb(1, 40, 0, &[0, 0, 0, 2, 0x01, 2]));
+                // A Xiph lace of two audio frames (3 + 4 bytes).
+                body.extend(sb(2, 21, 0x02, &[1, 3, 0xB1, 0xB2, 0xB3, 0xC1, 0xC2, 0xC3, 0xC4]));
+                seg.extend(el(CLUSTER, &body));
+            }
+            for body in &self.extra {
+                seg.extend(el(CLUSTER, body));
+            }
+            out.extend(el(SEGMENT, &seg));
+            out
         }
-        out.extend(el(SEGMENT, &seg));
-        out
+
+        pub fn write(&self, name: &str) -> std::path::PathBuf {
+            let p = std::env::temp_dir().join(format!("corrent-remux-{}-{name}.mkv", std::process::id()));
+            std::fs::write(&p, self.bytes()).unwrap();
+            p
+        }
     }
 
     pub fn write_sample(name: &str, clusters: usize) -> std::path::PathBuf {
-        write_sample_with(name, clusters, false)
+        Sample::new(clusters).write(name)
     }
 
     pub fn write_sample_with(name: &str, clusters: usize, mid_key: bool) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!("corrent-remux-{}-{name}.mkv", std::process::id()));
-        std::fs::write(&p, sample_file_with(clusters, mid_key)).unwrap();
-        p
+        Sample { mid_key, ..Sample::new(clusters) }.write(name)
+    }
+
+    #[test]
+    fn big_block_groups_read_their_reference() {
+        // A 1.5 MiB video frame in a block group with its ReferenceBlock after it: not a
+        // keyframe, although the reference lies beyond any small peek.
+        let group = |reference: bool| {
+            let mut blk = vec![0x81, 0, 0, 0];
+            blk.extend(std::iter::repeat_n(0x41u8, 1536 * 1024));
+            let mut g = el(BLOCK, &blk);
+            if reference {
+                g.extend(u(REFERENCE_BLOCK, 1));
+            }
+            el(BLOCK_GROUP, &g)
+        };
+        let extra = vec![[u(TIMECODE, 0), group(false)].concat(), [u(TIMECODE, 2000), group(true)].concat()];
+        let p = Sample { extra, ..Sample::new(0) }.write("group");
+        let h = open(&p).unwrap();
+        assert_eq!(h.clusters.iter().map(|c| c.key).collect::<Vec<_>>(), vec![true, false]);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn damaged_and_cut_off_files_index() {
+        let good = Sample::new(5).bytes();
+        let h = {
+            let p = std::env::temp_dir().join(format!("corrent-remux-{}-good.mkv", std::process::id()));
+            std::fs::write(&p, &good).unwrap();
+            let h = open(&p).unwrap();
+            let _ = std::fs::remove_file(p);
+            h
+        };
+        // Cluster 2's timestamp turned into a block: that cluster is left out, the rest stay.
+        let mut bad = good.clone();
+        let at = h.clusters[2].offset as usize;
+        assert_eq!(bad[at], 0xE7);
+        bad[at] = SIMPLE_BLOCK as u8;
+        let p = std::env::temp_dir().join(format!("corrent-remux-{}-damaged.mkv", std::process::id()));
+        std::fs::write(&p, &bad).unwrap();
+        let d = open(&p).unwrap();
+        assert_eq!(d.clusters.iter().map(|c| c.time_ns / 1_000_000_000).collect::<Vec<_>>(), vec![0, 2, 6, 8]);
+        // Cut off in the middle of the last cluster: it ends where the file does.
+        let cut = &good[..good.len() - 10];
+        std::fs::write(&p, cut).unwrap();
+        let c = open(&p).unwrap();
+        let last = c.clusters.last().unwrap();
+        assert_eq!((c.clusters.len(), last.offset + last.size), (5, cut.len() as u64));
+        assert!(frames(&p, &c, (4, 0), (5, 0), &[1, 2]).is_ok());
+        let _ = std::fs::remove_file(p);
     }
 
     #[test]

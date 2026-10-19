@@ -128,7 +128,7 @@ fn remuxed_hls_plays_and_seeks() {
     assert!(r.codecs().starts_with("avc1.") && r.codecs().ends_with(",mp4a.40.2"), "{}", r.codecs());
     let out = dir.join("hls");
     std::fs::create_dir_all(&out).unwrap();
-    std::fs::write(out.join("index.m3u8"), r.playlist()).unwrap();
+    std::fs::write(out.join("index.m3u8"), r.playlist("")).unwrap();
     std::fs::write(out.join("init.mp4"), r.init()).unwrap();
     for i in 0..r.segments.len() {
         std::fs::write(out.join(format!("{i}.m4s")), r.segment(i).unwrap()).unwrap();

@@ -27,7 +27,7 @@ fn main() {
     });
     let out = std::path::Path::new(out);
     std::fs::create_dir_all(out).unwrap();
-    std::fs::write(out.join("index.m3u8"), r.playlist()).unwrap();
+    std::fs::write(out.join("index.m3u8"), r.playlist("")).unwrap();
     std::fs::write(out.join("init.mp4"), r.init()).unwrap();
     for i in 0..r.segments.len() {
         std::fs::write(out.join(format!("{i}.m4s")), r.segment(i).unwrap()).unwrap();

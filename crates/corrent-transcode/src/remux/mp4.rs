@@ -101,6 +101,9 @@ fn hevc_codec_string(h: &[u8]) -> String {
 
 /// What to do with a Matroska track, or why it can't be copied.
 pub fn out_track(t: &Track, id: u32, first_frame: Option<&[u8]>) -> Result<OutTrack, String> {
+    if let Some(why) = &t.unsupported {
+        return Err(why.clone());
+    }
     let video = |codec| OutTrack {
         source: t.number,
         id,
@@ -418,24 +421,32 @@ struct Sample {
 }
 
 /// One track's part of a segment.
-struct Traf {
+struct Traf<'a> {
     id: u32,
     base: u64,
     samples: Vec<Sample>,
-    data: Vec<u8>,
+    frames: Vec<&'a Frame>,
     video: bool,
 }
 
-/// One `moof` + `mdat` with every frame of `frames` that belongs to `tracks`.
-pub fn media_segment(seq: u32, tracks: &[OutTrack], frames: &[Frame]) -> Vec<u8> {
+fn clamp_u32(v: i64) -> u32 {
+    v.clamp(0, u32::MAX as i64) as u32
+}
+
+/// One `moof` + `mdat` with every frame of `frames` that belongs to `tracks`. Timestamps move
+/// by `shift_ns` (so none is negative); the segment ends at `end_ns` (before the shift), where
+/// its last video frame ends.
+pub fn media_segment(seq: u32, tracks: &[OutTrack], frames: &[Frame], shift_ns: i64, end_ns: i64) -> Vec<u8> {
     let mut trafs: Vec<Traf> = Vec::new();
     for t in tracks {
         let mine: Vec<&Frame> = frames.iter().filter(|f| f.track == t.source).collect();
         if mine.is_empty() {
             continue;
         }
-        let to_ts = |ns: i64| -> i64 { (ns as i128 * t.timescale as i128 / 1_000_000_000) as i64 };
-        let mut data = Vec::new();
+        let to_ts = |ns: i64| -> i64 {
+            let v = ns.saturating_add(shift_ns) as i128 * t.timescale as i128 / 1_000_000_000;
+            v.clamp(i64::MIN as i128, i64::MAX as i128) as i64
+        };
         let mut samples = Vec::with_capacity(mine.len());
         let base;
         if t.is_video() {
@@ -444,20 +455,26 @@ pub fn media_segment(seq: u32, tracks: &[OutTrack], frames: &[Frame]) -> Vec<u8>
             let mut dts = pts.clone();
             dts.sort_unstable();
             base = dts[0];
+            let end = to_ts(end_ns);
             for (i, f) in mine.iter().enumerate() {
-                let duration = dts.get(i + 1).map_or(t.frame_duration as i64, |n| n - dts[i]).max(1);
+                let duration = match dts.get(i + 1) {
+                    Some(n) => n.saturating_sub(dts[i]),
+                    // The last frame lasts until the next segment starts.
+                    None if end > dts[i] => end - dts[i],
+                    None => t.frame_duration as i64,
+                };
                 samples.push(Sample {
-                    duration: duration as u32,
+                    duration: clamp_u32(duration).max(1),
                     size: f.data.len() as u32,
                     key: f.key,
-                    cto: (pts[i] - dts[i]) as i32,
+                    cto: pts[i].saturating_sub(dts[i]).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
                 });
-                data.extend_from_slice(&f.data);
             }
         } else {
             base = to_ts(mine[0].pts_ns);
             // Frames run back to back by their codec length; a gap in the source (a frame's own
-            // timestamp more than a frame past the running time) stretches the sample before it.
+            // timestamp more than half a frame past the running time) stretches the sample
+            // before it. Matroska's millisecond timestamps jitter by far less than that.
             let mut running = base;
             let mut last_pts = i64::MIN;
             for f in &mine {
@@ -465,10 +482,10 @@ pub fn media_segment(seq: u32, tracks: &[OutTrack], frames: &[Frame]) -> Vec<u8>
                 if pts != last_pts
                     && let Some(prev) = samples.last_mut()
                 {
-                    let gap = pts - running;
-                    if gap > prev.duration as i64 {
-                        prev.duration += gap as u32;
-                        running += gap;
+                    let gap = pts.saturating_sub(running);
+                    if gap > prev.duration as i64 / 2 {
+                        prev.duration = prev.duration.saturating_add(clamp_u32(gap));
+                        running = running.saturating_add(gap);
                     }
                 }
                 last_pts = pts;
@@ -481,18 +498,17 @@ pub fn media_segment(seq: u32, tracks: &[OutTrack], frames: &[Frame]) -> Vec<u8>
                     _ => 1024,
                 };
                 samples.push(Sample { duration, size: f.data.len() as u32, key: true, cto: 0 });
-                running += duration as i64;
-                data.extend_from_slice(&f.data);
+                running = running.saturating_add(duration as i64);
             }
         }
-        trafs.push(Traf { id: t.id, base: base.max(0) as u64, samples, data, video: t.is_video() });
+        trafs.push(Traf { id: t.id, base: base.max(0) as u64, samples, frames: mine, video: t.is_video() });
     }
     // moof size first (it is fixed by the sample counts), then each trun's data offset.
     let traf_len = |n: usize, video: bool| 8 + 16 + 20 + 12 + 8 + n * if video { 16 } else { 8 };
     let moof_len = 8 + 16 + trafs.iter().map(|t| traf_len(t.samples.len(), t.video)).sum::<usize>();
     let mut moof = full(b"mfhd", 0, 0, &seq.to_be_bytes());
     let mut offset = moof_len + 8;
-    for Traf { id, base, samples, data, video } in &trafs {
+    for Traf { id, base, samples, video, .. } in &trafs {
         let tfhd = full(b"tfhd", 0, 0x02_0000, &id.to_be_bytes());
         let tfdt = full(b"tfdt", 1, 0, &base.to_be_bytes());
         let flags = 0x1 | 0x100 | 0x200 | if *video { 0x400 | 0x800 } else { 0 };
@@ -510,23 +526,23 @@ pub fn media_segment(seq: u32, tracks: &[OutTrack], frames: &[Frame]) -> Vec<u8>
         }
         let trun = full(b"trun", 1, flags, &trun);
         moof.extend(bx(b"traf", &[tfhd, tfdt, trun].concat()));
-        offset += data.len();
+        offset += samples.iter().map(|s| s.size as usize).sum::<usize>();
     }
     let moof = bx(b"moof", &moof);
     debug_assert_eq!(moof.len(), moof_len);
-    let mdat_len: usize = trafs.iter().map(|t| t.data.len()).sum();
+    let mdat_len: usize = trafs.iter().flat_map(|t| &t.samples).map(|s| s.size as usize).sum();
     let mut out = Vec::with_capacity(moof.len() + 8 + mdat_len);
     out.extend(moof);
     out.extend_from_slice(&(8 + mdat_len as u32).to_be_bytes());
     out.extend_from_slice(b"mdat");
-    for t in &trafs {
-        out.extend_from_slice(&t.data);
+    for f in trafs.iter().flat_map(|t| &t.frames) {
+        out.extend_from_slice(&f.data);
     }
     out
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Box (kind, body) pairs at one level.
@@ -604,13 +620,14 @@ mod tests {
         let moov = boxes(top[1].1);
         assert_eq!(moov.iter().filter(|b| b.0 == "trak").count(), 2);
         let ms = |n| n * 1_000_000i64;
+        let frame = |track, pts_ns, key, data: Vec<u8>| Frame { track, pts_ns, key, data: data.into() };
         let frames = vec![
-            Frame { track: 1, pts_ns: ms(0), key: true, data: vec![1; 10] },
-            Frame { track: 2, pts_ns: ms(0), key: true, data: vec![2; 5] },
-            Frame { track: 1, pts_ns: ms(80), key: false, data: vec![3; 7] },
-            Frame { track: 1, pts_ns: ms(40), key: false, data: vec![4; 6] },
+            frame(1, ms(0), true, vec![1; 10]),
+            frame(2, ms(0), true, vec![2; 5]),
+            frame(1, ms(80), false, vec![3; 7]),
+            frame(1, ms(40), false, vec![4; 6]),
         ];
-        let seg = media_segment(1, &[video, audio.clone()], &frames);
+        let seg = media_segment(1, &[video.clone(), audio.clone()], &frames, 0, 0);
         let top = boxes(&seg);
         assert_eq!(top.iter().map(|b| b.0.as_str()).collect::<Vec<_>>(), ["moof", "mdat"]);
         assert_eq!(top[1].1.len(), 28);
@@ -625,18 +642,31 @@ mod tests {
         let cto = |i: usize| i32::from_be_bytes(trun[12 + i * 16 + 12..12 + i * 16 + 16].try_into().unwrap());
         assert_eq!((cto(0), cto(1), cto(2)), (0, 3600, -3600));
         // An audio gap in the source stretches the sample before it (to the next timestamp).
+        let trun_of = |seg: &[u8], traf: usize| -> Vec<u8> { boxes(boxes(boxes(seg)[0].1)[1 + traf].1)[2].1.to_vec() };
         let gap = vec![
-            Frame { track: 2, pts_ns: ms(0), key: true, data: vec![1] },
-            Frame { track: 2, pts_ns: ms(1021), key: true, data: vec![2] },
-            Frame { track: 2, pts_ns: ms(1043), key: true, data: vec![3] },
+            frame(2, ms(0), true, vec![1]),
+            frame(2, ms(1021), true, vec![2]),
+            frame(2, ms(1043), true, vec![3]),
+            // One AAC frame (21.3 ms) missing: also filled.
+            frame(2, ms(1086), true, vec![4]),
         ];
-        let g = media_segment(2, std::slice::from_ref(&audio), &gap);
-        let gtrun = boxes(boxes(boxes(&g)[0].1)[1].1)[2].1;
+        let g = media_segment(2, std::slice::from_ref(&audio), &gap, 0, 0);
+        let gtrun = trun_of(&g, 0);
         let dur = |i: usize| u32::from_be_bytes(gtrun[12 + i * 8..16 + i * 8].try_into().unwrap());
-        assert_eq!((dur(0), dur(1)), (1021 * 48, 1024));
+        // The third frame runs on to 1086 ms: 1024 samples plus the 1072-sample gap.
+        assert_eq!((dur(0), dur(1), dur(2)), (1021 * 48, 1024, 2096), "{gtrun:?}");
         // Audio data follows the video's.
         let atrun = boxes(moof[2].1)[2].1;
         let aoff = u32::from_be_bytes(atrun[8..12].try_into().unwrap()) as usize;
         assert_eq!(&seg[aoff..aoff + 5], &[2; 5]);
+        // A negative first timestamp moves everything by the shift; the last video frame lasts
+        // until the segment's end.
+        let neg = vec![frame(1, ms(-40), true, vec![1]), frame(1, ms(0), false, vec![2])];
+        let n = media_segment(3, std::slice::from_ref(&video), &neg, ms(40), ms(1000));
+        let ntraf = boxes(boxes(boxes(&n)[0].1)[1].1);
+        assert_eq!(u64::from_be_bytes(ntraf[1].1[4..12].try_into().unwrap()), 0, "tfdt");
+        let ntrun = ntraf[2].1;
+        let vdur = |i: usize| u32::from_be_bytes(ntrun[12 + i * 16..16 + i * 16].try_into().unwrap());
+        assert_eq!((vdur(0), vdur(1)), (3600, 90_000));
     }
 }
