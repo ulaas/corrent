@@ -438,13 +438,25 @@ impl Rss {
         }
         self.data.schema_version = STATE_VERSION;
         match serde_json::to_vec(&self.data) {
-            Ok(b) => {
-                if let Err(e) = crate::util::write_atomic(&self.path, &b) {
-                    tracing::error!("failed to save rss.json: {e:#}");
-                }
-            }
+            // On the writer thread (it logs failures); see `flush`.
+            Ok(b) => crate::writer::global().submit(&self.path, b, None),
             Err(e) => tracing::error!("failed to encode rss state: {e}"),
         }
+    }
+
+    /// Wait until the state is on disk (shutdown).
+    pub fn flush(&self) {
+        if !crate::writer::global().flush(&self.path, std::time::Duration::from_secs(5)) {
+            tracing::warn!("rss.json is still being saved");
+        }
+        let _ = crate::writer::global().take_result(&self.path);
+    }
+}
+
+impl Drop for Rss {
+    /// Also when the engine task unwinds after a panic.
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 

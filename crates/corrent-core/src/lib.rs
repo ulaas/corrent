@@ -18,3 +18,4 @@ pub mod search;
 pub mod store;
 pub mod updates;
 pub mod util;
+pub mod writer;

@@ -361,10 +361,11 @@ impl Actor {
         for (_, h) in self.previews.drain() {
             h.abort();
         }
-        self.store.maybe_save(true);
+        self.store.flush();
         self.stop_session().await;
         self.purge_pending();
-        self.store.maybe_save(true);
+        self.store.flush();
+        self.rss.flush();
     }
 
     fn apply_rate_limits(&self) {
@@ -568,7 +569,7 @@ impl Actor {
                         // The engine never loaded it; drop it from its database on the next stop.
                         self.store.data.purge.push(hash);
                         self.forget_hash(&hash);
-                        self.store.maybe_save(true);
+                        self.store.mark_dirty();
                         self.emit(EngineEvent::Removed { hash, name: String::new(), undoable: false });
                         if with_data {
                             self.toast(ToastKind::Info, t!("The torrent was removed; its files were left in place because they couldn't be opened."));
@@ -1078,7 +1079,7 @@ impl Actor {
         let set: HashSet<InfoHash> = self.store.data.purge.drain(..).collect();
         super::restore::purge(&self.paths.session_dir(), &set);
         self.store.mark_dirty();
-        self.store.maybe_save(true);
+        self.store.mark_dirty();
     }
 
     fn detect_failed_restores(&mut self) {
@@ -1303,7 +1304,7 @@ impl Actor {
                         {
                             let _ = std::fs::remove_file(p);
                         }
-                        self.store.maybe_save(true);
+                        self.store.mark_dirty();
                         self.emit(EngineEvent::Added { hash, name });
                     }
                     Err(e) => {
@@ -1358,7 +1359,7 @@ impl Actor {
                         }
                         *self.store.meta_mut(hash) = meta;
                         self.store.normalize_queue();
-                        self.store.maybe_save(true);
+                        self.store.mark_dirty();
                         self.emit(EngineEvent::Restored { hash, name });
                     }
                     Err(e) => {
@@ -1417,7 +1418,7 @@ impl Actor {
                         .map(|m| m.display_name.clone().unwrap_or(m.name.clone()))
                         .unwrap_or_default();
                     self.forget_hash(&hash);
-                    self.store.maybe_save(true);
+                    self.store.mark_dirty();
                     let undoable = match self.undo_pending.remove(&hash) {
                         Some(mut e) => {
                             e.at = Instant::now();
@@ -1665,7 +1666,7 @@ impl Actor {
                 .collect(),
         };
         self.snapshot.store(Arc::new(snap));
-        self.store.maybe_save(false);
+        self.store.maybe_save();
         if let Some(e) = self.store.take_save_error() {
             self.emit(EngineEvent::DataWarning(t!(
                 "Corrent couldn't save its data: {why}",

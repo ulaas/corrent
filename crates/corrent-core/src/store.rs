@@ -120,9 +120,12 @@ const DAILY_GENERATIONS: usize = 3;
 impl Drop for Store {
     /// Flush pending changes, also when the engine task unwinds after a panic.
     fn drop(&mut self) {
-        self.maybe_save(true);
+        self.flush();
     }
 }
+
+/// How long a flush waits for the writer thread (a hung disk must not hang shutdown forever).
+const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl Store {
     /// Tests: drop without flushing to disk.
@@ -130,6 +133,7 @@ impl Store {
     fn discard(mut self) {
         self.dirty = false;
         self.soft_dirty = false;
+        crate::writer::global().cancel(&self.path);
     }
 
     pub fn load(path: PathBuf) -> Store {
@@ -355,52 +359,69 @@ impl Store {
         self.dirty = true;
     }
 
-    /// Debounced save; `force` writes immediately (shutdown).
-    pub fn maybe_save(&mut self, force: bool) {
+    /// Debounced save on the writer thread: structural changes within ~2 s, counters within 30 s.
+    /// A batch of changes (500 adds) costs a write or two.
+    pub fn maybe_save(&mut self) {
+        self.collect_result();
         if !self.dirty && !self.soft_dirty || self.read_only {
             return;
         }
         let wait = if self.dirty { std::time::Duration::from_secs(2) } else { std::time::Duration::from_secs(30) };
-        if !force && self.last_save.elapsed() < wait {
-            return;
+        if self.last_save.elapsed() >= wait {
+            self.submit();
         }
+    }
+
+    /// Save now and wait until it is on disk (shutdown; a store dropped while its task unwinds).
+    pub fn flush(&mut self) {
+        if (self.dirty || self.soft_dirty) && !self.read_only {
+            self.submit();
+        }
+        if !crate::writer::global().flush(&self.path, FLUSH_TIMEOUT) {
+            tracing::warn!("store.json is still being saved after {FLUSH_TIMEOUT:?}");
+        }
+        self.collect_result();
+    }
+
+    fn submit(&mut self) {
         match serde_json::to_vec_pretty(&self.data) {
-            Ok(bytes) => match self.rotate_daily(&bytes).and_then(|()| crate::util::write_atomic(&self.path, &bytes)) {
-                Ok(()) => {
-                    self.last_error = None;
-                    self.dirty = false;
-                    self.soft_dirty = false;
-                    self.last_save = std::time::Instant::now();
-                }
-                Err(e) => {
-                    tracing::error!("failed to save store: {e:#}");
-                    let msg = format!("{e:#}");
-                    if self.last_error.as_deref() != Some(msg.as_str()) {
-                        self.pending_error = Some(msg.clone());
-                    }
-                    self.last_error = Some(msg);
-                    // Retry later instead of every tick.
-                    self.last_save = std::time::Instant::now();
-                }
-            },
+            Ok(bytes) => {
+                let generation =
+                    self.daily_due().then_some(crate::writer::Generation { tag: "daily", keep: DAILY_GENERATIONS });
+                crate::writer::global().submit(&self.path, bytes, generation);
+                self.dirty = false;
+                self.soft_dirty = false;
+                self.last_save = std::time::Instant::now();
+            }
             Err(e) => tracing::error!("failed to serialize store: {e:#}"),
         }
     }
-}
 
-impl Store {
-    /// On the first save of a UTC day, keep the new contents as a dated generation too.
-    fn rotate_daily(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+    /// Pick up the outcome of the last write: a failure is reported once and retried later.
+    fn collect_result(&mut self) {
+        match crate::writer::global().take_result(&self.path) {
+            Some(Ok(())) => self.last_error = None,
+            Some(Err(msg)) => {
+                if self.last_error.as_deref() != Some(msg.as_str()) {
+                    self.pending_error = Some(msg.clone());
+                }
+                self.last_error = Some(msg);
+                self.dirty = true;
+                self.last_save = std::time::Instant::now();
+            }
+            None => {}
+        }
+    }
+
+    /// True on the first save of a UTC day (then the save also keeps a dated generation).
+    fn daily_due(&mut self) -> bool {
         let today = crate::util::now_unix().div_euclid(86400);
         let path = &self.path;
         let newest = *self.daily_day.get_or_insert_with(|| {
             crate::util::generations(path, "daily").first().map_or(i64::MIN, |g| g.0.div_euclid(86400))
         });
-        if newest != today {
-            crate::util::keep_generations(&self.path, "daily", bytes, DAILY_GENERATIONS)?;
-            self.daily_day = Some(today);
-        }
-        Ok(())
+        self.daily_day = Some(today);
+        newest != today
     }
 }
 
@@ -495,7 +516,7 @@ mod more_tests {
         let p = tmp("s");
         let mut s = Store::load(p.clone());
         s.meta_mut(InfoHash([9; 20])).category = Some("Movies".into());
-        s.maybe_save(true);
+        s.flush();
         let back = Store::load(p.clone());
         assert_eq!(back.get(&InfoHash([9; 20])).unwrap().category.as_deref(), Some("Movies"));
         assert!(back.warning.is_none());
@@ -509,9 +530,9 @@ mod more_tests {
         let p = tmp("c");
         let mut s = Store::load(p.clone());
         s.meta_mut(InfoHash([3; 20])).tags = vec!["x".into()];
-        s.maybe_save(true);
+        s.flush();
         s.meta_mut(InfoHash([4; 20]));
-        s.maybe_save(true); // second save creates .bak with the first version
+        s.flush(); // second save creates .bak with the first version
         std::fs::write(&p, b"{ broken").unwrap();
         let back = Store::load(p.clone());
         assert!(back.warning.as_deref().unwrap_or("").contains("restored from its backup"));
@@ -526,7 +547,7 @@ mod more_tests {
         let p = tmp("d");
         let mut s = Store::load(p.clone());
         s.meta_mut(InfoHash([5; 20])).category = Some("Daily".into());
-        s.maybe_save(true);
+        s.flush();
         s.discard();
         std::fs::write(&p, b"{ broken").unwrap();
         std::fs::write(p.with_extension("json.bak"), b"also broken").unwrap();
@@ -557,7 +578,7 @@ mod schema_tests {
         let mut s = Store::load(p.clone());
         assert!(s.warning.is_some());
         s.meta_mut(InfoHash([1; 20]));
-        s.maybe_save(true);
+        s.flush();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), future);
         drop(s);
         assert_eq!(std::fs::read_to_string(&p).unwrap(), future, "not even on drop");
@@ -579,7 +600,7 @@ mod save_error_tests {
         let mut s = Store::load(path.clone());
         assert!(s.warning.is_some());
         s.meta_mut(InfoHash([1; 20]));
-        s.maybe_save(true);
+        s.flush();
         assert!(path.is_dir(), "left as it was");
         assert!(!base.join("store.json.bak").exists());
         s.discard();
@@ -595,10 +616,10 @@ mod save_error_tests {
         std::fs::write(base.join("blocked"), b"x").unwrap();
         let mut s = Store::load(base.join("blocked").join("store.json"));
         s.meta_mut(InfoHash([1; 20]));
-        s.maybe_save(true);
+        s.flush();
         assert!(s.take_save_error().is_some(), "first failure is reported");
         s.mark_dirty();
-        s.maybe_save(true);
+        s.flush();
         assert!(s.take_save_error().is_none(), "the same failure isn't repeated");
         assert!(s.dirty, "data stays marked for a later retry");
         s.discard();

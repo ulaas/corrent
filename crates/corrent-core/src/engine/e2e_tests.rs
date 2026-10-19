@@ -615,8 +615,15 @@ async fn many_adds_at_once_all_arrive() {
             added_by: None,
         })));
     }
-    wait_for(&l, "every torrent", 60, |sn| sn.torrents.len() == n).await;
-    stop(l).await;
+    wait_for(&l, "every torrent", 60, |sn| sn.torrents.len() == n && sn.torrents.iter().all(|t| !t.pending)).await;
+    // The store is saved on the writer thread with a 2 s debounce: a batch costs a write or two,
+    // not one (plus an fsync) per torrent on the engine's thread.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let writes = crate::writer::global().writes(&l.paths.store_file());
+    assert!((1..=5).contains(&writes), "{writes} store writes for {n} adds");
+    let paths = stop(l).await;
+    let store: crate::store::StoreData = serde_json::from_slice(&std::fs::read(paths.store_file()).unwrap()).unwrap();
+    assert_eq!(store.torrents.len(), n, "all of them saved");
     let _ = std::fs::remove_dir_all(dir);
 }
 
