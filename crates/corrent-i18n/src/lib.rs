@@ -199,7 +199,8 @@ mod tests {
                     // (core) and shared labels (proto). Server-side crates answer with error
                     // codes that clients translate; their English text and SQL are for logs.
                     let in_crate = |c: &str| p.components().any(|x| x.as_os_str() == c);
-                    let codes_only = p.starts_with(root.join("crates")) && !in_crate("corrent-core") && !in_crate("corrent-proto");
+                    let codes_only =
+                        p.starts_with(root.join("crates")) && !in_crate("corrent-core") && !in_crate("corrent-proto");
                     let sentence = prose.is_match(line) && !line.contains("# Corrent theme") && !codes_only;
                     // URLs given as examples aren't text to translate.
                     let url_only = line.contains("(\"http://") || line.contains("(\"https://");
