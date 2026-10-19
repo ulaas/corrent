@@ -21,15 +21,22 @@ async fn download_completes_with_metadata_and_event() {
     assert_eq!(t.category.as_deref(), Some("Tests"));
     assert_eq!(t.tags, vec!["e2e".to_string()]);
     assert_eq!(std::fs::read(&t.content_path).unwrap(), s.content, "downloaded bytes match");
-    let mut completed = false;
-    while let Ok(ev) = l.events.try_recv() {
-        if let EngineEvent::Completed { hash, category, .. } = ev {
-            assert_eq!(hash, s.hash);
-            assert_eq!(category.as_deref(), Some("Tests"));
-            completed = true;
+    // A completion seen before the add was recorded is announced a tick later, with its category.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match l.events.try_recv() {
+            Ok(EngineEvent::Completed { hash, category, .. }) => {
+                assert_eq!(hash, s.hash);
+                assert_eq!(category.as_deref(), Some("Tests"));
+                break;
+            }
+            Ok(_) => {}
+            Err(_) => {
+                assert!(Instant::now() < deadline, "a Completed event was emitted");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         }
     }
-    assert!(completed, "a Completed event was emitted");
     // On-demand details for a remote client.
     let (tx, rx) = tokio::sync::oneshot::channel();
     l.engine.send(EngineCommand::Detail { hash: s.hash, reply: tx });

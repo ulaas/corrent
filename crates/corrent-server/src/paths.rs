@@ -22,7 +22,7 @@ pub fn resolve(p: &Path) -> Option<PathBuf> {
     let mut rest = Vec::new();
     loop {
         if let Ok(c) = std::fs::canonicalize(&existing) {
-            let mut out = c;
+            let mut out = plain(c);
             for part in rest.iter().rev() {
                 out.push(part);
             }
@@ -34,6 +34,45 @@ pub fn resolve(p: &Path) -> Option<PathBuf> {
             return None;
         }
     }
+}
+
+/// Windows canonicalizes to verbatim paths (`\\?\C:\x`, `\\?\UNC\server\share\x`); settings,
+/// torrent folders and the library's file paths use the plain form, so return that unless the
+/// path needs the verbatim form (a component Windows would otherwise alter).
+#[cfg(windows)]
+fn plain(p: PathBuf) -> PathBuf {
+    use std::path::Prefix;
+    let mut parts = p.components();
+    let Some(Component::Prefix(prefix)) = parts.next() else { return p };
+    let rest = parts.as_path();
+    const RESERVED: &[&str] = &["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
+    let odd = rest.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy();
+        let stem = s.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+        s.ends_with('.')
+            || s.ends_with(' ')
+            || RESERVED.contains(&stem.as_str())
+            || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+                && stem.len() == 4
+                && stem.as_bytes()[3].is_ascii_digit())
+    });
+    if odd {
+        return p;
+    }
+    let base = match prefix.kind() {
+        Prefix::VerbatimDisk(d) => format!("{}:\\", d as char),
+        Prefix::VerbatimUNC(server, share) => {
+            format!(r"\\{}\{}\", server.to_string_lossy(), share.to_string_lossy())
+        }
+        _ => return p,
+    };
+    let rest = rest.strip_prefix(std::path::MAIN_SEPARATOR_STR).unwrap_or(rest);
+    PathBuf::from(base).join(rest)
+}
+
+#[cfg(not(windows))]
+fn plain(p: PathBuf) -> PathBuf {
+    p
 }
 
 /// The roots a confined user may use (resolved; missing ones dropped).
@@ -81,6 +120,16 @@ mod tests {
             std::os::unix::fs::symlink("/etc", d.join("a/link")).unwrap();
             let r = resolve(&d.join("a/link/passwd")).unwrap();
             assert!(r.starts_with("/etc"), "symlinks resolve to their target: {}", r.display());
+        }
+        #[cfg(windows)]
+        {
+            // Plain form, comparable with what users and the engine store.
+            assert!(!r.to_string_lossy().starts_with(r"\\?\"), "{}", r.display());
+            assert_eq!(plain(PathBuf::from(r"\\?\C:\Videos\a b")), PathBuf::from(r"C:\Videos\a b"));
+            assert_eq!(plain(PathBuf::from(r"\\?\UNC\nas\media\x")), PathBuf::from(r"\\nas\media\x"));
+            // Names Windows would alter keep the verbatim form.
+            assert_eq!(plain(PathBuf::from(r"\\?\C:\x\con")), PathBuf::from(r"\\?\C:\x\con"));
+            assert_eq!(plain(PathBuf::from(r"\\?\C:\x\dots.")), PathBuf::from(r"\\?\C:\x\dots."));
         }
         let _ = std::fs::remove_dir_all(d);
     }

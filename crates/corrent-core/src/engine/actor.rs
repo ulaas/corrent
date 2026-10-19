@@ -125,6 +125,8 @@ pub struct Actor {
     next_pending: u64,
     busy: HashMap<InfoHash, String>,
     seen_unfinished: HashSet<InfoHash>,
+    /// Torrents first seen in the engine while an add was pending, until their add is recorded.
+    unrecorded: HashSet<InfoHash>,
     last_down_active: HashMap<InfoHash, Instant>,
     seed_carry_ms: HashMap<InfoHash, u64>,
     generation: u64,
@@ -203,6 +205,7 @@ impl Actor {
             next_pending: 1,
             busy: HashMap::new(),
             seen_unfinished: HashSet::new(),
+            unrecorded: HashSet::new(),
             last_down_active: HashMap::new(),
             seed_carry_ms: HashMap::new(),
             generation: 0,
@@ -1248,6 +1251,7 @@ impl Actor {
                 }
                 match result {
                     Ok((hash, name)) => {
+                        self.unrecorded.remove(&hash);
                         let top = req.add_to_top;
                         let m = self.store.meta_mut(hash);
                         m.name = name.clone();
@@ -1648,6 +1652,14 @@ impl Actor {
             && self.last_down_active.get(&hash).map(|t| t.elapsed() > STALL_AFTER).unwrap_or(false);
 
         let name_engine = h.name();
+        if self.pending.is_empty() {
+            self.unrecorded.clear();
+        } else if self.store.get(&hash).is_none() {
+            self.unrecorded.insert(hash);
+        }
+        // A torrent the engine already has while its add is still being recorded (category,
+        // tags…): announce its completion on a later tick, once the add has finished.
+        let add_unrecorded = self.unrecorded.contains(&hash);
         let m = self.store.meta_quiet(hash);
         let mut structural = false;
         let mut counters = false;
@@ -1674,7 +1686,7 @@ impl Actor {
             m.last_upload_at = now;
         }
         let mut completed_event = false;
-        if stats.finished && has_metadata {
+        if stats.finished && has_metadata && !add_unrecorded {
             if m.completed_at.is_none() {
                 m.completed_at = Some(now);
                 // Only torrents seen unfinished (or receiving data) this session: fast downloads

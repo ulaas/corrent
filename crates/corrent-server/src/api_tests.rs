@@ -259,8 +259,9 @@ async fn setup_login_and_permissions() {
     .await;
     let bob = v["token"].as_str().unwrap().to_string();
     let magnet = "magnet:?xt=urn:btih:0202020202020202020202020202020202020202";
+    let outside = if cfg!(windows) { r"C:\Windows" } else { "/etc" };
     let (s, v, _) =
-        send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": [magnet], "save_path": "/etc" })).await;
+        send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": [magnet], "save_path": outside })).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
     let inside = h.dir.join("dl").join("bob");
     let (s, v, _) = send(
@@ -275,11 +276,11 @@ async fn setup_login_and_permissions() {
     let (s, _, _) =
         send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": ["http://127.0.0.1:9/x.torrent"] })).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "no fetching from the server's own network");
-    let (s, _, _) = get(app, "/api/v1/server/fs?path=/etc", &bob).await;
+    let (s, _, _) = get(app, &format!("/api/v1/server/fs?path={}", outside.replace('\\', "%5C")), &bob).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     let (s, v, _) = get(app, "/api/v1/server/fs", &bob).await;
     assert_eq!(s, StatusCode::OK);
-    assert!(v["entries"].as_array().unwrap().iter().all(|e| !e["path"].as_str().unwrap().starts_with("/etc")));
+    assert!(v["entries"].as_array().unwrap().iter().all(|e| !e["path"].as_str().unwrap().starts_with(outside)));
     // Changing one's own password needs the current one.
     let bob_id = get(app, "/api/v1/auth/me", &bob).await.1["user"]["id"].as_i64().unwrap();
     let (s, _, _) =
