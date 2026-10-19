@@ -165,12 +165,26 @@ async fn torrent_from_url(
     if !response.status().is_success() {
         bail!("GET {} returned {}", url, response.status())
     }
-    let b = response
-        .bytes()
+    // CORRENT PATCH (F4): read at most MAX_TORRENT_BYTES (the body was read whole, however big).
+    let mut response = response;
+    let mut b = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .with_context(|| format!("error reading response body from {url}"))?;
-    torrent_from_bytes(b).context("error decoding torrent")
+        .with_context(|| format!("error reading response body from {url}"))?
+    {
+        if b.len() + chunk.len() > MAX_TORRENT_BYTES {
+            bail!("the torrent file from {url} is larger than {} MiB", MAX_TORRENT_BYTES >> 20);
+        }
+        b.extend_from_slice(&chunk);
+    }
+    torrent_from_bytes(Bytes::from(b)).context("error decoding torrent")
 }
+
+// CORRENT PATCH (F4): limits for the session's HTTP client (torrent URLs, HTTP trackers).
+const MAX_TORRENT_BYTES: usize = 32 << 20;
+const DEFAULT_HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn compute_only_files_regex<ByteBuf: AsRef<[u8]>>(
     torrent: &ValidatedTorrentMetaV1Info<ByteBuf>,
@@ -479,6 +493,10 @@ pub struct SessionOptions {
     /// Override the client name and version used in User-Agent headers and
     /// peer extended handshakes. Defaults to "rqbit X.Y.Z".
     pub client_name_and_version: Option<String>,
+
+    // CORRENT PATCH (F4): a whole HTTP request (torrent URL, tracker announce) may take this long.
+    // Defaults to 60 s; it had no timeout, so a server that trickled bytes held an add forever.
+    pub http_timeout: Option<Duration>,
 }
 
 impl Default for SessionOptions {
@@ -507,6 +525,7 @@ impl Default for SessionOptions {
             disable_local_service_discovery: false,
             ipv4_only: false,
             client_name_and_version: None,
+            http_timeout: None,
         }
     }
 }
@@ -720,6 +739,9 @@ impl Session {
 
                 builder
                     .user_agent(&client_name_and_version)
+                    // CORRENT PATCH (F4)
+                    .timeout(opts.http_timeout.unwrap_or(DEFAULT_HTTP_TIMEOUT))
+                    .connect_timeout(HTTP_CONNECT_TIMEOUT)
                     .build()
                     .context("error building HTTP(S) client")?
             };

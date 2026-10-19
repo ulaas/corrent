@@ -1327,3 +1327,87 @@ async fn an_engine_that_doesnt_start_in_time_fails_with_a_reason() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A loopback HTTP server that answers every request with `head`, then sends `body` in `chunk`
+/// pieces with `pause` between them.
+async fn http_server(head: String, body: Vec<u8>, chunk: usize, pause: Duration) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut c, _)) = l.accept().await {
+            let (head, body) = (head.clone(), body.clone());
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let _ = c.read(&mut buf).await;
+                if c.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                for piece in body.chunks(chunk) {
+                    if c.write_all(piece).await.is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(pause).await;
+                }
+            });
+        }
+    });
+    port
+}
+
+async fn add_url_error(l: &Leecher, dir: &Path, url: String) -> String {
+    l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        source: AddSource::Url(url),
+        torrent_bytes: None,
+        save_path: dir.join("dl"),
+        create_subfolder: true,
+        category: None,
+        tags: Vec::new(),
+        paused: true,
+        only_files: None,
+        add_to_top: false,
+        initial_peers: None,
+        added_by: None,
+    })));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match l.events.try_recv() {
+            Ok(EngineEvent::Toast(super::ToastKind::Error, text)) => return text,
+            Ok(EngineEvent::Added { .. }) => panic!("the add went through"),
+            Ok(_) => {}
+            Err(_) => {
+                assert!(Instant::now() < deadline, "the add neither failed nor finished");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_torrent_url_that_trickles_fails_in_time() {
+    let dir = temp_dir("trickle");
+    crate::faults::set_http_timeout(&dir, Duration::from_secs(3));
+    // Promises a megabyte, then sends a byte a second.
+    let head =
+        "HTTP/1.1 200 OK\r\nContent-Type: application/x-bittorrent\r\nContent-Length: 1000000\r\n\r\n".to_string();
+    let port = http_server(head, vec![b'd'; 1000], 1, Duration::from_secs(1)).await;
+    let l = start(&dir);
+    let started = Instant::now();
+    let err = add_url_error(&l, &dir, format!("http://127.0.0.1:{port}/slow.torrent")).await;
+    assert!(started.elapsed() < Duration::from_secs(10), "failed after {:?}: {err}", started.elapsed());
+    crate::faults::clear(&dir);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_oversized_torrent_url_is_refused() {
+    let dir = temp_dir("oversized");
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: application/x-bittorrent\r\n\r\n".to_string();
+    let port = http_server(head, vec![b'x'; 40 << 20], 1 << 20, Duration::ZERO).await;
+    let l = start(&dir);
+    let err = add_url_error(&l, &dir, format!("http://127.0.0.1:{port}/huge.torrent")).await;
+    assert!(err.contains("larger than 32 MiB"), "{err}");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

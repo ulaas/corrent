@@ -26,6 +26,13 @@ used by the `webui`/`http-api` features Corrent doesn't enable), plus runtime co
 
   The folder itself isn't synced (that matters on Unix only): a lost rename leaves the previous,
   complete file. Diff: `docs/upstream/librqbit-persistence-fsync.patch`.
+- Limits for the session's HTTP client (`src/session.rs`, marked `CORRENT PATCH (F4)`).
+  - New `SessionOptions::http_timeout` caps a whole request at 60 s by default, with a 15 s
+    connect timeout. The client had none, so a server that trickled bytes held a URL add (or an
+    HTTP tracker announce, which uses the same client) forever.
+  - A `.torrent` downloaded from a URL is read up to 32 MiB; before, the body was read whole.
+
+  Diff: `docs/upstream/librqbit-http-timeouts.patch`.
 
 librqbit rebuilds these from the add-time options whenever a torrent goes live again, so Corrent
 stores them itself and re-applies them (`Actor::apply_torrent_limits`).

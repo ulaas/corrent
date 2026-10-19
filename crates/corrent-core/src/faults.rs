@@ -36,6 +36,7 @@ mod imp {
     pub static FS_DELAY: Rules = Rules::new();
     pub static START_DELAY: Rules = Rules::new();
     pub static START_DEADLINE: Rules = Rules::new();
+    pub static HTTP_TIMEOUT: Rules = Rules::new();
     static CALL_DELAY: Mutex<Vec<([u8; 20], Duration)>> = Mutex::new(Vec::new());
 
     pub fn set_call_delay(hash: [u8; 20], delay: Duration) {
@@ -75,12 +76,19 @@ pub fn set_start_deadline(prefix: &Path, d: Duration) {
     imp::START_DEADLINE.set(prefix, d);
 }
 
+/// Tests: the engine HTTP requests of a data folder under `prefix` time out after `d`.
+#[cfg(any(test, feature = "testkit"))]
+pub fn set_http_timeout(prefix: &Path, d: Duration) {
+    imp::HTTP_TIMEOUT.set(prefix, d);
+}
+
 /// Tests: drop every rule for paths under `prefix`.
 #[cfg(any(test, feature = "testkit"))]
 pub fn clear(prefix: &Path) {
     imp::FS_DELAY.clear(prefix);
     imp::START_DELAY.clear(prefix);
     imp::START_DEADLINE.clear(prefix);
+    imp::HTTP_TIMEOUT.clear(prefix);
 }
 
 /// A test's slow disk: file system work on `path` waits this long first (blocking).
@@ -100,6 +108,11 @@ pub fn start_deadline(path: &Path) -> Option<Duration> {
     lookup(Kind::StartDeadline, path)
 }
 
+/// A test's HTTP timeout for the engine of the data folder `path`.
+pub fn http_timeout(path: &Path) -> Option<Duration> {
+    lookup(Kind::HttpTimeout, path)
+}
+
 /// A test's stalled engine: librqbit calls for the torrent `hash` hang this long first.
 pub fn call_delay(hash: [u8; 20]) -> Option<Duration> {
     #[cfg(any(test, feature = "testkit"))]
@@ -117,6 +130,7 @@ enum Kind {
     Fs,
     StartDelay,
     StartDeadline,
+    HttpTimeout,
 }
 
 fn lookup(kind: Kind, path: &Path) -> Option<Duration> {
@@ -126,6 +140,7 @@ fn lookup(kind: Kind, path: &Path) -> Option<Duration> {
             Kind::Fs => imp::FS_DELAY.get(path),
             Kind::StartDelay => imp::START_DELAY.get(path),
             Kind::StartDeadline => imp::START_DEADLINE.get(path),
+            Kind::HttpTimeout => imp::HTTP_TIMEOUT.get(path),
         }
     }
     #[cfg(not(any(test, feature = "testkit")))]

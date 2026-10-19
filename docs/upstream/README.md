@@ -14,5 +14,7 @@ ready to turn into upstream pull requests:
   copies are synced before their rename, so a power cut can't leave them empty or cut off. It
   also drops a `to_str().unwrap()` that panicked on non-Unicode paths. It applies on top of the
   next-id patch.
+- `librqbit-http-timeouts.patch` — `SessionOptions::http_timeout` (60 s default, 15 s connect)
+  for the session's HTTP client, and a 32 MiB cap on `.torrent` files downloaded from a URL.
 
 The owner submits them; Corrent drops the vendored copies once a release contains equivalents.
