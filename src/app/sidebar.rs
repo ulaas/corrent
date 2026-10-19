@@ -257,7 +257,7 @@ impl CorrentApp {
                             self.prefs.category_filter = GroupFilter::Named(c.clone());
                             self.main_view = super::feeds::MainView::Torrents;
                         }
-                        r.context_menu(|ui| {
+                        crate::ui::widgets::context_menu(&r, |ui| {
                             if ui.button(format!("{}  {}", icons::PENCIL_SIMPLE, t!("Edit…"))).clicked() {
                                 self.open_edit_category(c.clone());
                             }
@@ -326,7 +326,7 @@ impl CorrentApp {
                         self.prefs.tag_filter = GroupFilter::Named(tag.clone());
                         self.main_view = super::feeds::MainView::Torrents;
                     }
-                    r.context_menu(|ui| {
+                    crate::ui::widgets::context_menu(&r, |ui| {
                         if ui.button(format!("{}  {}", icons::TRASH, t!("Remove tag"))).clicked() {
                             let tags: Vec<String> = self.snap.tags.iter().filter(|t| **t != tag).cloned().collect();
                             self.engine.send(EngineCommand::SetTagList(tags));

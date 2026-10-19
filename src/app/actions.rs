@@ -64,7 +64,7 @@ impl CorrentApp {
         if single {
             let media = self.media_files(first.hash);
             if !media.is_empty() {
-                ui.menu_button(format!("{}  {}", icons::PLAY_CIRCLE, t!("Play")), |ui| {
+                crate::ui::widgets::menu_button(ui, format!("{}  {}", icons::PLAY_CIRCLE, t!("Play")), |ui| {
                     ui.label(RichText::new(t!("Streams while downloading")).small().color(p.text_dim));
                     for (idx, name, _) in media.iter().take(12) {
                         let short = name.rsplit(['/', '\\']).next().unwrap_or(name);
@@ -89,7 +89,7 @@ impl CorrentApp {
             self.open_rename_dialog(first.hash, first.name.clone());
         }
 
-        ui.menu_button(format!("{}  {}", icons::FOLDER_SIMPLE, t!("Category")), |ui| {
+        crate::ui::widgets::menu_button(ui, format!("{}  {}", icons::FOLDER_SIMPLE, t!("Category")), |ui| {
             if ui.button(t!("New category…")).clicked() {
                 self.open_new_category(Some(hashes.clone()));
             }
@@ -104,7 +104,7 @@ impl CorrentApp {
                 }
             }
         });
-        ui.menu_button(format!("{}  {}", icons::TAG, t!("Tags")), |ui| {
+        crate::ui::widgets::menu_button(ui, format!("{}  {}", icons::TAG, t!("Tags")), |ui| {
             if ui.button(t!("New tag…")).clicked() {
                 self.open_new_tag(Some(hashes.clone()));
             }
@@ -125,7 +125,7 @@ impl CorrentApp {
                 }
             }
         });
-        ui.menu_button(format!("{}  {}", icons::LIST_NUMBERS, t!("Queue")), |ui| {
+        crate::ui::widgets::menu_button(ui, format!("{}  {}", icons::LIST_NUMBERS, t!("Queue")), |ui| {
             for (label, mv) in [
                 (t!("Move to top"), QueueMove::Top),
                 (t!("Move up"), QueueMove::Up),
@@ -150,7 +150,7 @@ impl CorrentApp {
         if single && item(ui, icons::BROADCAST, t!("Add trackers…")) {
             self.open_trackers_dialog(first.hash);
         }
-        ui.menu_button(format!("{}  {}", icons::COPY, t!("Copy")), |ui| {
+        crate::ui::widgets::menu_button(ui, format!("{}  {}", icons::COPY, t!("Copy")), |ui| {
             if ui.button(t!("Name")).clicked() {
                 self.copy(sel.iter().map(|t| t.name.clone()).collect::<Vec<_>>().join("\n"));
             }

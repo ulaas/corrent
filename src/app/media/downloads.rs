@@ -82,7 +82,7 @@ impl CorrentApp {
         }
         let r = ui.button(format!("{}  {}", icons::DOWNLOAD_SIMPLE, t!("Download")));
         let video = targets.iter().any(|t| !matches!(t.kind, ItemKind::Track | ItemKind::Book));
-        egui::Popup::from_toggle_button_response(&r).show(|ui| {
+        crate::ui::widgets::popup(egui::Popup::from_toggle_button_response(&r), |ui| {
             ui.set_min_width(240.0);
             let mut pick = None;
             if ui.button(t!("Original file")).on_hover_text(t!("The file as it is on the server.")).clicked() {

@@ -142,7 +142,7 @@ impl CorrentApp {
 
     /// Quick global speed-limit presets under a speed readout.
     fn limit_menu(&mut self, resp: &egui::Response, download: bool) {
-        egui::Popup::menu(resp).show(|ui| {
+        crate::ui::widgets::popup(egui::Popup::menu(resp), |ui| {
             ui.set_min_width(170.0);
             ui.label(RichText::new(if download { t!("Download limit") } else { t!("Upload limit") }).strong());
             let current = if download { self.settings.speed.download_limit } else { self.settings.speed.upload_limit };

@@ -59,7 +59,7 @@ pub struct TreeChange {
 
 /// "Priority" submenu for a set of files.
 fn priority_menu(ui: &mut Ui, files: &[usize], current: Option<i8>, change: &mut TreeChange) {
-    ui.menu_button(format!("{}  {}", icons::FLAG, t!("Priority")), |ui| {
+    crate::ui::widgets::menu_button(ui, format!("{}  {}", icons::FLAG, t!("Priority")), |ui| {
         for (v, icon) in [(1i8, icons::ARROW_FAT_UP), (0, icons::MINUS), (-1, icons::ARROW_FAT_DOWN)] {
             let label = format!("{icon}  {}", priority_label(v));
             if ui.add(egui::Button::selectable(current == Some(v), label)).clicked() {
@@ -153,7 +153,9 @@ fn show_node(
             let ids: Vec<usize> = all.iter().map(|&i| entries[i].index).collect();
             let first = all.first().and_then(|&i| entries[i].priority);
             let same = all.iter().all(|&i| entries[i].priority == first);
-            header_resp.response.context_menu(|ui| priority_menu(ui, &ids, first.filter(|_| same), change));
+            crate::ui::widgets::context_menu(&header_resp.response, |ui| {
+                priority_menu(ui, &ids, first.filter(|_| same), change)
+            });
         }
     }
     for &i in &node.files {
@@ -176,7 +178,7 @@ fn show_node(
         });
         if editable && e.priority.is_some() {
             let resp = row.response.interact(egui::Sense::click());
-            resp.context_menu(|ui| priority_menu(ui, &[e.index], e.priority, change));
+            crate::ui::widgets::context_menu(&resp, |ui| priority_menu(ui, &[e.index], e.priority, change));
         }
     }
 }

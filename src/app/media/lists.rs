@@ -169,7 +169,7 @@ impl CorrentApp {
         }
         let lists = self.media.my_playlists.as_ref().and_then(ready).and_then(Result::ok).unwrap_or_default();
         let mut add: Option<Option<i64>> = None;
-        egui::Popup::from_toggle_button_response(&r).show(|ui| {
+        crate::ui::widgets::popup(egui::Popup::from_toggle_button_response(&r), |ui| {
             ui.set_min_width(240.0);
             for l in &lists {
                 if ui.button(&l.name).clicked() {

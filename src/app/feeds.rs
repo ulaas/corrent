@@ -194,7 +194,7 @@ impl CorrentApp {
                 if resp.clicked() {
                     self.feeds.selected = Some(f.url.clone());
                 }
-                resp.context_menu(|ui| {
+                crate::ui::widgets::context_menu(&resp, |ui| {
                     if ui.button(format!("{}  {}", icons::ARROWS_CLOCKWISE, t!("Refresh"))).clicked() {
                         self.engine.send(EngineCommand::RssRefresh(Some(f.url.clone())));
                         ui.close();
@@ -349,7 +349,7 @@ impl CorrentApp {
                         let color = if a.downloaded { p.text_dim } else { p.text };
                         let resp = ui.add(egui::Label::new(RichText::new(&a.article.title).color(color)).truncate());
                         if let Some(page) = &a.article.page {
-                            resp.context_menu(|ui| {
+                            crate::ui::widgets::context_menu(&resp, |ui| {
                                 if ui.button(format!("{}  {}", icons::GLOBE, t!("Open web page"))).clicked() {
                                     let _ = open::that_detached(page);
                                     ui.close();

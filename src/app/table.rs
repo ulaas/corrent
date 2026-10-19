@@ -320,7 +320,7 @@ impl CorrentApp {
                     if resp.secondary_clicked() && !t.pending {
                         context_target = Some(t.hash);
                     }
-                    resp.context_menu(|ui| {
+                    crate::ui::widgets::context_menu(&resp, |ui| {
                         if t.pending {
                             if ui.button(format!("{}  {}", icons::X_CIRCLE, t!("Cancel"))).clicked() {
                                 self.engine.send(crate::engine::EngineCommand::CancelAdd(t.hash));

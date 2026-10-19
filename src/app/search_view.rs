@@ -338,7 +338,7 @@ impl CorrentApp {
                         row.col(|ui| {
                             let resp = ui.add(egui::Label::new(RichText::new(&r.title).color(p.text)).truncate());
                             if let Some(page) = &r.page {
-                                resp.context_menu(|ui| {
+                                crate::ui::widgets::context_menu(&resp, |ui| {
                                     if ui.button(format!("{}  {}", icons::GLOBE, t!("Open details page"))).clicked() {
                                         let _ = open::that_detached(page);
                                         ui.close();

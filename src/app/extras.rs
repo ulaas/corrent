@@ -25,97 +25,106 @@ pub struct Extras {
 
 impl CorrentApp {
     pub(super) fn overflow_menu(&mut self, ui: &mut Ui, p: &Palette) {
-        let r = ui.menu_button(RichText::new(icons::DOTS_THREE_VERTICAL).size(18.0).color(p.text_dim), |ui| {
-            ui.set_min_width(220.0);
-            if ui.button(format!("{}  {}", icons::PAUSE, t!("Pause all"))).clicked() {
-                self.engine.send(crate::engine::EngineCommand::PauseAll);
-            }
-            if ui.button(format!("{}  {}", icons::PLAY, t!("Resume all"))).clicked() {
-                self.engine.send(crate::engine::EngineCommand::ResumeAll);
-            }
-            if !self.snap.undoable.is_empty() {
-                let n = self.snap.undoable.len();
-                let label = if n == 1 {
-                    format!(
-                        "{}  {}",
-                        icons::ARROW_COUNTER_CLOCKWISE,
-                        t!("Undo remove “{name}”", name = self.snap.undoable[0].1)
-                    )
-                } else {
-                    format!("{}  {}", icons::ARROW_COUNTER_CLOCKWISE, t!("Undo remove ({n} torrents)", n = n))
-                };
-                if ui.button(label).clicked() {
-                    let hashes = self.snap.undoable.iter().map(|(h, _)| *h).collect();
-                    self.engine.send(crate::engine::EngineCommand::UndoRemove(hashes));
+        let r = crate::ui::widgets::menu_button(
+            ui,
+            RichText::new(icons::DOTS_THREE_VERTICAL).size(18.0).color(p.text_dim),
+            |ui| {
+                ui.set_min_width(220.0);
+                if ui.button(format!("{}  {}", icons::PAUSE, t!("Pause all"))).clicked() {
+                    self.engine.send(crate::engine::EngineCommand::PauseAll);
                 }
-            }
-            ui.separator();
-            let mut sidebar = self.prefs.show_sidebar;
-            if ui.checkbox(&mut sidebar, t!("Sidebar  (Ctrl+B)")).changed() {
-                self.prefs.show_sidebar = sidebar;
-            }
-            let mut details = self.prefs.show_details;
-            if ui.checkbox(&mut details, t!("Details panel  (Ctrl+I)")).changed() {
-                self.prefs.show_details = details;
-            }
-            let mut compact = self.settings.appearance.compact_rows;
-            if ui.checkbox(&mut compact, t!("Compact rows")).changed() {
-                self.settings.appearance.compact_rows = compact;
-                self.save_settings();
-            }
-            ui.separator();
-            self.server_menu(ui);
-            ui.separator();
-            let local = self.server.is_none();
-            if local && ui.button(format!("{}  {}", icons::FILE_PLUS, t!("Create torrent…  (Ctrl+N)"))).clicked() {
-                self.open_creator();
-            }
-            ui.menu_button(format!("{}  {}", icons::POWER, t!("When downloads finish")), |ui| {
-                for a in crate::integration::power::WhenDone::ALL.into_iter().filter(|a| a.available()) {
-                    if ui.add(egui::Button::selectable(self.when_done.action == a, a.label())).clicked() {
-                        self.set_when_done(a);
-                        ui.close();
+                if ui.button(format!("{}  {}", icons::PLAY, t!("Resume all"))).clicked() {
+                    self.engine.send(crate::engine::EngineCommand::ResumeAll);
+                }
+                if !self.snap.undoable.is_empty() {
+                    let n = self.snap.undoable.len();
+                    let label = if n == 1 {
+                        format!(
+                            "{}  {}",
+                            icons::ARROW_COUNTER_CLOCKWISE,
+                            t!("Undo remove “{name}”", name = self.snap.undoable[0].1)
+                        )
+                    } else {
+                        format!("{}  {}", icons::ARROW_COUNTER_CLOCKWISE, t!("Undo remove ({n} torrents)", n = n))
+                    };
+                    if ui.button(label).clicked() {
+                        let hashes = self.snap.undoable.iter().map(|(h, _)| *h).collect();
+                        self.engine.send(crate::engine::EngineCommand::UndoRemove(hashes));
                     }
                 }
-            });
-            if ui.button(format!("{}  {}", icons::ARROW_CIRCLE_UP, t!("Check for updates"))).clicked() {
-                self.check_for_updates(true);
-            }
-            if local
-                && ui.button(format!("{}  {}", icons::ARROW_SQUARE_IN, t!("Import from another client…"))).clicked()
-            {
-                self.open_import();
-            }
-            if ui.button(format!("{}  {}", icons::CHART_BAR, t!("Statistics"))).clicked() {
-                self.extras.stats = true;
-            }
-            if local
-                && self.media.local().is_some()
-                && ui.button(format!("{}  {}", icons::GLOBE, t!("Web interface sign-in…"))).clicked()
-            {
-                self.open_web_account();
-            }
-            if ui.button(format!("{}  {}", icons::TELEVISION, t!("TV mode"))).clicked() {
-                self.set_tv(true);
-            }
-            if local && ui.button(format!("{}  {}", icons::PLAY_CIRCLE, t!("Streaming"))).clicked() {
-                self.extras.streams = true;
-            }
-            if ui.button(format!("{}  {}", icons::SCROLL, t!("Log"))).clicked() {
-                self.extras.log = true;
-            }
-            if ui.button(format!("{}  {}", icons::FOLDER_OPEN, t!("Open data folder"))).clicked() {
-                super::open_path(&self.paths.data_dir);
-            }
-            ui.separator();
-            if ui.button(format!("{}  {}", icons::INFO, t!("About Corrent"))).clicked() {
-                self.extras.about = true;
-            }
-            if ui.button(format!("{}  {}", icons::SIGN_OUT, t!("Quit"))).clicked() {
-                self.quitting = true;
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-        });
+                ui.separator();
+                let mut sidebar = self.prefs.show_sidebar;
+                if ui.checkbox(&mut sidebar, t!("Sidebar  (Ctrl+B)")).changed() {
+                    self.prefs.show_sidebar = sidebar;
+                }
+                let mut details = self.prefs.show_details;
+                if ui.checkbox(&mut details, t!("Details panel  (Ctrl+I)")).changed() {
+                    self.prefs.show_details = details;
+                }
+                let mut compact = self.settings.appearance.compact_rows;
+                if ui.checkbox(&mut compact, t!("Compact rows")).changed() {
+                    self.settings.appearance.compact_rows = compact;
+                    self.save_settings();
+                }
+                ui.separator();
+                self.server_menu(ui);
+                ui.separator();
+                let local = self.server.is_none();
+                if local && ui.button(format!("{}  {}", icons::FILE_PLUS, t!("Create torrent…  (Ctrl+N)"))).clicked()
+                {
+                    self.open_creator();
+                }
+                crate::ui::widgets::menu_button(
+                    ui,
+                    format!("{}  {}", icons::POWER, t!("When downloads finish")),
+                    |ui| {
+                        for a in crate::integration::power::WhenDone::ALL.into_iter().filter(|a| a.available()) {
+                            if ui.add(egui::Button::selectable(self.when_done.action == a, a.label())).clicked() {
+                                self.set_when_done(a);
+                                ui.close();
+                            }
+                        }
+                    },
+                );
+                if ui.button(format!("{}  {}", icons::ARROW_CIRCLE_UP, t!("Check for updates"))).clicked() {
+                    self.check_for_updates(true);
+                }
+                if local
+                    && ui.button(format!("{}  {}", icons::ARROW_SQUARE_IN, t!("Import from another client…"))).clicked()
+                {
+                    self.open_import();
+                }
+                if ui.button(format!("{}  {}", icons::CHART_BAR, t!("Statistics"))).clicked() {
+                    self.extras.stats = true;
+                }
+                if local
+                    && self.media.local().is_some()
+                    && ui.button(format!("{}  {}", icons::GLOBE, t!("Web interface sign-in…"))).clicked()
+                {
+                    self.open_web_account();
+                }
+                if ui.button(format!("{}  {}", icons::TELEVISION, t!("TV mode"))).clicked() {
+                    self.set_tv(true);
+                }
+                if local && ui.button(format!("{}  {}", icons::PLAY_CIRCLE, t!("Streaming"))).clicked() {
+                    self.extras.streams = true;
+                }
+                if ui.button(format!("{}  {}", icons::SCROLL, t!("Log"))).clicked() {
+                    self.extras.log = true;
+                }
+                if ui.button(format!("{}  {}", icons::FOLDER_OPEN, t!("Open data folder"))).clicked() {
+                    super::open_path(&self.paths.data_dir);
+                }
+                ui.separator();
+                if ui.button(format!("{}  {}", icons::INFO, t!("About Corrent"))).clicked() {
+                    self.extras.about = true;
+                }
+                if ui.button(format!("{}  {}", icons::SIGN_OUT, t!("Quit"))).clicked() {
+                    self.quitting = true;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            },
+        );
         // Icon-only: give screen readers a name.
         let _ = r.response.labeled(t!("More"));
     }

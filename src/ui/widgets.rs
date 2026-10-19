@@ -334,3 +334,76 @@ impl Labeled for Response {
         self.on_hover_text(label)
     }
 }
+
+// ---------------------------------------------------------------- menus and popups
+//
+// Menus, context menus and popups grow with their contents and egui doesn't scroll them, so a
+// long list (subtitle tracks, tags, categories) ran off the window. Every one goes through
+// these wrappers, which scroll beyond a share of the window's height; a test keeps raw
+// `menu_button` / `context_menu` / `Popup::…show` out of the rest of the app.
+
+/// The tallest a menu or popup gets before it scrolls.
+fn popup_max_height(ctx: &egui::Context) -> f32 {
+    (ctx.content_rect().height() * 0.6).max(160.0)
+}
+
+/// `add` in a vertical scroll area capped at `popup_max_height`.
+pub fn scroll_body<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    egui::ScrollArea::vertical().max_height(popup_max_height(ui.ctx())).show(ui, add).inner
+}
+
+/// `ui.menu_button`, scrolling when long.
+pub fn menu_button<R>(
+    ui: &mut Ui,
+    title: impl Into<egui::WidgetText>,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    ui.menu_button(title, |ui| scroll_body(ui, add))
+}
+
+/// `response.context_menu`, scrolling when long.
+pub fn context_menu(response: &Response, add: impl FnOnce(&mut Ui)) -> Option<egui::InnerResponse<()>> {
+    response.context_menu(|ui| scroll_body(ui, add))
+}
+
+/// `popup.show`, scrolling when long.
+pub fn popup<R>(popup: egui::Popup<'_>, add: impl FnOnce(&mut Ui) -> R) -> Option<egui::InnerResponse<R>> {
+    popup.show(|ui| scroll_body(ui, add))
+}
+
+#[cfg(test)]
+mod popup_tests {
+    /// Menus and popups that don't go through the wrappers above can run off the window.
+    #[test]
+    fn menus_and_popups_scroll() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let raw = regex::Regex::new(r"\.menu_button\(|\.context_menu\(\s*\|").unwrap();
+        let raw_popup = regex::Regex::new(r"Popup::[a-z_]+\((?s:[^;]{0,300}?)\)\s*\.show\(").unwrap();
+        let mut found = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("ui/widgets.rs") {
+                    let text = std::fs::read_to_string(&p).unwrap();
+                    for (n, line) in text.lines().enumerate() {
+                        if raw.is_match(line) {
+                            found.push(format!("{}:{}: {}", p.display(), n + 1, line.trim()));
+                        }
+                    }
+                    for m in raw_popup.find_iter(&text) {
+                        let n = text[..m.start()].lines().count();
+                        found.push(format!("{}:{}: {}", p.display(), n, m.as_str().lines().next().unwrap_or("")));
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "use ui::widgets::{{menu_button, context_menu, popup}} instead:\n{}",
+            found.join("\n")
+        );
+    }
+}
