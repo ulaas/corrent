@@ -7,6 +7,7 @@
   import { t, tk } from '../lib/i18n.svelte';
   import { Perm } from '../lib/types';
   import type { IconName } from '../lib/icons';
+  import { extensions } from '../lib/extensions.svelte';
 
   let { params }: { params: Record<string, string> } = $props();
 
@@ -45,7 +46,10 @@
     { id: 'about', label: tk('About'), icon: 'info', group: tk('Administration'), load: () => import('./settings/About.svelte') },
   ];
 
-  const visible = $derived(SECTIONS.filter((s) => !s.perm || can(s.perm)));
+  const extensionPages = $derived<Section[]>(
+    extensions.pages.map((p) => ({ id: `ext-${p.id}`, label: p.title, icon: 'puzzle-piece', group: tk('Extensions'), load: () => import('./settings/ExtensionPage.svelte') })),
+  );
+  const visible = $derived([...SECTIONS, ...extensionPages].filter((s) => !s.perm || can(s.perm)));
   const current = $derived(visible.find((s) => s.id === params.section) ?? (params.section ? undefined : visible[0]));
   const groups = $derived([...new Set(visible.map((s) => s.group))]);
   const phoneIndex = $derived(!params.section);

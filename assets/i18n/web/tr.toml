@@ -605,3 +605,5 @@
 "Jellyfin apps: http://<this computer>:{port}" = "Jellyfin uygulamaları: http://<bu bilgisayar>:{port}"
 "Names" = "Adlar"
 "Task" = "Görev"
+"Extensions" = "Uzantılar"
+"This extension isn’t loaded." = "Bu uzantı yüklenmedi."

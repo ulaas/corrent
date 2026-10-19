@@ -21,6 +21,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/plugins", get(list).post(install).layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)))
         .route("/plugins/{id}", axum::routing::delete(remove))
         .route("/plugins/catalog", get(catalog))
+        .route("/plugins/web", get(web_plugins))
+        .route("/plugins/{id}/web/{*path}", get(web_file))
         .route("/plugins/catalog/install", post(install_from_catalog))
         .route("/plugins/{id}/settings", put(settings))
         .route("/plugins/{id}/enabled", put(enabled))
@@ -417,4 +419,35 @@ async fn install_from_catalog(
     .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
     .map_err(|e| err(ErrorCode::BadRequest, e))?;
     install_files(&st, auth.name(), &ip.0.to_string(), &text, &wasm, Some(&entry.id)).await
+}
+
+#[derive(Serialize)]
+struct WebPlugin {
+    id: String,
+    name: String,
+    /// The module to `import()`.
+    entry: String,
+}
+
+/// Web plugins the web client loads (everyone signed in).
+async fn web_plugins(State(st): State<Arc<AppState>>, _auth: Auth) -> ApiResult<Vec<WebPlugin>> {
+    let Some(h) = st.plugins.as_ref() else { return Ok(Json(Vec::new())) };
+    Ok(Json(
+        h.web_plugins()
+            .into_iter()
+            .map(|(id, name, entry)| WebPlugin { entry: format!("/api/v1/plugins/{id}/web/{entry}"), id, name })
+            .collect(),
+    ))
+}
+
+async fn web_file(
+    State(st): State<Arc<AppState>>,
+    _auth: Auth,
+    Path((id, path)): Path<(String, String)>,
+    req: Request,
+) -> Result<axum::response::Response, ApiErr> {
+    let file = host(&st)?.web_file(&id, &path).ok_or_else(|| err(ErrorCode::NotFound, "no such file"))?;
+    let mut r = super::library::serve_path(file, req).await?;
+    r.headers_mut().insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-cache"));
+    Ok(r)
 }

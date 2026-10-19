@@ -1011,6 +1011,35 @@ async fn install_plugin(app: &Router, admin: &str, manifest: &str, wasm: &[u8]) 
     assert_eq!(res.status(), StatusCode::OK);
 }
 
+/// Web plugins: listed for the web client, their files served, nothing outside `web/`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn web_plugins_serve_their_files() {
+    let h = harness("web-plugin", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let dir = h.dir.join("hello");
+    std::fs::create_dir_all(dir.join("web")).unwrap();
+    std::fs::write(dir.join("plugin.toml"), "id = \"hello\"\nname = \"Hello\"\nversion = \"1.0.0\"\nhost_api = \"1\"\nkinds = [\"web\"]\nruntime = \"web\"\n").unwrap();
+    std::fs::write(dir.join("web/index.js"), "corrent.toast('hello');").unwrap();
+    let m = corrent_plugins::Manifest::parse(&std::fs::read_to_string(dir.join("plugin.toml")).unwrap()).unwrap();
+    h.st.plugins.as_ref().unwrap().load_web(m, dir.clone(), true).unwrap();
+    let (_, v, _) = get(app, "/api/v1/plugins/web", &admin).await;
+    assert_eq!(v, json!([{ "id": "hello", "name": "Hello", "entry": "/api/v1/plugins/hello/web/index.js" }]));
+    let (s, body, hd) = get(app, "/api/v1/plugins/hello/web/index.js", &admin).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(hd[header::CONTENT_TYPE].to_str().unwrap().contains("javascript"), "{hd:?}");
+    assert_eq!(body, "corrent.toast('hello');");
+    for bad in [
+        "/api/v1/plugins/hello/web/..%2Fplugin.toml",
+        "/api/v1/plugins/hello/web/.hidden",
+        "/api/v1/plugins/nope/web/index.js",
+    ] {
+        assert_eq!(get(app, bad, &admin).await.0, StatusCode::NOT_FOUND, "{bad}");
+    }
+    assert!(corrent_plugins::Manifest::parse("id = \"x\"\nname = \"X\"\nversion = \"1\"\nhost_api = \"1\"\nkinds = [\"web\"]\nruntime = \"web\"\nweb_entry = \"../x.js\"\n").is_err());
+    h.stop().await;
+}
+
 /// Event plugins hear what notifications do and may read the library.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn event_plugins_read_the_library() {

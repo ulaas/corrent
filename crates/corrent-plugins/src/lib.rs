@@ -293,6 +293,8 @@ impl bindings::corrent::plugin::host::Host for HostState {
 enum Code {
     Wasm(Component),
     Process(Arc<process::ProcessPlugin>),
+    /// Files for the web client.
+    Web(std::path::PathBuf),
 }
 
 struct Loaded {
@@ -426,6 +428,48 @@ impl PluginHost {
         let p = process::ProcessPlugin::new(&manifest.id, dir, manifest.command.clone());
         self.insert(manifest, Code::Process(Arc::new(p)), settings, enabled, false);
         Ok(())
+    }
+
+    /// A web plugin (its folder holds `web/`).
+    pub fn load_web(&self, manifest: Manifest, dir: std::path::PathBuf, enabled: bool) -> Result<(), String> {
+        if manifest.runtime != Runtime::Web {
+            return Err("not a web plugin".into());
+        }
+        let entry = dir.join("web").join(manifest.web_entry.as_deref().unwrap_or("index.js"));
+        if !entry.is_file() {
+            return Err(format!("{} is missing", entry.display()));
+        }
+        self.insert(manifest, Code::Web(dir), HashMap::new(), enabled, false);
+        Ok(())
+    }
+
+    /// Enabled web plugins: (id, name, entry module path under `web/`).
+    pub fn web_plugins(&self) -> Vec<(String, String, String)> {
+        let m = self.plugins.read().unwrap_or_else(|e| e.into_inner());
+        let mut v: Vec<_> = m
+            .values()
+            .filter(|l| l.enabled && matches!(&*l.code, Code::Web(_)))
+            .map(|l| {
+                let man = &l.ctx.manifest;
+                (man.id.clone(), man.name.clone(), man.web_entry.clone().unwrap_or_else(|| "index.js".into()))
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// A file of an enabled web plugin (`path` relative to its `web/`).
+    pub fn web_file(&self, id: &str, path: &str) -> Option<std::path::PathBuf> {
+        if !manifest::web_path_ok(path) {
+            return None;
+        }
+        let l = self.get(id).ok().filter(|l| l.enabled)?;
+        let Code::Web(dir) = &*l.code else { return None };
+        let web = dir.join("web");
+        let p = web.join(path);
+        // Symlinks out of the folder don't count.
+        let real = std::fs::canonicalize(&p).ok()?;
+        (real.starts_with(std::fs::canonicalize(&web).ok()?) && real.is_file()).then_some(real)
     }
 
     fn insert(&self, manifest: Manifest, code: Code, settings: HashMap<String, String>, enabled: bool, builtin: bool) {
@@ -587,7 +631,7 @@ impl PluginHost {
         let l2 = l.clone();
         let r = tokio::task::spawn_blocking(move || match &*l2.code {
             Code::Wasm(c) => f(&me, &l2, c),
-            Code::Process(_) => Err(wasmtime::Error::msg("not a WebAssembly plugin")),
+            Code::Process(_) | Code::Web(_) => Err(wasmtime::Error::msg("not a WebAssembly plugin")),
         })
         .await
         .map_err(|e| PluginError::Trap(e.to_string()))?;

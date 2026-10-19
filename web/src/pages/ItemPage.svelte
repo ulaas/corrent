@@ -19,6 +19,7 @@
   import { t } from '../lib/i18n.svelte';
   import { can } from '../lib/session.svelte';
   import { Perm } from '../lib/types';
+  import { extensions } from '../lib/extensions.svelte';
   import type { Item, ItemDetail, Page } from '../lib/types';
 
   // Following a show: aired episodes it lacks go on the wanted list.
@@ -266,6 +267,9 @@
             {#if (item.kind === 'movie' || item.kind === 'episode' || item.kind === 'video') && can(Perm.LIBRARY_MANAGE)}
               <button class="btn lg" onclick={() => findSubs(item!.id)}><Icon name="closed-captioning" />{t('Find subtitles')}</button>
             {/if}
+            {#each extensions.itemActions as x (x.id)}
+              <button class="btn lg" onclick={() => Promise.resolve(x.run($state.snapshot(item!) as ItemDetail)).catch((e) => toast(errorText(e), 'error'))}><Icon name="puzzle-piece" />{x.label}</button>
+            {/each}
           </div>
 
           {#if item.overview}<p class="overview">{item.overview}</p>{/if}

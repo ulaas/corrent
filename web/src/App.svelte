@@ -16,6 +16,7 @@
   import { ms, prefs } from './lib/prefs.svelte';
   import { music } from './lib/player.svelte';
   import { startLibraries } from './lib/libraries.svelte';
+  import { loadExtensions } from './lib/extensions.svelte';
   import { startSessionFeed } from './lib/torrents.svelte';
   import { link } from './lib/events.svelte';
   import { t } from './lib/i18n.svelte';
@@ -54,6 +55,7 @@
     if (session.user) {
       startLibraries();
       startSessionFeed();
+      void loadExtensions();
     }
   });
 
@@ -61,6 +63,7 @@
     if (session.user) {
       startLibraries();
       startSessionFeed();
+      void loadExtensions();
     } else {
       music.close();
     }

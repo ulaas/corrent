@@ -13,6 +13,8 @@ pub enum Kind {
     Task,
     /// Receives server events (`event-handler` world / `events.on_event`).
     Events,
+    /// Adds to the web client (`runtime = "web"`: scripts in the plugin's `web/` folder).
+    Web,
 }
 
 /// How a plugin runs.
@@ -25,6 +27,9 @@ pub enum Runtime {
     /// A program speaking JSON-RPC 2.0 over stdin/stdout (`command`); not sandboxed, so only an
     /// administrator can install one.
     Process,
+    /// Files for the web client (`web/` in the plugin's folder, `web_entry` its module); runs in
+    /// people's browsers with their rights, so only an administrator can install one.
+    Web,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -80,6 +85,19 @@ pub struct Manifest {
     /// used to identify items.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub supplements: bool,
+    /// Web plugins: the module the web client loads, relative to `web/` (default `index.js`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_entry: Option<String>,
+}
+
+/// A relative path that stays inside a folder.
+pub fn web_path_ok(p: &str) -> bool {
+    !p.is_empty()
+        && p.len() < 300
+        && !p.starts_with('/')
+        && !p.contains('\\')
+        && !p.contains(':')
+        && p.split('/').all(|s| !s.is_empty() && s != ".." && s != "." && !s.starts_with('.'))
 }
 
 impl Manifest {
@@ -104,6 +122,12 @@ impl Manifest {
             // The program lives inside the plugin's folder.
             if program.starts_with('/') || program.contains("..") || program.contains('\\') || program.contains(':') {
                 return Err("the command must be a file inside the plugin's folder".into());
+            }
+        }
+        if m.runtime == Runtime::Web {
+            let e = m.web_entry.as_deref().unwrap_or("index.js");
+            if !web_path_ok(e) || !e.ends_with(".js") {
+                return Err("web_entry must be a .js file inside web/".into());
             }
         }
         Ok(m)

@@ -113,6 +113,23 @@ parameters and results have the WIT records' shapes, field names in snake_case. 
 started on first use, restarted after it exits or times out, and told about new settings by a
 restart. See `crates/corrent-plugins/src/process.rs` and its Python test plugin.
 
+## Web plugins
+
+`runtime = "web"` with `kinds = ["web"]`: a folder in `<server data>/plugins/<id>/` holding
+`plugin.toml` and `web/` (the module `web_entry`, default `index.js`, plus anything it loads).
+The web client imports the module for everyone signed in; it runs in their browser with their
+rights, so only an administrator installs one (by copying the folder, then restarting). It talks
+to Corrent through `window.corrent` (version 1):
+
+```js
+corrent.addItemAction({ id: 'tell', label: 'Tell a friend', run: (item) => corrent.toast(item.title) });
+corrent.addSettingsPage({ id: 'stats', title: 'My stats', render(el) { el.textContent = 'Hello'; } });
+const libs = await corrent.api.get('/libraries');   // /api/v1 as this person; post/put/del too
+```
+
+Item actions appear on item pages; pages under Settings → Extensions. Files are served at
+`/api/v1/plugins/<id>/web/<path>` (signed-in people only, nothing outside `web/`).
+
 ## Catalogs and signatures
 
 A server can install from a catalog: `plugin_catalog = "https://…/index.json"` and

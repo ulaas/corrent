@@ -85,13 +85,18 @@ pub async fn start(db: &Db, data: &Path) -> Option<Arc<PluginHost>> {
     let mut all: Vec<(Manifest, Vec<u8>, bool)> =
         corrent_plugins::builtins().into_iter().map(|(m, w)| (m, w.to_vec(), true)).collect();
     let mut processes = Vec::new();
+    let mut webs = Vec::new();
     for e in std::fs::read_dir(plugins_dir(data)).into_iter().flatten().flatten() {
         let (m, w) = (e.path().join("plugin.toml"), e.path().join("plugin.wasm"));
         // Process plugins: a program in the folder (put there by an administrator).
         if let Ok(man) = std::fs::read_to_string(&m).map_err(|e| e.to_string()).and_then(|t| Manifest::parse(&t))
-            && man.runtime == corrent_plugins::Runtime::Process
+            && man.runtime != corrent_plugins::Runtime::Wasm
         {
-            processes.push((man, e.path()));
+            if man.runtime == corrent_plugins::Runtime::Web {
+                webs.push((man, e.path()));
+            } else {
+                processes.push((man, e.path()));
+            }
             continue;
         }
         match (
@@ -101,6 +106,12 @@ pub async fn start(db: &Db, data: &Path) -> Option<Arc<PluginHost>> {
             (Ok(m), Ok(w)) => all.push((m, w, false)),
             (Err(err), _) => tracing::warn!("plugin in {}: {err}", m.display()),
             (_, Err(e)) => tracing::warn!("plugin in {}: {e}", w.display()),
+        }
+    }
+    for (m, dir) in webs {
+        let id = m.id.clone();
+        if let Err(e) = host.load_web(m, dir, saved.get(&id).is_none_or(|s| s.enabled)) {
+            tracing::warn!("plugin {id}: {e}");
         }
     }
     for (m, dir) in processes {
