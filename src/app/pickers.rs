@@ -39,7 +39,7 @@ pub enum PickTarget {
 type PickResult = (u64, PickTarget, Vec<PathBuf>);
 
 pub struct Pickers {
-    tx: Sender<PickResult>,
+    pub(super) tx: Sender<PickResult>,
     rx: Receiver<PickResult>,
     /// The open picker: sequence id, target and when it was opened.
     pub open: Option<(u64, PickTarget, std::time::Instant)>,
@@ -73,6 +73,18 @@ impl CorrentApp {
         self.pickers.seq += 1;
         let seq = self.pickers.seq;
         self.pickers.open = Some((seq, target.clone(), std::time::Instant::now()));
+        // Using a server: its folders, not this computer's.
+        let server_path = matches!(
+            target,
+            PickTarget::AddDialogFolder(_)
+                | PickTarget::MoveFolder
+                | PickTarget::CategoryFolder
+                | PickTarget::LibraryFolder
+        );
+        if self.server.is_some() && server_path && matches!(kind, PickKind::Folder) {
+            self.open_server_fs(seq, target, start);
+            return;
+        }
         let tx = self.pickers.tx.clone();
         let ctx = self.ctx.clone();
         let mut dialog = rfd::AsyncFileDialog::new();

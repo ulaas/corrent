@@ -160,7 +160,7 @@ impl CorrentApp {
                                 .hint_text(if local { "" } else { t!("A folder on the server") })
                                 .desired_width(320.0),
                         );
-                        if local && secondary_button(ui, t!("Choose…")).clicked() {
+                        if secondary_button(ui, t!("Choose…")).clicked() {
                             pick = true;
                         }
                     });
@@ -194,8 +194,12 @@ impl CorrentApp {
             }
         }
         if pick {
-            let start =
-                self.media.library_form.as_ref().map(|f| std::path::PathBuf::from(&f.folder)).filter(|p| p.is_dir());
+            let start = self
+                .media
+                .library_form
+                .as_ref()
+                .map(|f| std::path::PathBuf::from(&f.folder))
+                .filter(|p| !local || p.is_dir());
             self.pick(crate::app::pickers::PickTarget::LibraryFolder, crate::app::pickers::PickKind::Folder, start);
         }
     }

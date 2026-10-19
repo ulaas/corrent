@@ -211,6 +211,13 @@ impl CorrentApp {
                 QueueEntry { item_id: id, title: String::new(), subtitle: String::new(), resume_ms: 0, poster: None };
             self.play_queue(vec![e], false);
         }
+        if std::env::var("CORRENT_DEV_SERVER_FS").is_ok()
+            && self.server.as_ref().is_some_and(|s| s.connected())
+            && !self.media_dev_profiles
+        {
+            self.media_dev_profiles = true;
+            self.pick(super::pickers::PickTarget::LibraryFolder, super::pickers::PickKind::Folder, None);
+        }
         if std::env::var("CORRENT_DEV_PROFILES").is_ok() && self.media.client.is_some() && !self.media_dev_profiles {
             self.media_dev_profiles = true;
             self.main_view = super::feeds::MainView::Media;

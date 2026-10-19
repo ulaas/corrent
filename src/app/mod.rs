@@ -18,6 +18,7 @@ mod onboarding;
 mod pickers;
 mod remote;
 mod search_view;
+mod server_fs;
 mod settings_window;
 mod sidebar;
 mod statusbar;
@@ -384,6 +385,7 @@ pub struct CorrentApp {
     pub media: media::MediaState,
     pub tv: tv::TvState,
     pub web_account: Option<web_account::WebAccount>,
+    server_fs: Option<server_fs::ServerFs>,
     /// The server used instead of the local engine (None: local).
     pub server: Option<connect::ServerLink>,
     pub connect: Option<connect::ConnectDialog>,
@@ -534,6 +536,7 @@ impl CorrentApp {
             server,
             tv: Default::default(),
             web_account: None,
+            server_fs: None,
             servers,
             pending_local: false,
             connect: None,
@@ -1213,6 +1216,7 @@ impl CorrentApp {
         self.extra_windows(&ctx, &p);
         self.connect_dialog(&ctx, &p);
         self.web_account_window(&ctx, &p);
+        self.server_fs_window(&ctx, &p);
         self.onboarding(&ctx, &p);
         self.creator_dialog(&ctx, &p);
         self.rules_dialog(&ctx, &p);
