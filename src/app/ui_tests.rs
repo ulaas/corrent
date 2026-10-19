@@ -185,10 +185,14 @@ fn settings_window_navigation_and_search() {
         "Search",
         "Remote control",
         "Appearance",
+        "Playback",
         "Advanced",
     ] {
         assert!(h.query_all_by_label(page).next().is_some(), "settings page '{page}' listed");
     }
+    h.get_by_label("Playback").click();
+    h.run_steps(3);
+    h.get_by_label("Exclusive mode");
     h.get_by_label("Connection").click();
     h.run_steps(3);
     h.get_by_label("Use a SOCKS5 proxy for peer connections");

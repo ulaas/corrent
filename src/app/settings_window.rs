@@ -28,11 +28,12 @@ pub enum Page {
     Search,
     Remote,
     Appearance,
+    Playback,
     Advanced,
 }
 
 impl Page {
-    const ALL: [Page; 12] = [
+    const ALL: [Page; 13] = [
         Page::Behavior,
         Page::Downloads,
         Page::Connection,
@@ -44,6 +45,7 @@ impl Page {
         Page::Search,
         Page::Remote,
         Page::Appearance,
+        Page::Playback,
         Page::Advanced,
     ];
 
@@ -60,6 +62,7 @@ impl Page {
             Page::Search => t!("Search"),
             Page::Remote => t!("Remote control"),
             Page::Appearance => t!("Appearance"),
+            Page::Playback => t!("Playback"),
             Page::Advanced => t!("Advanced"),
         }
     }
@@ -77,6 +80,7 @@ impl Page {
             Page::Search => icons::MAGNIFYING_GLASS,
             Page::Remote => icons::PLUGS,
             Page::Appearance => icons::PALETTE,
+            Page::Playback => icons::SPEAKER_HIGH,
             Page::Advanced => icons::WRENCH,
         }
     }
@@ -98,6 +102,7 @@ impl Page {
                     != (b.rss.auto_download, b.rss.refresh_minutes, b.rss.max_articles)
             }
             Page::Appearance => a.appearance != b.appearance,
+            Page::Playback => a.playback != b.playback,
             Page::Advanced => a.advanced != b.advanced,
         }
     }
@@ -134,6 +139,9 @@ impl Page {
                     "theme dark light system accent color colour palette preset nord solarized high contrast custom import export compact rows zoom scale units animations sparklines progress"
                 )
             }
+            Page::Playback => t!(
+                "audio sound output device speakers headphones exclusive bit-perfect channels surround stereo 5.1 7.1 passthrough receiver hdmi spdif dolby dts normalize loudness equalizer bass treble replaygain gapless"
+            ),
             Page::Advanced => t!("log level refresh interval checking concurrent data folder reset defaults"),
         }
     }
@@ -275,6 +283,11 @@ impl CorrentApp {
             return;
         }
         let restart = self.settings.requires_restart(&new);
+        if self.settings.playback != new.playback
+            && let Some(pl) = &self.media.player
+        {
+            pl.apply_audio(&new.playback);
+        }
         let speed_changed = self.settings.speed != new.speed;
         self.settings = new.clone();
         self.save_settings();
@@ -1503,6 +1516,105 @@ impl CorrentApp {
                     );
                 });
             }
+            Page::Playback => {
+                if self.media.audio_devices.is_none() {
+                    self.media.audio_devices = Some(super::media::client::fetch(&self.rt, &self.ctx, async {
+                        tokio::task::spawn_blocking(audio_devices).await.map_err(|e| e.to_string())?
+                    }));
+                }
+                let devices = self.media.audio_devices.as_ref().and_then(super::media::client::ready);
+                let pb = &mut s.playback;
+                card(p).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    heading(ui, p, t!("Sound output"));
+                    row(ui, p, t!("Output device"), t!("Where the media player sends sound."), |ui| {
+                        let list = devices.as_ref().and_then(|d| d.as_ref().ok()).cloned().unwrap_or_default();
+                        let shown =
+                            list.iter().find(|(n, _)| *n == pb.audio_device).map(|(_, d)| d.clone()).unwrap_or_else(
+                                || {
+                                    if pb.audio_device == "auto" {
+                                        t!("System default").to_string()
+                                    } else {
+                                        pb.audio_device.clone()
+                                    }
+                                },
+                            );
+                        egui::ComboBox::from_id_salt("audio_device").width(250.0).selected_text(shown).show_ui(
+                            ui,
+                            |ui| {
+                                ui.selectable_value(&mut pb.audio_device, "auto".to_string(), t!("System default"));
+                                for (name, desc) in &list {
+                                    if name != "auto" {
+                                        ui.selectable_value(&mut pb.audio_device, name.clone(), desc);
+                                    }
+                                }
+                                if devices.is_none() {
+                                    ui.spinner();
+                                }
+                            },
+                        );
+                    });
+                    toggle(
+                        ui,
+                        p,
+                        t!("Exclusive mode"),
+                        t!("Takes the device for the player alone: bit-perfect sound, but other apps go quiet."),
+                        &mut pb.exclusive,
+                    );
+                    row(ui, p, t!("Speakers"), t!("What the player mixes for."), |ui| {
+                        let opts =
+                            [("auto-safe", t!("Automatic")), ("stereo", t!("Stereo")), ("5.1", "5.1"), ("7.1", "7.1")];
+                        let shown =
+                            opts.iter().find(|(v, _)| *v == pb.channels).map(|(_, l)| *l).unwrap_or(t!("Automatic"));
+                        egui::ComboBox::from_id_salt("audio_channels").selected_text(shown).show_ui(ui, |ui| {
+                            for (v, l) in opts {
+                                ui.selectable_value(&mut pb.channels, v.to_string(), l);
+                            }
+                        });
+                    });
+                    toggle(
+                        ui,
+                        p,
+                        t!("Pass Dolby and DTS to the receiver"),
+                        t!("For an AV receiver over HDMI or S/PDIF that decodes them itself."),
+                        &mut pb.passthrough,
+                    );
+                    ui.add_space(8.0);
+                    heading(ui, p, t!("Sound processing"));
+                    toggle(
+                        ui,
+                        p,
+                        t!("Even out loudness"),
+                        t!("Quiet and loud films and tracks play at a similar level."),
+                        &mut pb.normalize,
+                    );
+                    row(ui, p, t!("Equalizer"), "", |ui| {
+                        let label = |e: corrent_core::config::EqPreset| match e {
+                            corrent_core::config::EqPreset::Flat => t!("Off"),
+                            corrent_core::config::EqPreset::BassBoost => t!("More bass"),
+                            corrent_core::config::EqPreset::Treble => t!("More treble"),
+                            corrent_core::config::EqPreset::Vocal => t!("Voices"),
+                            corrent_core::config::EqPreset::Loudness => t!("Loudness"),
+                        };
+                        egui::ComboBox::from_id_salt("eq").selected_text(label(pb.equalizer)).show_ui(ui, |ui| {
+                            for e in corrent_core::config::EqPreset::ALL {
+                                ui.selectable_value(&mut pb.equalizer, e, label(e));
+                            }
+                        });
+                    });
+                    row(ui, p, t!("ReplayGain"), t!("Uses the volume levels stored in music files."), |ui| {
+                        let opts = [("album", t!("By album")), ("track", t!("By track")), ("off", t!("Off"))];
+                        let shown =
+                            opts.iter().find(|(v, _)| *v == pb.replaygain).map(|(_, l)| *l).unwrap_or(t!("By album"));
+                        egui::ComboBox::from_id_salt("replaygain").selected_text(shown).show_ui(ui, |ui| {
+                            for (v, l) in opts {
+                                ui.selectable_value(&mut pb.replaygain, v.to_string(), l);
+                            }
+                        });
+                    });
+                    toggle(ui, p, t!("Gapless albums"), t!("No pause between tracks of an album."), &mut pb.gapless);
+                });
+            }
             Page::Advanced => {
                 card(p).show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -1619,4 +1731,20 @@ impl CorrentApp {
             self.save_settings();
         }
     }
+}
+
+/// The sound devices mpv can play to: (name, description). Blocking (starts a headless mpv).
+fn audio_devices() -> Result<Vec<(String, String)>, String> {
+    let lib = corrent_mpv::Library::get().map_err(|e| e.to_string())?;
+    let mpv = corrent_mpv::Mpv::new(lib, corrent_mpv::HEADLESS).map_err(|e| e.to_string())?;
+    let list = mpv.get("audio-device-list").map_err(|e| e.to_string())?;
+    Ok(list
+        .as_array()
+        .iter()
+        .filter_map(|d| {
+            let name = d.get("name")?.as_str()?.to_string();
+            let desc = d.get("description").and_then(|x| x.as_str()).unwrap_or(&name).to_string();
+            Some((name, desc))
+        })
+        .collect())
 }

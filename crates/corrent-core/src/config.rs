@@ -96,7 +96,98 @@ pub struct Settings {
     pub web_api: WebApiSettings,
     pub updates: crate::updates::UpdateSettings,
     pub appearance: Appearance,
+    /// The media player (sound output and processing).
+    pub playback: Playback,
     pub advanced: Advanced,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EqPreset {
+    #[default]
+    Flat,
+    BassBoost,
+    Treble,
+    Vocal,
+    Loudness,
+}
+
+impl EqPreset {
+    pub const ALL: [EqPreset; 5] =
+        [EqPreset::Flat, EqPreset::BassBoost, EqPreset::Treble, EqPreset::Vocal, EqPreset::Loudness];
+
+    /// Bands as (frequency Hz, gain dB).
+    pub fn bands(self) -> &'static [(u32, i32)] {
+        match self {
+            EqPreset::Flat => &[],
+            EqPreset::BassBoost => &[(60, 6), (150, 4), (400, 1)],
+            EqPreset::Treble => &[(4000, 2), (8000, 4), (14000, 5)],
+            EqPreset::Vocal => &[(150, -2), (1000, 2), (3000, 4), (8000, 1)],
+            EqPreset::Loudness => &[(60, 5), (150, 2), (3000, -1), (10000, 4)],
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Playback {
+    /// mpv `audio-device` ("auto" = the system default).
+    pub audio_device: String,
+    /// Bit-perfect: take the device for ourselves (WASAPI exclusive, CoreAudio hog mode).
+    pub exclusive: bool,
+    /// mpv `audio-channels`: "auto-safe", "auto", "stereo", "5.1", "7.1".
+    pub channels: String,
+    /// Send Dolby/DTS untouched to a receiver (S/PDIF, HDMI).
+    pub passthrough: bool,
+    /// Even out loudness between tracks and films (EBU R128).
+    pub normalize: bool,
+    pub equalizer: EqPreset,
+    /// "off", "track" or "album".
+    pub replaygain: String,
+    /// No gap between album tracks.
+    pub gapless: bool,
+}
+
+impl Default for Playback {
+    fn default() -> Self {
+        Playback {
+            audio_device: "auto".into(),
+            exclusive: false,
+            channels: "auto-safe".into(),
+            passthrough: false,
+            normalize: false,
+            equalizer: EqPreset::Flat,
+            replaygain: "album".into(),
+            gapless: true,
+        }
+    }
+}
+
+impl Playback {
+    /// The player's audio options for mpv.
+    pub fn mpv_options(&self) -> Vec<(&'static str, String)> {
+        let mut filters: Vec<String> = Vec::new();
+        if self.normalize {
+            filters.push("loudnorm=I=-18:TP=-1.5:LRA=11".into());
+        }
+        for (f, g) in self.equalizer.bands() {
+            filters.push(format!("equalizer=f={f}:t=o:w=1:g={g}"));
+        }
+        let af = if filters.is_empty() { String::new() } else { format!("lavfi=[{}]", filters.join(",")) };
+        let device = if self.audio_device.trim().is_empty() { "auto".to_string() } else { self.audio_device.clone() };
+        vec![
+            ("audio-device", device),
+            ("audio-exclusive", if self.exclusive { "yes" } else { "no" }.into()),
+            ("audio-channels", if self.channels.is_empty() { "auto-safe".into() } else { self.channels.clone() }),
+            ("audio-spdif", if self.passthrough { "ac3,eac3,dts,dts-hd,truehd".into() } else { String::new() }),
+            ("af", af),
+            (
+                "replaygain",
+                if matches!(self.replaygain.as_str(), "off" | "no") { "no".into() } else { self.replaygain.clone() },
+            ),
+            ("gapless-audio", if self.gapless { "weak" } else { "no" }.into()),
+        ]
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -723,6 +814,26 @@ pub struct PaletteDef {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn playback_options_for_mpv() {
+        let d = Playback::default().mpv_options();
+        let get = |o: &[(&str, String)], k: &str| o.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone()).unwrap();
+        assert_eq!(get(&d, "af"), "");
+        assert_eq!(get(&d, "audio-device"), "auto");
+        let p = Playback {
+            normalize: true,
+            equalizer: EqPreset::BassBoost,
+            replaygain: "off".into(),
+            passthrough: true,
+            ..Default::default()
+        };
+        let o = p.mpv_options();
+        assert!(get(&o, "af").starts_with("lavfi=[loudnorm=") && get(&o, "af").contains("equalizer=f=60"));
+        assert_eq!(get(&o, "replaygain"), "no");
+        assert!(get(&o, "audio-spdif").contains("truehd"));
+    }
+
     use super::*;
 
     #[test]

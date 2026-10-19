@@ -90,6 +90,8 @@ pub struct MediaState {
     focus_rect: Option<Rect>,
     offline: Option<Arc<offline::Store>>,
     offline_loading: Option<Slot<Arc<offline::Store>>>,
+    /// Sound devices for the Playback settings (asked once).
+    pub audio_devices: Option<Slot<Vec<(String, String)>>>,
     /// Waiting downloads were restarted (once per session).
     offline_resumed: bool,
     /// When queued offline progress was last sent.
@@ -410,7 +412,15 @@ impl CorrentApp {
             }
         }
         self.media.player = None;
-        match Player::new(client.clone(), self.rt.clone(), &self.ctx, self.media.gl.as_ref(), queue, audio_only) {
+        match Player::new(
+            client.clone(),
+            self.rt.clone(),
+            &self.ctx,
+            self.media.gl.as_ref(),
+            queue,
+            audio_only,
+            &self.settings.playback,
+        ) {
             Ok(mut p) => {
                 p.offline = offline.map(|s| (s, client.base().to_string()));
                 self.media.player = Some(p)

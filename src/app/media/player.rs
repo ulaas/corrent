@@ -236,6 +236,7 @@ impl Player {
         gl: Option<&GlAccess>,
         queue: Vec<QueueEntry>,
         audio_only: bool,
+        audio: &corrent_core::config::Playback,
     ) -> Result<Player, String> {
         let lib = corrent_mpv::Library::get().map_err(|e| e.to_string())?;
         let header = client.auth_header();
@@ -247,10 +248,10 @@ impl Player {
             ("keep-open", "yes"),
             ("hwdec", "auto-safe"),
             ("http-header-fields", header.as_str()),
-            ("gapless-audio", "weak"),
-            ("replaygain", "album"),
             ("audio-display", "no"),
         ]);
+        let audio_opts = audio.mpv_options();
+        opts.extend(audio_opts.iter().map(|(k, v)| (*k, v.as_str())));
         opts.push(if audio_only { ("vid", "no") } else { ("vo", "libmpv") });
         // mpv sends the token: always verify HTTPS (mpv doesn't by default), against the
         // server's own CA when it has one.
@@ -480,6 +481,13 @@ impl Player {
     /// Commands from the UI thread are asynchronous: the UI never waits for mpv's core.
     fn cmd(&self, args: &[&str]) {
         let _ = self.mpv.command_async(0, args);
+    }
+
+    /// New sound settings while playing.
+    pub fn apply_audio(&self, audio: &corrent_core::config::Playback) {
+        for (k, v) in audio.mpv_options() {
+            self.cmd(&["set", k, &v]);
+        }
     }
 
     pub fn toggle_pause(&mut self) {
