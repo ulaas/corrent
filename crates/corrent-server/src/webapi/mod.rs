@@ -106,9 +106,9 @@ fn router(state: Arc<ApiState>) -> Router {
         .with_state(state)
 }
 
-const WEBUI_HTML: &str = include_str!("../../assets/webui/index.html");
-const WEBUI_JS: &str = include_str!("../../assets/webui/app.js");
-const WEBUI_CSS: &str = include_str!("../../assets/webui/style.css");
+const WEBUI_HTML: &str = include_str!("../../../../assets/webui/index.html");
+const WEBUI_JS: &str = include_str!("../../../../assets/webui/app.js");
+const WEBUI_CSS: &str = include_str!("../../../../assets/webui/style.css");
 
 /// A web UI file with headers that keep it from being framed, sniffed or extended with
 /// scripts from elsewhere.

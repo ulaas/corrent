@@ -1,0 +1,28 @@
+[package]
+name = "corrent-server"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Corrent's HTTP server: qBittorrent-compatible API, API v1, web client"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+corrent-core = { path = "../corrent-core" }
+corrent-proto = { path = "../corrent-proto" }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net"] }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "multipart", "json", "query", "form"] }
+arc-swap = "1"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+url = "2"
+aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
+
+[target."cfg(windows)".dependencies]
+aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
+
+[dev-dependencies]
+corrent-core = { path = "../corrent-core", features = ["testkit"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "form", "multipart", "json"] }

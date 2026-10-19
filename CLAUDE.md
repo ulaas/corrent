@@ -73,8 +73,9 @@ crates/corrent-i18n + assets/i18n/
                             Translations: t!("English text", name = x) / tk! in consts; tr.toml catalog
                             (the source of truth — edit it directly)
 crates/corrent-mpv/         Runtime-loaded libmpv (dlopen): probe, encode, GL/SW render; spike examples
-src/webapi/                 qBittorrent-compatible Web API (axum) for Sonarr/Radarr
-assets/webui/               Web interface served by src/webapi at /
+crates/corrent-proto/       API v1 wire types (serde): torrents + deltas, events, errors, auth DTOs
+crates/corrent-server/      HTTP server; webapi/ = qBittorrent-compatible Web API (axum) for Sonarr/Radarr
+assets/webui/               Web interface served by corrent-server's webapi at /
 src/integration/            single_instance (local socket IPC), os_handler(+_windows) magnet/.torrent
                             registration, macos_events (Apple Events), app_identity, power (when done)
 src/app/                    eframe App: titlebar/toolbar, sidebar, table, details, dialogs, settings

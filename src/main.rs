@@ -5,10 +5,10 @@
 extern crate corrent_i18n;
 use corrent_core::{backup, config, crash, engine, import, rss, search, store, updates, util};
 use corrent_i18n as i18n;
+use corrent_server::webapi;
 mod app;
 mod integration;
 mod ui;
-mod webapi;
 
 use std::sync::Arc;
 
