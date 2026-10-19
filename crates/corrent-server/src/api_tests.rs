@@ -1479,7 +1479,10 @@ async fn casts_to_a_receiver() {
     let next = async |seen: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
         tokio::time::timeout(std::time::Duration::from_secs(10), seen.recv()).await.unwrap().unwrap()
     };
-    let load = next(&mut seen).await;
+    let load = match tokio::time::timeout(std::time::Duration::from_secs(10), seen.recv()).await {
+        Ok(Some(l)) => l,
+        _ => panic!("no LOAD; status {:?}", h.st.casts.status("tv")),
+    };
     let url = load.strip_prefix("LOAD ").unwrap();
     assert!(url.starts_with("http://127.0.0.1:") && url.contains("/dlna/media/"), "{url}");
     // The device fetches the file itself, over the network.
@@ -1504,6 +1507,28 @@ async fn casts_to_a_receiver() {
     assert_eq!(next(&mut seen).await, "SEEK");
     let (s, _, _) = send(app, Method::POST, "/api/v1/cast/nope/command", &admin, json!({ "action": "play" })).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+    // Someone else's running cast isn't theirs to drive.
+    send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        &admin,
+        json!({ "name": "guest1", "password": "long enough pw", "role": "user" }),
+    )
+    .await;
+    let (_, v, _) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call {
+            body: Some(json!({ "username": "guest1", "password": "long enough pw", "device": device() })),
+            ..Default::default()
+        },
+    )
+    .await;
+    let other = v["token"].as_str().unwrap().to_string();
+    let (s, _, _) = send(app, Method::POST, "/api/v1/cast/tv/command", &other, json!({ "action": "pause" })).await;
+    assert_eq!(s, StatusCode::CONFLICT);
     h.stop().await;
 }
 

@@ -130,6 +130,12 @@ impl MediaClient {
         Ok(res)
     }
 
+    /// A whole response with only a stall timeout (slow transcoded segments).
+    pub async fn download_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
+        let res = self.download(path, 0).await?;
+        Ok(res.bytes().await.map_err(|e| e.to_string())?.to_vec())
+    }
+
     /// The server's address (what offline copies are filed under).
     pub fn base(&self) -> &str {
         &self.base

@@ -23,6 +23,7 @@ pub struct Ssdp {
     udn: String,
     port: u16,
     socket: MulticastUdpSocket,
+    st: std::sync::Arc<crate::state::AppState>,
 }
 
 /// A search request's target, if it is a well-formed M-SEARCH.
@@ -79,9 +80,9 @@ fn location(ip: IpAddr, port: u16) -> String {
 }
 
 impl Ssdp {
-    pub async fn new(udn: String, port: u16) -> anyhow::Result<Ssdp> {
+    pub async fn new(udn: String, port: u16, st: std::sync::Arc<crate::state::AppState>) -> anyhow::Result<Ssdp> {
         let socket = MulticastUdpSocket::new((Ipv6Addr::UNSPECIFIED, PORT).into(), V4, V6_SITE, None, None).await?;
-        Ok(Ssdp { udn, port, socket })
+        Ok(Ssdp { udn, port, socket, st })
     }
 
     fn notify(&self, nt: &str, nts: &str, o: &MulticastOpts) -> String {
@@ -93,7 +94,7 @@ impl Ssdp {
         )
     }
 
-    async fn announce(&self, nts: &str) {
+    pub async fn announce(&self, nts: &str) {
         let mut nts_list = vec![self.udn.clone()];
         nts_list.extend(TARGETS.iter().map(|t| t.to_string()));
         for nt in &nts_list {
@@ -102,6 +103,10 @@ impl Ssdp {
     }
 
     async fn reply(&self, msg: &[u8], from: SocketAddr) {
+        // Only the local network (no reflection to the internet).
+        if !crate::net::is_local(from.ip(), &crate::net::parse_cidrs(&self.st.cfg.load().allowed_networks)) {
+            return;
+        }
         let Some(st) = search_target(msg) else { return };
         // Link-local IPv6 locations can't carry the scope a client would need.
         if matches!(from.ip(), IpAddr::V6(a) if a.is_unicast_link_local()) {

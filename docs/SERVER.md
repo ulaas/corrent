@@ -162,7 +162,8 @@ player's Watch together menu. Play, pause and seek from anyone apply to everyone
 computed from the server's clock, so late joiners start at the right place. Everyone needs an
 account that may see the item. Rooms close when the last person leaves or after six idle hours
 (at most 200 rooms, 20 people each). API: `POST /api/v1/syncplay`, `GET /syncplay/{code}`,
-`POST /syncplay/{code}/join|leave|command`; WebSocket topic `room` with the code as argument.
+`POST /syncplay/{code}/join|leave|command`; WebSocket topic `room` with the code as argument. Membership is per
+account: two devices of one account count once (leaving on one leaves both).
 
 ## DLNA for TVs and players
 

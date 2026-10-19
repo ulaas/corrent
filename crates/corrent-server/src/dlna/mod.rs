@@ -36,15 +36,19 @@ const PAGE_MAX: usize = 500;
 /// The running server (dropping it stops announcing; the HTTP listener stops with it).
 pub struct Running {
     _http: crate::Listener,
-    ssdp: Option<tokio::task::JoinHandle<()>>,
+    ssdp: Option<(Arc<ssdp::Ssdp>, tokio::task::JoinHandle<()>)>,
     d: Arc<Dlna>,
     pub port: u16,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
-        if let Some(t) = &self.ssdp {
+        if let Some((s, t)) = self.ssdp.take() {
             t.abort();
+            // TVs forget us now rather than when the announcement expires.
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                rt.spawn(async move { s.announce("ssdp:byebye").await });
+            }
         }
     }
 }
@@ -117,9 +121,10 @@ pub async fn start(st: Arc<AppState>, announce: bool) -> anyhow::Result<Running>
     let http = crate::serve_http(router(d.clone()), addr).await?;
     let port = http.addr.port();
     let ssdp = if announce {
-        let runner = ssdp::Ssdp::new(d.udn.clone(), port).await?;
+        let runner = Arc::new(ssdp::Ssdp::new(d.udn.clone(), port, d.st.clone()).await?);
         tracing::info!("DLNA: announcing “{}” as {} (port {port})", d.name, d.udn);
-        Some(tokio::spawn(async move { runner.run().await }))
+        let r2 = runner.clone();
+        Some((runner, tokio::spawn(async move { r2.run().await })))
     } else {
         None
     };
@@ -176,7 +181,7 @@ fn udn(server_id: &str) -> String {
 }
 
 fn router(d: Arc<Dlna>) -> Router {
-    let allowed = crate::net::parse_cidrs(&d.st.cfg.load().allowed_networks);
+    let st = d.st.clone();
     let mut r = Router::new()
         .route("/dlna/media/{user}/{file}/{sig}", get(media))
         .route("/dlna/hls/{session}/{sig}/{name}", get(hls))
@@ -199,7 +204,8 @@ fn router(d: Arc<Dlna>) -> Router {
     r.layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(axum::middleware::from_fn(
             move |ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request, next: Next| {
-                let ok = crate::net::is_local(peer.ip(), &allowed);
+                // Read per request: changes to the allowed networks apply at once.
+                let ok = crate::net::is_local(peer.ip(), &crate::net::parse_cidrs(&st.cfg.load().allowed_networks));
                 async move { if ok { next.run(req).await } else { StatusCode::FORBIDDEN.into_response() } }
             },
         ))
@@ -390,6 +396,10 @@ async fn item_object(d: &Dlna, user: i64, host: &str, it: &corrent_proto::librar
         .find(|i| matches!(i.kind.as_str(), "poster" | "primary" | "cover" | "thumb"))
         .or(it.images.first());
     let art = art.map(|i| format!("http://{host}/dlna/art/{}/{}", i.sha, sign(d, &format!("art:{}", i.sha))));
+    // Unfinished downloads: the file on disk has holes (TVs would play zeros).
+    if it.partial && !is_container(it.kind) {
+        return None;
+    }
     if is_container(it.kind) {
         return Some(didl::Object::Container {
             id: format!("i{}", it.id),

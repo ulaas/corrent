@@ -11,14 +11,36 @@ use crate::ui::theme::Palette;
 
 impl CorrentApp {
     /// The offline store (remote servers only: a local server's files are already here).
+    /// `None` until its index is read (in the background).
     pub(super) fn offline_store(&mut self) -> Option<std::sync::Arc<Store>> {
         self.server.as_ref()?;
-        Some(self.media.offline.get_or_insert_with(|| Store::open(&self.paths.data_dir)).clone())
+        if let Some(s) = &self.media.offline {
+            return Some(s.clone());
+        }
+        match &self.media.offline_loading {
+            None => {
+                let dir = self.paths.data_dir.clone();
+                self.media.offline_loading = Some(super::client::fetch(&self.rt, &self.ctx, async move {
+                    tokio::task::spawn_blocking(move || Store::open(&dir)).await.map_err(|e| e.to_string())
+                }));
+                None
+            }
+            Some(slot) => {
+                let s = super::client::ready(slot)?.ok()?;
+                self.media.offline = Some(s.clone());
+                self.media.offline_loading = None;
+                Some(s)
+            }
+        }
     }
 
     /// Sends progress made offline, once a minute while some is waiting.
     pub(super) fn flush_offline(&mut self, client: &MediaClient) {
         let Some(store) = self.offline_store() else { return };
+        if !self.media.offline_resumed {
+            self.media.offline_resumed = true;
+            store.resume_queued(client, &self.rt, &self.ctx);
+        }
         if self.media.flushed.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(60))
             || !store.has_pending(client.base())
         {
@@ -44,8 +66,15 @@ impl CorrentApp {
         }
         let have: Vec<_> = targets.iter().filter_map(|t| store.find(client.base(), t.id)).collect();
         if have.len() == targets.len() {
-            let done = have.iter().all(|d| d.state == State::Done);
-            let label = if done { t!("Downloaded") } else { t!("Downloading…") };
+            let label = if have.iter().all(|d| d.state == State::Done) {
+                t!("Downloaded")
+            } else if have.iter().any(|d| matches!(d.state, State::Failed(_))) {
+                t!("Download failed")
+            } else if have.iter().any(|d| matches!(d.state, State::Running | State::Queued)) {
+                t!("Downloading…")
+            } else {
+                t!("Paused")
+            };
             if ui.button(format!("{}  {label}", icons::CHECK_CIRCLE)).on_hover_text(t!("Open downloads")).clicked() {
                 self.open(super::Page::Downloads);
             }
@@ -108,10 +137,8 @@ impl CorrentApp {
                                 Quality::Smaller => t!("Smaller copy (720p)"),
                             };
                             let state = match &d.state {
-                                State::Done => {
-                                    let size = std::fs::metadata(store.path(d)).map(|m| m.len()).unwrap_or(d.total);
-                                    corrent_core::util::fmt_bytes(size)
-                                }
+                                State::Done if d.quality == Quality::Original => corrent_core::util::fmt_bytes(d.total),
+                                State::Done => String::new(),
                                 State::Queued => t!("Waiting").to_string(),
                                 State::Paused => t!("Paused").to_string(),
                                 State::Running if d.total == 0 => t!("Starting…").to_string(),
@@ -155,12 +182,12 @@ impl CorrentApp {
                                         play = Some(d.item.clone());
                                     }
                                 }
-                                State::Running | State::Queued => {
+                                State::Running => {
                                     if ui.button(icons::PAUSE).on_hover_text(t!("Pause")).clicked() {
                                         store.pause(d.key);
                                     }
                                 }
-                                State::Paused | State::Failed(_) => {
+                                State::Queued | State::Paused | State::Failed(_) => {
                                     if ui.button(icons::PLAY).on_hover_text(t!("Resume")).clicked() {
                                         store.start(client, &self.rt, &self.ctx, d.key);
                                     }

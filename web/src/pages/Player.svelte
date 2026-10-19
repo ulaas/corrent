@@ -242,6 +242,22 @@
     });
   });
   onDestroy(() => room?.leave());
+  // Closing the tab leaves too (else the room counts a ghost until it idles out).
+  $effect(() => {
+    const bye = () => room?.leave();
+    window.addEventListener('pagehide', bye);
+    return () => window.removeEventListener('pagehide', bye);
+  });
+  // Another item here (next episode): the room stays with its item, this player leaves it.
+  $effect(() => {
+    const cur = id;
+    untrack(() => {
+      if (room?.state && room.state.item_id !== cur && !route.query.get('room')) {
+        room.leave();
+        room = null;
+      }
+    });
+  });
   async function watchTogether() {
     if (room) {
       void navigator.clipboard?.writeText(location.href).then(() => toast(t('Link copied: send it to whoever watches with you.'), 'success'));
@@ -522,7 +538,7 @@
       <div class="stext">
         <strong>{t('Playing on {name}', { name: cast.device.name })}</strong>
         <span class="small muted">
-          {#if cast.status?.state === 'error'}{cast.status.error ?? t('The device couldn’t play this.')}
+          {#if cast.status?.state === 'error'}{!cast.status.error || cast.status.error === 'cant_play' ? t('The device couldn’t play this.') : cast.status.error}
           {:else if cast.status?.state === 'connecting' || cast.status?.state === 'loading'}{t('Connecting…')}
           {:else if cast.status?.state === 'idle'}{t('Finished')}
           {/if}

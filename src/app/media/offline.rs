@@ -58,7 +58,7 @@ pub struct PendingState {
     pub at: i64,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct Index {
     downloads: Vec<Download>,
     #[serde(default)]
@@ -67,9 +67,17 @@ struct Index {
     next_key: u64,
 }
 
+enum Write {
+    Index(Vec<u8>),
+    #[cfg(test)]
+    Barrier(std::sync::mpsc::Sender<()>),
+}
+
 pub struct Store {
     dir: PathBuf,
     index: Mutex<Index>,
+    /// The index is written by its own thread (callers never wait for the disk).
+    writer: Mutex<std::sync::mpsc::Sender<Write>>,
     /// Keys of downloads with a running task.
     running: Mutex<std::collections::HashSet<u64>>,
 }
@@ -99,14 +107,53 @@ pub fn segments(playlist: &str) -> Vec<String> {
 }
 
 impl Store {
+    /// Reads the index (blocking: call it off the UI thread).
     pub fn open(data_dir: &Path) -> Arc<Store> {
         let dir = data_dir.join("offline");
-        let index = std::fs::read(dir.join("index.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Index>(&b).ok())
-            .unwrap_or_default();
-        let s = Store { dir, index: Mutex::new(index), running: Default::default() };
-        // Downloads that were running when the app closed continue when asked to.
+        // A damaged index falls back to the copy `write_atomic` keeps.
+        let read = |p: PathBuf| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<Index>(&b).ok());
+        let index = read(dir.join("index.json")).or_else(|| read(dir.join("index.json.bak"))).unwrap_or_default();
+        let (tx, rx) = std::sync::mpsc::channel::<Write>();
+        let file = dir.join("index.json");
+        std::thread::Builder::new()
+            .name("offline-index".into())
+            .spawn(move || {
+                while let Ok(mut w) = rx.recv() {
+                    // Only the newest index matters.
+                    while let Ok(next) = rx.try_recv() {
+                        match next {
+                            Write::Index(b) => w = Write::Index(b),
+                            #[cfg(test)]
+                            other => {
+                                if let Write::Index(b) = &w
+                                    && let Some(d) = file.parent()
+                                {
+                                    let _ = std::fs::create_dir_all(d);
+                                    let _ = corrent_core::util::write_atomic(&file, b);
+                                }
+                                w = other;
+                            }
+                        }
+                    }
+                    match w {
+                        Write::Index(b) => {
+                            if let Some(d) = file.parent() {
+                                let _ = std::fs::create_dir_all(d);
+                            }
+                            if let Err(e) = corrent_core::util::write_atomic(&file, &b) {
+                                tracing::warn!("offline index: {e}");
+                            }
+                        }
+                        #[cfg(test)]
+                        Write::Barrier(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            })
+            .ok();
+        let s = Store { dir, index: Mutex::new(index), writer: Mutex::new(tx), running: Default::default() };
+        // Downloads that were running when the app closed continue (`resume_queued`).
         {
             let mut i = s.index.lock().unwrap_or_else(|e| e.into_inner());
             for d in &mut i.downloads {
@@ -119,20 +166,37 @@ impl Store {
     }
 
     fn save(&self, i: &Index) {
-        let _ = std::fs::create_dir_all(&self.dir);
-        if let Ok(b) = serde_json::to_vec_pretty(i)
-            && let Err(e) = corrent_core::util::write_atomic(&self.dir.join("index.json"), &b)
-        {
-            tracing::warn!("offline index: {e}");
+        if let Ok(b) = serde_json::to_vec_pretty(i) {
+            let _ = self.writer.lock().unwrap_or_else(|e| e.into_inner()).send(Write::Index(b));
+        }
+    }
+
+    /// Waits until everything sent so far is on disk (tests).
+    #[cfg(test)]
+    fn wait_saved(&self) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = self.writer.lock().unwrap().send(Write::Barrier(tx));
+        let _ = rx.recv();
+    }
+
+    /// Starts downloads left waiting (the app closed while they ran).
+    pub fn resume_queued(self: &Arc<Self>, client: &MediaClient, rt: &tokio::runtime::Handle, ctx: &egui::Context) {
+        for d in self.downloads(client.base()) {
+            if d.state == State::Queued {
+                self.start(client, rt, ctx, d.key);
+            }
         }
     }
 
     fn update(&self, key: u64, f: impl FnOnce(&mut Download)) {
-        let mut i = self.index.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(d) = i.downloads.iter_mut().find(|d| d.key == key) {
-            f(d);
-        }
-        self.save(&i);
+        let snapshot = {
+            let mut i = self.index.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(d) = i.downloads.iter_mut().find(|d| d.key == key) {
+                f(d);
+            }
+            i.clone()
+        };
+        self.save(&snapshot);
     }
 
     pub fn downloads(&self, server: &str) -> Vec<Download> {
@@ -161,7 +225,18 @@ impl Store {
     ) {
         let key = {
             let mut i = self.index.lock().unwrap_or_else(|e| e.into_inner());
-            if i.downloads.iter().any(|d| d.server == client.base() && d.item.id == item.id) {
+            // A failed one is tried again.
+            if let Some(d) = i.downloads.iter_mut().find(|d| d.server == client.base() && d.item.id == item.id) {
+                if !matches!(d.state, State::Failed(_)) {
+                    return;
+                }
+                d.state = State::Queued;
+                d.quality = quality;
+                let key = d.key;
+                let snapshot = i.clone();
+                drop(i);
+                self.save(&snapshot);
+                self.start(client, rt, ctx, key);
                 return;
             }
             i.next_key += 1;
@@ -191,12 +266,21 @@ impl Store {
         });
     }
 
+    /// Forgets a download and deletes its folder in the background (a running task stops
+    /// at its next check and deletes what it still held open).
     pub fn remove(&self, key: u64) {
         let mut i = self.index.lock().unwrap_or_else(|e| e.into_inner());
         i.downloads.retain(|d| d.key != key);
         self.save(&i);
         drop(i);
-        let _ = std::fs::remove_dir_all(self.dir.join(key.to_string()));
+        let folder = self.dir.join(key.to_string());
+        std::thread::spawn(move || {
+            let _ = std::fs::remove_dir_all(folder);
+        });
+    }
+
+    fn gone(&self, key: u64) -> bool {
+        !self.index.lock().unwrap_or_else(|e| e.into_inner()).downloads.iter().any(|d| d.key == key)
     }
 
     /// Runs (or resumes) a download.
@@ -209,6 +293,10 @@ impl Store {
         rt.spawn(async move {
             let r = me.run(&c, key, &ctx).await;
             me.running.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+            if me.gone(key) {
+                let _ = tokio::fs::remove_dir_all(me.dir.join(key.to_string())).await;
+                return;
+            }
             me.update(key, |d| match r {
                 Ok(true) => d.state = State::Done,
                 Ok(false) => {}
@@ -258,7 +346,15 @@ impl Store {
                 };
                 let path = folder.join(&file);
                 let have = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
-                let mut res = c.download(&info.url, have).await?;
+                let mut res = match c.download(&info.url, have).await {
+                    Ok(r) => r,
+                    // Asked past the end: the copy was already complete (closed before it was marked).
+                    Err(e) if have > 0 && e.starts_with("416") => {
+                        self.update(key, |x| (x.done, x.total) = (have, have));
+                        return Ok(true);
+                    }
+                    Err(e) => return Err(e),
+                };
                 // A server that ignored the range sends everything again.
                 let resumed = res.status() == reqwest::StatusCode::PARTIAL_CONTENT;
                 let start = if resumed { have } else { 0 };
@@ -362,7 +458,18 @@ impl Store {
             if self.paused(key) {
                 return Ok(false);
             }
-            let bytes = c.bytes(&format!("{base}/{name}")).await?;
+            // A segment can take a while (the server converts as we go): retry a few times.
+            let mut tries = 0;
+            let bytes = loop {
+                match c.download_bytes(&format!("{base}/{name}")).await {
+                    Ok(b) => break b,
+                    Err(_) if tries < 3 => {
+                        tries += 1;
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                    Err(e) => return Err(e),
+                }
+            };
             out.write_all(&bytes).await.map_err(|e| e.to_string())?;
             out.flush().await.map_err(|e| e.to_string())?;
             ends.push(ends.last().copied().unwrap_or(0) + bytes.len() as u64);
@@ -484,6 +591,7 @@ mod tests {
         }
         s.queue_state("https://s", 5, serde_json::json!({ "position_ms": 1000 }));
         s.queue_state("https://s", 5, serde_json::json!({ "position_ms": 2000 }));
+        s.wait_saved();
         let s2 = Store::open(&dir);
         let d = s2.find("https://s", 5).unwrap();
         assert_eq!(d.state, State::Queued);

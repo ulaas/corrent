@@ -937,9 +937,10 @@ impl Player {
         self.cast_button(ui, pos2(rect.right() - 188.0, y), white, pos);
         if let Some(c) = &self.casting {
             let line = match self.cast.status() {
-                Some(s) if s.state == "error" => {
-                    s.error.unwrap_or_else(|| t!("The device couldn’t play this.").to_string())
-                }
+                Some(s) if s.state == "error" => s
+                    .error
+                    .filter(|e| e != "cant_play")
+                    .unwrap_or_else(|| t!("The device couldn’t play this.").to_string()),
                 Some(s) if s.state == "connecting" || s.state == "loading" => t!("Connecting…").to_string(),
                 _ => String::new(),
             };

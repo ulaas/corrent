@@ -37,6 +37,20 @@ async fn devices(
     Ok(Json(list.into_iter().map(|f| f.device).collect()))
 }
 
+/// Someone else's running cast is theirs (administrators may take over).
+fn may_control(st: &AppState, auth: &Auth, device: &str) -> Result<(), super::ApiErr> {
+    match st.casts.status(device) {
+        Some(s)
+            if s.by != auth.name()
+                && !matches!(s.state.as_str(), "idle" | "error")
+                && !auth.0.can(corrent_proto::auth::Perms::USERS_MANAGE) =>
+        {
+            Err(err(ErrorCode::Conflict, format!("{} is casting there", s.by)))
+        }
+        _ => Ok(()),
+    }
+}
+
 async fn status(State(st): State<Arc<AppState>>, _auth: Auth, Path(device): Path<String>) -> ApiResult<CastStatus> {
     st.casts.status(&device).map(Json).ok_or_else(|| err(ErrorCode::NotFound, "nothing is casting there"))
 }
@@ -58,6 +72,7 @@ async fn play(
     Path(device): Path<String>,
     Json(b): Json<PlayBody>,
 ) -> ApiResult<CastStatus> {
+    may_control(&st, &auth, &device)?;
     let found = st.casts.device(&device).await.map_err(|e| err(ErrorCode::NotFound, format!("{e:#}")))?;
     let host =
         crate::cast::local_ip_towards(found.addr).ok_or_else(|| err(ErrorCode::Internal, "no route to the device"))?;
@@ -104,6 +119,7 @@ async fn play(
             start_s: b.position_ms.max(0) as f64 / 1000.0,
             item_id: b.item_id,
             by: auth.name().to_string(),
+            user_id: user,
             hls_session: info.session_id,
             duration_ms: info.duration_ms,
         },
@@ -113,10 +129,11 @@ async fn play(
 
 async fn command(
     State(st): State<Arc<AppState>>,
-    _auth: Auth,
+    auth: Auth,
     Path(device): Path<String>,
     Json(c): Json<CastCommand>,
 ) -> ApiResult<serde_json::Value> {
+    may_control(&st, &auth, &device)?;
     if !st.casts.command(&device, c) {
         return Err(err(ErrorCode::NotFound, "nothing is casting there"));
     }

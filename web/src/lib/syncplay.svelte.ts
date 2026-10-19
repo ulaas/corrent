@@ -77,12 +77,21 @@ export class SyncRoom {
   /** The person played, paused or seeked here. */
   send(action: 'play' | 'pause' | 'seek', positionS: number) {
     if (this.applying) return;
+    // Pressing play while the room plays (autoplay was blocked here): catch up, don't rewind
+    // everyone to this player's stale position.
+    if (action === 'play' && this.state && !this.state.paused) {
+      this.apply();
+      return;
+    }
     void api.post(`/syncplay/${encodeURIComponent(this.id)}/command`, { action, position_ms: Math.round(positionS * 1000) }).catch(() => {});
   }
 
   leave() {
+    if (this.left) return;
+    this.left = true;
     for (const f of this.stop) f();
     this.stop = [];
-    void api.post(`/syncplay/${encodeURIComponent(this.id)}/leave`).catch(() => {});
+    void api.post(`/syncplay/${encodeURIComponent(this.id)}/leave`, undefined, { keepalive: true }).catch(() => {});
   }
+  private left = false;
 }

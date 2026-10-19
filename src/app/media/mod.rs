@@ -89,6 +89,9 @@ pub struct MediaState {
     /// A focused card outside the view: the page scrolls to it.
     focus_rect: Option<Rect>,
     offline: Option<Arc<offline::Store>>,
+    offline_loading: Option<Slot<Arc<offline::Store>>>,
+    /// Waiting downloads were restarted (once per session).
+    offline_resumed: bool,
     /// When queued offline progress was last sent.
     flushed: Option<std::time::Instant>,
 }

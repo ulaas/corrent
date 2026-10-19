@@ -269,6 +269,14 @@ impl HlsManager {
         self.sessions.lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned().ok_or(HlsError::NotFound)
     }
 
+    /// Keeps a session from being reaped while a player that isn't fetching holds it (a paused
+    /// cast).
+    pub fn keep_alive(&self, id: &str) {
+        if let Ok(s) = self.get(id) {
+            s.touch();
+        }
+    }
+
     /// The owner of a session (the server checks it against the requesting user).
     pub fn owner(&self, id: &str) -> Option<String> {
         self.get(id).ok().map(|s| s.spec.user.clone())

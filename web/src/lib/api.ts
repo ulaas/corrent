@@ -83,6 +83,8 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /** Don't treat 401 as "signed out" (sign-in itself). */
   quiet401?: boolean;
+  /** Finish even when the page closes (leaving a room). */
+  keepalive?: boolean;
 }
 
 async function request<T>(method: string, path: string, o: RequestOptions = {}): Promise<T> {
@@ -100,7 +102,7 @@ async function request<T>(method: string, path: string, o: RequestOptions = {}):
   if (method !== 'GET' && csrf) headers['X-Corrent-CSRF'] = csrf;
   let res: Response;
   try {
-    res = await fetch(url(path, o.query), { method, headers, body, signal: o.signal, credentials: 'same-origin' });
+    res = await fetch(url(path, o.query), { method, headers, body, signal: o.signal, credentials: 'same-origin', keepalive: o.keepalive });
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') throw e;
     throw new ApiError(0, null);

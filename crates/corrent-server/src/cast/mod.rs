@@ -26,6 +26,8 @@ const NS_HEARTBEAT: &str = "urn:x-cast:com.google.cast.tp.heartbeat";
 const NS_RECEIVER: &str = "urn:x-cast:com.google.cast.receiver";
 const NS_MEDIA: &str = "urn:x-cast:com.google.cast.media";
 const SENDER: &str = "sender-corrent";
+/// The error clients translate ("The device couldn't play this").
+pub const CANT_PLAY: &str = "cant_play";
 /// Devices are looked for again after this long.
 const FRESH: Duration = Duration::from_secs(60);
 
@@ -46,6 +48,8 @@ pub struct Media {
     pub start_s: f64,
     pub item_id: i64,
     pub by: String,
+    /// Whose watch progress the cast records.
+    pub user_id: i64,
     /// The HLS session to stop when the cast ends.
     pub hls_session: Option<String>,
     pub duration_ms: Option<i64>,
@@ -252,7 +256,7 @@ pub fn apply_media_status(s: &mut CastStatus, v: &Value) -> Option<i64> {
             let reason = m.get("idleReason").and_then(Value::as_str).unwrap_or("");
             s.state = if reason == "ERROR" { "error".into() } else { "idle".into() };
             if reason == "ERROR" {
-                s.error = Some("the device couldn't play this".into());
+                s.error = Some(CANT_PLAY.into());
             }
         }
         _ => {}
@@ -274,7 +278,12 @@ async fn connection(
         .with_no_client_auth();
     let tcp = tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect(addr)).await??;
     let name = rustls::pki_types::ServerName::IpAddress(addr.ip().into());
-    let stream = tokio_rustls::TlsConnector::from(Arc::new(tls)).connect(name, tcp).await?;
+    let stream = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio_rustls::TlsConnector::from(Arc::new(tls)).connect(name, tcp),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("the device didn't finish the TLS handshake"))??;
     let (mut r, mut w) = tokio::io::split(stream);
 
     w.write_all(&msg("receiver-0", NS_CONNECTION, json!({ "type": "CONNECT" }))).await?;
@@ -287,6 +296,8 @@ async fn connection(
     let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
     let mut poll = tokio::time::interval(Duration::from_secs(1));
     let mut last_seen = Instant::now();
+    let mut launched: Option<Instant> = None;
+    let mut last_report = Instant::now();
     let (frames_tx, mut frames) = mpsc::channel::<anyhow::Result<CastMessage>>(32);
     // Reading runs on its own so a half-read frame is never dropped by `select!`.
     let reader = tokio::spawn(async move {
@@ -326,6 +337,13 @@ async fn connection(
             tokio::select! {
                 _ = heartbeat.tick() => {
                     w.write_all(&msg("receiver-0", NS_HEARTBEAT, json!({ "type": "PING" }))).await?;
+                    // A paused cast fetches nothing: keep its transcode alive.
+                    if let Some(id) = current.as_ref().and_then(|m| m.hls_session.as_deref()) {
+                        st.hls.keep_alive(id);
+                    }
+                    if launched.is_some_and(|t: Instant| t.elapsed() > Duration::from_secs(20)) {
+                        anyhow::bail!("the device didn't start the player");
+                    }
                     if last_seen.elapsed() > Duration::from_secs(30) {
                         anyhow::bail!("the device stopped answering");
                     }
@@ -358,6 +376,7 @@ async fn connection(
                                     pending = Some(m);
                                     req += 1;
                                     w.write_all(&msg("receiver-0", NS_RECEIVER, json!({ "type": "LAUNCH", "appId": APP_ID, "requestId": req }))).await?;
+                                    launched = Some(Instant::now());
                                 }
                             }
                         }
@@ -410,6 +429,7 @@ async fn connection(
                                     if transport.as_deref() != Some(t.as_str()) && !t.is_empty() {
                                         w.write_all(&msg(&t, NS_CONNECTION, json!({ "type": "CONNECT" }))).await?;
                                         transport = Some(t);
+                                        launched = None;
                                     }
                                 }
                                 // Another app took over the device (or ours was closed).
@@ -419,38 +439,61 @@ async fn connection(
                         }
                         (NS_RECEIVER, "LAUNCH_ERROR") => anyhow::bail!("the device refused to start the player"),
                         (NS_MEDIA, "MEDIA_STATUS") => {
-                            let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
-                            if let Some(ms) = apply_media_status(&mut s, &v) {
-                                media_session = Some(ms);
+                            let (state, pos, dur) = {
+                                let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
+                                if let Some(ms) = apply_media_status(&mut s, &v) {
+                                    media_session = Some(ms);
+                                }
+                                (s.state.clone(), s.position_ms, s.duration_ms)
+                            };
+                            // Watch progress, as the players record it (every 10 s, and at the end).
+                            if let Some(m) = &current {
+                                let finished = state == "idle"
+                                    && v.pointer("/status/0/idleReason").and_then(Value::as_str) == Some("FINISHED");
+                                if finished || (state == "playing" && last_report.elapsed() > Duration::from_secs(10)) {
+                                    last_report = Instant::now();
+                                    let near_end = dur.is_some_and(|d| d > 0 && pos * 10 > d * 9);
+                                    let u = if finished || near_end {
+                                        corrent_proto::library::StateUpdate { played: Some(true), ..Default::default() }
+                                    } else {
+                                        corrent_proto::library::StateUpdate { position_ms: Some(pos), ..Default::default() }
+                                    };
+                                    let (lib, user, item) = (st.library.clone(), m.user_id, m.item_id);
+                                    tokio::spawn(async move {
+                                        let _ = lib.set_state(user, item, u).await;
+                                    });
+                                }
                             }
                         }
                         (NS_MEDIA, "LOAD_FAILED" | "LOAD_CANCELLED" | "INVALID_REQUEST") => {
                             let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
                             s.state = "error".into();
-                            s.error = Some("the device couldn't play this".into());
+                            s.error = Some(CANT_PLAY.into());
                         }
                         (NS_CONNECTION, "CLOSE") if Some(&m.source) == transport.as_ref() => return Ok(()),
                         _ => {}
                     }
-                    // The player is ready: load what is waiting.
-                    if let (Some(t), Some(media)) = (transport.clone(), pending.take()) {
-                        req += 1;
-                        let mut meta = json!({ "metadataType": 0, "title": media.title, "subtitle": media.subtitle });
-                        if let Some(img) = &media.image {
-                            meta["images"] = json!([{ "url": img }]);
-                        }
-                        let mut info = json!({
-                            "contentId": media.url, "contentType": media.content_type, "streamType": "BUFFERED", "metadata": meta,
-                        });
-                        if let Some(d) = media.duration_ms {
-                            info["duration"] = json!(d as f64 / 1000.0);
-                        }
-                        w.write_all(&msg(&t, NS_MEDIA, json!({
-                            "type": "LOAD", "requestId": req, "media": info, "autoplay": true, "currentTime": media.start_s,
-                        }))).await?;
-                        current = Some(media);
-                    }
                 }
+            }
+            // The player is ready: load what is waiting.
+            if let Some(t) = transport.clone()
+                && let Some(media) = pending.take()
+            {
+                req += 1;
+                let mut meta = json!({ "metadataType": 0, "title": media.title, "subtitle": media.subtitle });
+                if let Some(img) = &media.image {
+                    meta["images"] = json!([{ "url": img }]);
+                }
+                let mut info = json!({
+                    "contentId": media.url, "contentType": media.content_type, "streamType": "BUFFERED", "metadata": meta,
+                });
+                if let Some(d) = media.duration_ms {
+                    info["duration"] = json!(d as f64 / 1000.0);
+                }
+                w.write_all(&msg(&t, NS_MEDIA, json!({
+                    "type": "LOAD", "requestId": req, "media": info, "autoplay": true, "currentTime": media.start_s,
+                }))).await?;
+                current = Some(media);
             }
         }
     }

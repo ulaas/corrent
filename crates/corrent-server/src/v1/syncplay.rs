@@ -115,6 +115,7 @@ async fn join(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<String
     let item = item.ok_or_else(|| err(ErrorCode::NotFound, "no such room"))?;
     st.library.item(auth.0.user.id, item).await.map_err(lib_err)?;
     let mut rooms = st.rooms.0.lock().unwrap_or_else(|e| e.into_inner());
+    rooms.retain(|_, room| room.touched.elapsed() < IDLE);
     let r = rooms.get_mut(&id).ok_or_else(|| err(ErrorCode::NotFound, "no such room"))?;
     if r.members.len() >= 20 && !r.members.contains(auth.name()) {
         return Err(err(ErrorCode::Conflict, "the room is full"));
