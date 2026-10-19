@@ -33,10 +33,18 @@ Windows, and what is still open.
 
 1. **Toolchains:** Rust (MSVC, see `rust-version` in the manifests); Node 20+ for `web/`;
    `cargo install cargo-deny`; `rustup target add wasm32-wasip2` only if you rebuild plugins.
-2. **libmpv:** Corrent loads `libmpv-2.dll` (or `mpv-2.dll`/`mpv-1.dll`) at runtime. Put one next to
-   the executables or on `PATH` (for example from a shinchiro mpv dev build). Without it, playback,
-   transcodes and the mpv-based tests are skipped or unavailable, and probing falls back to
-   `ffprobe` if that is installed. The `corrent-mpvw` worker (`cargo build -p corrent-mpv --bin corrent-mpvw`)
+2. **libmpv:** Corrent loads `libmpv-2.dll` (or `mpv-2.dll`/`mpv-1.dll`) at runtime, from next to
+   the executables or from `PATH`. An installed mpv player doesn't include it.
+   - Run `powershell -File scripts/fetch-libmpv.ps1` once. It downloads the pinned shinchiro
+     `mpv-dev-x86_64` build, checks its SHA-256 and keeps `libmpv-2.dll` in `.cache\libmpv\`
+     (ignored by git).
+   - From then on, every build of the `corrent` crate copies it into `target\<profile>\` (`build.rs`).
+     The script also copies it into the target folders that already exist.
+   - `-Latest` takes the newest release (with GitHub's digest) once the pinned one has been pruned.
+   - Cargo puts `target\debug` on the test binaries' search path, so the in-process mpv tests run
+     too (the gate then covers them; they first ran on Windows on 2026-10-20).
+   - Without it, playback, transcodes and the mpv-based tests are skipped or unavailable, and probing
+     falls back to `ffprobe` if that is installed. The `corrent-mpvw` worker (`cargo build -p corrent-mpv --bin corrent-mpvw`)
    is found next to the server binary.
 3. **Gate:** `powershell -File scripts/gate.ps1`, the same checks as `scripts/gate.sh`. Commit only after
    it prints `GATE OK`.

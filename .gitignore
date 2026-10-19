@@ -3,3 +3,4 @@
 /.corrent-portable
 /.zigvenv
 /dist
+/.cache

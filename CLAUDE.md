@@ -29,6 +29,7 @@ librqbit 9.0.1 engine. Goal: full-featured, beautiful, stable, easy to use, full
 ```sh
 cargo build                 # debug
 cargo build --release       # target/release/corrent.exe (owner runs this build)
+powershell -File scripts/fetch-libmpv.ps1   # once: libmpv-2.dll into .cache/libmpv; build.rs copies it next to the exe
 cargo test --workspace      # unit + loopback engine integration tests (crates/corrent-core/src/engine/e2e_tests.rs)
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo deny check   # CI gates
 ./target/debug/corrent.exe --portable [magnet|url|file]
