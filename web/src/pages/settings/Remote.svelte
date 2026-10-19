@@ -101,6 +101,12 @@
     <div class="srow toggle-row">
       <Toggle bind:checked={draft.connect_relay} label={t('Use public relays')} hint={t('Needed outside this network. While on, the server’s addresses are published to the relay operator’s lookup service.')} />
     </div>
+    {#if draft.connect_relay}
+      <div class="srow">
+        <div class="stext"><span class="slabel">{t('Your own relay')}</span><span class="shint">{t('Optional: the address of a relay you run (iroh-relay) to use instead of the public ones.')}</span></div>
+        <div class="sctl"><input class="input" type="url" bind:value={draft.connect_relay_url} placeholder="https://relay.example.org" aria-label={t('Your own relay')} /></div>
+      </div>
+    {/if}
     {#if st.connect_id}
       <div class="srow">
         <div class="stext"><span class="slabel">{t('Connect address')}</span><span class="shint mono ellipsis">{st.connect_id}</span></div>

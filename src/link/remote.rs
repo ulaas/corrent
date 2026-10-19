@@ -955,6 +955,7 @@ mod tests {
             corrent_server::router(local.state.clone()),
             corrent_server::p2p::load_or_create_key(&dir).unwrap(),
             false,
+            None,
             Some("127.0.0.1:0".parse().unwrap()),
         )
         .await

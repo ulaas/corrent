@@ -231,6 +231,7 @@ export interface RemoteConfig {
   discovery: boolean;
   connect: boolean;
   connect_relay: boolean;
+  connect_relay_url: string;
   port_mapping: boolean;
   dlna: boolean;
   dlna_user: string;

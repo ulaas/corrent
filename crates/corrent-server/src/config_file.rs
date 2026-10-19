@@ -39,6 +39,8 @@ pub struct ServerConfig {
     pub connect: bool,
     /// Use the public relays for Connect.
     pub connect_relay: bool,
+    /// A self-hosted relay for Connect (`https://relay.example.org`) instead of n0's.
+    pub connect_relay_url: String,
     /// Ask the router to forward the HTTPS port.
     pub port_mapping: bool,
     /// Serve Prometheus metrics at /metrics (local network only, never over Corrent Connect).
@@ -75,6 +77,7 @@ impl Default for ServerConfig {
             discovery: true,
             connect: false,
             connect_relay: true,
+            connect_relay_url: String::new(),
             port_mapping: false,
             metrics: false,
             metrics_token: String::new(),

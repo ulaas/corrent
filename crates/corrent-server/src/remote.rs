@@ -28,6 +28,7 @@ struct Applied {
     connect_relay: bool,
     port_mapping: bool,
     name: String,
+    relay_url: String,
     dlna: (bool, u16, String),
 }
 
@@ -37,6 +38,7 @@ pub fn config_of(c: &ServerConfig) -> RemoteConfig {
         discovery: c.discovery,
         connect: c.connect,
         connect_relay: c.connect_relay,
+        connect_relay_url: c.connect_relay_url.clone(),
         port_mapping: c.port_mapping,
         dlna: c.dlna,
         dlna_user: c.dlna_user.clone(),
@@ -51,6 +53,7 @@ pub fn with_config(mut c: ServerConfig, r: RemoteConfig) -> ServerConfig {
     c.discovery = r.discovery;
     c.connect = r.connect;
     c.connect_relay = r.connect_relay;
+    c.connect_relay_url = r.connect_relay_url.trim().to_string();
     c.port_mapping = r.port_mapping;
     c.dlna = r.dlna;
     c.dlna_user = r.dlna_user.trim().to_string();
@@ -84,6 +87,7 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
         connect_relay: cfg.connect_relay,
         port_mapping: cfg.port_mapping,
         name: name.clone(),
+        relay_url: cfg.connect_relay_url.clone(),
         dlna: (cfg.dlna, cfg.dlna_port, cfg.dlna_user.clone()),
     };
     let mut run = st.remote.lock().await;
@@ -134,7 +138,9 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
     #[cfg(feature = "p2p")]
     {
         // Corrent Connect.
-        let relay_changed = previous.as_ref().is_some_and(|p| p.connect_relay != cfg.connect_relay);
+        let relay_changed = previous
+            .as_ref()
+            .is_some_and(|p| p.connect_relay != cfg.connect_relay || p.relay_url != cfg.connect_relay_url);
         if !cfg.connect || relay_changed {
             run.connect = None;
             update(st, |s| {
@@ -145,7 +151,16 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
         }
         if cfg.connect && run.connect.is_none() {
             let started = match crate::p2p::load_or_create_key(&st.paths.data_dir) {
-                Ok(key) => crate::p2p::serve(crate::router(st.clone()), key, cfg.connect_relay, None).await,
+                Ok(key) => {
+                    crate::p2p::serve(
+                        crate::router(st.clone()),
+                        key,
+                        cfg.connect_relay,
+                        Some(&cfg.connect_relay_url),
+                        None,
+                    )
+                    .await
+                }
                 Err(e) => Err(e),
             };
             match started {

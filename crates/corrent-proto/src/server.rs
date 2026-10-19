@@ -36,6 +36,8 @@ pub struct RemoteConfig {
     pub connect: bool,
     /// Use the public relays for Connect (off: direct connections only).
     pub connect_relay: bool,
+    /// A self-hosted relay instead of the public ones (empty: the public ones).
+    pub connect_relay_url: String,
     /// Ask the router to forward the HTTPS port (UPnP / NAT-PMP / PCP).
     pub port_mapping: bool,
     /// DLNA/UPnP media server for TVs and players on this network.

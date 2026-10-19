@@ -91,9 +91,21 @@ impl Drop for Listener {
 }
 
 /// Serves `router` over Connect. `relay`: use n0's relays and address lookup (needed to be
-/// reachable from outside the LAN); off: direct addresses only (tests, LAN).
-pub async fn serve(router: Router, key: SecretKey, relay: bool, bind: Option<SocketAddr>) -> anyhow::Result<Listener> {
+/// reachable from outside the LAN); off: direct addresses only (tests, LAN). `own_relay`: a
+/// self-hosted relay (`iroh-relay`) to use instead of n0's (address lookup stays n0's; clients
+/// reach the server's home relay from what the lookup publishes).
+pub async fn serve(
+    router: Router,
+    key: SecretKey,
+    relay: bool,
+    own_relay: Option<&str>,
+    bind: Option<SocketAddr>,
+) -> anyhow::Result<Listener> {
     let mut b = builder(relay).secret_key(key).alpns(vec![ALPN.to_vec()]);
+    if relay && let Some(u) = own_relay.map(str::trim).filter(|u| !u.is_empty()) {
+        let url: iroh::RelayUrl = u.parse().map_err(|e| anyhow::anyhow!("relay address {u:?}: {e}"))?;
+        b = b.relay_mode(RelayMode::Custom(iroh::RelayMap::from(url)));
+    }
     if let Some(addr) = bind {
         b = b.clear_ip_transports().bind_addr(addr)?;
     }
@@ -263,9 +275,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn http_through_the_bridge_direct() {
         let t0 = std::time::Instant::now();
-        let server = serve(echo_router().await, SecretKey::generate(), false, Some("127.0.0.1:0".parse().unwrap()))
-            .await
-            .unwrap();
+        let server =
+            serve(echo_router().await, SecretKey::generate(), false, None, Some("127.0.0.1:0".parse().unwrap()))
+                .await
+                .unwrap();
         let direct: Vec<SocketAddr> = server.endpoint.bound_sockets();
         let bridge = bridge(server.id(), false, direct).await.unwrap();
         let connected = t0.elapsed();
@@ -287,7 +300,7 @@ mod tests {
             return;
         }
         let t0 = std::time::Instant::now();
-        let server = serve(echo_router().await, SecretKey::generate(), true, None).await.unwrap();
+        let server = serve(echo_router().await, SecretKey::generate(), true, None, None).await.unwrap();
         server.endpoint.online().await;
         let online = t0.elapsed();
         let bridge = bridge(server.id(), true, Vec::new()).await.unwrap();

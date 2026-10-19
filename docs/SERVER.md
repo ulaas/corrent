@@ -284,6 +284,13 @@ sent once it is back — unless the server saw that item played later.
 `GET /api/v1/server/remote` also reports what is running: the Connect id and home relay, the
 mapped public address, and errors.
 
+
+**Your own relay:** run iroh's relay server yourself (`cargo install iroh-relay --features
+server`, then `iroh-relay --config-path relay.toml` on a host with a public name and TLS) and
+put its address in Remote access → Your own relay (`connect_relay_url` in `server.toml`). The
+server then uses it as its home relay; apps reach it from the address the lookup service
+publishes, with no change on their side.
+
 ## Tasks, notifications, backups, metrics
 
 **Tasks** (`GET /api/v1/tasks`, `PUT /tasks/{id}`, `POST /tasks/{id}/run`, `GET /tasks/{id}/history`;

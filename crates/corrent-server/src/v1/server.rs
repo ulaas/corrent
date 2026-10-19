@@ -337,6 +337,10 @@ async fn put_remote(
             return Err(err(ErrorCode::BadRequest, "not a network in CIDR form").with_text("network", c));
         }
     }
+    let relay = r.connect_relay_url.trim();
+    if !relay.is_empty() && !(relay.starts_with("https://") || relay.starts_with("http://")) {
+        return Err(err(ErrorCode::BadRequest, "a relay address starts with https://"));
+    }
     {
         let _w = st.settings_lock.lock().await;
         let cfg = crate::remote::with_config((*st.cfg.load_full()).clone(), r);
