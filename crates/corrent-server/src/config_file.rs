@@ -41,8 +41,10 @@ pub struct ServerConfig {
     pub connect_relay: bool,
     /// Ask the router to forward the HTTPS port.
     pub port_mapping: bool,
-    /// Serve Prometheus metrics at /metrics (local network only, like everything else).
+    /// Serve Prometheus metrics at /metrics (local network only, never over Corrent Connect).
     pub metrics: bool,
+    /// When set, /metrics needs `Authorization: Bearer <metrics_token>`.
+    pub metrics_token: String,
 }
 
 impl Default for ServerConfig {
@@ -66,6 +68,7 @@ impl Default for ServerConfig {
             connect_relay: true,
             port_mapping: false,
             metrics: false,
+            metrics_token: String::new(),
         }
     }
 }

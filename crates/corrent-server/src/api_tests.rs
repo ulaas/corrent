@@ -653,6 +653,23 @@ async fn remote_access_settings() {
     h.stop().await;
 }
 
+/// Starts a task and waits for its run to finish; returns the finished run.
+async fn run_task(app: &Router, token: &str, id: &str) -> Value {
+    let (s, started, _) = send(app, Method::POST, &format!("/api/v1/tasks/{id}/run"), token, Value::Null).await;
+    assert_eq!(s, StatusCode::OK, "{started}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let (_, h, _) = get(app, &format!("/api/v1/tasks/{id}/history"), token).await;
+        if let Some(r) =
+            h.as_array().and_then(|a| a.iter().find(|r| r["id"] == started["id"])).filter(|r| r["finished"].is_i64())
+        {
+            return r.clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "task {id} finished: {h}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tasks_notifications_backups_metrics() {
     let h = harness("admin", ServerConfig { tls: false, metrics: true, ..Default::default() }).await;
@@ -666,9 +683,8 @@ async fn tasks_notifications_backups_metrics() {
     let (s, v, _) = send(app, Method::PUT, "/api/v1/tasks/backup", &admin, json!({ "every_min": 60 })).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v.as_array().unwrap().iter().any(|t| t["id"] == "backup" && t["every_min"] == 60));
-    let (s, v, _) = send(app, Method::POST, "/api/v1/tasks/cleanup_cache/run", &admin, Value::Null).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["ok"], true);
+    let v = run_task(app, &admin, "cleanup_cache").await;
+    assert_eq!(v["ok"], true, "{v}");
     let (_, v, _) = get(app, "/api/v1/tasks/cleanup_cache/history", &admin).await;
     assert_eq!(v.as_array().unwrap().len(), 1);
     assert_eq!(v[0]["trigger"], "admin");
@@ -676,8 +692,8 @@ async fn tasks_notifications_backups_metrics() {
     assert_eq!(s, StatusCode::NOT_FOUND);
 
     // Backups: a zip with the database and the configuration, downloadable by admins.
-    let (s, v, _) = send(app, Method::POST, "/api/v1/tasks/backup/run", &admin, Value::Null).await;
-    assert_eq!(s, StatusCode::OK, "{v}");
+    let v = run_task(app, &admin, "backup").await;
+    assert_eq!(v["ok"], true, "{v}");
     let (_, list, _) = get(app, "/api/v1/backups", &admin).await;
     let name = list[0]["name"].as_str().unwrap().to_string();
     let zip_path = crate::backups::path_of(&h.st.paths.data_dir, &name).unwrap();
@@ -792,6 +808,25 @@ async fn profiles_and_pins() {
     assert_ne!(v1["token"], kid_token);
     let (s, _, _) = get(app, "/api/v1/auth/me", &kid_token).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED, "the old profile token was replaced");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_the_app_claims_its_owner_account() {
+    let h = harness("claim", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let (_, issued) = h.st.identity.local_device_token().await.unwrap();
+    let (_, v, _) = call(app, Method::GET, "/api/v1/server/info", Call::default()).await;
+    assert_eq!(v["setup_required"], false, "browsers aren't offered the setup page");
+    let body = json!({ "name": "me", "password": "correct horse", "role": "admin" });
+    // Another local program (loopback, no token) can't take the account.
+    let (s, _, _) =
+        call(app, Method::POST, "/api/v1/auth/setup", Call { body: Some(body.clone()), ..Default::default() }).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // The app itself can.
+    let (s, v, _) = send(app, Method::POST, "/api/v1/auth/setup", &issued.token, body).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["user"]["name"], "me");
     h.stop().await;
 }
 
@@ -1302,7 +1337,7 @@ async fn plugins_identify_library_items() {
     assert_eq!(eps.len(), 5, "S01E01 is in the library: {eps:?}");
     assert!(!eps.contains(&(1, 1)));
     // Checking again adds nothing new.
-    let (_, r, _) = send(app, Method::POST, "/api/v1/tasks/monitor_shows/run", &admin, Value::Null).await;
+    let r = run_task(app, &admin, "monitor_shows").await;
     assert_eq!(r["ok"], true, "{r}");
     let (_, w, _) = get(app, "/api/v1/wanted", &admin).await;
     assert_eq!(w.as_array().unwrap().len(), 5);

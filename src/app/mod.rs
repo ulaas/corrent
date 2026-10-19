@@ -30,6 +30,7 @@ mod tray;
 mod tv;
 #[cfg(test)]
 mod ui_tests;
+mod web_account;
 mod when_done;
 mod win_chrome;
 mod window;
@@ -382,6 +383,7 @@ pub struct CorrentApp {
     media_dev_profiles: bool,
     pub media: media::MediaState,
     pub tv: tv::TvState,
+    pub web_account: Option<web_account::WebAccount>,
     /// The server used instead of the local engine (None: local).
     pub server: Option<connect::ServerLink>,
     pub connect: Option<connect::ConnectDialog>,
@@ -531,6 +533,7 @@ impl CorrentApp {
             media: Default::default(),
             server,
             tv: Default::default(),
+            web_account: None,
             servers,
             pending_local: false,
             connect: None,
@@ -1209,6 +1212,7 @@ impl CorrentApp {
         self.window_frame(&ctx, &p);
         self.extra_windows(&ctx, &p);
         self.connect_dialog(&ctx, &p);
+        self.web_account_window(&ctx, &p);
         self.onboarding(&ctx, &p);
         self.creator_dialog(&ctx, &p);
         self.rules_dialog(&ctx, &p);

@@ -37,16 +37,17 @@ pub fn routes() -> Router<Arc<AppState>> {
 }
 
 /// Public: lets a client recognise the server (and whether it still needs setting up).
-async fn info(State(st): State<Arc<AppState>>) -> ApiResult<ServerInfo> {
+async fn info(State(st): State<Arc<AppState>>, auth: Result<Auth, super::ApiErr>) -> ApiResult<ServerInfo> {
     Ok(Json(ServerInfo {
         id: st.server_id.clone(),
         name: st.cfg.load().display_name(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         api_version: corrent_proto::API_VERSION,
         tls_fingerprint: st.tls_fingerprint.clone(),
-        setup_required: st.identity.user_count().await? == 0,
+        setup_required: st.identity.user_count().await? == 0 && st.identity.claimable_owner().await?.is_none(),
         features: vec!["torrents".into(), "rss".into(), "search".into(), "events".into()],
-        connect_id: st.remote_status.load().connect_id.clone(),
+        // Signed-in callers only (pairing links carry it for new devices).
+        connect_id: auth.ok().and(st.remote_status.load().connect_id.clone()),
     }))
 }
 

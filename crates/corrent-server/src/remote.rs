@@ -50,6 +50,9 @@ fn loopback_only(bind: &str) -> bool {
 }
 
 fn update(st: &AppState, f: impl FnOnce(&mut RemoteStatus)) {
+    // Several tasks update different fields: one at a time, so none is lost.
+    static UPDATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = UPDATING.lock().unwrap_or_else(|e| e.into_inner());
     let mut s = (**st.remote_status.load()).clone();
     f(&mut s);
     st.remote_status.store(Arc::new(s));
@@ -66,6 +69,8 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
         return;
     }
     let previous = run.applied.replace(key);
+    // A part that fails to start is tried again on the next apply (same settings or not).
+    let mut failed = false;
     update(st, |s| s.https_port = port);
 
     // LAN discovery: only when the server listens beyond loopback.
@@ -92,6 +97,7 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
                 });
             }
             Err(e) => {
+                failed = true;
                 tracing::warn!("mDNS: {e}");
                 update(st, |s| {
                     s.discovery = false;
@@ -140,6 +146,7 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
                     });
                 }
                 Err(e) => {
+                    failed = true;
                     tracing::warn!("Corrent Connect: {e:#}");
                     update(st, |s| s.connect_error = Some(format!("{e:#}")));
                 }
@@ -200,6 +207,9 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
             s.connect_error = msg.clone();
             s.port_mapping_error = msg;
         });
+    }
+    if failed {
+        run.applied = None;
     }
 }
 

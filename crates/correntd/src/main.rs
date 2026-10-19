@@ -396,6 +396,8 @@ async fn serve(
     // Libraries: watch their folders (full rescans are the scan_libraries task).
     corrent_server::restart_watching(&state).await;
     sd_notify("READY=1");
+    #[cfg(windows)]
+    winservice::ready();
     wait_for_shutdown().await;
     state.hub.publish(corrent_proto_bye());
     corrent_server::remote::stop(&state).await;

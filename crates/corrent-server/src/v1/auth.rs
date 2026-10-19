@@ -163,11 +163,19 @@ async fn setup(
     State(st): State<Arc<AppState>>,
     ip: ClientIp,
     headers: HeaderMap,
+    auth: Result<Auth, ApiErr>,
     Json(mut req): Json<NewUser>,
 ) -> Result<Response, ApiErr> {
     limited(&st, ip)?;
     if !ip.0.is_loopback() {
         return Err(err(ErrorCode::Forbidden, "setup is only possible on the server itself"));
+    }
+    // The desktop app's own account is claimed only by the app (its token): loopback is shared
+    // with every local user and program.
+    if let Some(owner) = st.identity.claimable_owner().await?
+        && !auth.as_ref().is_ok_and(|a| a.0.user.id == owner)
+    {
+        return Err(err(ErrorCode::Forbidden, "set the password from the Corrent app"));
     }
     req.role = Role::Admin;
     req.perms = None;

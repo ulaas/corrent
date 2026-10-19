@@ -228,4 +228,6 @@ start it.
 
 **Metrics**: `metrics = true` in `server.toml` serves Prometheus text at `/metrics` (torrents by
 state, rates, totals, peers, DHT, free space, library items, transcode sessions, WebSocket
-clients, users). It is subject to the same LAN guard as everything else.
+clients, users). It is subject to the same LAN guard as everything else, is never served over
+Corrent Connect, and with `metrics_token = "…"` needs `Authorization: Bearer …`
+(Prometheus `bearer_token_file`).

@@ -50,8 +50,8 @@
   async function run(task: TaskInfo) {
     task.running = true;
     try {
-      const r = await api.post<{ ok?: boolean; message: string }>(`/tasks/${task.id}/run`);
-      toast(r.ok ? t('Done') : r.message, r.ok ? 'success' : 'error');
+      await api.post(`/tasks/${task.id}/run`);
+      toast(t('Started'), 'success');
     } catch (e) {
       toast(errorText(e), 'error');
     }

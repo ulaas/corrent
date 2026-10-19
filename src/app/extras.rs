@@ -89,6 +89,12 @@ impl CorrentApp {
             if ui.button(format!("{}  {}", icons::CHART_BAR, t!("Statistics"))).clicked() {
                 self.extras.stats = true;
             }
+            if local
+                && self.media.local().is_some()
+                && ui.button(format!("{}  {}", icons::GLOBE, t!("Web interface sign-in…"))).clicked()
+            {
+                self.open_web_account();
+            }
             if ui.button(format!("{}  {}", icons::TELEVISION, t!("TV mode"))).clicked() {
                 self.set_tv(true);
             }

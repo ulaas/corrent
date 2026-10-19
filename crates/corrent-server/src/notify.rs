@@ -111,7 +111,9 @@ pub async fn deliver(st: &AppState, t: &NotifyTarget, event: &str, title: &str, 
         }
         NotifyKind::Discord => {
             let content = if body.is_empty() { format!("**{title}**") } else { format!("**{title}**\n{body}") };
-            send(st.http.post(&t.url).json(&serde_json::json!({ "content": content }))).await
+            // Names come from torrents: no @everyone pings or role mentions from them.
+            let j = serde_json::json!({ "content": content, "allowed_mentions": { "parse": [] } });
+            send(st.http.post(&t.url).json(&j)).await
         }
         NotifyKind::Ntfy => {
             // ntfy takes the message as the body and the title in a header (ASCII only there).

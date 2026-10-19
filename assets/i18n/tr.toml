@@ -1046,3 +1046,7 @@
 "Who's watching?" = "Kim izliyor?"
 "PIN for {name}" = "{name} için PIN"
 "Switch profile" = "Profil değiştir"
+"Web interface sign-in" = "Web arayüzü girişi"
+"Web interface sign-in…" = "Web arayüzü girişi…"
+"Done. Sign in at {url} with this name and password." = "Tamam. {url} adresinde bu ad ve parolayla oturum açın."
+"Choose a name and password to sign in to the web interface on this computer." = "Bu bilgisayarda web arayüzüne giriş için bir ad ve parola seçin."

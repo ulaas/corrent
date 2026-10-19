@@ -89,10 +89,12 @@ async fn last_run(st: &AppState, id: &str) -> Option<TaskRun> {
 pub async fn list(st: &AppState) -> Vec<TaskInfo> {
     let mut out = Vec::new();
     for (id, enabled, every_min) in settings(st).await {
-        let last = last_run(st, &id).await;
+        let raw = last_run(st, &id).await;
         let next_at = (enabled && every_min > 0).then(|| {
-            last.as_ref().map(|l| l.started + every_min as i64 * 60).unwrap_or_else(corrent_core::util::now_unix)
+            raw.as_ref().map(|l| l.started + every_min as i64 * 60).unwrap_or_else(corrent_core::util::now_unix)
         });
+        // An anchor (the interval's starting point) isn't a run.
+        let last = raw.filter(|r| r.trigger != "anchor");
         out.push(TaskInfo { running: st.tasks.is(&id), id, enabled, every_min, last, next_at });
     }
     out
@@ -104,7 +106,7 @@ pub async fn history(st: &AppState, id: &str, limit: u32) -> Vec<TaskRun> {
         .db()
         .read(move |c| {
             let mut s = c.prepare(&format!(
-                "SELECT {RUN_COLS} FROM task_runs WHERE task = ?1 ORDER BY started DESC, id DESC LIMIT ?2"
+                "SELECT {RUN_COLS} FROM task_runs WHERE task = ?1 AND trigger != 'anchor' ORDER BY started DESC, id DESC LIMIT ?2"
             ))?;
             s.query_map(params![id, limit], run_row)?.collect()
         })
@@ -191,8 +193,8 @@ fn cleanup(root: &std::path::Path, active: &HashSet<String>) -> usize {
     n
 }
 
-/// Runs a task now (unless it is running already); `trigger` is "schedule" or a user name.
-pub async fn run(st: Arc<AppState>, id: &str, trigger: &str) -> Result<TaskRun, String> {
+/// Starts a run: checks, marks the task running and records the row.
+async fn begin(st: &Arc<AppState>, id: &str, trigger: &str) -> Result<TaskRun, String> {
     if !TASKS.iter().any(|(t, _)| *t == id) {
         return Err("no such task".into());
     }
@@ -208,44 +210,75 @@ pub async fn run(st: Arc<AppState>, id: &str, trigger: &str) -> Result<TaskRun, 
             Ok(t.last_insert_rowid())
         })
         .await;
-    let result = execute(&st, id).await;
-    st.tasks.end(id);
-    let (ok, message) = match &result {
-        Ok(m) => (true, m.clone()),
-        Err(e) => (false, e.clone()),
+    match run_id {
+        Ok(run_id) => Ok(TaskRun {
+            id: run_id,
+            task: id.to_string(),
+            started: now,
+            finished: None,
+            ok: None,
+            message: String::new(),
+            trigger: trigger.to_string(),
+        }),
+        Err(e) => {
+            st.tasks.end(id);
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Does the work of a begun run and records the outcome (a panic counts as a failure and
+/// never leaves the task marked running).
+async fn finish(st: Arc<AppState>, mut run: TaskRun) -> TaskRun {
+    let (st2, id) = (st.clone(), run.task.clone());
+    let result = match tokio::spawn(async move { execute(&st2, &id).await }).await {
+        Ok(r) => r,
+        Err(e) => Err(format!("the task crashed: {e}")),
+    };
+    st.tasks.end(&run.task);
+    let (ok, message) = match result {
+        Ok(m) => (true, m),
+        Err(e) => (false, e),
     };
     if !ok {
-        tracing::warn!("task {id}: {message}");
-        crate::notify::send(&st, "task_failed", t!("A server task failed: {task}", task = id), message.clone());
+        tracing::warn!("task {}: {message}", run.task);
+        crate::notify::send(&st, "task_failed", t!("A server task failed: {task}", task = run.task), message.clone());
     }
-    if let Ok(run_id) = run_id {
-        let (m, fin) = (message.clone(), corrent_core::util::now_unix());
-        let _ = st
-            .identity
-            .db()
-            .write(move |t| {
-                t.execute(
-                    "UPDATE task_runs SET finished = ?1, ok = ?2, message = ?3 WHERE id = ?4",
-                    params![fin, ok as i64, m, run_id],
-                )?;
-                // Keep the last 50 runs per task.
-                t.execute(
-                    "DELETE FROM task_runs WHERE id IN (SELECT id FROM task_runs WHERE task = (SELECT task FROM task_runs WHERE id = ?1)                      ORDER BY started DESC, id DESC LIMIT -1 OFFSET 50)",
-                    [run_id],
-                )
-                .map(drop)
-            })
-            .await;
-    }
-    Ok(TaskRun {
-        id: run_id.unwrap_or_default(),
-        task: id.to_string(),
-        started: now,
-        finished: Some(corrent_core::util::now_unix()),
-        ok: Some(ok),
-        message,
-        trigger: trigger.to_string(),
-    })
+    let (m, fin, run_id) = (message.clone(), corrent_core::util::now_unix(), run.id);
+    let _ = st
+        .identity
+        .db()
+        .write(move |t| {
+            t.execute(
+                "UPDATE task_runs SET finished = ?1, ok = ?2, message = ?3 WHERE id = ?4",
+                params![fin, ok as i64, m, run_id],
+            )?;
+            // Keep the last 50 runs per task.
+            t.execute(
+                "DELETE FROM task_runs WHERE id IN (SELECT id FROM task_runs WHERE task = (SELECT task FROM task_runs WHERE id = ?1) \
+                 ORDER BY started DESC, id DESC LIMIT -1 OFFSET 50)",
+                [run_id],
+            )
+            .map(drop)
+        })
+        .await;
+    run.finished = Some(fin);
+    run.ok = Some(ok);
+    run.message = message;
+    run
+}
+
+/// Runs a task to the end (unless it is running already); `trigger` is "schedule" or a user.
+pub async fn run(st: Arc<AppState>, id: &str, trigger: &str) -> Result<TaskRun, String> {
+    let r = begin(&st, id, trigger).await?;
+    Ok(finish(st, r).await)
+}
+
+/// Starts a task and answers right away (the run row, not finished yet).
+pub async fn start_run(st: Arc<AppState>, id: &str, trigger: &str) -> Result<TaskRun, String> {
+    let r = begin(&st, id, trigger).await?;
+    tokio::spawn(finish(st, r.clone()));
+    Ok(r)
 }
 
 /// Checks every minute which tasks are due (stops with the server state).
@@ -262,34 +295,37 @@ pub fn start(st: Arc<AppState>) {
                 _ = &mut stopped => break,
             }
             for t in list(&st).await {
-                let due = t.enabled
-                    && t.every_min > 0
-                    && !t.running
-                    && t.next_at.is_some_and(|n| n <= corrent_core::util::now_unix());
-                // A first-ever backup or metadata refresh waits for its interval instead of running at once.
-                if due
-                    && (t.last.is_some()
-                        || matches!(t.id.as_str(), "wanted_search" | "cleanup_cache" | "monitor_shows"))
-                {
-                    let st = st.clone();
-                    tokio::spawn(async move {
-                        let _ = run(st, &t.id, "schedule").await;
-                    });
-                } else if due && t.last.is_none() {
-                    // Record a starting point so the interval counts from now.
-                    let id = t.id.clone();
-                    let now = corrent_core::util::now_unix();
-                    let _ = st
-                        .identity
-                        .db()
-                        .write(move |tx| {
-                            tx.execute(
-                                "INSERT INTO task_runs(task, started, finished, ok, message, trigger) VALUES (?1, ?2, ?2, 1, '', 'schedule')",
-                                params![id, now],
-                            )
-                            .map(drop)
-                        })
-                        .await;
+                if !t.enabled || t.every_min == 0 || t.running {
+                    continue;
+                }
+                let now = corrent_core::util::now_unix();
+                match last_run(&st, &t.id).await {
+                    Some(r) if r.started + t.every_min as i64 * 60 > now => {}
+                    // Never run: some tasks wait one interval (counted from an "anchor" row).
+                    None if !matches!(
+                        t.id.as_str(),
+                        "wanted_search" | "cleanup_cache" | "monitor_shows" | "scan_libraries"
+                    ) =>
+                    {
+                        let id = t.id.clone();
+                        let _ = st
+                            .identity
+                            .db()
+                            .write(move |tx| {
+                                tx.execute(
+                                    "INSERT INTO task_runs(task, started, trigger) VALUES (?1, ?2, 'anchor')",
+                                    params![id, now],
+                                )
+                                .map(drop)
+                            })
+                            .await;
+                    }
+                    _ => {
+                        let st = st.clone();
+                        tokio::spawn(async move {
+                            let _ = run(st, &t.id, "schedule").await;
+                        });
+                    }
                 }
             }
         }

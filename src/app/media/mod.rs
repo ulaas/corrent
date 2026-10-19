@@ -51,6 +51,8 @@ pub struct MediaState {
     pub error: Option<String>,
     pub page: Option<Page>,
     back: Vec<Page>,
+    /// The focused widget on each page in `back` (TV mode returns to the card you left).
+    back_focus: Vec<Option<egui::Id>>,
     libraries: Option<Slot<Vec<Library>>>,
     home: Option<Slot<Vec<HomeRow>>>,
     grids: HashMap<i64, Grid>,
@@ -309,6 +311,9 @@ impl CorrentApp {
     /// Back one page (Home when there is no history).
     pub(super) fn media_back(&mut self) {
         self.media.page = Some(self.media.back.pop().unwrap_or(Page::Home));
+        if let Some(id) = self.media.back_focus.pop().flatten() {
+            self.ctx.memory_mut(|m| m.request_focus(id));
+        }
     }
 
     /// The search page for the current query (on-screen keyboard).
@@ -333,10 +338,10 @@ impl CorrentApp {
     }
 
     fn open(&mut self, page: Page) {
-        if let Some(cur) = self.media.page.take()
-            && cur != page
-        {
+        let cur = self.media.page.take().unwrap_or(Page::Home);
+        if cur != page {
             self.media.back.push(cur);
+            self.media.back_focus.push(self.ctx.memory(|m| m.focused()));
         }
         self.media.page = Some(page);
     }
@@ -448,7 +453,7 @@ impl CorrentApp {
                 .on_hover_text(t!("Back"))
                 .clicked()
             {
-                self.media.page = self.media.back.pop();
+                self.media_back();
             }
             if ui
                 .add(egui::Button::new(RichText::new(icons::HOUSE).size(18.0)).frame(false))

@@ -1465,6 +1465,7 @@ dependencies = [
  "base64 0.22.1",
  "corrent-core",
  "corrent-db",
+ "corrent-i18n",
  "corrent-library",
  "corrent-mpv",
  "corrent-plugins",
@@ -1496,6 +1497,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "url",
+ "zip",
 ]
 
 [[package]]

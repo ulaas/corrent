@@ -18,6 +18,8 @@ use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, TransportAddr};
 pub use iroh::EndpointId;
 
 pub const ALPN: &[u8] = b"corrent/1";
+/// Concurrent streams (HTTP connections) per Connect client.
+const MAX_STREAMS: usize = 64;
 
 /// Marks requests that came through Corrent Connect (with the client's key).
 #[derive(Clone, Copy, Debug)]
@@ -110,8 +112,15 @@ pub async fn serve(router: Router, key: SecretKey, relay: bool, bind: Option<Soc
                 };
                 let peer = conn.remote_id();
                 tracing::debug!("connect: {} connected", peer.fmt_short());
+                // A bounded number of streams per connection at once (each is an HTTP connection).
+                let slots = Arc::new(tokio::sync::Semaphore::new(MAX_STREAMS));
                 while let Ok((send, recv)) = conn.accept_bi().await {
-                    tokio::spawn(serve_stream(send, recv, router.clone(), peer));
+                    let Ok(slot) = slots.clone().acquire_owned().await else { break };
+                    let router = router.clone();
+                    tokio::spawn(async move {
+                        serve_stream(send, recv, router, peer).await;
+                        drop(slot);
+                    });
                 }
             });
         }
@@ -175,7 +184,16 @@ pub async fn bridge(server: EndpointId, relay: bool, direct: Vec<SocketAddr>) ->
     let addr = listener.local_addr()?;
     let ep = endpoint.clone();
     let task = tokio::spawn(async move {
-        while let Ok((tcp, peer)) = listener.accept().await {
+        loop {
+            let (tcp, peer) = match listener.accept().await {
+                Ok(c) => c,
+                // Out of file descriptors and the like: wait a moment, keep the bridge alive.
+                Err(e) => {
+                    tracing::debug!("connect bridge: accept: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    continue;
+                }
+            };
             if !peer.ip().is_loopback() {
                 continue;
             }

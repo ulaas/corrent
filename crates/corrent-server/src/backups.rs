@@ -2,7 +2,9 @@
 //! certificates and keys, zipped into `<data>/backups/` (the newest seven are kept).
 //!
 //! Restore: stop the server, unzip a backup into an empty data folder (or over the old one),
-//! start it again. The zip holds private keys: it is readable by the owner only.
+//! start it again. The zip holds private keys: on Unix it is readable by the owner only; on
+//! Windows the data folder's ACL applies (`correntd service install` limits it to SYSTEM,
+//! Administrators and the service account).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

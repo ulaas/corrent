@@ -25,7 +25,22 @@ fn label(k: &str, v: &str) -> String {
     format!("{{{k}=\"{}\"}}", v.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " "))
 }
 
-pub async fn serve(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn serve(State(st): State<Arc<AppState>>, req: axum::extract::Request) -> axum::response::Response {
+    #[cfg(feature = "p2p")]
+    if req.extensions().get::<crate::p2p::P2pPeer>().is_some() {
+        return axum::http::StatusCode::NOT_FOUND.into_response();
+    }
+    let token = st.cfg.load().metrics_token.clone();
+    if !token.is_empty() {
+        let given = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
+        let expected = format!("Bearer {token}");
+        // Constant-time comparison (the token is a secret).
+        let same = given.len() == expected.len()
+            && given.bytes().zip(expected.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0;
+        if !same {
+            return axum::http::StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
     let snap = st.engine.snapshot();
     let s = &snap.session;
     let mut out = String::new();
@@ -79,5 +94,5 @@ pub async fn serve(State(st): State<Arc<AppState>>) -> impl IntoResponse {
     );
     metric(&mut out, "corrent_realtime_clients", "gauge", "Open WebSocket connections.", &one(st.hub.clients() as f64));
     metric(&mut out, "corrent_users", "gauge", "Accounts.", &one(st.identity.user_count().await.unwrap_or(0) as f64));
-    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], out)
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], out).into_response()
 }

@@ -37,6 +37,7 @@ pub fn default_data_dir() -> PathBuf {
 pub fn install(data_dir: Option<PathBuf>, account: Option<String>, password: Option<String>) -> anyhow::Result<()> {
     let data_dir = data_dir.unwrap_or_else(default_data_dir);
     std::fs::create_dir_all(&data_dir)?;
+    restrict(&data_dir, account.as_deref())?;
     let manager = ServiceManager::local_computer(
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
@@ -73,6 +74,27 @@ pub fn install(data_dir: Option<PathBuf>, account: Option<String>, password: Opt
     Ok(())
 }
 
+/// Keys, the database and backups live here: only SYSTEM, Administrators and the service's
+/// account may read it (ProgramData lets every user read by default).
+fn restrict(dir: &std::path::Path, account: Option<&str>) -> anyhow::Result<()> {
+    let mut args: Vec<String> = vec![
+        dir.display().to_string(),
+        "/inheritance:r".into(),
+        "/grant:r".into(),
+        "*S-1-5-18:(OI)(CI)F".into(),     // SYSTEM
+        "*S-1-5-32-544:(OI)(CI)F".into(), // Administrators
+    ];
+    if let Some(a) = account {
+        args.push("/grant:r".into());
+        args.push(format!("{a}:(OI)(CI)M"));
+    }
+    let out = std::process::Command::new("icacls").args(&args).output()?;
+    if !out.status.success() {
+        anyhow::bail!("icacls: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
+}
+
 pub fn uninstall() -> anyhow::Result<()> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let service =
@@ -100,11 +122,38 @@ pub fn run(hooks: Hooks) -> anyhow::Result<()> {
 
 define_windows_service!(ffi_service_main, service_main);
 
+static STATUS: OnceLock<windows_service::service_control_handler::ServiceStatusHandle> = OnceLock::new();
+
+fn report(state: ServiceState, code: u32, wait: Duration, checkpoint: u32) {
+    let Some(h) = STATUS.get() else { return };
+    let accept = match state {
+        ServiceState::Running => ServiceControlAccept::STOP | ServiceControlAccept::PRESHUTDOWN,
+        _ => ServiceControlAccept::empty(),
+    };
+    let _ = h.set_service_status(ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: state,
+        controls_accepted: accept,
+        exit_code: ServiceExitCode::Win32(code),
+        checkpoint,
+        wait_hint: wait,
+        process_id: None,
+    });
+}
+
+/// The server listens: the service is running (called where systemd gets READY=1).
+pub fn ready() {
+    report(ServiceState::Running, 0, Duration::ZERO, 0);
+}
+
 fn service_main(_args: Vec<OsString>) {
     let Some(hooks) = HOOKS.get() else { return };
     let stop = hooks.stop;
     let handler = move |control| match control {
+        // Preshutdown gives the engine time to flush its session before Windows goes down.
         ServiceControl::Stop | ServiceControl::Shutdown | ServiceControl::Preshutdown => {
+            // Tell the manager it will take a while (the session is written out).
+            report(ServiceState::StopPending, 0, Duration::from_secs(45), 1);
             stop();
             ServiceControlHandlerResult::NoError
         }
@@ -112,22 +161,12 @@ fn service_main(_args: Vec<OsString>) {
         _ => ServiceControlHandlerResult::NotImplemented,
     };
     let Ok(status) = service_control_handler::register(NAME, handler) else { return };
-    let set = |state, accept, code: u32, wait| {
-        let _ = status.set_service_status(ServiceStatus {
-            service_type: ServiceType::OWN_PROCESS,
-            current_state: state,
-            controls_accepted: accept,
-            exit_code: ServiceExitCode::Win32(code),
-            checkpoint: 0,
-            wait_hint: wait,
-            process_id: None,
-        });
-    };
-    set(ServiceState::Running, ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN, 0, Duration::ZERO);
+    let _ = STATUS.set(status);
+    report(ServiceState::StartPending, 0, Duration::from_secs(60), 1);
     let result = (hooks.run)();
     if let Err(e) = &result {
         tracing::error!("service: {e:#}");
     }
     // ERROR_SERVICE_SPECIFIC_ERROR (1066) tells the manager to apply the failure actions.
-    set(ServiceState::Stopped, ServiceControlAccept::empty(), if result.is_ok() { 0 } else { 1066 }, Duration::ZERO);
+    report(ServiceState::Stopped, if result.is_ok() { 0 } else { 1066 }, Duration::ZERO, 0);
 }

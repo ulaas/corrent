@@ -365,6 +365,21 @@ impl Identity {
         Ok((admin, issued))
     }
 
+    /// The desktop app's passwordless owner, while nobody has claimed it with a password.
+    pub async fn claimable_owner(&self) -> Result<Option<i64>, ApiError> {
+        self.db
+            .read(|c| {
+                c.query_row(
+                    "SELECT id FROM users WHERE pw_hash = '' AND role = 'admin'                      AND NOT EXISTS (SELECT 1 FROM users WHERE pw_hash != '') ORDER BY id LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+            .map_err(db_err)
+    }
+
     /// Profiles for the switcher: enabled accounts that can sign in (or the desktop owner).
     pub async fn profiles(&self) -> Result<Vec<corrent_proto::auth::Profile>, ApiError> {
         self.db

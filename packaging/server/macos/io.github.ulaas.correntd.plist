@@ -6,7 +6,8 @@
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.ulaas.correntd.plist
   Stop / remove:
     launchctl bootout gui/$(id -u)/io.github.ulaas.correntd
-  Data lives in ~/Library/Application Support/Corrent Server (the default for correntd).
+  Data lives in ~/Library/Application Support/Corrent Server (the default for correntd); the
+  log is in its logs/ folder.
   Adjust the program path if correntd isn't in /usr/local/bin (corrent-mpvw goes next to it).
 -->
 <plist version="1.0">
@@ -30,7 +31,5 @@
   <integer>45</integer>
   <key>ProcessType</key>
   <string>Background</string>
-  <key>StandardErrorPath</key>
-  <string>/tmp/correntd.err.log</string>
 </dict>
 </plist>

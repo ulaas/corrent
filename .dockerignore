@@ -1,0 +1,7 @@
+# Build context for packaging/server/docker/Dockerfile: sources only.
+target/
+web/node_modules/
+dist/
+.git/
+**/corrent-data/
+**/correntd-data/

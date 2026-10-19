@@ -124,6 +124,7 @@ impl CorrentApp {
         if active {
             self.tv.last_input = Instant::now();
             if self.tv.saver.take().is_some() {
+                self.tv.held = None;
                 // The input that woke the screen does nothing else.
                 raw.events.retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::PointerButton { .. }));
             }
@@ -186,6 +187,11 @@ impl CorrentApp {
                     }
                 }
                 EventType::ButtonReleased(b, _) if dir(b).is_some() => self.tv.held = None,
+                // A pad that goes away mid-press must not keep "pressing".
+                EventType::Disconnected => {
+                    self.tv.held = None;
+                    self.tv.stick = (0.0, 0.0);
+                }
                 EventType::AxisChanged(axis, v, _) => {
                     let (x, y) = &mut self.tv.stick;
                     match axis {
@@ -244,8 +250,12 @@ impl CorrentApp {
             }
             // Gamepads and held keys need frames even when nothing else changes.
             #[cfg(feature = "gamepad")]
-            if self.tv.gamepad.as_ref().is_some_and(|g| g.gamepads().next().is_some()) || self.tv.held.is_some() {
+            // Frame-rate polling only while a direction is held; otherwise ~10 Hz is enough to
+            // notice a button press (a TV box shouldn't render 60 fps for nothing).
+            if self.tv.held.is_some() {
                 ctx.request_repaint_after(Duration::from_millis(16));
+            } else if self.tv.gamepad.as_ref().is_some_and(|g| g.gamepads().next().is_some()) {
+                ctx.request_repaint_after(Duration::from_millis(100));
             } else {
                 ctx.request_repaint_after(Duration::from_millis(250));
             }

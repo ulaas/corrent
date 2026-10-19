@@ -43,7 +43,7 @@ async fn update_task(
     Ok(Json(crate::tasks::list(&st).await))
 }
 
-/// Starts a task; answers when it finished (scans and searches continue in the background).
+/// Starts a task and answers right away with its run (the page polls for the outcome).
 async fn run_task(
     State(st): State<Arc<AppState>>,
     auth: Auth,
@@ -52,7 +52,7 @@ async fn run_task(
 ) -> ApiResult<TaskRun> {
     auth.require(Perms::SETTINGS_WRITE)?;
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "task_run", &id, true, "").await;
-    match crate::tasks::run(st.clone(), &id, auth.name()).await {
+    match crate::tasks::start_run(st.clone(), &id, auth.name()).await {
         Ok(r) => Ok(Json(r)),
         Err(e) if e == "already running" => Err(err(ErrorCode::Conflict, e)),
         Err(e) => Err(err(ErrorCode::NotFound, e)),
@@ -65,7 +65,7 @@ async fn history(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<Str
 }
 
 async fn targets(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<Vec<NotifyTarget>> {
-    auth.require(Perms::SETTINGS_WRITE)?;
+    admin(&auth)?;
     crate::notify::list(st.identity.db()).await.map(Json).map_err(|e| err(ErrorCode::Internal, e))
 }
 
@@ -86,7 +86,7 @@ async fn add_target(
     auth: Auth,
     Json(mut t): Json<NotifyTarget>,
 ) -> ApiResult<NotifyTarget> {
-    auth.require(Perms::SETTINGS_WRITE)?;
+    admin(&auth)?;
     t.id = 0;
     save(&st, t).await
 }
@@ -97,7 +97,7 @@ async fn edit_target(
     Path(id): Path<i64>,
     Json(mut t): Json<NotifyTarget>,
 ) -> ApiResult<NotifyTarget> {
-    auth.require(Perms::SETTINGS_WRITE)?;
+    admin(&auth)?;
     t.id = id;
     save(&st, t).await
 }
@@ -107,7 +107,7 @@ async fn delete_target(
     auth: Auth,
     Path(id): Path<i64>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require(Perms::SETTINGS_WRITE)?;
+    admin(&auth)?;
     match crate::notify::delete(st.identity.db(), id).await {
         Ok(true) => Ok(Json(serde_json::json!({}))),
         Ok(false) => Err(err(ErrorCode::NotFound, "no such target")),
@@ -117,7 +117,7 @@ async fn delete_target(
 
 /// Sends a test message; the error (if any) comes back for the person to see.
 async fn test_target(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<i64>) -> ApiResult<serde_json::Value> {
-    auth.require(Perms::SETTINGS_WRITE)?;
+    admin(&auth)?;
     let t = crate::notify::list(st.identity.db())
         .await
         .map_err(|e| err(ErrorCode::Internal, e))?
