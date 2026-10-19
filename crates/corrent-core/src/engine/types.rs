@@ -184,6 +184,26 @@ pub struct SessionView {
     pub allowed_ranges: Option<usize>,
 }
 
+/// What a starting engine is doing (shown while it starts, so a slow step is visible).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartPhase {
+    /// Checking and repairing the engine's torrent list.
+    TorrentList,
+    IpFilter,
+    /// librqbit opens its listeners and loads every torrent.
+    Torrents,
+}
+
+impl StartPhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            StartPhase::TorrentList => t!("checking the torrent list"),
+            StartPhase::IpFilter => t!("loading the IP filter"),
+            StartPhase::Torrents => t!("loading torrents"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum EngineState {
     #[default]
@@ -199,6 +219,8 @@ pub struct Snapshot {
     pub detail: Option<TorrentDetail>,
     pub session: SessionView,
     pub engine_state: EngineState,
+    /// While the engine starts: what it is doing.
+    pub start_phase: Option<StartPhase>,
     /// Global (down, up) bytes/s samples, one per second, newest last.
     pub history: VecDeque<(u64, u64)>,
     pub generation: u64,

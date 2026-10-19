@@ -152,6 +152,8 @@ pub struct Actor {
     undo: HashMap<InfoHash, UndoEntry>,
     /// Pruning the store waits until failed restores have been identified.
     restore_checked: bool,
+    /// While the session starts: what it is doing (published in the snapshot).
+    start_phase: Option<StartPhase>,
     /// The engine-call worker (see `engine_call`), started with the first call.
     calls: Option<mpsc::UnboundedSender<EngineCall>>,
     /// Size of the last refused prune (see `logic::prune_allowed`), so it is reported once.
@@ -248,6 +250,7 @@ impl Actor {
             restore_checked: false,
             prune_refused: None,
             calls: None,
+            start_phase: None,
             prune_suspended: false,
             first_start: true,
             free_space_running: false,
@@ -312,6 +315,7 @@ impl Actor {
 
     async fn start_session(&mut self) {
         self.engine_state = if self.session.is_some() { EngineState::Restarting } else { EngineState::Starting };
+        self.start_phase = Some(StartPhase::TorrentList);
         self.publish();
         self.recover_session_db();
         self.purge_pending();
@@ -320,10 +324,35 @@ impl Actor {
         }
         super::session_db::snapshot(&self.paths.session_dir());
         let mut last_err = String::new();
+        // A big library takes longer to load (librqbit adds every torrent before it returns).
+        let n = super::session_db::torrent_count(&self.paths.session_dir());
+        let deadline = crate::faults::start_deadline(&self.paths.data_dir)
+            .unwrap_or(START_DEADLINE + Duration::from_millis(100) * n as u32);
+        // The phase is shown while `create` runs, so it goes straight to the published snapshot.
+        let on_phase = {
+            let (snapshot, wake) = (self.snapshot.clone(), self.wake.clone());
+            move |phase: StartPhase| {
+                let mut snap = (**snapshot.load()).clone();
+                snap.start_phase = Some(phase);
+                snapshot.store(Arc::new(snap));
+                wake.wake();
+            }
+        };
         for attempt in 0..3 {
             let cancel = tokio_util::sync::CancellationToken::new();
-            match session::create(&self.paths, &self.settings, self.alt, &cancel).await {
+            let created = tokio::time::timeout(
+                deadline,
+                session::create(&self.paths, &self.settings, self.alt, &cancel, &on_phase),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                // Stop what the half-built session started (DHT, listeners) before a retry.
+                cancel.cancel();
+                Err(anyhow::anyhow!(t!("the engine didn't start within {secs} seconds", secs = deadline.as_secs())))
+            });
+            match created {
                 Ok((sess, warning)) => {
+                    self.start_phase = None;
                     if let Some(w) = &warning {
                         self.toast(ToastKind::Warning, w.clone());
                     }
@@ -346,11 +375,13 @@ impl Actor {
                 Err(e) => {
                     last_err = format!("{e:#}");
                     tracing::error!("failed to start session (attempt {}): {last_err}", attempt + 1);
+                    // Also gives a cancelled session's tasks time to let go of ports and files.
                     tokio::time::sleep(Duration::from_millis(700 * (attempt + 1))).await;
                 }
             }
         }
         self.engine_state = EngineState::Failed(last_err.clone());
+        self.start_phase = None;
         self.toast(ToastKind::Error, t!("Could not start the torrent engine: {last_err}", last_err = last_err));
         self.publish();
     }
@@ -1848,6 +1879,7 @@ impl Actor {
             detail,
             session: session_view,
             engine_state: self.engine_state.clone(),
+            start_phase: self.start_phase,
             history: self.history.clone(),
             generation: self.generation,
             categories: self.store.data.categories.clone(),
@@ -2899,6 +2931,9 @@ struct EngineCall {
     h: Arc<ManagedTorrent>,
     kind: CallKind,
 }
+
+/// How long the engine may take to start, plus 100 ms per torrent in its list.
+const START_DEADLINE: Duration = Duration::from_secs(60);
 
 /// One librqbit call may take this long (pausing rewrites and syncs session.json).
 const ENGINE_CALL_TIMEOUT: Duration = Duration::from_secs(10);

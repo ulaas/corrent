@@ -1279,3 +1279,51 @@ async fn pause_and_resume_in_a_burst_end_as_last_asked() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hanging_blocklist_server_does_not_hold_up_the_start() {
+    let dir = temp_dir("blackhole");
+    // Accepts connections and never answers.
+    let hole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = hole.local_addr().unwrap().port();
+    let keep = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((c, _)) = hole.accept().await {
+            open.push(c);
+        }
+    });
+    // A copy from an earlier start, two days old.
+    let cache = dir.join("data").join("ipfilter").join("blocklist-download.txt");
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    std::fs::write(&cache, "bad:10.0.0.1-10.0.0.9\n").unwrap();
+    let old = std::time::SystemTime::now() - Duration::from_secs(2 * 86400);
+    std::fs::File::options().write(true).open(&cache).unwrap().set_modified(old).unwrap();
+    let mut cfg = settings(&dir);
+    cfg.connection.blocklist_url = format!("http://127.0.0.1:{port}/list.p2p");
+    let started = Instant::now();
+    let l = start_with(&dir, cfg);
+    wait_for(&l, "a running engine", 5, |sn| sn.engine_state == super::types::EngineState::Running).await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let snap = l.engine.snapshot();
+    assert_eq!(snap.start_phase, None);
+    assert!(snap.session.blocked_ranges > 0, "the cached list is in use");
+    stop(l).await;
+    keep.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_engine_that_doesnt_start_in_time_fails_with_a_reason() {
+    let dir = temp_dir("start-deadline");
+    crate::faults::set_start_delay(&dir, Duration::from_secs(10));
+    crate::faults::set_start_deadline(&dir, Duration::from_secs(1));
+    let l = start(&dir);
+    let notices = notices_until(&l, 20, |sn| matches!(sn.engine_state, super::types::EngineState::Failed(_))).await;
+    let super::types::EngineState::Failed(why) = l.engine.snapshot().engine_state.clone() else {
+        panic!("the engine should have given up: {notices:?}")
+    };
+    assert!(why.contains("didn't start within 1 seconds"), "{why}");
+    crate::faults::clear(&dir);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -120,8 +120,32 @@ async fn fetch(client: &reqwest::Client, source: &str) -> Result<Vec<u8>, String
     gunzip_if_needed(bytes)
 }
 
-/// Download (or read) a list; fall back to the cached copy from an earlier start.
+/// How old the cached copy of a downloaded list may get before it is refreshed.
+const REFRESH_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Download (or read) a list. A downloaded list's copy from an earlier start is used at once (a
+/// slow or dead server must not hold up the start); when it is older than a day it is refreshed
+/// in the background for the next start. Only the download's own copy is rewritten then, never
+/// the merged list. Without a copy the list is fetched now.
 async fn load(client: &reqwest::Client, source: &str, cache: &Path, allow: bool, warnings: &mut Vec<String>) -> String {
+    let remote = source.trim().starts_with("http://") || source.trim().starts_with("https://");
+    if remote && let Ok(b) = std::fs::read(cache) {
+        let age = std::fs::metadata(cache).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+        if age.is_none_or(|a| a > REFRESH_AFTER) {
+            let (client, source, cache) = (client.clone(), source.to_string(), cache.to_path_buf());
+            tokio::spawn(async move {
+                match fetch(&client, &source).await {
+                    Ok(bytes) => {
+                        if let Err(e) = crate::util::write_atomic(&cache, &bytes) {
+                            tracing::warn!("could not keep the refreshed IP filter list: {e:#}");
+                        }
+                    }
+                    Err(e) => tracing::warn!("the IP filter list couldn't be refreshed: {e}"),
+                }
+            });
+        }
+        return String::from_utf8_lossy(&b).into_owned();
+    }
     match fetch(client, source).await {
         Ok(bytes) => {
             let _ = crate::util::write_atomic(cache, &bytes);
@@ -244,8 +268,9 @@ mod tests {
         let text = std::fs::read_to_string(p.blocklist.unwrap()).unwrap();
         assert_eq!(text, "corrent:10.0.0.0-10.255.255.255\n", "custom entries still apply");
         std::fs::write(dir.join("ipfilter/blocklist-download.txt"), "old:1.1.1.1-1.1.1.2\n").unwrap();
+        // A copy from an earlier start is used at once, without asking the (dead) server.
         let p = prepare(&paths, &c).await;
-        assert!(p.warnings[0].contains("earlier start"));
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
         let text = std::fs::read_to_string(p.blocklist.unwrap()).unwrap();
         assert!(text.starts_with("old:1.1.1.1-1.1.1.2\n") && text.contains("corrent:10.0.0.0"));
         let _ = std::fs::remove_dir_all(dir);

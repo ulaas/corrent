@@ -15,7 +15,10 @@ impl CorrentApp {
             ui.spacing_mut().item_spacing.x = 10.0;
             let (dot, text) = match &self.snap.engine_state {
                 _ if !self.engine.is_alive() => (p.error, t!("Engine stopped").to_string()),
-                EngineState::Starting => (p.warn, t!("Starting…").to_string()),
+                EngineState::Starting => match self.snap.start_phase {
+                    Some(phase) => (p.warn, t!("Starting… ({phase})", phase = phase.label())),
+                    None => (p.warn, t!("Starting…").to_string()),
+                },
                 EngineState::Restarting => (p.warn, t!("Reconnecting…").to_string()),
                 EngineState::Failed(e) => (p.error, t!("Engine error: {e}", e = e)),
                 EngineState::Running if let Some(srv) = &self.server => {

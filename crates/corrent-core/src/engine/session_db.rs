@@ -58,6 +58,11 @@ pub fn snapshot(session_dir: &Path) {
     }
 }
 
+/// Torrents in the engine's list (0 if it can't be read).
+pub fn torrent_count(session_dir: &Path) -> usize {
+    std::fs::read(db_file(session_dir)).ok().and_then(|b| parse(&b)).map_or(0, |db| db.torrents.len())
+}
+
 /// What `recover` put back.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Recovered {

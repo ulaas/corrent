@@ -107,11 +107,17 @@ pub async fn create(
     s: &Settings,
     alt: bool,
     cancel: &CancellationToken,
+    on_phase: &(dyn Fn(super::types::StartPhase) + Send + Sync),
 ) -> anyhow::Result<(Arc<Session>, Option<String>)> {
     std::fs::create_dir_all(paths.session_dir())?;
     let out = s.downloads.save_path.clone();
     let _ = std::fs::create_dir_all(&out);
+    if let Some(d) = crate::faults::start_delay(&paths.data_dir) {
+        tokio::time::sleep(d).await;
+    }
+    on_phase(super::types::StartPhase::IpFilter);
     let lists = super::ipfilter::prepare(paths, &s.connection).await;
+    on_phase(super::types::StartPhase::Torrents);
     let list_warning = (!lists.warnings.is_empty()).then(|| lists.warnings.join(" "));
     match Session::new_with_opts(out.clone(), options(paths, s, None, alt, &lists, cancel)).await {
         Ok(sess) => Ok((sess, list_warning)),
