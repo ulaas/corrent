@@ -183,6 +183,8 @@ pub fn fingerprint(samples: &[i16]) -> Vec<u16> {
 }
 
 /// The stretch two fingerprints share: frame ranges `(a_start, a_end, b_start, b_end)`.
+// Two arrays at an offset: indexing reads clearer than zipped iterators.
+#[allow(clippy::needless_range_loop)]
 pub fn common(a: &[u16], b: &[u16]) -> Option<(usize, usize, usize, usize)> {
     let min = (MIN_S / frame_secs()) as usize;
     let max = (MAX_S / frame_secs()) as usize;
