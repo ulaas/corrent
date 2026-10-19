@@ -619,3 +619,31 @@ async fn many_adds_at_once_all_arrive() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watch_folder_keeps_files_until_their_add_finishes() {
+    let dir = temp_dir("watch");
+    let s = seeder(&dir).await;
+    let watch = dir.join("watch");
+    std::fs::create_dir_all(&watch).unwrap();
+    std::fs::write(watch.join("good.torrent"), &s.bytes).unwrap();
+    std::fs::write(watch.join("bad.torrent"), b"this is not a torrent").unwrap();
+    let mut cfg = settings(&dir);
+    cfg.watch.push(crate::config::WatchFolder { path: watch.clone(), start_paused: true, ..Default::default() });
+    let l = start(&dir);
+    l.engine.send(EngineCommand::ApplySettings(Box::new(cfg)));
+    wait_for(&l, "the watched torrent", 30, |sn| find(sn, s.hash).is_some_and(|t| !t.pending)).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !(watch.join("good.torrent.added").exists() && watch.join("bad.torrent.failed").exists()) {
+        assert!(
+            Instant::now() < deadline,
+            "files after their adds: {:?}",
+            std::fs::read_dir(&watch).unwrap().collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(std::fs::read(watch.join("bad.torrent.failed")).unwrap(), b"this is not a torrent");
+    assert!(!watch.join("good.torrent").exists() && !watch.join("bad.torrent").exists());
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

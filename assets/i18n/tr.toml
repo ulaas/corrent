@@ -698,6 +698,7 @@
 "The engine doesn't report per-tracker announce results; connected peers above reflect all sources." = "Motor izleyici başına duyuru sonuçlarını bildirmez; yukarıdaki bağlı eşler tüm kaynakları yansıtır."
 "The engine is not running." = "Motor çalışmıyor."
 "The engine is not running; cannot add torrents." = "Motor çalışmıyor; torrent eklenemez."
+"The file was renamed to {name} so it isn't added again." = "Dosya tekrar eklenmemesi için {name} olarak yeniden adlandırıldı."
 "The previous data was kept in {path}." = "Önceki veriler {path} konumunda saklandı."
 "The torrent engine hasn't responded for {secs} seconds. If this doesn't clear up, restart Corrent." = "Torrent motoru {secs} saniyedir yanıt vermiyor. Düzelmezse Corrent'i yeniden başlatın."
 "The torrent engine stopped unexpectedly" = "Torrent motoru beklenmedik şekilde durdu"

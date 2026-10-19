@@ -1,6 +1,6 @@
 //! Watch folders and "run a program on completion".
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::types::{AddSource, TorrentView};
@@ -10,16 +10,20 @@ use crate::config::{AfterAdd, WatchFolder};
 #[derive(Default)]
 pub struct WatchState {
     sizes: HashMap<PathBuf, (u64, u8)>,
+    /// Files handed out by `poll` whose add hasn't finished: left in place, never handed out twice.
+    in_flight: HashSet<PathBuf>,
 }
 
 pub struct WatchHit {
     pub source: AddSource,
     pub folder: WatchFolder,
+    pub path: PathBuf,
 }
 
 impl WatchState {
-    /// Scan all enabled folders once. Files are returned after two polls with an unchanged size;
-    /// they are read into memory and then renamed/deleted so they are never added twice.
+    /// Scan all enabled folders once. Files are returned after two polls with an unchanged size.
+    /// They stay where they are until `finish` reports how their add went, so a failed add never
+    /// costs the user their only copy.
     pub fn poll(&mut self, folders: &[WatchFolder]) -> Vec<WatchHit> {
         let mut hits = Vec::new();
         let mut seen = HashMap::new();
@@ -28,7 +32,7 @@ impl WatchState {
             for e in entries.flatten() {
                 let path = e.path();
                 let is_torrent = path.extension().is_some_and(|x| x.eq_ignore_ascii_case("torrent"));
-                if !is_torrent || !path.is_file() {
+                if !is_torrent || !path.is_file() || self.in_flight.contains(&path) {
                     continue;
                 }
                 let size = e.metadata().map(|m| m.len()).unwrap_or(0);
@@ -38,10 +42,10 @@ impl WatchState {
                 if stable >= 1 {
                     match std::fs::read(&path) {
                         Ok(bytes) => {
-                            finish_file(&path, f.after_add);
                             seen.remove(&path);
+                            self.in_flight.insert(path.clone());
                             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                            hits.push(WatchHit { source: AddSource::Bytes { name, bytes }, folder: f.clone() });
+                            hits.push(WatchHit { source: AddSource::Bytes { name, bytes }, folder: f.clone(), path });
                         }
                         Err(e) => tracing::warn!("watch folder: cannot read {}: {e}", path.display()),
                     }
@@ -50,6 +54,32 @@ impl WatchState {
         }
         self.sizes = seen;
         hits
+    }
+
+    /// The add of a file from `poll` has ended. Added (or already in the list): the folder's
+    /// after-add action runs. Otherwise the file is renamed to `<name>.failed` so it isn't tried
+    /// again; that new path is returned.
+    pub fn finish(&mut self, path: &Path, after: AfterAdd, added: bool) -> Option<PathBuf> {
+        self.in_flight.remove(path);
+        if added {
+            finish_file(path, after);
+            return None;
+        }
+        let mut failed = path.as_os_str().to_owned();
+        failed.push(".failed");
+        let failed = PathBuf::from(failed);
+        match std::fs::rename(path, &failed) {
+            Ok(()) => Some(failed),
+            Err(e) => {
+                tracing::warn!("watch folder: could not rename {}: {e}", path.display());
+                None
+            }
+        }
+    }
+
+    /// The add never started (no engine): the file stays and is picked up again later.
+    pub fn release(&mut self, path: &Path) {
+        self.in_flight.remove(path);
     }
 }
 
@@ -182,9 +212,44 @@ mod tests {
         assert!(w.poll(std::slice::from_ref(&folder)).is_empty(), "first sighting is not stable yet");
         let hits = w.poll(std::slice::from_ref(&folder));
         assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, f);
+        assert!(f.exists(), "kept until the add has finished");
+        for _ in 0..3 {
+            assert!(w.poll(std::slice::from_ref(&folder)).is_empty(), "never handed out twice");
+        }
+        assert_eq!(w.finish(&f, AfterAdd::Rename, true), None);
         assert!(!f.exists());
         assert!(dir.join("a.torrent.added").exists());
         assert!(w.poll(&[folder]).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn watch_keeps_files_whose_add_failed() {
+        let dir = std::env::temp_dir().join(format!("corrent-watch-failed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("b.torrent");
+        std::fs::write(&f, b"not a torrent").unwrap();
+        let folder = WatchFolder { path: dir.clone(), after_add: AfterAdd::Delete, ..Default::default() };
+        let mut w = WatchState::default();
+        w.poll(std::slice::from_ref(&folder));
+        let hits = w.poll(std::slice::from_ref(&folder));
+        assert_eq!(hits.len(), 1);
+        let failed = w.finish(&f, AfterAdd::Delete, false).unwrap();
+        assert_eq!(failed, dir.join("b.torrent.failed"));
+        assert_eq!(std::fs::read(&failed).unwrap(), b"not a torrent", "the user's copy survives");
+        for _ in 0..3 {
+            assert!(w.poll(std::slice::from_ref(&folder)).is_empty(), "a failed file isn't retried");
+        }
+        // An add that never started leaves the file to be picked up again.
+        let g = dir.join("c.torrent");
+        std::fs::write(&g, b"d4:infod4:name1:cee").unwrap();
+        w.poll(std::slice::from_ref(&folder));
+        assert_eq!(w.poll(std::slice::from_ref(&folder)).len(), 1);
+        w.release(&g);
+        w.poll(std::slice::from_ref(&folder));
+        assert_eq!(w.poll(std::slice::from_ref(&folder)).len(), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

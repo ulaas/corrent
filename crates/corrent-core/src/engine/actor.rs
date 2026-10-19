@@ -156,6 +156,8 @@ pub struct Actor {
     rss: crate::rss::Rss,
     /// Adds started by feed rules (pending id → article), so a failed add can be retried.
     rss_adds: HashMap<u64, crate::rss::Download>,
+    /// Watch-folder files behind pending adds, with their folder's after-add action.
+    watch_adds: HashMap<u64, (PathBuf, crate::config::AfterAdd)>,
     rss_failures: HashMap<String, u32>,
     /// Shared limiters for categories with speed limits.
     category_limits: HashMap<String, Arc<librqbit::limits::Limits>>,
@@ -229,6 +231,7 @@ impl Actor {
             stream_haves: HashMap::new(),
             rss,
             rss_adds: HashMap::new(),
+            watch_adds: HashMap::new(),
             rss_failures: HashMap::new(),
             category_limits: HashMap::new(),
             rss_client: None,
@@ -493,6 +496,10 @@ impl Actor {
                         && let Some(t) = p.task
                     {
                         t.abort();
+                    }
+                    // Cancelled by the user: keep the file, renamed so it isn't added again.
+                    if let Some((path, after)) = self.watch_adds.remove(&id) {
+                        self.watch.finish(&path, after, false);
                     }
                 }
             }
@@ -1239,7 +1246,7 @@ impl Actor {
                 self.pending.remove(&pending);
                 if let Some(d) = self.rss_adds.remove(&pending)
                     && let Err(e) = &result
-                    && !e.contains("already")
+                    && !is_duplicate_error(e)
                 {
                     // Retry on a later refresh, but give up on links that keep failing.
                     let n = self.rss_failures.entry(d.key.clone()).or_default();
@@ -1253,6 +1260,9 @@ impl Actor {
                     Ok((hash, name)) => {
                         self.unrecorded.remove(&hash);
                         let top = req.add_to_top;
+                        if let Some((path, after)) = self.watch_adds.remove(&pending) {
+                            self.watch.finish(&path, after, true);
+                        }
                         let m = self.store.meta_mut(hash);
                         m.name = name.clone();
                         m.category = req.category.clone();
@@ -1284,10 +1294,18 @@ impl Actor {
                     Err(e) => {
                         // Logged too: a headless server has no one reading the toasts.
                         tracing::warn!("could not add {}: {e}", req.source.describe());
-                        self.toast(
-                            ToastKind::Error,
-                            t!("Could not add {name}: {e}", name = req.source.describe(), e = e),
-                        );
+                        let duplicate = is_duplicate_error(&e);
+                        let mut msg = t!("Could not add {name}: {e}", name = req.source.describe(), e = e);
+                        if let Some((path, after)) = self.watch_adds.remove(&pending)
+                            && let Some(failed) = self.watch.finish(&path, after, duplicate)
+                        {
+                            let name = failed.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                            msg = format!(
+                                "{msg}\n{}",
+                                t!("The file was renamed to {name} so it isn't added again.", name = name)
+                            );
+                        }
+                        self.toast(ToastKind::Error, msg);
                     }
                 }
             }
@@ -1440,7 +1458,8 @@ impl Actor {
                     })
                     .unwrap_or_else(|| self.settings.downloads.save_path.clone());
                 tracing::info!("watch folder: adding {}", hit.source.describe());
-                let _ = self.start_add(Box::new(AddRequest {
+                let (path, after) = (hit.path, hit.folder.after_add);
+                let id = self.start_add(Box::new(AddRequest {
                     source: hit.source,
                     torrent_bytes: None,
                     save_path,
@@ -1453,6 +1472,12 @@ impl Actor {
                     initial_peers: None,
                     added_by: None,
                 }));
+                match id {
+                    Some(id) => {
+                        self.watch_adds.insert(id, (path, after));
+                    }
+                    None => self.watch.release(&path),
+                }
             }
         }
 
@@ -2339,6 +2364,14 @@ pub fn sanitize_name(name: &str) -> String {
     if trimmed.is_empty() { "torrent".into() } else { trimmed }
 }
 
+/// The end of the error an add returns for a torrent that is already in the list.
+const DUPLICATE: &str = "is already in your list";
+
+/// True for the error of an add that found its torrent already in the list.
+fn is_duplicate_error(e: &str) -> bool {
+    e.ends_with(DUPLICATE)
+}
+
 async fn add_torrent(
     sess: &Arc<Session>,
     req: &AddRequest,
@@ -2352,7 +2385,7 @@ async fn add_torrent(
     let hash = InfoHash(l.info_hash.0);
     let name = l.info.name().map(|n| n.into_owned()).unwrap_or_else(|| hash.to_hex());
     if sess.get(TorrentIdOrHash::Hash(l.info_hash)).is_some() {
-        anyhow::bail!("“{name}” is already in your list");
+        anyhow::bail!("“{name}” {DUPLICATE}");
     }
     let multi = l.info.info().files.is_some();
     // Trackers from the magnet link (tr=…) must reach the engine even when we add from bytes.
@@ -2375,7 +2408,7 @@ async fn add_torrent(
     };
     match sess.add_torrent(AddTorrent::from_bytes(bytes), Some(opts)).await? {
         AddTorrentResponse::Added(_, _) => Ok((hash, name)),
-        AddTorrentResponse::AlreadyManaged(_, _) => anyhow::bail!("“{name}” is already in your list"),
+        AddTorrentResponse::AlreadyManaged(_, _) => anyhow::bail!("“{name}” {DUPLICATE}"),
         AddTorrentResponse::ListOnly(_) => anyhow::bail!("unexpected response from engine"),
     }
 }
