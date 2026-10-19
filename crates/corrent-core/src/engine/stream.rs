@@ -540,7 +540,9 @@ impl StreamServer {
         // and Stop must work there too.
         set_phase(PHASE_READ);
         let setup = async {
-            conn.write_all(headers.as_bytes()).await?;
+            tokio::time::timeout(write_timeout(), conn.write_all(headers.as_bytes()))
+                .await
+                .map_err(|_| anyhow::anyhow!("the player stopped reading"))??;
             let mut stream = handle.stream(file).await?;
             stream.seek(std::io::SeekFrom::Start(start)).await?;
             anyhow::Ok(stream)
