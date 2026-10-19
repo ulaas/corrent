@@ -97,7 +97,7 @@ async fn scans_movies_shows_and_music() {
         &music.join("Band/Record/01 - One.flac"),
         2,
         false,
-        "title=\"One\",artist=\"Band\",album=\"Record\",track=\"1\",date=\"2021\",genre=\"Rock\"",
+        "title=\"One\",artist=\"Band\",album=\"Record\",track=\"1\",date=\"2021\",genre=\"Rock\",work=\"Suite\"",
     );
     encode(
         &music.join("Band/Record/02 - Two.flac"),
@@ -165,6 +165,7 @@ async fn scans_movies_shows_and_music() {
     let tracks =
         lib.items(user, ItemQuery { parent_id: Some(albums.items[0].id), ..Default::default() }).await.unwrap();
     assert_eq!(tracks.items.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), vec!["One", "Two"]);
+    assert_eq!(tracks.items[0].work.as_deref(), Some("Suite"), "the work tag groups classical movements");
 
     // Query filters: kinds, everything below a show, ids, titles, parent fields.
     let below = lib

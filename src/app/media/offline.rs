@@ -581,6 +581,7 @@ mod tests {
                     partial: false,
                     grandparent_id: None,
                     parent_index: None,
+                    work: None,
                 },
                 quality: Quality::Original,
                 file: "Sintel.mkv".into(),

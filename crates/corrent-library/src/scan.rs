@@ -751,7 +751,7 @@ fn apply(t: &Transaction, library_id: i64, a: &Analyzed) -> rusqlite::Result<Vec
             t.execute("UPDATE items SET runtime_ms = ?1 WHERE id = ?2", params![runtime, tr])?;
             if let Some(tags) = &a.tags {
                 let extra = serde_json::json!({
-                    "artist": tags.artist, "album_artist": tags.album_artist, "composer": tags.composer,
+                    "artist": tags.artist, "album_artist": tags.album_artist, "composer": tags.composer, "work": tags.work,
                     "rg_track_gain": tags.rg_track_gain, "rg_album_gain": tags.rg_album_gain,
                     "sample_rate": tags.sample_rate, "channels": tags.channels, "bitrate_kbps": tags.bitrate_kbps,
                 });

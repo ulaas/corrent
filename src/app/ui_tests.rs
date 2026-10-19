@@ -587,6 +587,7 @@ fn perf_50k_grid() {
             partial: false,
             grandparent_id: None,
             parent_index: None,
+            work: None,
         })
         .collect();
     app.media.fill_grid(1, items);

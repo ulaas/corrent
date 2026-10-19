@@ -406,6 +406,7 @@ export interface Item {
   added_at: number;
   child_count?: number;
   partial?: boolean;
+  work?: string;
 }
 
 export interface Stream {

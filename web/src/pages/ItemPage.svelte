@@ -322,6 +322,7 @@
       {:else if item.kind === 'album'}
         <ol class="tracks">
           {#each children as tr, i (tr.id)}
+            {#if tr.work && tr.work !== children[i - 1]?.work}<li class="work" aria-hidden="true">{tr.work}</li>{/if}
             <li class:current={isCurrent(tr.id)}>
               <button class="track" onclick={() => playAlbum(false, i)}>
                 <span class="tn num">
@@ -694,6 +695,14 @@
     align-items: center;
     border-radius: var(--r-md);
     padding-right: 8px;
+  }
+  .tracks li.work {
+    padding: 14px 8px 4px;
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+  .tracks li.work:hover {
+    background: none;
   }
   .tracks li:hover {
     background: var(--hover);

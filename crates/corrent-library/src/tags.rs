@@ -20,6 +20,8 @@ pub struct AudioTags {
     pub year: Option<u32>,
     pub genres: Vec<String>,
     pub composer: Option<String>,
+    /// Classical music: the work a track is a movement of.
+    pub work: Option<String>,
     pub compilation: bool,
     pub mb_track: Option<String>,
     pub mb_album: Option<String>,
@@ -73,6 +75,7 @@ pub fn read(path: &Path) -> Result<AudioTags, String> {
         .collect();
     t.genres.dedup();
     t.composer = tag.get_string(ItemKey::Composer).map(str::to_string);
+    t.work = tag.get_string(ItemKey::Work).map(|w| w.trim().to_string()).filter(|w| !w.is_empty());
     t.compilation =
         tag.get_string(ItemKey::FlagCompilation).is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
     t.mb_track = tag.get_string(ItemKey::MusicBrainzRecordingId).map(str::to_string);

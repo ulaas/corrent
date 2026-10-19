@@ -20,7 +20,7 @@ const ITEM_SELECT: &str = "SELECT i.id, i.library_id, i.kind, i.parent_id, i.tit
        WHEN 'show' THEN (SELECT count(*) FROM items e JOIN items s ON e.parent_id = s.id WHERE s.parent_id = i.id AND NOT EXISTS \
             (SELECT 1 FROM watch_state w WHERE w.item_id = e.id AND w.user_id = ?1 AND w.played = 1)) \
        ELSE NULL END, \
-     p.parent_id, p.index_no \
+     p.parent_id, p.index_no, CASE WHEN i.kind = 'track' THEN json_extract(i.extra, '$.work') END \
      FROM items i LEFT JOIN items p ON p.id = i.parent_id LEFT JOIN items gp ON gp.id = p.parent_id \
      LEFT JOIN watch_state ws ON ws.item_id = i.id AND ws.user_id = ?1";
 
@@ -66,6 +66,7 @@ fn item_row(r: &Row) -> rusqlite::Result<RawItem> {
             partial: false,
             grandparent_id: r.get(19)?,
             parent_index: r.get(20)?,
+            work: r.get(21)?,
         },
         parent,
         grandparent: r.get(19)?,

@@ -254,6 +254,9 @@ pub struct Item {
     /// Parent's index (episode: its season number).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_index: Option<i64>,
+    /// Classical tracks: the work they belong to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<String>,
     /// Some files still downloading (torrent not complete).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
