@@ -328,7 +328,7 @@ export interface ApiErrorBody {
 
 // ---- library ----
 
-export type LibraryKind = 'movies' | 'shows' | 'music' | 'audiobooks' | 'videos' | 'photos';
+export type LibraryKind = 'movies' | 'shows' | 'music' | 'audiobooks' | 'videos' | 'photos' | 'podcasts';
 export type ItemKind =
   | 'movie'
   | 'show'
@@ -699,4 +699,16 @@ export interface CastStatus {
 export interface Lyrics {
   synced: boolean;
   lines: { time_ms?: number; text: string }[];
+}
+
+export interface Podcast {
+  id: string;
+  url: string;
+  title: string;
+  library_id: number;
+  keep: number;
+  added_at: number;
+  checked_at?: number | null;
+  error?: string | null;
+  episodes: number;
 }

@@ -475,6 +475,7 @@ impl Library {
                         corrent_proto::library::LibraryKind::Audiobooks => "book",
                         corrent_proto::library::LibraryKind::Videos => "video",
                         corrent_proto::library::LibraryKind::Photos => "photo",
+                        corrent_proto::library::LibraryKind::Podcasts => "episode",
                     };
                     let items = items_by_sql(
                         c,

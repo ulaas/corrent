@@ -33,6 +33,7 @@ pub fn kind_label(k: LibraryKind) -> &'static str {
         LibraryKind::Audiobooks => t!("Audiobooks"),
         LibraryKind::Videos => t!("Videos"),
         LibraryKind::Photos => t!("Photos"),
+        LibraryKind::Podcasts => t!("Podcasts"),
     }
 }
 

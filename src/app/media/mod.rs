@@ -1448,6 +1448,7 @@ impl CorrentApp {
                 corrent_proto::library::LibraryKind::Audiobooks => icons::BOOK_OPEN,
                 corrent_proto::library::LibraryKind::Photos => icons::IMAGES,
                 corrent_proto::library::LibraryKind::Videos => icons::VIDEO_CAMERA,
+                corrent_proto::library::LibraryKind::Podcasts => icons::MICROPHONE,
             };
             let count = Some(l.item_count.max(0) as usize);
             if super::sidebar::row(ui, p, icon, p.text_dim, &l.name, count, in_media && page == Page::Library(l.id))

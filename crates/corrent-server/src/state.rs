@@ -61,6 +61,8 @@ pub struct AppState {
     pub rooms: crate::v1::syncplay::Rooms,
     /// Chromecasts found and the casts running on them.
     pub casts: crate::cast::Casts,
+    /// Podcast subscriptions (`podcasts.json`).
+    pub podcasts: crate::podcasts::Podcasts,
     pub remote_status: ArcSwap<corrent_proto::server::RemoteStatus>,
     /// Set when a hosted server stops: its background tasks end (they hold the state).
     pub stopping: tokio::sync::watch::Sender<bool>,

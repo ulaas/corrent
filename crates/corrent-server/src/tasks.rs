@@ -11,13 +11,14 @@ use corrent_proto::tasks::{TaskInfo, TaskRun, TaskUpdate};
 use crate::state::AppState;
 
 /// Task ids and their default intervals in minutes.
-pub const TASKS: [(&str, u32); 6] = [
+pub const TASKS: [(&str, u32); 7] = [
     ("scan_libraries", 6 * 60),
     ("monitor_shows", 6 * 60),
     ("refresh_metadata", 24 * 60),
     ("wanted_search", 15),
     ("cleanup_cache", 24 * 60),
     ("backup", 24 * 60),
+    ("podcasts", 60),
 ];
 
 /// Tasks running right now.
@@ -158,6 +159,7 @@ async fn execute(st: &Arc<AppState>, id: &str) -> Result<String, String> {
             Ok(format!("{} libraries", libs.len()))
         }
         "monitor_shows" => crate::monitor::check_all(st).await,
+        "podcasts" => crate::podcasts::check_all(st).await,
         plugin if plugin.starts_with("plugin:") => {
             let host = st.plugins.clone().ok_or("plugins are unavailable")?;
             host.run_task(&plugin["plugin:".len()..]).await.map_err(|e| e.to_string())
@@ -317,7 +319,7 @@ pub fn start(st: Arc<AppState>) {
                     // Never run: some tasks wait one interval (counted from an "anchor" row).
                     None if !matches!(
                         t.id.as_str(),
-                        "wanted_search" | "cleanup_cache" | "monitor_shows" | "scan_libraries"
+                        "wanted_search" | "cleanup_cache" | "monitor_shows" | "scan_libraries" | "podcasts"
                     ) =>
                     {
                         let id = t.id.clone();

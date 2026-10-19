@@ -14,16 +14,19 @@ pub enum LibraryKind {
     /// Home videos and anything else: one item per file, organised by folder.
     Videos,
     Photos,
+    /// A folder per podcast, one episode per (dated) file; feeds download into it.
+    Podcasts,
 }
 
 impl LibraryKind {
-    pub const ALL: [LibraryKind; 6] = [
+    pub const ALL: [LibraryKind; 7] = [
         LibraryKind::Movies,
         LibraryKind::Shows,
         LibraryKind::Music,
         LibraryKind::Audiobooks,
         LibraryKind::Videos,
         LibraryKind::Photos,
+        LibraryKind::Podcasts,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -34,6 +37,7 @@ impl LibraryKind {
             LibraryKind::Audiobooks => "audiobooks",
             LibraryKind::Videos => "videos",
             LibraryKind::Photos => "photos",
+            LibraryKind::Podcasts => "podcasts",
         }
     }
 
@@ -49,6 +53,7 @@ impl LibraryKind {
             LibraryKind::Audiobooks => t!("Audiobooks"),
             LibraryKind::Videos => t!("Videos"),
             LibraryKind::Photos => t!("Photos"),
+            LibraryKind::Podcasts => t!("Podcasts"),
         }
     }
 }

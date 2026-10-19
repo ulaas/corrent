@@ -17,7 +17,7 @@
 
   $effect(() => useTorrents());
 
-  const KINDS: LibraryKind[] = ['movies', 'shows', 'music', 'audiobooks', 'videos', 'photos'];
+  const KINDS: LibraryKind[] = ['movies', 'shows', 'music', 'audiobooks', 'videos', 'photos', 'podcasts'];
 
   interface Draft {
     id: number | null;

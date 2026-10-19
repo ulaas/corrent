@@ -45,6 +45,8 @@ export function topKind(kind: LibraryKind): ItemKind | undefined {
       return 'video';
     case 'photos':
       return 'photo';
+    case 'podcasts':
+      return 'show';
   }
 }
 
@@ -111,6 +113,7 @@ export const LIBRARY_ICON: Record<LibraryKind, IconName> = {
   audiobooks: 'book-open',
   videos: 'video-camera',
   photos: 'image',
+  podcasts: 'microphone-stage',
 };
 
 export const LIBRARY_KIND_LABEL: Record<LibraryKind, string> = {
@@ -120,6 +123,7 @@ export const LIBRARY_KIND_LABEL: Record<LibraryKind, string> = {
   audiobooks: tk('Audiobooks'),
   videos: tk('Videos'),
   photos: tk('Photos'),
+  podcasts: tk('Podcasts'),
 };
 
 export const KIND_LABEL: Record<ItemKind, string> = {

@@ -1533,6 +1533,94 @@ async fn casts_to_a_receiver() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn podcasts_download_into_their_library() {
+    let h = harness("podcasts", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    // A feed and its episodes on loopback.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let rss = format!(
+        r#"<?xml version="1.0"?><rss version="2.0"><channel><title>Test Cast</title>
+<item><title>Third</title><pubDate>Sat, 03 Oct 2026 10:00:00 GMT</pubDate><enclosure url="{base}/e3.mp3" type="audio/mpeg"/></item>
+<item><title>Second</title><pubDate>Fri, 02 Oct 2026 10:00:00 GMT</pubDate><enclosure url="{base}/e2.mp3" type="audio/mpeg"/></item>
+<item><title>First</title><pubDate>Thu, 01 Oct 2026 10:00:00 GMT</pubDate><enclosure url="{base}/e1.mp3" type="audio/mpeg"/></item>
+</channel></rss>"#
+    );
+    let feed = axum::Router::new().route("/feed.xml", axum::routing::get(move || async move { rss })).route(
+        "/{ep}",
+        axum::routing::get(
+            |axum::extract::Path(ep): axum::extract::Path<String>| async move { format!("audio of {ep}") },
+        ),
+    );
+    tokio::spawn(async move { axum::serve(listener, feed).await.unwrap() });
+    let folder = h.dir.join("Podcasts");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Podcasts", "kind": "podcasts", "folders": [folder] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    // Only podcast libraries, only real feeds.
+    let (s, _, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/podcasts",
+        &admin,
+        json!({ "url": format!("{base}/e1.mp3"), "library_id": lib }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/podcasts",
+        &admin,
+        json!({ "url": format!("{base}/feed.xml"), "library_id": lib, "keep": 2 }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["title"], "Test Cast");
+    let (s, _, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/podcasts",
+        &admin,
+        json!({ "url": format!("{base}/feed.xml"), "library_id": lib }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let dir = folder.join("Test Cast");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let (_, v, _) = get(app, "/api/v1/podcasts", &admin).await;
+        if v[0]["episodes"] == 2 {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let mut names: Vec<String> =
+        std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    assert_eq!(names, vec!["2026-10-02 Second.mp3", "2026-10-03 Third.mp3"]);
+    assert_eq!(std::fs::read_to_string(dir.join("2026-10-03 Third.mp3")).unwrap(), "audio of e3.mp3");
+    let id = v_id(app, &admin).await;
+    let (s, _, _) = send(app, Method::DELETE, &format!("/api/v1/podcasts/{id}"), &admin, json!({})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(dir.join("2026-10-03 Third.mp3").exists(), "unsubscribing keeps the episodes");
+    h.stop().await;
+}
+
+async fn v_id(app: &Router, admin: &str) -> String {
+    get(app, "/api/v1/podcasts", admin).await.1[0]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_with_the_servers_own_ca() {
     let h = harness("https", ServerConfig::default()).await;
     let tls =

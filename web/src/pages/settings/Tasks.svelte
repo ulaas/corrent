@@ -17,6 +17,7 @@
     wanted_search: tk('Search for wanted releases'),
     cleanup_cache: tk('Clean up the transcoding cache'),
     backup: tk('Back up the server'),
+    podcasts: tk('Download new podcast episodes'),
   };
   const EVERY: [number, string][] = [
     [0, tk('Only by hand')],

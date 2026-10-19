@@ -82,6 +82,7 @@ fn wanted(p: &Path, kind: LibraryKind) -> bool {
         LibraryKind::Music => k == FileKind::Audio,
         LibraryKind::Audiobooks => k == FileKind::Audio,
         LibraryKind::Photos => k == FileKind::Image,
+        LibraryKind::Podcasts => matches!(k, FileKind::Audio | FileKind::Video),
     }
 }
 
@@ -266,6 +267,27 @@ fn place(kind: LibraryKind, roots: &[PathBuf], f: &Path, tags: Option<&AudioTags
         }
         LibraryKind::Videos => Placement::Video { title: st, folder: folder_name(f) },
         LibraryKind::Photos => Placement::Photo { title: st, folder: folder_name(f) },
+        LibraryKind::Podcasts => {
+            // "<root>/<Podcast>/2026-10-01 Episode title.mp3": the date orders the episodes.
+            let root = root_of(roots, f);
+            let show = parse::show_folder(root, f).map(str::to_string).unwrap_or_else(|| folder_name(f));
+            let (episode, title) = podcast_episode(&st);
+            Placement::Episode { show, show_year: None, season: 1, episode, episode_end: None, title: Some(title) }
+        }
+    }
+}
+
+/// "2026-10-01 Title" → (20261001, "Title"); undated names keep their whole stem.
+fn podcast_episode(stem: &str) -> (i64, String) {
+    let b = stem.as_bytes();
+    let dated = b.len() >= 10
+        && b[..10].iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() });
+    if dated {
+        let n = stem[..10].replace('-', "").parse().unwrap_or(0);
+        let rest = stem[10..].trim_start_matches([' ', '-', '_', '.']).trim();
+        (n, if rest.is_empty() { stem.to_string() } else { rest.to_string() })
+    } else {
+        (0, stem.to_string())
     }
 }
 
@@ -341,6 +363,14 @@ fn local_art(kind: LibraryKind, roots: &[PathBuf], f: &Path) -> Vec<(ArtTarget, 
             }
         }
         LibraryKind::Photos => out.push((ArtTarget::Main, "thumb", f.to_path_buf())),
+        LibraryKind::Podcasts => {
+            let root = root_of(roots, f);
+            if let Some(show) = parse::show_folder(root, f).map(|s| root.join(s))
+                && let Some(p) = first(&show, &imgs(&["cover", "poster", "folder"]))
+            {
+                out.push((ArtTarget::Show, "poster", p));
+            }
+        }
     }
     out
 }

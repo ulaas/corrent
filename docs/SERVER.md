@@ -113,6 +113,12 @@ for changes and every library is rescanned every six hours. Files that disappear
 missing and removed after 30 days; a folder that can't be read at all (unplugged drive, offline
 share) leaves the library untouched. Admins can limit which libraries a user sees.
 
+**Podcasts**: a library of the kind *Podcasts* holds a folder per podcast with dated episode
+files (`2026-10-01 Title.mp3`). Settings → Podcasts subscribes to feeds; the `podcasts` task
+(hourly) downloads new episodes into the library's first folder and keeps the newest N (0 = all;
+only files it named are removed). API: `GET/POST /api/v1/podcasts`, `DELETE /podcasts/{id}`,
+`POST /podcasts/{id}/refresh`.
+
 Lyrics come from a `.lrc` (synced) or `.txt` file named like the track, else the track's lyrics
 tag (`GET /api/v1/items/{id}/lyrics`); the web player shows them in its queue panel (synced lines
 follow the music, click one to jump), the desktop player behind the microphone button.
