@@ -120,6 +120,8 @@ struct Mirror {
 
 struct Shared {
     mirror: Mutex<Mirror>,
+    /// Signalled whenever the connection comes up (queued commands are sent then).
+    up: tokio::sync::Notify,
     snapshot: Arc<ArcSwap<Snapshot>>,
     wake: Wake,
     status: Arc<RemoteStatus>,
@@ -170,6 +172,7 @@ impl Shared {
         self.status.problem.store(problem.map(Arc::new));
         if on {
             self.with(|m| m.ever_connected = true);
+            self.up.notify_one();
         }
         self.publish();
     }
@@ -178,6 +181,7 @@ impl Shared {
 async fn run(server: ServerEntry, status: Arc<RemoteStatus>, mut io: BackendIo) {
     let shared = Arc::new(Shared {
         mirror: Mutex::default(),
+        up: tokio::sync::Notify::new(),
         snapshot: io.snapshot.clone(),
         wake: io.wake.clone(),
         status: status.clone(),
@@ -200,7 +204,41 @@ async fn run(server: ServerEntry, status: Arc<RemoteStatus>, mut io: BackendIo) 
     let (target_tx, target_rx) = tokio::sync::watch::channel(None);
     let ws = tokio::spawn(ws_loop(server.clone(), shared.clone(), io.events.clone(), target_rx));
     let ctx = Ctx { fallback, events: io.events.clone(), wake: io.wake.clone(), shared: shared.clone() };
-    while let Some(cmd) = io.commands.recv().await {
+    // Changes made while the server is unreachable wait here and go out after reconnecting
+    // (in order); queries are answered (or fail) right away.
+    let mut queued: std::collections::VecDeque<EngineCommand> = Default::default();
+    loop {
+        let cmd = tokio::select! {
+            c = io.commands.recv() => match c {
+                Some(c) => c,
+                None => break,
+            },
+            _ = shared.up.notified() => {
+                if !queued.is_empty() {
+                    let n = queued.len();
+                    tracing::info!("server {}: sending {n} queued changes", server.name);
+                    for c in queued.drain(..) {
+                        ctx.command(c);
+                    }
+                }
+                continue;
+            }
+        };
+        let offline = !status.connected.load(std::sync::atomic::Ordering::Relaxed);
+        if offline && queueable(&cmd) {
+            if queued.len() < QUEUE_MAX {
+                if queued.is_empty() {
+                    ctx.toast(
+                        ToastKind::Info,
+                        t!("The server can't be reached: changes are sent when it's back.").to_string(),
+                    );
+                }
+                queued.push_back(cmd);
+            } else {
+                ctx.toast(ToastKind::Error, t!("The server can't be reached.").to_string());
+            }
+            continue;
+        }
         match cmd {
             EngineCommand::Shutdown(tx) => {
                 ws.abort();
@@ -221,6 +259,39 @@ async fn run(server: ServerEntry, status: Arc<RemoteStatus>, mut io: BackendIo) 
         }
     }
     ws.abort();
+}
+
+const QUEUE_MAX: usize = 200;
+
+/// Changes that make sense to send later (not queries with a reply, previews or local-only
+/// things).
+fn queueable(c: &EngineCommand) -> bool {
+    matches!(
+        c,
+        EngineCommand::Add(_)
+            | EngineCommand::Pause(_)
+            | EngineCommand::Resume(_)
+            | EngineCommand::ForceStart(_)
+            | EngineCommand::PauseAll
+            | EngineCommand::ResumeAll
+            | EngineCommand::Delete { .. }
+            | EngineCommand::SetFiles { .. }
+            | EngineCommand::SetCategory { .. }
+            | EngineCommand::SetTags { .. }
+            | EngineCommand::ToggleTag { .. }
+            | EngineCommand::Rename { .. }
+            | EngineCommand::SetTorrentLimits { .. }
+            | EngineCommand::SetFilePriority { .. }
+            | EngineCommand::QueuePlace { .. }
+            | EngineCommand::QueueMove { .. }
+            | EngineCommand::SetSeedLimits { .. }
+            | EngineCommand::MoveStorage { .. }
+            | EngineCommand::Recheck(_)
+            | EngineCommand::AddTrackers { .. }
+            | EngineCommand::SetCategories(_)
+            | EngineCommand::SetTagList(_)
+            | EngineCommand::SetAltSpeed(_)
+    )
 }
 
 #[derive(Clone)]
@@ -912,6 +983,68 @@ mod tests {
         let c2 = client.clone();
         tokio::task::spawn_blocking(move || c2.shutdown_blocking(Duration::from_secs(5))).await.unwrap();
         drop(p2p);
+        let e2 = server_engine.engine.clone();
+        tokio::task::spawn_blocking(move || e2.shutdown_blocking(Duration::from_secs(10))).await.unwrap();
+        drop(local);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Changes made while the server is down are sent once it is reachable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn queues_changes_while_offline() {
+        let dir = testkit::temp_dir("remote-offline");
+        let seeder = testkit::seeder(&dir).await;
+        let server_engine = testkit::start(&dir);
+        let settings = Arc::new(ArcSwap::from_pointee(testkit::settings(&dir)));
+        let local = corrent_server::local::start(server_engine.engine.clone(), settings, server_engine.paths.clone())
+            .await
+            .unwrap();
+        corrent_server::forward_engine_events(server_engine.events, local.state.clone());
+        // A port with nothing behind it yet.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let entry = ServerEntry {
+            id: local.state.server_id.clone(),
+            name: "Later".into(),
+            url: format!("http://127.0.0.1:{port}"),
+            token: local.token.clone(),
+            ..Default::default()
+        };
+        let (backend, status) = backend(entry);
+        let (tx, events) = std::sync::mpsc::channel();
+        let paths = corrent_core::config::Paths { data_dir: dir.join("client"), portable: true };
+        let client = EngineHandle::with_backend(&tokio::runtime::Handle::current(), paths, Wake::noop(), tx, backend);
+        until("a failed first attempt", || status.problem.load_full().map(drop)).await;
+        client.send(EngineCommand::Add(Box::new(AddRequest {
+            source: AddSource::Bytes { name: "data.torrent".into(), bytes: seeder.bytes.clone() },
+            torrent_bytes: None,
+            save_path: dir.join("dl"),
+            create_subfolder: true,
+            category: None,
+            tags: vec![],
+            paused: true,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        })));
+        until("the queued notice", || match events.try_recv() {
+            Ok(EngineEvent::Toast(ToastKind::Info, _)) => Some(()),
+            _ => None,
+        })
+        .await;
+        // The server comes up on that port.
+        let _listener = corrent_server::serve_http(
+            corrent_server::router(local.state.clone()),
+            std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        )
+        .await
+        .unwrap();
+        until("the queued add arrived", || {
+            client.snapshot().torrents.iter().any(|t| t.hash == seeder.hash).then_some(())
+        })
+        .await;
+        let c2 = client.clone();
+        tokio::task::spawn_blocking(move || c2.shutdown_blocking(Duration::from_secs(5))).await.unwrap();
         let e2 = server_engine.engine.clone();
         tokio::task::spawn_blocking(move || e2.shutdown_blocking(Duration::from_secs(10))).await.unwrap();
         drop(local);

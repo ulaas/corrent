@@ -1069,3 +1069,5 @@
 "Choose this folder" = "Bu klasörü seç"
 "Locations" = "Konumlar"
 "{size} free" = "{size} boş"
+"The server can't be reached: changes are sent when it's back." = "Sunucuya ulaşılamıyor: değişiklikler geri geldiğinde gönderilecek."
+"The server can't be reached." = "Sunucuya ulaşılamıyor."
