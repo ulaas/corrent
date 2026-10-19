@@ -40,6 +40,7 @@ pub struct ServerParts {
     pub cfg: ServerConfig,
     pub hub: Arc<Hub>,
     pub tls_fingerprint: Option<String>,
+    pub library: corrent_library::Library,
 }
 
 /// Builds the shared state (server id, adopted qBittorrent-API admin).
@@ -55,7 +56,23 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         tracing::info!("the Web API account {:?} is now the server administrator", u.name);
     }
     let proxy = p.settings.load().connection.proxy_url();
-    Ok(Arc::new(AppState {
+    // Library changes and scan progress go to realtime clients.
+    let (mut rx, hub) = (p.library.subscribe(), p.hub.clone());
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(corrent_library::LibraryEvent::Changed { library_id }) => {
+                    hub.publish(corrent_proto::event::Event::LibraryChanged { library_id })
+                }
+                Ok(corrent_library::LibraryEvent::Scan(status)) => {
+                    hub.publish(corrent_proto::event::Event::ScanStatus { status })
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+    });
+    let state = Arc::new(AppState {
         nets: ArcSwap::from_pointee(Nets::from(&p.cfg)),
         tls: p.cfg.tls,
         cfg: ArcSwap::from_pointee(p.cfg),
@@ -68,9 +85,23 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         http: corrent_core::rss::feed::client(proxy),
         limiter: Default::default(),
         settings_lock: Default::default(),
-        hub: p.hub,
+        hub: p.hub.clone(),
         library_roots: Default::default(),
-    }))
+        library: p.library.clone(),
+        watching: Default::default(),
+    });
+    v1::library::refresh_roots(&state).await;
+    Ok(state)
+}
+
+/// (Re)starts watching the library folders (after libraries change).
+pub async fn restart_watching(st: &AppState) {
+    let mut w = st.watching.lock().await;
+    *w = None;
+    match corrent_library::watch::start(&st.library, std::time::Duration::from_secs(3)).await {
+        Ok(new) => *w = Some(new),
+        Err(e) => tracing::warn!("library watching: {e}"),
+    }
 }
 
 /// The whole HTTP surface: `/api/v1`, and (when enabled) the qBittorrent API and classic web UI.

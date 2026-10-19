@@ -13,6 +13,8 @@ pub enum Topic {
     Torrent(InfoHash),
     Session,
     Log,
+    /// Library changes and scan progress.
+    Library,
 }
 
 /// Client → server.
@@ -89,6 +91,13 @@ pub enum Event {
         target: String,
         message: String,
         time: i64,
+    },
+    /// A library's items changed (refetch what is shown).
+    LibraryChanged {
+        library_id: i64,
+    },
+    ScanStatus {
+        status: crate::library::ScanStatus,
     },
     /// The server is going away (restart or shutdown).
     Bye,

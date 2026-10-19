@@ -170,7 +170,7 @@ fn run(args: Args) -> anyhow::Result<()> {
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("correntd-rt").build()?;
     let db = corrent_db::Db::open(&paths.data_dir.join("corrent.db"))?;
-    let identity = Identity::new(db, HashCost::STANDARD);
+    let identity = Identity::new(db.clone(), HashCost::STANDARD);
 
     if let Some(name) = &args.init_admin {
         // Works while the server runs (SQLite serializes the write).
@@ -258,6 +258,11 @@ fn run(args: Args) -> anyhow::Result<()> {
             cfg,
             hub,
             tls_fingerprint: fingerprint,
+            library: corrent_library::Library::new(
+                db,
+                &paths.data_dir,
+                corrent_library::probe::Prober::new(corrent_library::probe::Prober::find_worker(), 3),
+            ),
         },
         tls_material,
     ));
@@ -308,6 +313,18 @@ async fn serve(parts: ServerParts, tls_material: Option<tls::TlsMaterial>) -> an
         println!("  first run: open the address above on this computer to create the administrator,");
         println!("  or run `correntd --init-admin <name>`.");
     }
+    // Libraries: watch their folders and rescan everything every six hours.
+    corrent_server::restart_watching(&state).await;
+    let lib = state.library.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+        loop {
+            tick.tick().await;
+            for l in lib.list().await.unwrap_or_default() {
+                lib.start_scan(l.id);
+            }
+        }
+    });
     sd_notify("READY=1");
     wait_for_shutdown().await;
     state.hub.publish(corrent_proto_bye());

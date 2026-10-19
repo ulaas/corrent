@@ -11,6 +11,10 @@ publish = false
 corrent-core = { path = "../corrent-core" }
 corrent-proto = { path = "../corrent-proto" }
 corrent-db = { path = "../corrent-db" }
+corrent-library = { path = "../corrent-library" }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", default-features = false, features = ["fs"] }
+mime_guess = "2"
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net"] }
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "multipart", "json", "query", "form", "ws"] }
@@ -34,9 +38,9 @@ aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"]
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 
 [dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
-tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 corrent-core = { path = "../corrent-core", features = ["testkit"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "form", "multipart", "json"] }

@@ -33,6 +33,9 @@ pub struct AppState {
     pub hub: Arc<Hub>,
     /// Library folders (confined users may save and browse there).
     pub library_roots: ArcSwap<Vec<std::path::PathBuf>>,
+    pub library: corrent_library::Library,
+    /// Folder watchers of the libraries (replaced when libraries change).
+    pub watching: tokio::sync::Mutex<Option<corrent_library::watch::Watching>>,
 }
 
 #[derive(Default)]

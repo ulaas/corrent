@@ -83,13 +83,26 @@ All JSON; errors are `{ "code": "...", "message": "...", "params": {...} }` with
 | Server | `GET server/info` (public), `GET/PUT server/settings` (secrets masked), `GET server/audit`, `GET server/log`, `GET server/fs?path=`, `POST server/fs/mkdir`, `POST server/alt-speed` |
 | Torrents | `GET/POST torrents` (JSON or multipart), `GET/PATCH torrents/{hash}`, `GET torrents/{hash}/detail`, `POST torrents/{hash}/files`, `POST torrents/{hash}/trackers`, `POST torrents/actions`, `POST torrents/move`, `GET/PUT torrents/categories`, `PUT torrents/tags` |
 | RSS, search | `GET rss`, `GET/PUT rss/config`, `POST rss/refresh`, `POST rss/download`, `GET search?q=` |
+| Library | `GET/POST libraries`, `GET/PATCH/DELETE libraries/{id}`, `GET/POST/DELETE libraries/{id}/scan`, `GET items?library_id=&parent_id=&kind=&genre=&person_id=&favorite=&played=&sort=title\|added\|year\|played\|index&desc=&offset=&limit=`, `GET/PATCH items/{id}`, `PUT items/{id}/state`, `GET items/{id}/file` and `GET files/{id}` (Range), `GET images/{sha}?w=`, `GET home`, `GET library/search?q=`, `GET/PUT users/{id}/libraries` |
 | Events | `GET events` (WebSocket; see below) |
 
 **Events:** send `{"t":"subscribe","topics":[{"topic":"torrents"},{"topic":"session"}]}`. The
 torrent list arrives whole once (`torrents_full`) and then as `torrents_delta` (`upserted`,
 `patched`, `removed`), at most every `?rate_ms=` (default 1000). `{"topic":"torrent","arg":"<hash>"}`
-streams one torrent's details every second; admins can subscribe to `log`. Messages over 32 KiB
+streams one torrent's details every second; `library` sends `library_changed` and `scan_status`;
+admins can subscribe to `log`. Messages over 32 KiB
 are zlib-compressed binary frames (`DecompressionStream("deflate")` in browsers).
+
+## Libraries
+
+A library has a kind (`movies`, `shows`, `music`, `audiobooks`, `videos`, `photos`) and folders.
+Scans read file names and folders, `.nfo` files, audio tags, local artwork (`poster.jpg`,
+`fanart.jpg`, `cover.jpg`, `seasonNN-poster.jpg`, embedded covers) and external subtitles, and
+probe media with libmpv through the `corrent-mpvw` worker (install it next to `correntd`; without
+it libmpv is used in-process, and without libmpv files are added unprobed). Folders are watched
+for changes and every library is rescanned every six hours. Files that disappear are marked
+missing and removed after 30 days; a folder that can't be read at all (unplugged drive, offline
+share) leaves the library untouched. Admins can limit which libraries a user sees.
 
 ## systemd
 

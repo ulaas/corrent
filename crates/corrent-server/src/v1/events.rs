@@ -141,6 +141,11 @@ impl Client {
                 }
                 _ = fallback.tick() => self.tick(&mut ws, false).await?,
                 ev = events.recv() => match ev {
+                    Ok(e @ (Event::LibraryChanged { .. } | Event::ScanStatus { .. })) => {
+                        if self.topics.contains(&Topic::Library) {
+                            self.send(&mut ws, &e).await?;
+                        }
+                    }
                     Ok(e) => self.send(&mut ws, &e).await?,
                     // Fell behind on discrete events: they are notifications, skipping is fine.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => tracing::debug!("events client lagged {n}"),

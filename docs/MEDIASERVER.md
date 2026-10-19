@@ -920,6 +920,16 @@ them. Sizes are per the legend; milestones in the same row group can run in para
 
 Deviations are recorded under each milestone as they happen (like `docs/ROADMAP.md`).
 
+### Status and deviations (updated as milestones land)
+
+| MS | Status | Notes |
+|---|---|---|
+| MS0 | Done | `docs/spikes/mpv-embed.md` (GL + SW: go), `docs/spikes/mpv-hls.md` (go). The libmpv **in-process** encode path *is* exercised: `corrent-mpv` tests encode MKV/FLAC/HLS through libmpv (not only the CLI). The GL spike renders inside the `egui_glow` paint callback (works; the framebuffer binding must be restored by the callback). |
+| MS1 | Done | Deviation: the i18n catalog stays in `assets/i18n/` (the web client reads it too). `InfoHash`/`TorrentState` live in `corrent-proto`; the GUI keeps `crate::engine` etc. through `use corrent_core::{…}` at the crate root. |
+| MS2a | Done | Deviation: a separate `corrent-db` crate owns `corrent.db` (writer thread, read pool, migrations) for identity *and* library — one migration sequence. Torrent ownership is `added_by` in the engine's store (not a table). Fable review findings fixed (path confinement, passkey redaction, timing, limits). |
+| MS2b | Done | Deltas use `upserted/patched/removed`; frames > 32 KiB zlib-compressed binary. |
+| MS5 | Done | `corrent-library` + `/api/v1` library routes; watching + 6-hourly rescans in `correntd`. Not yet: ffprobe backend (optional), trickplay (moves to MS9 with the encoder), metadata providers (MS6). STABILITY S1 was not done first: the library uses `corrent-db`'s writer, which is what S1's F1 writer pattern was needed for; S1 stays on the stability roadmap. |
+
 **Relationship to `docs/STABILITY.md`:** CLAUDE.md names STABILITY S1 (profile data-loss guards,
 incl. the `corrent-writer` thread from F1) as the next hardening step. Do **MS1 first** (it is a
 mechanical move and touches the same files S1 will edit), then **STABILITY S1 inside

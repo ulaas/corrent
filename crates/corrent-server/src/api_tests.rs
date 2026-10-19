@@ -29,7 +29,9 @@ struct H {
 async fn harness(name: &str, cfg: ServerConfig) -> H {
     let dir = testkit::temp_dir(&format!("api-{name}"));
     let l = testkit::start(&dir);
-    let identity = Identity::new(Db::open(&dir.join("corrent.db")).unwrap(), HashCost::FAST);
+    let db = Db::open(&dir.join("corrent.db")).unwrap();
+    let identity = Identity::new(db.clone(), HashCost::FAST);
+    let library = corrent_library::Library::new(db, &dir, corrent_library::probe::Prober::new(None, 2));
     let settings = Arc::new(ArcSwap::from_pointee(testkit::settings(&dir)));
     let st = build_state(ServerParts {
         engine: l.engine.clone(),
@@ -39,6 +41,7 @@ async fn harness(name: &str, cfg: ServerConfig) -> H {
         cfg,
         hub: Default::default(),
         tls_fingerprint: None,
+        library,
     })
     .await
     .unwrap();
@@ -219,21 +222,42 @@ async fn setup_login_and_permissions() {
         send(app, Method::PATCH, &format!("/api/v1/users/{me}"), &guest, json!({ "display_name": "Kiddo" })).await;
     assert_eq!((s, v["display_name"].as_str()), (StatusCode::OK, Some("Kiddo")));
     // A plain user is confined to the download folders and public URLs.
-    let (s, v, _) = send(app, Method::POST, "/api/v1/users", &admin, json!({ "name": "bob", "password": "bob password", "role": "user" })).await;
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        &admin,
+        json!({ "name": "bob", "password": "bob password", "role": "user" }),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let (_, v, _) = call(app, Method::POST, "/api/v1/auth/login", Call {
-        body: Some(json!({ "username": "bob", "password": "bob password", "device": device() })),
-        ..Default::default()
-    })
+    let (_, v, _) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call {
+            body: Some(json!({ "username": "bob", "password": "bob password", "device": device() })),
+            ..Default::default()
+        },
+    )
     .await;
     let bob = v["token"].as_str().unwrap().to_string();
     let magnet = "magnet:?xt=urn:btih:0202020202020202020202020202020202020202";
-    let (s, v, _) = send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": [magnet], "save_path": "/etc" })).await;
+    let (s, v, _) =
+        send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": [magnet], "save_path": "/etc" })).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
     let inside = h.dir.join("dl").join("bob");
-    let (s, v, _) = send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": [magnet], "save_path": inside, "paused": true })).await;
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/torrents",
+        &bob,
+        json!({ "urls": [magnet], "save_path": inside, "paused": true }),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let (s, _, _) = send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": ["http://127.0.0.1:9/x.torrent"] })).await;
+    let (s, _, _) =
+        send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": ["http://127.0.0.1:9/x.torrent"] })).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "no fetching from the server's own network");
     let (s, _, _) = get(app, "/api/v1/server/fs?path=/etc", &bob).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -242,9 +266,18 @@ async fn setup_login_and_permissions() {
     assert!(v["entries"].as_array().unwrap().iter().all(|e| !e["path"].as_str().unwrap().starts_with("/etc")));
     // Changing one's own password needs the current one.
     let bob_id = get(app, "/api/v1/auth/me", &bob).await.1["user"]["id"].as_i64().unwrap();
-    let (s, _, _) = send(app, Method::PATCH, &format!("/api/v1/users/{bob_id}"), &bob, json!({ "password": "new password 1" })).await;
+    let (s, _, _) =
+        send(app, Method::PATCH, &format!("/api/v1/users/{bob_id}"), &bob, json!({ "password": "new password 1" }))
+            .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
-    let (s, _, _) = send(app, Method::PATCH, &format!("/api/v1/users/{bob_id}"), &bob, json!({ "password": "new password 1", "current_password": "bob password" })).await;
+    let (s, _, _) = send(
+        app,
+        Method::PATCH,
+        &format!("/api/v1/users/{bob_id}"),
+        &bob,
+        json!({ "password": "new password 1", "current_password": "bob password" }),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
 
     // The audit log saw the sign-ins.
@@ -365,12 +398,24 @@ async fn torrents_settings_pairing_and_qbittorrent_login() {
     }
     assert_eq!(get(app, &format!("/api/v1/torrents/{hash}"), &admin).await.0, StatusCode::OK);
     // Other users don't see the admin's trackers or folders.
-    let (_, v, _) = send(app, Method::POST, "/api/v1/users", &admin, json!({ "name": "viewer", "password": "viewer password", "role": "guest" })).await;
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        &admin,
+        json!({ "name": "viewer", "password": "viewer password", "role": "guest" }),
+    )
+    .await;
     assert!(v["id"].is_i64());
-    let (_, v, _) = call(app, Method::POST, "/api/v1/auth/login", Call {
-        body: Some(json!({ "username": "viewer", "password": "viewer password", "device": device() })),
-        ..Default::default()
-    })
+    let (_, v, _) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call {
+            body: Some(json!({ "username": "viewer", "password": "viewer password", "device": device() })),
+            ..Default::default()
+        },
+    )
     .await;
     let viewer = v["token"].as_str().unwrap().to_string();
     let (_, v, _) = get(app, &format!("/api/v1/torrents/{hash}"), &viewer).await;
@@ -559,5 +604,107 @@ async fn https_with_the_servers_own_ca() {
     // Without the CA the connection is refused (self-signed).
     assert!(reqwest::Client::new().get(&url).send().await.is_err());
     drop(listener);
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn library_endpoints() {
+    let h = harness("library", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    // Photos need no probing, so this runs without libmpv.
+    let photos = h.dir.join("Photos/Trip");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::from_fn(64, 48, |x, _| image::Rgb([x as u8, 0, 0])).save(photos.join("beach.png")).unwrap();
+    image::RgbImage::from_fn(64, 48, |_, y| image::Rgb([0, y as u8, 0])).save(photos.join("forest.png")).unwrap();
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Photos", "kind": "photos", "folders": [h.dir.join("Photos")] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let items = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if v["total"] == 2 {
+            break v;
+        }
+        assert!(std::time::Instant::now() < deadline, "scan finished: {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let first = &items["items"][0];
+    assert_eq!(first["title"], "beach");
+    let sha = first["images"][0]["sha"].as_str().unwrap().to_string();
+    // Artwork is served with an immutable cache policy; Range works on files.
+    let (s, _, hd) = get(app, &format!("/api/v1/images/{sha}?w=200"), &admin).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(hd.get(header::CACHE_CONTROL).unwrap().to_str().unwrap().contains("immutable"));
+    assert_eq!(get(app, "/api/v1/images/../../etc/passwd", &admin).await.0, StatusCode::NOT_FOUND);
+    let id = first["id"].as_i64().unwrap();
+    let res = h
+        .app
+        .clone()
+        .oneshot({
+            let mut r = Request::builder()
+                .uri(format!("/api/v1/items/{id}/file"))
+                .header(header::HOST, "127.0.0.1:8443")
+                .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                .header(header::RANGE, "bytes=0-9")
+                .body(Body::empty())
+                .unwrap();
+            r.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+            r
+        })
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(res.into_body().collect().await.unwrap().to_bytes().len(), 10);
+    // Watch state, search, home.
+    let (s, v, _) =
+        send(app, Method::PUT, &format!("/api/v1/items/{id}/state"), &admin, json!({ "favorite": true })).await;
+    assert_eq!((s, v["favorite"].as_bool()), (StatusCode::OK, Some(true)));
+    let (_, v, _) = get(app, "/api/v1/library/search?q=fore", &admin).await;
+    assert_eq!(v["items"][0]["title"], "forest");
+    let (_, v, _) = get(app, "/api/v1/home", &admin).await;
+    assert!(v.as_array().unwrap().iter().any(|r| r["id"] == "favorites"));
+    // A guest limited to no libraries sees nothing of this one; library management needs the permission.
+    let (_, guest, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        &admin,
+        json!({ "name": "g", "password": "guest password", "role": "guest" }),
+    )
+    .await;
+    let gid = guest["id"].as_i64().unwrap();
+    let (s, _, _) = send(app, Method::PUT, &format!("/api/v1/users/{gid}/libraries"), &admin, json!([999])).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "unknown library");
+    let other = h.dir.join("dl/videos");
+    std::fs::create_dir_all(&other).unwrap();
+    let (_, v, _) = send(app, Method::POST, "/api/v1/libraries", &admin, json!({ "name": "Other", "kind": "videos", "folders": [other] })).await;
+    let other_id = v["id"].as_i64().unwrap();
+    let (s, _, _) = send(app, Method::PUT, &format!("/api/v1/users/{gid}/libraries"), &admin, json!([other_id])).await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, v, _) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call {
+            body: Some(json!({ "username": "g", "password": "guest password", "device": device() })),
+            ..Default::default()
+        },
+    )
+    .await;
+    let g = v["token"].as_str().unwrap().to_string();
+    assert_eq!(get(app, &format!("/api/v1/items/{id}"), &g).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(get(app, "/api/v1/libraries", &g).await.1.as_array().unwrap().len(), 1, "only the allowed one");
+    let (s, _, _) =
+        send(app, Method::POST, "/api/v1/libraries", &g, json!({ "name": "x", "kind": "videos", "folders": ["/"] }))
+            .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
     h.stop().await;
 }

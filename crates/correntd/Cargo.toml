@@ -12,6 +12,7 @@ corrent-core = { path = "../corrent-core" }
 corrent-db = { path = "../corrent-db" }
 corrent-i18n = { path = "../corrent-i18n" }
 corrent-server = { path = "../corrent-server" }
+corrent-library = { path = "../corrent-library" }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal", "time"] }
 arc-swap = "1"
 anyhow = "1"
