@@ -1033,6 +1033,7 @@ dependencies = [
  "aws-lc-rs",
  "chrono",
  "corrent-i18n",
+ "corrent-proto",
  "directories",
  "feed-rs",
  "flate2",
@@ -1073,6 +1074,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "corrent-proto"
+version = "0.1.0"
+dependencies = [
+ "corrent-i18n",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -3,87 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// 20-byte BitTorrent v1 info hash, the stable identity of a torrent across restarts.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
-pub struct InfoHash(pub [u8; 20]);
-
-impl InfoHash {
-    pub fn to_hex(self) -> String {
-        let mut s = String::with_capacity(40);
-        for b in self.0 {
-            s.push_str(&format!("{b:02x}"));
-        }
-        s
-    }
-
-    pub fn from_hex(s: &str) -> Option<Self> {
-        let s = s.trim();
-        if s.len() != 40 {
-            return None;
-        }
-        let mut out = [0u8; 20];
-        for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
-            let hex = std::str::from_utf8(chunk).ok()?;
-            out[i] = u8::from_str_radix(hex, 16).ok()?;
-        }
-        Some(Self(out))
-    }
-}
-
-impl serde::Serialize for InfoHash {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for InfoHash {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        InfoHash::from_hex(&s).ok_or_else(|| serde::de::Error::custom("invalid info hash"))
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]
-pub enum TorrentState {
-    /// Waiting for metadata from peers (magnet links).
-    Metadata,
-    Checking,
-    Downloading,
-    Stalled,
-    Seeding,
-    Completed,
-    #[default]
-    Paused,
-    Queued,
-    Error,
-}
-
-impl TorrentState {
-    pub fn label(self) -> &'static str {
-        match self {
-            TorrentState::Metadata => t!("Fetching metadata"),
-            TorrentState::Checking => t!("Checking"),
-            TorrentState::Downloading => t!("Downloading"),
-            TorrentState::Stalled => t!("Stalled"),
-            TorrentState::Seeding => t!("Seeding"),
-            TorrentState::Completed => t!("Completed"),
-            TorrentState::Paused => t!("Paused"),
-            TorrentState::Queued => t!("Queued"),
-            TorrentState::Error => t!("Error"),
-        }
-    }
-
-    pub fn is_active(self) -> bool {
-        matches!(
-            self,
-            TorrentState::Downloading | TorrentState::Seeding | TorrentState::Metadata | TorrentState::Checking
-        )
-    }
-
-    pub fn is_paused_like(self) -> bool {
-        matches!(self, TorrentState::Paused | TorrentState::Queued | TorrentState::Completed)
-    }
-}
+pub use corrent_proto::{InfoHash, TorrentState};
 
 #[derive(Clone, Debug, Default)]
 pub struct TorrentView {
@@ -474,5 +394,140 @@ mod more_tests {
         assert!(TorrentState::Queued.is_paused_like());
         assert!(!TorrentState::Seeding.is_paused_like());
         assert_eq!(TorrentState::Metadata.label(), "Fetching metadata");
+    }
+}
+
+/// Wire forms of the engine's views (`corrent-proto`), for the server and remote clients.
+pub mod wire {
+    use corrent_proto::torrent as p;
+
+    use super::{EngineState, Snapshot, TorrentDetail, TorrentView};
+
+    pub fn torrent(t: &TorrentView) -> p::Torrent {
+        p::Torrent {
+            hash: t.hash,
+            name: t.name.clone(),
+            state: t.state,
+            error: t.error.clone(),
+            size: t.size,
+            done: t.done,
+            progress: t.progress,
+            uploaded: t.uploaded,
+            downloaded: t.downloaded,
+            down_bps: t.down_bps,
+            up_bps: t.up_bps,
+            eta_secs: t.eta.map(|d| d.as_secs()),
+            ratio: t.ratio,
+            peers_live: t.peers_live,
+            peers_seen: t.peers_seen,
+            peers_connecting: t.peers_connecting,
+            save_path: t.save_path.display().to_string(),
+            content_path: t.content_path.display().to_string(),
+            category: t.category.clone(),
+            tags: t.tags.clone(),
+            added_at: t.added_at,
+            completed_at: t.completed_at,
+            queue_pos: t.queue_pos,
+            trackers: t.trackers.clone(),
+            has_metadata: t.has_metadata,
+            file_count: t.file_count,
+            piece_count: t.piece_count,
+            piece_size: t.piece_size,
+            comment: t.comment.clone(),
+            created_by: t.created_by.clone(),
+            creation_date: t.creation_date,
+            busy: t.busy.clone(),
+            last_activity: t.last_activity,
+            seeding_secs: t.seeding_secs,
+            down_limit_kib: t.down_limit_kib,
+            up_limit_kib: t.up_limit_kib,
+            pending: t.pending,
+            restore_failed: t.restore_failed,
+        }
+    }
+
+    pub fn torrents(s: &Snapshot) -> Vec<p::Torrent> {
+        s.torrents.iter().map(torrent).collect()
+    }
+
+    pub fn labels(s: &Snapshot) -> p::Labels {
+        p::Labels {
+            categories: s
+                .categories
+                .iter()
+                .map(|(k, c)| {
+                    (
+                        k.clone(),
+                        p::Category {
+                            save_path: c.save_path.as_ref().map(|p| p.display().to_string()),
+                            down_limit_kib: c.down_limit_kib,
+                            up_limit_kib: c.up_limit_kib,
+                        },
+                    )
+                })
+                .collect(),
+            tags: s.tags.clone(),
+        }
+    }
+
+    pub fn session(s: &Snapshot) -> p::SessionStats {
+        let v = &s.session;
+        p::SessionStats {
+            engine: match &s.engine_state {
+                EngineState::Starting => p::EngineStatus::Starting,
+                EngineState::Running => p::EngineStatus::Running,
+                EngineState::Restarting => p::EngineStatus::Restarting,
+                EngineState::Failed(e) => p::EngineStatus::Failed(e.clone()),
+            },
+            down_bps: v.down_bps,
+            up_bps: v.up_bps,
+            dht_nodes: v.dht_nodes,
+            listen_port: v.listen_port,
+            peers_live: v.peers_live,
+            alt_speed: v.alt_speed,
+            uptime_secs: v.uptime_secs,
+            session_downloaded: v.session_downloaded,
+            session_uploaded: v.session_uploaded,
+            all_time_downloaded: s.all_time_downloaded,
+            all_time_uploaded: s.all_time_uploaded,
+            free_space: s.free_space,
+            warning: s.warning.clone(),
+            busy_ops: s.busy_ops,
+            torrent_count: s.torrents.len(),
+        }
+    }
+
+    pub fn detail(d: &TorrentDetail) -> p::TorrentDetail {
+        p::TorrentDetail {
+            hash: d.hash,
+            files: d
+                .files
+                .iter()
+                .map(|f| p::FileEntry {
+                    index: f.index,
+                    path: f.components.clone(),
+                    len: f.len,
+                    done: f.done,
+                    included: f.included,
+                    priority: f.priority,
+                })
+                .collect(),
+            peers: d
+                .peers
+                .iter()
+                .map(|x| p::Peer {
+                    addr: x.addr.clone(),
+                    client: x.client.clone(),
+                    kind: x.kind.clone(),
+                    state: x.state.clone(),
+                    downloaded: x.downloaded,
+                    uploaded: x.uploaded,
+                    down_bps: x.down_bps,
+                    up_bps: x.up_bps,
+                })
+                .collect(),
+            pieces: d.pieces.as_ref().map(|(b, _)| b.clone()),
+            piece_count: d.pieces.as_ref().map(|(_, n)| *n).unwrap_or(0),
+        }
     }
 }
