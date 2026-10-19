@@ -154,6 +154,10 @@
     .snav {
       position: static;
     }
+    .settings.index .snav a.on {
+      background: none;
+      color: var(--text-dim);
+    }
     .snav a {
       padding: 12px 10px;
     }

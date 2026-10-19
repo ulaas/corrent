@@ -3,3 +3,4 @@
 *.png binary
 *.ico binary
 web/dist/** -diff linguist-generated=true
+*.woff2 binary

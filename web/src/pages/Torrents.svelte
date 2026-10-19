@@ -434,8 +434,8 @@
 
     <footer class="status" aria-label={t('Session')}>
       {#if stats}
-        <span class="st"><Icon name="arrow-circle-down" size={15} /><span class="num">{rate(stats.down_bps) === '–' ? '0 B/s' : rate(stats.down_bps)}</span></span>
-        <span class="st"><Icon name="arrow-circle-up" size={15} /><span class="num">{rate(stats.up_bps) === '–' ? '0 B/s' : rate(stats.up_bps)}</span></span>
+        <span class="st"><Icon name="arrow-circle-down" size={15} /><span class="num">{t('{size}/s', { size: bytes(stats.down_bps) })}</span></span>
+        <span class="st"><Icon name="arrow-circle-up" size={15} /><span class="num">{t('{size}/s', { size: bytes(stats.up_bps) })}</span></span>
         <span class="st hide-sm"><Icon name="users" size={15} /><span class="num">{stats.peers_live}</span></span>
         {#if stats.dht_nodes != null}<span class="st hide-sm" title={t('DHT nodes')}><Icon name="globe" size={15} /><span class="num">{stats.dht_nodes}</span></span>{/if}
         {#if stats.free_space != null}<span class="st hide-sm" title={t('Free space')}><Icon name="hard-drives" size={15} />{t('{size} free', { size: bytes(stats.free_space) })}</span>{/if}
@@ -612,6 +612,7 @@
     gap: 4px;
     flex: 0 100 auto;
     min-width: 0;
+    max-width: 40%;
     overflow: hidden;
   }
   .c-size,
@@ -666,7 +667,7 @@
   .list:focus-visible .trow.focus {
     box-shadow: inset 3px 0 0 var(--accent);
   }
-  .c-name {
+  .trow .c-name {
     display: flex;
     flex-direction: column;
     gap: 6px;

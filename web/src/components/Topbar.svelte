@@ -181,7 +181,8 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    width: min(520px, 100%);
+    flex: 0 1 520px;
+    min-width: 0;
     height: 40px;
     padding: 0 10px 0 14px;
     border-radius: var(--r-pill);
@@ -301,6 +302,12 @@
   }
   @media (max-width: 760px) {
     .hint {
+      display: none;
+    }
+    .search {
+      flex: 1 1 auto;
+    }
+    .spacer {
       display: none;
     }
   }
