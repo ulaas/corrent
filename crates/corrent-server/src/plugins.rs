@@ -154,3 +154,51 @@ pub async fn persist(db: &Db, host: &PluginHost, id: &str) {
         tracing::error!("saving plugin state: {e}");
     }
 }
+
+/// Signing plugin archives for a catalog (`correntd plugin keygen|sign`).
+pub mod signing {
+    use base64::Engine as _;
+    use ed25519_dalek::Signer as _;
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// A new key pair: (secret, public), both hex. Keep the secret offline.
+    pub fn keygen() -> (String, String) {
+        let secret = corrent_core::util::random_hex(32);
+        let public = public_of(&secret).expect("fresh key");
+        (secret, public)
+    }
+
+    fn key(secret_hex: &str) -> Result<ed25519_dalek::SigningKey, String> {
+        let s = secret_hex.trim();
+        let bytes: Vec<u8> =
+            (0..s.len() / 2).filter_map(|i| u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()).collect();
+        let arr: [u8; 32] = bytes.try_into().map_err(|_| "a secret key is 64 hex digits".to_string())?;
+        Ok(ed25519_dalek::SigningKey::from_bytes(&arr))
+    }
+
+    pub fn public_of(secret_hex: &str) -> Result<String, String> {
+        Ok(hex(&key(secret_hex)?.verifying_key().to_bytes()))
+    }
+
+    /// (sha256 hex, base64 signature) of an archive, as a catalog entry carries them.
+    pub fn sign(archive: &[u8], secret_hex: &str) -> Result<(String, String), String> {
+        let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, archive);
+        let sig = key(secret_hex)?.sign(digest.as_ref());
+        Ok((hex(digest.as_ref()), base64::engine::general_purpose::STANDARD.encode(sig.to_bytes())))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn signatures_verify_with_the_public_key() {
+            let (secret, public) = super::keygen();
+            let (sha, sig) = super::sign(b"archive", &secret).unwrap();
+            let digest: Vec<u8> = (0..32).map(|i| u8::from_str_radix(&sha[i * 2..i * 2 + 2], 16).unwrap()).collect();
+            assert!(crate::v1::plugins_signed_by_trusted(&digest, &sig, &[public]));
+            assert!(!crate::v1::plugins_signed_by_trusted(&digest, &sig, &[super::keygen().1]));
+        }
+    }
+}

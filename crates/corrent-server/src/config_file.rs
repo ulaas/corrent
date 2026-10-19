@@ -45,6 +45,10 @@ pub struct ServerConfig {
     pub metrics: bool,
     /// When set, /metrics needs `Authorization: Bearer <metrics_token>`.
     pub metrics_token: String,
+    /// A plugin catalog (JSON index) to install signed plugins from; empty: none.
+    pub plugin_catalog: String,
+    /// Ed25519 public keys (hex) whose signatures on catalog plugins are trusted.
+    pub plugin_keys: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -69,6 +73,8 @@ impl Default for ServerConfig {
             port_mapping: false,
             metrics: false,
             metrics_token: String::new(),
+            plugin_catalog: String::new(),
+            plugin_keys: Vec::new(),
         }
     }
 }

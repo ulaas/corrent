@@ -1066,6 +1066,96 @@ async fn subtitle_parser_and_task_plugins() {
     h.stop().await;
 }
 
+/// Catalog installs: only archives that match their hash and carry a trusted signature.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn catalog_installs_signed_plugins_only() {
+    use base64::Engine as _;
+    use ed25519_dalek::Signer as _;
+    let b = |n: &str| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../corrent-plugins/builtin").join(n);
+    // The archive: plugin.toml + plugin.wasm.
+    let mut zip_bytes = Vec::new();
+    {
+        let mut z = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+        let o = zip::write::SimpleFileOptions::default();
+        z.start_file("plugin.toml", o).unwrap();
+        std::io::Write::write_all(&mut z, &std::fs::read(b("example-task.toml")).unwrap()).unwrap();
+        z.start_file("plugin.wasm", o).unwrap();
+        std::io::Write::write_all(&mut z, &std::fs::read(b("example-task.wasm")).unwrap()).unwrap();
+        z.finish().unwrap();
+    }
+    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &zip_bytes);
+    let sha: String = digest.as_ref().iter().map(|x| format!("{x:02x}")).collect();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+    let sig = base64::engine::general_purpose::STANDARD.encode(key.sign(digest.as_ref()).to_bytes());
+    let pubkey: String = key.verifying_key().to_bytes().iter().map(|x| format!("{x:02x}")).collect();
+    let other = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+    let bad_sig = base64::engine::general_purpose::STANDARD.encode(other.sign(digest.as_ref()).to_bytes());
+    // A tiny catalog server.
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    let index = json!({ "plugins": [
+        { "id": "example-task", "name": "Example task", "version": "1.0.0", "url": format!("{base}/task.zip"), "sha256": sha, "signature": sig },
+        { "id": "forged", "name": "Forged", "version": "1.0.0", "url": format!("{base}/task.zip"), "sha256": sha, "signature": bad_sig },
+        { "id": "tampered", "name": "Tampered", "version": "1.0.0", "url": format!("{base}/other.zip"), "sha256": sha, "signature": sig },
+    ]});
+    let (z1, z2) = (zip_bytes.clone(), {
+        let mut t = zip_bytes.clone();
+        let n = t.len() / 2;
+        t[n] ^= 0xff;
+        t
+    });
+    let srv = axum::Router::new()
+        .route(
+            "/index.json",
+            axum::routing::get(move || {
+                let i = index.clone();
+                async move { axum::Json(i) }
+            }),
+        )
+        .route(
+            "/task.zip",
+            axum::routing::get(move || {
+                let z = z1.clone();
+                async move { z }
+            }),
+        )
+        .route(
+            "/other.zip",
+            axum::routing::get(move || {
+                let z = z2.clone();
+                async move { z }
+            }),
+        );
+    tokio::spawn(async move { axum::serve(l, srv).await });
+    let h = harness(
+        "catalog",
+        ServerConfig {
+            tls: false,
+            plugin_catalog: format!("{base}/index.json"),
+            plugin_keys: vec![pubkey],
+            ..Default::default()
+        },
+    )
+    .await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let (s, v, _) = get(app, "/api/v1/plugins/catalog", &admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["entries"].as_array().unwrap().len(), 3);
+    assert!(v["entries"][0]["installed"].is_null());
+    let install = |id: &str| json!({ "id": id });
+    let (s, _, _) = send(app, Method::POST, "/api/v1/plugins/catalog/install", &admin, install("forged")).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "an untrusted signature is refused");
+    let (s, _, _) = send(app, Method::POST, "/api/v1/plugins/catalog/install", &admin, install("tampered")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "a download that doesn't match is refused");
+    let (s, v, _) = send(app, Method::POST, "/api/v1/plugins/catalog/install", &admin, install("example-task")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["manifest"]["id"], "example-task");
+    let (_, v, _) = get(app, "/api/v1/plugins/catalog", &admin).await;
+    assert_eq!(v["entries"][0]["installed"], "1.0.0");
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_with_the_servers_own_ca() {
     let h = harness("https", ServerConfig::default()).await;

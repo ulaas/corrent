@@ -18,6 +18,7 @@ const HELP: &str = "\
 Usage: correntd [OPTIONS]
        correntd service install [--data-dir <dir>] [--account <user> --password <pw>]
        correntd service uninstall | run [OPTIONS]      (Windows)
+       correntd plugin keygen | sign <archive.zip> <secret-key-file>   (plugin catalogs)
 
 Options:
   --portable              keep all data in correntd-data next to the executable
@@ -164,7 +165,50 @@ fn read_password() -> anyhow::Result<String> {
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
+/// `correntd plugin keygen|sign`: tools for publishing a signed plugin catalog.
+fn plugin_tool(args: &[String]) -> anyhow::Result<()> {
+    use corrent_server::plugins::signing;
+    match args.first().map(String::as_str) {
+        Some("keygen") => {
+            let (secret, public) = signing::keygen();
+            println!("secret key (keep it offline): {secret}");
+            println!("public key (plugin_keys in server.toml): {public}");
+        }
+        Some("sign") => {
+            let (Some(archive), Some(key_file)) = (args.get(1), args.get(2)) else {
+                anyhow::bail!("usage: correntd plugin sign <archive.zip> <secret-key-file>");
+            };
+            let data = std::fs::read(archive)?;
+            let secret = std::fs::read_to_string(key_file)?;
+            let (sha256, signature) = signing::sign(&data, &secret).map_err(anyhow::Error::msg)?;
+            println!(
+                "{}",
+                serde_json_line(&[
+                    ("sha256", &sha256),
+                    ("signature", &signature),
+                    ("key", &signing::public_of(&secret).map_err(anyhow::Error::msg)?)
+                ])
+            );
+        }
+        _ => anyhow::bail!("usage: correntd plugin keygen | sign <archive.zip> <secret-key-file>"),
+    }
+    Ok(())
+}
+
+fn serde_json_line(fields: &[(&str, &str)]) -> String {
+    let inner: Vec<String> = fields.iter().map(|(k, v)| format!("\"{k}\": \"{v}\"")).collect();
+    format!("{{ {} }}", inner.join(", "))
+}
+
 fn main() {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some("plugin") {
+        if let Err(e) = plugin_tool(&raw[1..]) {
+            eprintln!("correntd: {e:#}");
+            std::process::exit(2);
+        }
+        return;
+    }
     let args = match parse_args() {
         Ok(Some(a)) => a,
         Ok(None) => return,

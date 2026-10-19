@@ -199,6 +199,8 @@ pub async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next
     res
 }
 
+pub use plugins::signed_by_trusted as plugins_signed_by_trusted;
+
 #[cfg(test)]
 pub fn server_mask() -> &'static str {
     server::SECRET_MASK
