@@ -118,14 +118,9 @@ fn init_logging(paths: &Paths) {
     use tracing_subscriber::prelude::*;
     let filter = tracing_subscriber::EnvFilter::try_from_env("CORRENT_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,librqbit=info,librqbit_dht=warn,tracing=warn"));
-    let _ = std::fs::create_dir_all(paths.log_dir());
-    let log_file = paths.log_dir().join("correntd.log");
-    if std::fs::metadata(&log_file).is_ok_and(|m| m.len() > 10 * 1024 * 1024) {
-        let _ = std::fs::rename(&log_file, paths.log_dir().join("correntd.old.log"));
-    }
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(&log_file).ok();
-    let file_layer =
-        file.map(|f| tracing_subscriber::fmt::layer().with_ansi(false).with_writer(std::sync::Mutex::new(f)));
+    // Written by a background thread and rotated by size (corrent_core::logfile).
+    let file_layer = corrent_core::logfile::init(&paths.log_dir(), "correntd")
+        .map(|w| tracing_subscriber::fmt::layer().with_ansi(false).with_writer(w));
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
@@ -422,6 +417,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
     init_logging(&paths);
+    let _log_flush = corrent_core::logfile::FlushGuard;
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("correntd-rt").build()?;
     if let Some(name) = &args.init_admin {

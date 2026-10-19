@@ -13,6 +13,7 @@ pub mod faults;
 pub mod import;
 pub mod lock;
 pub mod logbuf;
+pub mod logfile;
 pub mod migrate;
 pub mod rss;
 pub mod search;

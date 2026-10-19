@@ -44,6 +44,7 @@ fn end() -> ! {
     if let Some(p) = PATHS.get() {
         crate::crash::finish(&p.log_dir());
     }
+    corrent_core::logfile::flush(Duration::from_millis(500));
     std::process::exit(0)
 }
 

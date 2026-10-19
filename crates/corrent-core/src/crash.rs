@@ -162,6 +162,8 @@ pub fn install_hook(log_dir: PathBuf) {
     std::panic::set_hook(Box::new(move |info| {
         let _ = write_report(&log_dir, info);
         previous(info);
+        // The lines before the panic are queued for the log thread (a no-op on that thread).
+        crate::logfile::flush(std::time::Duration::from_millis(500));
     }));
 }
 
