@@ -458,6 +458,10 @@ pub struct Appearance {
     pub follow_os_high_contrast: bool,
     /// Interface language code ("" = follow the system).
     pub language: String,
+    /// TV mode: scale on top of `zoom`.
+    pub tv_scale: f32,
+    /// TV mode: minutes without input before the screensaver (0 = never).
+    pub tv_screensaver_min: u32,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default, Hash)]
@@ -507,6 +511,8 @@ impl Default for Appearance {
             custom_palette: None,
             follow_os_high_contrast: true,
             language: String::new(),
+            tv_scale: 1.5,
+            tv_screensaver_min: 5,
         }
     }
 }

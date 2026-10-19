@@ -39,6 +39,8 @@ pub enum Page {
     Libraries,
     /// Offline copies on this computer.
     Downloads,
+    /// TV mode's settings.
+    TvSettings,
 }
 
 const PAGE: i64 = 120;
@@ -496,6 +498,7 @@ impl CorrentApp {
                     Page::Person(id, _) => self.person_page(ui, p, &client, id),
                     Page::Libraries => self.libraries_page(ui, p, &client),
                     Page::Downloads => self.downloads_page(ui, p, &client),
+                    Page::TvSettings => self.tv_settings_page(ui, p),
                 }
                 ui.add_space(24.0);
                 if let Some(r) = self.media.focus_rect.take() {
@@ -541,6 +544,7 @@ impl CorrentApp {
                 Page::Person(_, name) => name.clone(),
                 Page::Libraries => t!("Libraries").to_string(),
                 Page::Downloads => t!("Downloads").to_string(),
+                Page::TvSettings => t!("Settings").to_string(),
             };
             ui.label(RichText::new(title).size(20.0).strong().color(p.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -554,8 +558,8 @@ impl CorrentApp {
                     self.open_profiles();
                 }
                 if self.tv.on {
-                    if ui.button(format!("{}  {}", icons::MONITOR, t!("Leave TV mode"))).clicked() {
-                        self.set_tv(false);
+                    if ui.button(format!("{}  {}", icons::GEAR_SIX, t!("Settings"))).clicked() {
+                        self.open(Page::TvSettings);
                     }
                     if ui.button(format!("{}  {}", icons::MAGNIFYING_GLASS, t!("Search"))).clicked() {
                         self.tv.keyboard = true;

@@ -31,7 +31,7 @@ struct Picker {
 
 impl CorrentApp {
     /// The name shown on the profile button.
-    pub(super) fn profile_name(&mut self) -> Option<String> {
+    pub(crate) fn profile_name(&mut self) -> Option<String> {
         if let Some(u) = &self.media.profiles.current {
             return Some(if u.display_name.is_empty() { u.name.clone() } else { u.display_name.clone() });
         }
@@ -44,7 +44,7 @@ impl CorrentApp {
         Some(if me.display_name.is_empty() { me.name } else { me.display_name })
     }
 
-    pub(super) fn open_profiles(&mut self) {
+    pub(crate) fn open_profiles(&mut self) {
         let Some(client) = self.media.client.clone() else { return };
         let list = fetch(&self.rt, &self.ctx, async move { client.get("/api/v1/auth/profiles").await });
         self.media.profiles.picker =

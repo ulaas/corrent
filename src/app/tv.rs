@@ -12,9 +12,6 @@ use egui_phosphor::regular as icons;
 use super::CorrentApp;
 use crate::ui::theme::Palette;
 
-/// Scale on top of the user's zoom.
-const SCALE: f32 = 1.5;
-const SCREENSAVER_AFTER: Duration = Duration::from_secs(5 * 60);
 const SLIDE: Duration = Duration::from_secs(12);
 /// Held direction: first repeat after this, then every `REPEAT_EVERY`.
 const REPEAT_AFTER: Duration = Duration::from_millis(400);
@@ -230,7 +227,7 @@ impl CorrentApp {
     pub(super) fn tv_tick(&mut self, ctx: &egui::Context) {
         let user_zoom = self.settings.appearance.zoom.clamp(0.6, 2.5);
         if self.tv.on {
-            let want = (user_zoom * SCALE).min(3.0);
+            let want = (user_zoom * self.settings.appearance.tv_scale.clamp(1.0, 2.5)).min(3.0);
             if (ctx.zoom_factor() - want).abs() > 0.001 {
                 ctx.set_zoom_factor(want);
             }
@@ -245,7 +242,12 @@ impl CorrentApp {
                     self.media_back();
                 }
             }
-            if !in_player && self.tv.saver.is_none() && self.tv.last_input.elapsed() > SCREENSAVER_AFTER {
+            let after = self.settings.appearance.tv_screensaver_min;
+            if !in_player
+                && after > 0
+                && self.tv.saver.is_none()
+                && self.tv.last_input.elapsed() > Duration::from_secs(u64::from(after) * 60)
+            {
                 self.tv.saver = Some(Instant::now());
             }
             // Gamepads and held keys need frames even when nothing else changes.
@@ -263,6 +265,89 @@ impl CorrentApp {
             && (ctx.zoom_factor() - z).abs() < 0.001
         {
             ctx.set_zoom_factor(user_zoom);
+        }
+    }
+
+    /// TV mode's own settings: what makes sense from a sofa (the full settings window needs a
+    /// mouse and stays reachable by leaving TV mode).
+    pub(super) fn tv_settings_page(&mut self, ui: &mut Ui, p: &Palette) {
+        let a = self.settings.appearance.clone();
+        let mut new = a.clone();
+        let row = |ui: &mut Ui, title: &str, body: &mut dyn FnMut(&mut Ui)| {
+            ui.horizontal(|ui| {
+                ui.add_space(48.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(title).size(20.0).strong().color(p.text));
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        body(ui);
+                    });
+                });
+            });
+            ui.add_space(22.0);
+        };
+        let choice = |ui: &mut Ui, sel: bool, label: &str| -> bool {
+            ui.add(egui::Button::selectable(sel, RichText::new(label).size(18.0)).min_size(vec2(120.0, 48.0))).clicked()
+        };
+        ui.add_space(12.0);
+        row(ui, t!("Interface size"), &mut |ui| {
+            for s in [1.25f32, 1.5, 1.75, 2.0] {
+                if choice(ui, (new.tv_scale - s).abs() < 0.01, &format!("{}%", (s * 100.0) as u32)) {
+                    new.tv_scale = s;
+                }
+            }
+        });
+        row(ui, t!("Screensaver"), &mut |ui| {
+            for m in [0u32, 2, 5, 10, 30] {
+                let label = if m == 0 { t!("Never").to_string() } else { t!("After {n} min", n = m) };
+                if choice(ui, new.tv_screensaver_min == m, &label) {
+                    new.tv_screensaver_min = m;
+                }
+            }
+        });
+        row(ui, t!("Theme"), &mut |ui| {
+            use corrent_core::config::ThemeMode;
+            for (mode, label) in
+                [(ThemeMode::System, t!("System")), (ThemeMode::Dark, t!("Dark")), (ThemeMode::Light, t!("Light"))]
+            {
+                if choice(ui, new.theme == mode, label) {
+                    new.theme = mode;
+                }
+            }
+        });
+        row(ui, t!("Language"), &mut |ui| {
+            let sys = t!("System ({lang})", lang = crate::i18n::system_language().native_name());
+            if choice(ui, new.language.is_empty(), &sys) {
+                new.language.clear();
+            }
+            for l in crate::i18n::Lang::ALL {
+                if choice(ui, new.language == l.code(), l.native_name()) {
+                    new.language = l.code().to_string();
+                }
+            }
+        });
+        let mut leave = false;
+        let mut profiles = false;
+        row(ui, t!("This screen"), &mut |ui| {
+            if self.profile_name().is_some()
+                && choice(ui, false, &format!("{}  {}", icons::USER_CIRCLE, t!("Switch profile")))
+            {
+                profiles = true;
+            }
+            if choice(ui, false, &format!("{}  {}", icons::MONITOR, t!("Leave TV mode"))) {
+                leave = true;
+            }
+        });
+        if new != a {
+            self.settings.appearance = new;
+            self.save_settings();
+        }
+        if profiles {
+            self.open_profiles();
+        }
+        if leave {
+            self.set_tv(false);
         }
     }
 

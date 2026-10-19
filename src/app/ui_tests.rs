@@ -540,8 +540,18 @@ fn media_pages_browse_a_library_and_tv_mode_moves_focus() {
     let ctx = h.ctx.clone();
     h.state_mut().tv_tick(&ctx);
     h.run_steps(2);
-    h.state_mut().set_tv(false);
+    // TV settings: size and screensaver change from big buttons.
+    h.get_by_label_contains("Settings").click();
+    h.run_steps(3);
+    assert_eq!(h.state().media.page, Some(super::media::Page::TvSettings));
+    h.get_by_label("175%").click();
+    h.get_by_label("Never").click();
+    h.run_steps(3);
+    assert_eq!(h.state().settings.appearance.tv_scale, 1.75);
+    assert_eq!(h.state().settings.appearance.tv_screensaver_min, 0);
+    h.get_by_label_contains("Leave TV mode").click();
     h.run_steps(2);
+    assert!(!h.state().tv.on);
 }
 
 /// Scale check (U2): a 50,000-item library grid scrolls within the frame budget. Run with

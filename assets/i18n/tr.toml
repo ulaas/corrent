@@ -1110,3 +1110,8 @@
 "The server converts it while downloading; takes less space." = "Sunucu indirirken dönüştürür; daha az yer kaplar."
 "Waiting" = "Bekliyor"
 "{pct}% converted" = "%{pct} dönüştürüldü"
+"After {n} min" = "{n} dk sonra"
+"Interface size" = "Arayüz boyutu"
+"Never" = "Hiçbir zaman"
+"Screensaver" = "Ekran koruyucu"
+"This screen" = "Bu ekran"
