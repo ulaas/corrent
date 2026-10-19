@@ -361,6 +361,25 @@ fn random_token() -> String {
 /// piece writes); keep enough free for the engine.
 const MAX_STREAMS: usize = 3;
 const HEAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// A player that hasn't taken any data for this long has stopped reading (hung, or closed without
+/// closing the connection): its slot goes to the next player. Pausing in a player for this long
+/// costs a reconnect, which players do by themselves.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Tests: a shorter write timeout (ms; 0 = the default).
+#[cfg(test)]
+pub(crate) static TEST_WRITE_TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn write_timeout() -> Duration {
+    #[cfg(test)]
+    {
+        let ms = TEST_WRITE_TIMEOUT_MS.load(Ordering::Relaxed);
+        if ms > 0 {
+            return Duration::from_millis(ms);
+        }
+    }
+    WRITE_TIMEOUT
+}
 
 impl StreamServer {
     pub async fn start() -> anyhow::Result<Arc<StreamServer>> {
@@ -547,7 +566,9 @@ impl StreamServer {
             set_phase(PHASE_WRITE);
             for piece in buf[..n].chunks(PIECE) {
                 tokio::select! {
-                    r = conn.write_all(piece) => r?,
+                    r = tokio::time::timeout(write_timeout(), conn.write_all(piece)) => {
+                        r.map_err(|_| anyhow::anyhow!("the player stopped reading"))??
+                    }
                     _ = cancel.wait_for(|stop| *stop) => break 'copy,
                 }
                 c.phase_since.store(self.now_ms(), Ordering::Relaxed);

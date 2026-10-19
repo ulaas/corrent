@@ -1162,3 +1162,42 @@ fn find_file(dir: &Path, name: &str) -> std::path::PathBuf {
     }
     panic!("{name} not found under {}", dir.display())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_player_that_stops_reading_frees_its_slot() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let dir = temp_dir("stream-stall");
+    // Bigger than the loopback socket buffers, so a player that doesn't read blocks the writes.
+    let data: Vec<u8> = (0..48 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let s = seeder_with(&dir, "big.bin", data).await;
+    let l = start(&dir);
+    download(&l, &s, &dir).await;
+    super::stream::TEST_WRITE_TIMEOUT_MS.store(2000, std::sync::atomic::Ordering::Relaxed);
+    let (port, token) = l.engine.snapshot().session.stream.clone().expect("stream server running");
+    let path = format!("/{token}/{}/0/big.bin", s.hash.to_hex());
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    // Three players that ask for the whole file and then never read.
+    let mut stalled = Vec::new();
+    for _ in 0..3 {
+        let mut c = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        c.write_all(request.as_bytes()).await.unwrap();
+        stalled.push(c);
+    }
+    wait_for(&l, "all slots taken", 10, |sn| sn.session.stream_slots.0 == 3).await;
+    async fn head(port: u16, request: &str) -> String {
+        let mut c = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        c.write_all(request.as_bytes()).await.unwrap();
+        let mut buf = vec![0u8; 256];
+        let n = c.read(&mut buf).await.unwrap();
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    }
+    let range = request.replace("\r\n\r\n", "\r\nRange: bytes=0-99\r\n\r\n");
+    assert!(head(port, &range).await.starts_with("HTTP/1.1 503"), "no slot left");
+    // The stalled players time out and give their slots back.
+    wait_for(&l, "slots freed", 15, |sn| sn.session.stream_slots.0 == 0).await;
+    assert!(head(port, &range).await.starts_with("HTTP/1.1 206"));
+    super::stream::TEST_WRITE_TIMEOUT_MS.store(0, std::sync::atomic::Ordering::Relaxed);
+    drop(stalled);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
