@@ -15,6 +15,7 @@ corrent-library = { path = "../corrent-library" }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", default-features = false, features = ["fs"] }
 mime_guess = "2"
+rust-embed = "8"
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net"] }
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "multipart", "json", "query", "form", "ws"] }

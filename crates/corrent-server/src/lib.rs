@@ -17,6 +17,7 @@ pub mod state;
 pub mod tls;
 pub mod v1;
 pub mod webapi;
+pub mod webclient;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -111,7 +112,8 @@ pub fn router(st: Arc<AppState>) -> Router {
         app =
             app.merge(webapi::media_server_router(st.engine.clone(), st.settings.clone(), st.identity.clone(), st.tls));
     }
-    app.layer(axum::middleware::from_fn_with_state(st.clone(), v1::guard))
+    app.fallback(webclient::serve)
+        .layer(axum::middleware::from_fn_with_state(st.clone(), v1::guard))
         // Small by default; the routes that take uploads raise it for themselves.
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
 }

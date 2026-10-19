@@ -125,7 +125,10 @@ fn router(state: Arc<ApiState>) -> Router {
         // POST only: a GET login would put the password into URLs and logs.
         .route("/api/v2/auth/login", axum::routing::post(login))
         // The web UI's static files are public; everything it does goes through the API.
-        .route("/", axum::routing::get(|| async { webui("text/html; charset=utf-8", WEBUI_HTML) }))
+        .route(
+            if state.identity.is_some() { "/classic" } else { "/" },
+            axum::routing::get(|| async { webui("text/html; charset=utf-8", WEBUI_HTML) }),
+        )
         .route("/webui/app.js", axum::routing::get(|| async { webui("text/javascript; charset=utf-8", WEBUI_JS) }))
         .route("/webui/style.css", axum::routing::get(|| async { webui("text/css; charset=utf-8", WEBUI_CSS) }));
     api.layer(axum::middleware::from_fn_with_state(state.clone(), check_origin))
