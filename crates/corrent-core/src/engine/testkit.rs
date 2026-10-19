@@ -44,10 +44,14 @@ pub fn content() -> Vec<u8> {
 }
 
 pub async fn seeder(dir: &Path) -> Seeder {
+    seeder_with(dir, "data.bin", content()).await
+}
+
+/// A seeder for a single file `name` with `data`.
+pub async fn seeder_with(dir: &Path, name: &str, data: Vec<u8>) -> Seeder {
     let seed_dir = dir.join("seed");
     std::fs::create_dir_all(&seed_dir).unwrap();
-    let data = content();
-    std::fs::write(seed_dir.join("data.bin"), &data).unwrap();
+    std::fs::write(seed_dir.join(name), &data).unwrap();
     let opts = SessionOptions {
         dht: None,
         persistence: None,
@@ -65,8 +69,8 @@ pub async fn seeder(dir: &Path) -> Seeder {
     let session = Session::new_with_opts(seed_dir.clone(), opts).await.unwrap();
     let (res, _h) = session
         .create_and_serve_torrent(
-            &seed_dir.join("data.bin"),
-            CreateTorrentOptions { name: Some("data.bin"), trackers: vec![], piece_length: Some(64 * 1024) },
+            &seed_dir.join(name),
+            CreateTorrentOptions { name: Some(name), trackers: vec![], piece_length: Some(64 * 1024) },
         )
         .await
         .unwrap();

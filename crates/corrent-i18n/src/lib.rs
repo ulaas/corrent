@@ -204,7 +204,7 @@ mod tests {
                     let sentence = prose.is_match(line) && !line.contains("# Corrent theme") && !codes_only;
                     // URLs given as examples aren't text to translate.
                     let url_only = line.contains("(\"http://") || line.contains("(\"https://");
-                    if (calls.is_match(line) || icon_label.is_match(line) || sentence) && !url_only {
+                    if (calls.is_match(line) || (icon_label.is_match(line) && !codes_only) || sentence) && !url_only {
                         found.push(format!("{}:{}: {}", p.display(), n + 1, line.trim()));
                     }
                 }

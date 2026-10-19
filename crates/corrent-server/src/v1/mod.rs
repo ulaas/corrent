@@ -10,10 +10,11 @@ mod events;
 pub mod library;
 pub mod playback;
 mod rss;
-mod search;
+pub mod search;
 mod server;
 mod torrents;
 mod users;
+mod wanted;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -210,6 +211,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(search::routes())
         .merge(library::routes())
         .merge(playback::routes())
+        .merge(wanted::routes())
         .route("/events", axum::routing::get(events::events))
         .fallback(|| async { err(ErrorCode::NotFound, "no such endpoint") })
 }

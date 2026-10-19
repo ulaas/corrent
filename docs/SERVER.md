@@ -85,6 +85,7 @@ All JSON; errors are `{ "code": "...", "message": "...", "params": {...} }` with
 | RSS, search | `GET rss`, `GET/PUT rss/config`, `POST rss/refresh`, `POST rss/download`, `GET search?q=` |
 | Library | `GET/POST libraries`, `GET/PATCH/DELETE libraries/{id}`, `GET/POST/DELETE libraries/{id}/scan`, `GET items?library_id=&parent_id=&kind=&genre=&person_id=&favorite=&played=&sort=title\|added\|year\|played\|index&desc=&offset=&limit=`, `GET/PATCH items/{id}`, `PUT items/{id}/state`, `GET items/{id}/file` and `GET files/{id}` (Range), `GET images/{sha}?w=`, `GET home`, `GET library/search?q=`, `GET/PUT users/{id}/libraries` |
 | Playback | `POST playback/{item}` `{profile: "web"\|"safari"\|"native", audio_track?, burn_subtitle?, max_bitrate?, max_height?, force_transcode?, file_id?}` → `{method: "direct"\|"hls", url, session_id?, subtitles[{url?}], trickplay?, reasons}`, `GET hls/{session}/index.m3u8`, `GET hls/{session}/{n}.ts`, `GET/DELETE playback/sessions[/{id}]`, `GET files/{id}/subtitles/{idx}.vtt`, `GET files/{id}/trickplay/index.vtt` |
+| Wanted | `GET/POST wanted`, `DELETE wanted/{id}`, `POST wanted/{id}/search` → judged releases, `POST wanted/{id}/grab {link}`, `GET/POST quality-profiles`, `PUT/DELETE quality-profiles/{id}`, `GET items/{id}/releases`, `POST items/{id}/grab {link}`, `GET torrents/{hash}/files/{i}/stream` (Range; waits for pieces) |
 | Events | `GET events` (WebSocket; see below) |
 
 **Events:** send `{"t":"subscribe","topics":[{"topic":"torrents"},{"topic":"session"}]}`. The
@@ -104,6 +105,24 @@ it libmpv is used in-process, and without libmpv files are added unprobed). Fold
 for changes and every library is rescanned every six hours. Files that disappear are marked
 missing and removed after 30 days; a folder that can't be read at all (unplugged drive, offline
 share) leaves the library untouched. Admins can limit which libraries a user sees.
+
+## Torrents and libraries together
+
+A library lists the torrent categories that feed it (`settings.import_categories`). Those
+categories download into the library's first folder (the server sets their folder when they
+have none), and when a download completes the library imports it: **in place** (default — the
+file keeps seeding where it is), or **hard-linked**/**copied** into the library's first folder.
+Libraries can set seeding goals (`seed_ratio`, `seed_minutes`) for the torrents that feed them.
+Removing a torrent *with its data* is refused while library files are inside it (send
+`"force": true` to confirm).
+
+From any library item, `releases` searches the Torznab indexers and ranks what it finds against
+the library's quality profile (resolution, source, codec, words, size, seeders); `grab` adds
+the chosen one so it imports into that library. The **wanted list** remembers movies, episodes
+and seasons you want; every 15 minutes the server searches entries not searched in the last six
+hours and, when the profile allows auto-grab, adds the best acceptable release. A finished
+download marks its wanted entry done. Files that are still downloading play right away: the
+player (or the transcoder) reads them through the engine, which fetches the needed pieces first.
 
 ## Playback and transcoding
 

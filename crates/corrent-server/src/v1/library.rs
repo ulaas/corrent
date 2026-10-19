@@ -113,6 +113,7 @@ async fn create(
         .await;
     let lib = r?;
     refresh_roots(&st).await;
+    crate::integrate::ensure_category_folders(&st).await;
     st.library.start_scan(lib.id);
     crate::restart_watching(&st).await;
     Ok(Json(lib))
@@ -134,6 +135,7 @@ async fn update(
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "library_update", &id.to_string(), r.is_ok(), "").await;
     let lib = r?;
     refresh_roots(&st).await;
+    crate::integrate::ensure_category_folders(&st).await;
     if rescan {
         st.library.start_scan(id);
     }

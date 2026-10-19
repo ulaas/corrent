@@ -179,6 +179,45 @@ fn season_episode(lower: &str) -> Option<(usize, u32, u32, Option<u32>)> {
     None
 }
 
+/// Season packs: a bare `S01` token or `Season 1`.
+fn season_pack(lower: &str) -> Option<(usize, u32)> {
+    let mut words = Vec::new();
+    let mut start = None;
+    for (i, c) in lower.char_indices() {
+        let sep = !c.is_ascii_alphanumeric();
+        match (sep, start) {
+            (true, Some(s)) => {
+                words.push((s, &lower[s..i]));
+                start = None;
+            }
+            (false, None) => start = Some(i),
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        words.push((s, &lower[s..]));
+    }
+    for (k, (at, w)) in words.iter().enumerate() {
+        if *at == 0 {
+            continue;
+        }
+        if let Some(n) = w.strip_prefix('s')
+            && (1..=2).contains(&n.len())
+            && n.chars().all(|c| c.is_ascii_digit())
+        {
+            return Some((*at, n.parse().ok()?));
+        }
+        if *w == "season"
+            && let Some((_, n)) = words.get(k + 1)
+            && (1..=2).contains(&n.len())
+            && n.chars().all(|c| c.is_ascii_digit())
+        {
+            return Some((*at, n.parse().ok()?));
+        }
+    }
+    None
+}
+
 /// `2024-05-01`, `2024.05.01`.
 fn air_date(lower: &str) -> Option<(usize, String)> {
     let b = lower.as_bytes();
@@ -306,6 +345,9 @@ pub fn parse_name(stem: &str) -> Parsed {
         cut = cut.min(at);
     } else if let Some((at, date)) = air_date(&lower) {
         p.date = Some(date);
+        cut = cut.min(at);
+    } else if let Some((at, season)) = season_pack(&lower) {
+        p.season = Some(season);
         cut = cut.min(at);
     }
 
@@ -564,6 +606,10 @@ mod tests {
         assert_eq!((x.title.as_str(), x.date.as_deref()), ("The Daily Show", Some("2024-05-01")));
         let x = p("[SubsPlease] Frieren - 012 (1080p) [ABCD1234]");
         assert_eq!((x.title.as_str(), x.absolute), ("Frieren", Some(12)));
+        let x = p("Show.Name.S02.1080p.WEB-DL");
+        assert_eq!((x.title.as_str(), x.season, x.episode), ("Show Name", Some(2), None));
+        let x = p("Show Name Season 3 Complete");
+        assert_eq!((x.title.as_str(), x.season), ("Show Name", Some(3)));
         let x = p("Doctor Who (2005) S01E01");
         assert_eq!((x.title.as_str(), x.year, x.episode), ("Doctor Who", Some(2005), Some(1)));
     }

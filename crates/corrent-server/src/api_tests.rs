@@ -49,6 +49,11 @@ async fn harness(name: &str, cfg: ServerConfig) -> H {
 }
 
 impl H {
+    /// Takes the engine's event receiver (so the server's integration can consume it).
+    fn l_events(&mut self) -> std::sync::mpsc::Receiver<corrent_core::engine::EngineEvent> {
+        std::mem::replace(&mut self.l.events, std::sync::mpsc::channel().1)
+    }
+
     async fn stop(self) {
         drop(self.app);
         drop(self.st);
@@ -803,5 +808,164 @@ async fn playback_direct_and_hls() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completed_downloads_import_into_libraries() {
+    if !corrent_mpv::Library::available() {
+        eprintln!("libmpv not found; skipping");
+        return;
+    }
+    let mut h = harness("import", ServerConfig { tls: false, ..Default::default() }).await;
+    // Engine events reach the integration (the test harness owns the receiver).
+    let events = h.l_events();
+    crate::forward_engine_events(events, h.st.clone());
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    // A movie to seed.
+    let src = h.dir.join("src.mkv");
+    let job = corrent_mpv::encode::EncodeJob {
+        input: "av://lavfi:testsrc=duration=4:size=160x120:rate=10".into(),
+        audio_file: None,
+        output: src.display().to_string(),
+        options: vec![
+            ("of".into(), "matroska".into()),
+            ("ovc".into(), "libx264".into()),
+            ("ovcopts".into(), "preset=ultrafast".into()),
+        ],
+    };
+    corrent_mpv::encode::run(&job, std::time::Duration::from_secs(60), &mut |_| true).unwrap();
+    let seeder = testkit::seeder_with(&h.dir, "Big.Buck.Bunny.2008.mkv", std::fs::read(&src).unwrap()).await;
+
+    // A library fed by the "Movies" category gets that category's folder.
+    let folder = h.dir.join("dl/Movies");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({
+            "name": "Movies", "kind": "movies", "folders": [folder],
+            "settings": { "import_categories": ["Movies"], "watch": false, "seed_ratio": 2.5 }
+        }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let (_, v, _) = get(app, "/api/v1/torrents/categories", &admin).await;
+        if v["categories"]["Movies"]["save_path"].as_str().is_some_and(|p| p.ends_with("Movies")) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "category folder set: {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    h.st.engine.send(corrent_core::engine::EngineCommand::Add(Box::new(corrent_core::engine::AddRequest {
+        source: corrent_core::engine::types::AddSource::Bytes { name: "x.torrent".into(), bytes: seeder.bytes.clone() },
+        torrent_bytes: None,
+        save_path: folder.clone(),
+        create_subfolder: false,
+        category: Some("Movies".into()),
+        tags: vec![],
+        paused: false,
+        only_files: None,
+        add_to_top: false,
+        initial_peers: Some(vec![seeder.addr]),
+        added_by: Some("admin".into()),
+    })));
+    // Completed → imported in place → scanned → the movie is in the library.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+    let item = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if v["total"] == 1 {
+            break v["items"][0].clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "imported: {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    assert_eq!((item["title"].as_str(), item["year"].as_i64()), (Some("Big Buck Bunny"), Some(2008)));
+    // The library's seeding goal was applied when the torrent was added.
+    let hash = seeder.hash.to_hex();
+    // Removing it with its data needs confirmation, because library files are inside.
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/torrents/actions",
+        &admin,
+        json!({ "action": "remove_with_data", "hashes": [hash] }),
+    )
+    .await;
+    assert_eq!((s, v["code"].as_str()), (StatusCode::CONFLICT, Some("conflict")), "{v}");
+    assert_eq!(v["params"]["files"], "1");
+    let (s, _, _) =
+        send(app, Method::POST, "/api/v1/torrents/actions", &admin, json!({ "action": "remove", "hashes": [hash] }))
+            .await;
+    assert_eq!(s, StatusCode::OK, "removing without data is fine");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wanted_list_and_profiles() {
+    let h = harness("wanted", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let (_, v, _) = get(app, "/api/v1/quality-profiles", &admin).await;
+    assert!(v.as_array().unwrap().len() >= 3, "default profiles: {v}");
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/quality-profiles",
+        &admin,
+        json!({ "name": "Small", "rules": { "max_resolution": 720 } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/wanted",
+        &admin,
+        json!({ "title": "Sintel", "year": 2010, "profile_id": v["id"] }),
+    )
+    .await;
+    assert_eq!((s, v["kind"].as_str(), v["status"].as_str()), (StatusCode::OK, Some("movie"), Some("wanted")), "{v}");
+    let id = v["id"].as_i64().unwrap();
+    // No providers configured: searching finds nothing (and doesn't fail).
+    let (s, v, _) = send(app, Method::POST, &format!("/api/v1/wanted/{id}/search"), &admin, json!({})).await;
+    assert_eq!((s, v.as_array().map(Vec::len)), (StatusCode::OK, Some(0)));
+    let (_, v, _) = get(app, "/api/v1/wanted?status=wanted", &admin).await;
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    let (s, _, _) =
+        call(app, Method::DELETE, &format!("/api/v1/wanted/{id}"), Call { bearer: Some(&admin), ..Default::default() })
+            .await;
+    assert_eq!(s, StatusCode::OK);
+    // A file of an unfinished (paused, empty) download is found for streaming.
+    let seeder = testkit::seeder(&h.dir).await;
+    h.st.engine.send(corrent_core::engine::EngineCommand::Add(Box::new(corrent_core::engine::AddRequest {
+        source: corrent_core::engine::types::AddSource::Bytes { name: "x.torrent".into(), bytes: seeder.bytes.clone() },
+        torrent_bytes: None,
+        save_path: h.dir.join("dl"),
+        create_subfolder: false,
+        category: None,
+        tags: vec![],
+        paused: true,
+        only_files: None,
+        add_to_top: false,
+        initial_peers: None,
+        added_by: None,
+    })));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        if let Some((hash, idx, name)) = crate::integrate::downloading_file(&h.st, &h.dir.join("dl/data.bin")).await {
+            assert_eq!((hash, idx, name.as_str()), (seeder.hash, 0, "data.bin"));
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "downloading file found");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
     h.stop().await;
 }

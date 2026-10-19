@@ -122,6 +122,8 @@ async fn start(
     }
     .ok_or_else(|| err(ErrorCode::NotFound, "nothing to play"))?
     .clone();
+    // A file of an unfinished download plays through the engine (reads wait for pieces).
+    let downloading = crate::integrate::downloading_file(&st, std::path::Path::new(&file.path)).await;
     let profile = ClientProfile::named(req.profile.as_deref().unwrap_or("web"));
     let facts = facts(&file);
     let decision = decide::decide(
@@ -162,7 +164,13 @@ async fn start(
         None
     };
     let (method, url, session_id, reasons) = match decision {
-        Decision::Direct { reasons } => ("direct".to_string(), format!("/api/v1/files/{}", file.id), None, reasons),
+        Decision::Direct { reasons } => {
+            let url = match &downloading {
+                Some((hash, idx, _)) => format!("/api/v1/torrents/{}/files/{idx}/stream", hash.to_hex()),
+                None => format!("/api/v1/files/{}", file.id),
+            };
+            ("direct".to_string(), url, None, reasons)
+        }
         Decision::Transcode { video, audio, burn_subtitle, reasons } => {
             auth.require(Perms::PLAYBACK_TRANSCODE)?;
             if video.is_some() && st.hls_encoder.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
@@ -177,8 +185,14 @@ async fn start(
                 Some(i) => Some(st.library.subtitle_path(user, file.id, i).await.map_err(lib_err)?),
                 None => None,
             };
+            let input = match &downloading {
+                Some((hash, idx, name)) => {
+                    crate::integrate::loopback_stream_url(&st, *hash, *idx, name).unwrap_or_else(|| file.path.clone())
+                }
+                None => file.path.clone(),
+            };
             let spec = SessionSpec {
-                input: file.path.clone(),
+                input,
                 duration_ms: file.duration_ms.unwrap_or(0).max(1000),
                 fps: facts.video.as_ref().and_then(|v| v.fps),
                 video,
@@ -202,6 +216,7 @@ async fn start(
         subtitles,
         trickplay,
         reasons,
+        downloading: downloading.is_some(),
     }))
 }
 

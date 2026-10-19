@@ -238,6 +238,16 @@ impl AddSource {
     }
 
     /// Classify user input (CLI argument, pasted text, forwarded launch item).
+    /// The info hash, when it can be known before adding (magnets with a v1 hash, .torrent
+    /// bytes); URLs and files on disk are only known once fetched/read.
+    pub fn info_hash(&self) -> Option<InfoHash> {
+        match self {
+            AddSource::Magnet(m) => librqbit_core::magnet::Magnet::parse(m).ok()?.as_id20().map(|h| InfoHash(h.0)),
+            AddSource::Bytes { bytes, .. } => librqbit::torrent_from_bytes(bytes).ok().map(|t| InfoHash(t.info_hash.0)),
+            _ => None,
+        }
+    }
+
     pub fn parse(input: &str) -> Option<AddSource> {
         let s = input.trim().trim_matches('"');
         if s.is_empty() {
@@ -341,6 +351,16 @@ mod more_tests {
         assert!(InfoHash::from_hex("abc").is_none());
         assert!(InfoHash::from_hex(&"zz".repeat(20)).is_none());
         assert!(InfoHash::from_hex(&format!("  {}  ", "0a".repeat(20))).is_some(), "whitespace is trimmed");
+    }
+
+    #[test]
+    fn add_source_hashes() {
+        let h = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            AddSource::Magnet(format!("magnet:?xt=urn:btih:{h}&dn=x")).info_hash().map(|x| x.to_hex()).as_deref(),
+            Some(h)
+        );
+        assert_eq!(AddSource::Url("http://x/y.torrent".into()).info_hash(), None);
     }
 
     #[test]

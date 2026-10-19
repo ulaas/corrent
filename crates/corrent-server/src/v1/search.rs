@@ -39,9 +39,16 @@ async fn search(
     if query.is_empty() || query.len() > 200 {
         return Err(err(ErrorCode::BadRequest, "search text required"));
     }
+    let mut out = search_all(&st, &query).await;
+    out.results.sort_by_key(|r| std::cmp::Reverse(r.seeders.unwrap_or(0)));
+    Ok(Json(out))
+}
+
+/// Searches every enabled provider at once (30 s each).
+pub async fn search_all(st: &AppState, query: &str) -> SearchResponse {
     let providers: Vec<_> = st.settings.load().search.providers.iter().filter(|p| p.enabled).cloned().collect();
     let tasks = providers.into_iter().map(|p| {
-        let (client, query) = (st.http.clone(), query.clone());
+        let (client, query) = (st.http.clone(), query.to_string());
         tokio::spawn(async move {
             let r = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
@@ -59,6 +66,5 @@ async fn search(
             Err(e) => out.errors.push((String::new(), e.to_string())),
         }
     }
-    out.results.sort_by_key(|r| std::cmp::Reverse(r.seeders.unwrap_or(0)));
-    Ok(Json(out))
+    out
 }

@@ -124,6 +124,11 @@ pub struct LibrarySettings {
     pub language: String,
     /// Percentage watched after which an item counts as played.
     pub played_threshold: u8,
+    /// Seeding goals for torrents that feed this library (override the global ones).
+    pub seed_ratio: Option<f32>,
+    pub seed_minutes: Option<u32>,
+    /// Quality profile for releases found for this library.
+    pub profile_id: Option<i64>,
 }
 
 impl LibrarySettings {
@@ -420,6 +425,9 @@ pub struct PlaybackInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trickplay: Option<String>,
     pub reasons: Vec<String>,
+    /// The file is still downloading: playback reads pieces as they arrive.
+    #[serde(default)]
+    pub downloading: bool,
 }
 
 /// A running transcode (Sessions page).
@@ -435,4 +443,108 @@ pub struct PlaybackSession {
     pub segments: u64,
     pub produced: u64,
     pub idle_secs: u64,
+}
+
+/// What makes a release acceptable and how releases are ranked.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QualityRules {
+    pub min_resolution: Option<u32>,
+    pub max_resolution: Option<u32>,
+    pub preferred_resolution: Option<u32>,
+    /// Allowed sources ("bluray", "webdl", "webrip", "hdtv", "remux", "dvd"); empty = any.
+    pub sources: Vec<String>,
+    /// Preferred codecs ("hevc", "h264", "av1"), best first.
+    pub codecs: Vec<String>,
+    pub required_words: Vec<String>,
+    pub forbidden_words: Vec<String>,
+    pub preferred_words: Vec<String>,
+    pub min_size_mb: Option<u64>,
+    pub max_size_mb: Option<u64>,
+    pub min_seeders: Option<u32>,
+    /// Grab the best acceptable release automatically.
+    pub auto_grab: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct QualityProfile {
+    pub id: i64,
+    pub name: String,
+    pub rules: QualityRules,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WantedKind {
+    Movie,
+    Episode,
+    Season,
+    Show,
+    Album,
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Wanted {
+    pub id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_id: Option<i64>,
+    pub kind: WantedKind,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<i64>,
+    /// wanted | grabbed | done | failed
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<String>,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub searched_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NewWanted {
+    pub library_id: Option<i64>,
+    pub kind: Option<WantedKind>,
+    pub title: String,
+    pub year: Option<i32>,
+    pub season: Option<i64>,
+    pub episode: Option<i64>,
+    pub query: Option<String>,
+    pub profile_id: Option<i64>,
+}
+
+/// A Torznab result judged against a quality profile.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Release {
+    pub title: String,
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeders: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    /// Higher is better; `None` when the profile rejects it (see `rejected`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<String>,
 }

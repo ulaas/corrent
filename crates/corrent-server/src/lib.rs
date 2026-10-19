@@ -11,6 +11,7 @@ pub mod events;
 /// Wire event types, re-exported for hosts.
 pub use corrent_proto::event as events_api;
 pub mod identity;
+pub mod integrate;
 pub mod net;
 pub mod paths;
 pub mod state;
@@ -111,6 +112,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         *st2.hls_encoder.lock().unwrap_or_else(|e| e.into_inner()) = found;
     });
     v1::library::refresh_roots(&state).await;
+    integrate::ensure_category_folders(&state).await;
     Ok(state)
 }
 
@@ -137,15 +139,7 @@ pub fn router(st: Arc<AppState>) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
 }
 
-/// Forwards the engine's events to connected clients (for hosts that own the engine's event
-/// channel, like `correntd`). Runs until the channel closes.
-pub fn forward_engine_events(rx: std::sync::mpsc::Receiver<corrent_core::engine::EngineEvent>, hub: Arc<Hub>) {
-    let _ = std::thread::Builder::new().name("corrent-events".into()).spawn(move || {
-        while let Ok(ev) = rx.recv() {
-            hub.engine_event(ev);
-        }
-    });
-}
+pub use integrate::{forward_engine_events, start_wanted_scheduler};
 
 /// A running listener; stops when dropped.
 pub struct Listener {

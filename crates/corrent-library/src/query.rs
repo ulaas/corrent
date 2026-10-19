@@ -391,6 +391,21 @@ impl Library {
             .ok_or(LibError::NotFound)
     }
 
+    /// How many library files lie under `prefix` (the delete guard for torrents).
+    pub async fn files_under(&self, prefix: &std::path::Path) -> Result<i64> {
+        let p = prefix.display().to_string();
+        Ok(self
+            .db()
+            .read(move |c| {
+                c.query_row(
+                    "SELECT count(*) FROM files WHERE missing_since IS NULL AND (path = ?1 OR substr(path, 1, length(?1) + 1) = ?1 || ?2)",
+                    params![p, std::path::MAIN_SEPARATOR.to_string()],
+                    |r| r.get(0),
+                )
+            })
+            .await?)
+    }
+
     /// The file of an external subtitle stream, if the user may see the media file.
     pub async fn subtitle_path(&self, user: i64, file_id: i64, idx: i64) -> Result<String> {
         self.file_path(user, file_id).await?;

@@ -16,6 +16,7 @@ corrent-i18n = { path = "../corrent-i18n" }
 corrent-proto = { path = "../corrent-proto" }
 librqbit = { version = "=9.0.1", default-features = false, features = ["rust-tls"] }
 librqbit-bencode = "=9.0.1"
+librqbit-core = { version = "=9.0.1", default-features = false }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net", "io-util"] }
 arc-swap = "1"
 anyhow = "1"

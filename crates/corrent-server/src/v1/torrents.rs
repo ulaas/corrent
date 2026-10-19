@@ -243,6 +243,9 @@ struct ActionRequest {
     action: Action,
     #[serde(default)]
     hashes: Vec<InfoHash>,
+    /// Remove with data even though library files are inside.
+    #[serde(default)]
+    force: bool,
 }
 
 async fn action(
@@ -259,6 +262,20 @@ async fn action(
                 return Err(err(ErrorCode::BadRequest, "no torrents given"));
             }
             may_manage(&st, &auth, &hashes)?;
+        }
+    }
+    // Library files are never deleted by accident with a torrent's data.
+    if r.action == Action::RemoveWithData && !r.force {
+        let snap = st.engine.snapshot();
+        let mut in_library = 0;
+        for t in snap.torrents.iter().filter(|t| hashes.contains(&t.hash)) {
+            in_library += st.library.files_under(&t.content_path).await.unwrap_or(0);
+        }
+        if in_library > 0 {
+            return Err(ApiErr(
+                corrent_proto::ApiError::new(ErrorCode::Conflict, "library files would be deleted")
+                    .with("files", in_library),
+            ));
         }
     }
     let queue = |mv| EngineCommand::QueueMove { hashes: hashes.clone(), mv };

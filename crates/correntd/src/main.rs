@@ -247,9 +247,9 @@ fn run(args: Args) -> anyhow::Result<()> {
         Wake::new(move || hub.wake())
     };
     let engine = EngineHandle::start(rt.handle(), paths.clone(), settings.clone(), wake, ev_tx);
-    corrent_server::forward_engine_events(ev_rx, hub.clone());
 
     let result = rt.block_on(serve(
+        ev_rx,
         ServerParts {
             engine: engine.clone(),
             settings: Arc::new(ArcSwap::from_pointee(settings)),
@@ -276,9 +276,16 @@ fn run(args: Args) -> anyhow::Result<()> {
     result
 }
 
-async fn serve(parts: ServerParts, tls_material: Option<tls::TlsMaterial>) -> anyhow::Result<()> {
+async fn serve(
+    events: std::sync::mpsc::Receiver<corrent_core::engine::EngineEvent>,
+    parts: ServerParts,
+    tls_material: Option<tls::TlsMaterial>,
+) -> anyhow::Result<()> {
     let cfg = parts.cfg.clone();
     let state = corrent_server::build_state(parts).await?;
+    // Events queued while the server was starting are handled now.
+    corrent_server::forward_engine_events(events, state.clone());
+    corrent_server::start_wanted_scheduler(state.clone());
     let app = corrent_server::router(state.clone());
     let ip: IpAddr = cfg.bind.parse().map_err(|_| anyhow::anyhow!("bad bind address {:?}", cfg.bind))?;
     let main_addr = SocketAddr::new(ip, cfg.https_port);

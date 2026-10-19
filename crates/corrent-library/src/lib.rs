@@ -12,6 +12,7 @@ pub mod probe;
 pub mod query;
 pub mod scan;
 pub mod tags;
+pub mod wanted;
 pub mod watch;
 
 use std::collections::HashMap;
