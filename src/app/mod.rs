@@ -379,6 +379,7 @@ pub struct CorrentApp {
     media_dev_shot_sent: bool,
     media_dev_started: Option<std::time::Instant>,
     media_dev_pair: Option<media::client::Slot<crate::link::ServerEntry>>,
+    media_dev_profiles: bool,
     pub media: media::MediaState,
     pub tv: tv::TvState,
     /// The server used instead of the local engine (None: local).
@@ -534,6 +535,7 @@ impl CorrentApp {
             pending_local: false,
             connect: None,
             media_dev_pair: None,
+            media_dev_profiles: false,
             local_stopping: None,
         }
     }

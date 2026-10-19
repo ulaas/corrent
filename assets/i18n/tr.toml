@@ -1042,3 +1042,7 @@
 "Test notification" = "Deneme bildirimi"
 "{n} added to the downloads." = "{n} tanesi indirmelere eklendi."
 "“{device}” signed in as {user}." = "“{device}”, {user} olarak oturum açtı."
+"People" = "Kişiler"
+"Who's watching?" = "Kim izliyor?"
+"PIN for {name}" = "{name} için PIN"
+"Switch profile" = "Profil değiştir"

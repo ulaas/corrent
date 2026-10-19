@@ -23,6 +23,60 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/auth/setup", post(setup))
         .route("/auth/pair", post(pair))
         .route("/auth/pair/code", post(pair_code))
+        .route("/auth/profiles", get(profiles))
+        .route("/auth/profile", post(switch_profile))
+        .route("/auth/pin", axum::routing::put(set_own_pin))
+}
+
+/// Profiles to switch to on this device (names only).
+async fn profiles(State(st): State<Arc<AppState>>, _auth: Auth) -> ApiResult<Vec<corrent_proto::auth::Profile>> {
+    Ok(Json(st.identity.profiles().await?))
+}
+
+/// Switches this device to another profile: its PIN when it has one; without a PIN only kids'
+/// and guests' profiles (or any, for administrators). Wrong PINs count like wrong pairing codes.
+async fn switch_profile(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    ip: ClientIp,
+    Json(req): Json<corrent_proto::auth::ProfileSwitch>,
+) -> Result<Response, ApiErr> {
+    limited(&st, ip)?;
+    if !st.limiter.lock().unwrap_or_else(|e| e.into_inner()).may_pair(ip.0) {
+        return Err(err(ErrorCode::TooManyRequests, "too many wrong PINs"));
+    }
+    let target = st.identity.user(req.user_id).await?;
+    if target.disabled {
+        return Err(err(ErrorCode::NotFound, "no such profile"));
+    }
+    let allowed = match st.identity.check_pin(target.id, req.pin.as_deref().unwrap_or("")).await? {
+        Some(true) => true,
+        Some(false) => {
+            st.limiter.lock().unwrap_or_else(|e| e.into_inner()).pair_failed(ip.0);
+            st.identity.audit(Some(auth.name()), &ip.0.to_string(), "profile_switch", &target.name, false, "pin").await;
+            return Err(err(ErrorCode::InvalidCredentials, "wrong PIN"));
+        }
+        None => {
+            target.id == auth.0.user.id
+                || matches!(target.role, Role::Kids | Role::Guest)
+                || auth.0.can(corrent_proto::auth::Perms::USERS_MANAGE)
+        }
+    };
+    if !allowed {
+        return Err(err(ErrorCode::Forbidden, "this profile needs its password or a PIN"));
+    }
+    let (user, issued) = st.identity.issue_profile(target.id, req.device, ip.0.to_string()).await?;
+    st.identity.audit(Some(auth.name()), &ip.0.to_string(), "profile_switch", &user.name, true, "").await;
+    Ok(session_response(&st, user, issued, true))
+}
+
+async fn set_own_pin(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Json(req): Json<corrent_proto::auth::SetPin>,
+) -> ApiResult<serde_json::Value> {
+    st.identity.set_pin(auth.0.user.id, req.pin).await?;
+    Ok(Json(serde_json::json!({})))
 }
 
 fn user_agent(h: &HeaderMap) -> String {

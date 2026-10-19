@@ -216,3 +216,35 @@ mod tests {
         assert_eq!(serde_json::to_string(&Role::Kids).unwrap(), "\"kids\"");
     }
 }
+
+/// A profile to switch to on a shared device (`GET /api/v1/auth/profiles`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Profile {
+    pub id: i64,
+    pub name: String,
+    pub display_name: String,
+    pub role: Role,
+    /// Switching to it asks for a PIN.
+    pub has_pin: bool,
+}
+
+/// `POST /api/v1/auth/profile`: a device token for another profile.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProfileSwitch {
+    pub user_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<String>,
+    pub device: DeviceInfo,
+}
+
+/// `PUT /api/v1/auth/pin` (own profile) or `/api/v1/users/{id}/pin` (admins). `None` removes it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SetPin {
+    #[serde(default)]
+    pub pin: Option<String>,
+}
+
+/// PINs are 4 to 8 digits.
+pub fn valid_pin(pin: &str) -> bool {
+    (4..=8).contains(&pin.len()) && pin.chars().all(|c| c.is_ascii_digit())
+}

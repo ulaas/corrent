@@ -131,6 +131,9 @@ pub struct Player {
     /// The texture created this frame, to register with eframe.
     pub needs_registration: Option<glow::Texture>,
     seek_drag: Option<f32>,
+    /// Seek-bar thumbnails of the current item (empty until loaded, or when there are none).
+    trick: Arc<Mutex<Vec<Cue>>>,
+    sheets: std::collections::HashMap<String, Sheet>,
 }
 
 fn track_list(n: &Node) -> Vec<Track> {
@@ -151,6 +154,55 @@ fn track_list(n: &Node) -> Vec<Track> {
             })
         })
         .collect()
+}
+
+/// One seek-bar thumbnail: a rectangle of a sprite sheet for a time range.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cue {
+    pub start: f64,
+    pub end: f64,
+    /// API path of the sheet image.
+    pub sheet: String,
+    pub rect: [u32; 4],
+}
+
+fn vtt_secs(ts: &str) -> f64 {
+    ts.trim().split(':').fold(0.0, |a, v| a * 60.0 + v.trim().parse::<f64>().unwrap_or(0.0))
+}
+
+/// Parses a trickplay index (WebVTT whose cues are `sheet-0.jpg#xywh=x,y,w,h`), resolving sheet
+/// names against the index's own path.
+pub fn parse_trickplay(vtt: &str, index_path: &str) -> Vec<Cue> {
+    let dir = index_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    let mut out = Vec::new();
+    for block in vtt.replace('\r', "").split("\n\n") {
+        let lines: Vec<&str> = block.lines().filter(|l| !l.trim().is_empty()).collect();
+        let Some(ti) = lines.iter().position(|l| l.contains("-->")) else { continue };
+        let Some(target) = lines.get(ti + 1) else { continue };
+        let Some((a, z)) = lines[ti].split_once("-->") else { continue };
+        let Some((file, xywh)) = target.trim().split_once("#xywh=") else { continue };
+        let n: Vec<u32> = xywh.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+        let [x, y, w, h] = n[..] else { continue };
+        let sheet = if file.starts_with('/') { file.to_string() } else { format!("{dir}/{file}") };
+        out.push(Cue {
+            start: vtt_secs(a),
+            end: vtt_secs(z.split_whitespace().next().unwrap_or("")),
+            sheet,
+            rect: [x, y, w, h],
+        });
+    }
+    out
+}
+
+fn cue_at(cues: &[Cue], t: f64) -> Option<&Cue> {
+    let i = cues.partition_point(|c| c.end <= t);
+    cues.get(i).filter(|c| c.start <= t)
+}
+
+enum Sheet {
+    Loading(super::client::Slot<egui::ColorImage>),
+    Ready(egui::TextureHandle),
+    Failed,
 }
 
 pub fn fmt_time(secs: f64) -> String {
@@ -323,6 +375,8 @@ impl Player {
             stop_events: stop,
             needs_registration,
             seek_drag: None,
+            trick: Arc::default(),
+            sheets: Default::default(),
         };
         p.load_current();
         Ok(p)
@@ -337,6 +391,11 @@ impl Player {
         // The server decides; the native client plays everything directly.
         let client = self.client.clone();
         let mpv = self.mpv.clone();
+        let trick = self.trick.clone();
+        if let Ok(mut t) = trick.lock() {
+            t.clear();
+        }
+        self.sheets.clear();
         self.rt.spawn(async move {
             let info: Result<corrent_proto::library::PlaybackInfo, String> = client
                 .send(
@@ -347,6 +406,16 @@ impl Player {
                 .await;
             match info {
                 Ok(info) => {
+                    if let Some(tp) = info.trickplay.clone() {
+                        let (client, trick) = (client.clone(), trick.clone());
+                        tokio::spawn(async move {
+                            if let Ok(vtt) = client.text(&tp).await
+                                && let Ok(mut t) = trick.lock()
+                            {
+                                *t = parse_trickplay(&vtt, &tp);
+                            }
+                        });
+                    }
                     let url = client.url(&info.url);
                     let start = format!("start={}", e.resume_ms as f64 / 1000.0);
                     let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
@@ -679,6 +748,19 @@ impl Player {
         painter.circle_filled(pos2(line.left() + line.width() * frac.clamp(0.0, 1.0), line.center().y), h + 2.0, white);
         if let Some(hp) = r.hover_pos().filter(|_| dur > 0.0) {
             let t = frac_at(hp.x) as f64 * dur;
+            let cue = self.trick.lock().ok().and_then(|c| cue_at(&c, t).cloned());
+            if let Some(cue) = cue
+                && let Some(tex) = self.sheet(ui.ctx(), &cue.sheet)
+            {
+                let [x, y, w, h] = cue.rect.map(|v| v as f32);
+                let size = tex.size_vec2();
+                let shown = vec2(180.0, 180.0 * h / w.max(1.0));
+                let center_x = hp.x.clamp(bar.left() + shown.x / 2.0, bar.right() - shown.x / 2.0);
+                let thumb = Rect::from_center_size(pos2(center_x, bar.top() - 30.0 - shown.y / 2.0), shown);
+                let uv = Rect::from_min_max(pos2(x / size.x, y / size.y), pos2((x + w) / size.x, (y + h) / size.y));
+                painter.rect_filled(thumb.expand(2.0), CornerRadius::same(6), Color32::from_black_alpha(alpha));
+                painter.image(tex.id(), thumb, uv, Color32::WHITE);
+            }
             painter.text(
                 pos2(hp.x, bar.top() - 10.0),
                 egui::Align2::CENTER_BOTTOM,
@@ -835,6 +917,38 @@ impl Player {
         action
     }
 
+    /// A trickplay sheet as a texture: fetched and decoded in the background on first use.
+    fn sheet(&mut self, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+        let entry = self.sheets.entry(path.to_string()).or_insert_with(|| {
+            let (client, path) = (self.client.clone(), path.to_string());
+            Sheet::Loading(super::client::fetch(&self.rt, ctx, async move {
+                let bytes = client.bytes(&path).await?;
+                tokio::task::spawn_blocking(move || {
+                    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?.to_rgba8();
+                    Ok(egui::ColorImage::from_rgba_unmultiplied(
+                        [img.width() as usize, img.height() as usize],
+                        img.as_raw(),
+                    ))
+                })
+                .await
+                .map_err(|e| e.to_string())?
+            }))
+        });
+        if let Sheet::Loading(slot) = entry {
+            match super::client::ready(slot) {
+                None => return None,
+                Some(Ok(img)) => {
+                    *entry = Sheet::Ready(ctx.load_texture(format!("trick-{path}"), img, Default::default()))
+                }
+                Some(Err(_)) => *entry = Sheet::Failed,
+            }
+        }
+        match entry {
+            Sheet::Ready(t) => Some(t.clone()),
+            _ => None,
+        }
+    }
+
     /// Registers the native texture (needs eframe's `Frame`).
     pub fn register(&mut self, frame: &mut eframe::Frame) {
         if let (Some(tex), Video::Gl(_, id)) = (self.needs_registration.take(), &mut self.video) {
@@ -902,5 +1016,21 @@ fn create_target(gl: &glow::Context) -> Result<(glow::Framebuffer, glow::Texture
         gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(tex), 0);
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         Ok((fbo, tex))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trickplay_index() {
+        let vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:10.000\nsheet-0.jpg#xywh=0,0,160,90\n\n00:00:10.000 --> 00:00:20.000\nsheet-0.jpg#xywh=160,0,160,90\n";
+        let cues = parse_trickplay(vtt, "/api/v1/files/7/trickplay/index.vtt");
+        assert_eq!(cues.len(), 2);
+        assert_eq!(cues[1].sheet, "/api/v1/files/7/trickplay/sheet-0.jpg");
+        assert_eq!(cues[1].rect, [160, 0, 160, 90]);
+        assert_eq!(cue_at(&cues, 12.0).map(|c| c.rect[0]), Some(160));
+        assert!(cue_at(&cues, 25.0).is_none());
     }
 }

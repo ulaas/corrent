@@ -12,7 +12,26 @@ use super::{ApiResult, Auth, ClientIp, err};
 use crate::state::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
-    Router::new().route("/users", get(list).post(create)).route("/users/{id}", get(one).patch(update).delete(remove))
+    Router::new()
+        .route("/users", get(list).post(create))
+        .route("/users/{id}", get(one).patch(update).delete(remove))
+        .route("/users/{id}/pin", axum::routing::put(set_pin))
+}
+
+/// Admins set or remove any profile's PIN (e.g. for the kids' profiles on the TV).
+async fn set_pin(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    ip: ClientIp,
+    Path(id): Path<i64>,
+    Json(req): Json<corrent_proto::auth::SetPin>,
+) -> ApiResult<serde_json::Value> {
+    if id != auth.0.user.id {
+        auth.require(Perms::USERS_MANAGE)?;
+    }
+    st.identity.set_pin(id, req.pin).await?;
+    st.identity.audit(Some(auth.name()), &ip.0.to_string(), "user_pin", &id.to_string(), true, "").await;
+    Ok(Json(serde_json::json!({})))
 }
 
 async fn list(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<Vec<User>> {

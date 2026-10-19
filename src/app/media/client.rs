@@ -30,6 +30,11 @@ impl MediaClient {
         })
     }
 
+    /// The same server as another user (profile switch).
+    pub fn with_token(&self, token: &str) -> MediaClient {
+        MediaClient { token: token.to_string(), ..self.clone() }
+    }
+
     pub fn with_ca_file(mut self, path: Option<std::path::PathBuf>) -> MediaClient {
         self.ca_file = path;
         self

@@ -472,3 +472,74 @@ fn streaming_status_bar_and_window() {
     h.get_by_label("Nothing is streaming");
     assert!(h.query_by_label_contains("Streaming to 1 player").is_none());
 }
+
+/// Steps the app (its per-frame logic included) until `done` or a timeout.
+fn step_until(
+    h: &mut Harness<'static, CorrentApp>,
+    what: &str,
+    done: impl Fn(&mut Harness<'static, CorrentApp>) -> bool,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !done(h) {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        let ctx = h.ctx.clone();
+        h.state_mut().media_tick(&ctx);
+        h.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+}
+
+/// The media pages against the in-process server: a photo library (no libmpv needed) shows on
+/// Home, a card opens its page, and in TV mode the arrow keys move the focus between cards.
+#[test]
+fn media_pages_browse_a_library_and_tv_mode_moves_focus() {
+    let (f, mut app) = app("media", vec![]);
+    let photos = f.dir.join("Photos/Trip");
+    std::fs::create_dir_all(&photos).unwrap();
+    for (name, c) in [("beach", [200, 120, 40]), ("forest", [20, 140, 60]), ("harbour", [30, 60, 160])] {
+        image::RgbImage::from_pixel(64, 48, image::Rgb(c)).save(photos.join(format!("{name}.png"))).unwrap();
+    }
+    app.main_view = super::feeds::MainView::Media;
+    let mut h = harness(app);
+    step_until(&mut h, "the in-process server", |h| h.state().media.client.is_some());
+    let client = h.state().media.client.clone().unwrap();
+    let rt = f.rt.as_ref().unwrap();
+    let lib: corrent_proto::library::Library = rt
+        .block_on(client.send(
+            reqwest::Method::POST,
+            "/api/v1/libraries",
+            &serde_json::json!({ "name": "Photos", "kind": "photos", "folders": [f.dir.join("Photos")] }),
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let page: serde_json::Value = rt.block_on(client.get(&format!("/api/v1/items?library_id={}", lib.id))).unwrap();
+        if page["total"] == 3 {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "scan: {page}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    h.state_mut().media.invalidate();
+    step_until(&mut h, "the home rows", |h| h.query_by_label("beach").is_some());
+    assert!(h.query_by_label_contains("Recently added in Photos").is_some());
+
+    // TV mode: the first card has the focus, the right arrow moves it to the next one.
+    h.state_mut().set_tv(true);
+    step_until(&mut h, "a focused card", |h| h.state().ctx.memory(|m| m.focused()).is_some());
+    let first = h.state().ctx.memory(|m| m.focused());
+    h.key_press(egui::Key::ArrowRight);
+    h.run_steps(3);
+    let second = h.state().ctx.memory(|m| m.focused());
+    assert!(second.is_some() && second != first, "focus moved: {first:?} → {second:?}");
+    // Enter opens the focused item; Escape goes back home.
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(matches!(h.state().media.page, Some(super::media::Page::Item(_))), "{:?}", h.state().media.page);
+    h.key_press(egui::Key::Escape);
+    let ctx = h.ctx.clone();
+    h.state_mut().tv_tick(&ctx);
+    h.run_steps(2);
+    h.state_mut().set_tv(false);
+    h.run_steps(2);
+}

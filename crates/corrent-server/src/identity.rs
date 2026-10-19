@@ -365,6 +365,82 @@ impl Identity {
         Ok((admin, issued))
     }
 
+    /// Profiles for the switcher: enabled accounts that can sign in (or the desktop owner).
+    pub async fn profiles(&self) -> Result<Vec<corrent_proto::auth::Profile>, ApiError> {
+        self.db
+            .read(|c| {
+                let mut s = c.prepare(
+                    "SELECT id, name, display_name, role, pin_hash IS NOT NULL FROM users WHERE disabled = 0 ORDER BY id",
+                )?;
+                s.query_map([], |r| {
+                    Ok(corrent_proto::auth::Profile {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        display_name: r.get(2)?,
+                        role: role_from(&r.get::<_, String>(3)?),
+                        has_pin: r.get(4)?,
+                    })
+                })?
+                .collect()
+            })
+            .await
+            .map_err(db_err)
+    }
+
+    /// Sets (or with `None` removes) a profile's PIN.
+    pub async fn set_pin(&self, user_id: i64, pin: Option<String>) -> Result<(), ApiError> {
+        let hash = match pin {
+            Some(p) if corrent_proto::auth::valid_pin(&p) => Some(self.hash(p).await?),
+            Some(_) => return Err(ApiError::new(ErrorCode::BadRequest, "a PIN is 4 to 8 digits")),
+            None => None,
+        };
+        let n = self
+            .db
+            .write(move |t| t.execute("UPDATE users SET pin_hash = ?1 WHERE id = ?2", params![hash, user_id]))
+            .await
+            .map_err(db_err)?;
+        if n == 0 { Err(ApiError::new(ErrorCode::NotFound, "no such user")) } else { Ok(()) }
+    }
+
+    /// Whether `pin` is the profile's PIN (`None`: it has none).
+    pub async fn check_pin(&self, user_id: i64, pin: &str) -> Result<Option<bool>, ApiError> {
+        let stored: Option<Option<String>> = self
+            .db
+            .read(move |c| {
+                c.query_row("SELECT pin_hash FROM users WHERE id = ?1 AND disabled = 0", [user_id], |r| r.get(0))
+                    .optional()
+            })
+            .await
+            .map_err(db_err)?;
+        let Some(stored) = stored else { return Err(ApiError::new(ErrorCode::NotFound, "no such user")) };
+        let Some(hash) = stored else { return Ok(None) };
+        let pin = pin.to_string();
+        Ok(Some(tokio::task::spawn_blocking(move || verify_password(&hash, &pin)).await.unwrap_or(false)))
+    }
+
+    /// A device token for a profile, replacing the one this device got for it before.
+    pub async fn issue_profile(
+        &self,
+        user_id: i64,
+        device: DeviceInfo,
+        ip: String,
+    ) -> Result<(User, Issued), ApiError> {
+        let user = self.user(user_id).await?;
+        let name = device.name.clone();
+        self.db
+            .write(move |t| {
+                t.execute(
+                    "DELETE FROM devices WHERE user_id = ?1 AND client = 'corrent-profile' AND name = ?2",
+                    params![user_id, name],
+                )
+            })
+            .await
+            .map_err(db_err)?;
+        let dev = DeviceInfo { client: "corrent-profile".into(), ..device };
+        let issued = self.issue(user_id, Some(dev), ip, "profile switch".into()).await?;
+        Ok((user, issued))
+    }
+
     /// Checks a user's current password (self-service password changes).
     pub async fn check_password(&self, id: i64, password: &str) -> Result<bool, ApiError> {
         let stored: Option<String> = self

@@ -755,6 +755,47 @@ async fn tasks_notifications_backups_metrics() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn profiles_and_pins() {
+    let h = harness("profiles", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let mk = |name: &str, role: &str| json!({ "name": name, "password": "long enough pw", "role": role });
+    let (_, kid, _) = send(app, Method::POST, "/api/v1/users", &admin, mk("kid", "kids")).await;
+    let (_, mom, _) = send(app, Method::POST, "/api/v1/users", &admin, mk("mom", "user")).await;
+    let (kid, mom) = (kid["id"].as_i64().unwrap(), mom["id"].as_i64().unwrap());
+    let (s, v, _) = get(app, "/api/v1/auth/profiles", &admin).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v.as_array().unwrap().len(), 3);
+    let switch = |user: i64, pin: Option<&str>| json!({ "user_id": user, "pin": pin, "device": device() });
+    // The admin may enter the kid's profile without a PIN; the kid can't enter mom's.
+    let (s, v, _) = send(app, Method::POST, "/api/v1/auth/profile", &admin, switch(kid, None)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let kid_token = v["token"].as_str().unwrap().to_string();
+    let (s, _, _) = send(app, Method::POST, "/api/v1/auth/profile", &kid_token, switch(mom, None)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // With a PIN on mom's profile: the right PIN opens it, a wrong one doesn't.
+    let (s, _, _) = send(app, Method::PUT, &format!("/api/v1/users/{mom}/pin"), &admin, json!({ "pin": "12a4" })).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _, _) = send(app, Method::PUT, &format!("/api/v1/users/{mom}/pin"), &admin, json!({ "pin": "2468" })).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = send(app, Method::POST, "/api/v1/auth/profile", &kid_token, switch(mom, Some("1111"))).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, v, _) = send(app, Method::POST, "/api/v1/auth/profile", &kid_token, switch(mom, Some("2468"))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["user"]["name"], "mom");
+    // A kid can't set someone else's PIN.
+    let (s, _, _) =
+        send(app, Method::PUT, &format!("/api/v1/users/{mom}/pin"), &kid_token, json!({ "pin": null })).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Switching again replaces this device's previous token for that profile.
+    let (_, v1, _) = send(app, Method::POST, "/api/v1/auth/profile", &admin, switch(kid, None)).await;
+    assert_ne!(v1["token"], kid_token);
+    let (s, _, _) = get(app, "/api/v1/auth/me", &kid_token).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "the old profile token was replaced");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_with_the_servers_own_ca() {
     let h = harness("https", ServerConfig::default()).await;
     let tls =

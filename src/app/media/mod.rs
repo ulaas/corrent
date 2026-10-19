@@ -6,6 +6,7 @@
 pub mod client;
 pub mod images;
 pub mod player;
+pub mod profiles;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -26,6 +27,8 @@ pub enum Page {
     Library(i64),
     Item(i64),
     Search,
+    /// Everything a person is credited in (id, name).
+    Person(i64, String),
 }
 
 const PAGE: i64 = 120;
@@ -53,6 +56,8 @@ pub struct MediaState {
     grids: HashMap<i64, Grid>,
     detail: Option<(i64, Slot<ItemDetail>)>,
     children: HashMap<i64, Slot<ItemPage<Item>>>,
+    person: Option<(i64, Slot<ItemPage<Item>>)>,
+    pub profiles: profiles::Profiles,
     pub query: String,
     search: Option<(String, Slot<SearchResults>)>,
     images: ImageCache,
@@ -93,9 +98,10 @@ impl MediaState {
         *self = MediaState { gl, ..Default::default() };
     }
 
-    fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self) {
         self.home = None;
         self.libraries = None;
+        self.person = None;
         self.grids.clear();
         self.children.clear();
         self.detail = None;
@@ -190,6 +196,11 @@ impl CorrentApp {
             let e =
                 QueueEntry { item_id: id, title: String::new(), subtitle: String::new(), resume_ms: 0, poster: None };
             self.play_queue(vec![e], false);
+        }
+        if std::env::var("CORRENT_DEV_PROFILES").is_ok() && self.media.client.is_some() && !self.media_dev_profiles {
+            self.media_dev_profiles = true;
+            self.main_view = super::feeds::MainView::Media;
+            self.open_profiles();
         }
         if let Ok(path) = std::env::var("CORRENT_DEV_SHOT") {
             let delay: f64 = std::env::var("CORRENT_DEV_SHOT_DELAY").ok().and_then(|v| v.parse().ok()).unwrap_or(6.0);
@@ -407,6 +418,8 @@ impl CorrentApp {
         }
         let page = self.media.page.clone().unwrap_or(Page::Home);
         self.media_top_bar(ui, p, &page);
+        let ctx = self.ctx.clone();
+        self.profiles_window(&ctx, p);
         egui::ScrollArea::vertical().id_salt(("media", format!("{page:?}"))).auto_shrink([false, false]).show(
             ui,
             |ui| {
@@ -416,6 +429,7 @@ impl CorrentApp {
                     Page::Library(id) => self.library_page(ui, p, &client, id),
                     Page::Item(id) => self.item_page(ui, p, &client, id),
                     Page::Search => self.search_page(ui, p, &client),
+                    Page::Person(id, _) => self.person_page(ui, p, &client, id),
                 }
                 ui.add_space(24.0);
                 if let Some(r) = self.media.focus_rect.take() {
@@ -450,10 +464,19 @@ impl CorrentApp {
                 }
                 Page::Item(_) => String::new(),
                 Page::Search => t!("Search").to_string(),
+                Page::Person(_, name) => name.clone(),
             };
             ui.label(RichText::new(title).size(20.0).strong().color(p.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(16.0);
+                if let Some(name) = self.profile_name()
+                    && ui
+                        .button(format!("{}  {name}", icons::USER_CIRCLE))
+                        .on_hover_text(t!("Switch profile"))
+                        .clicked()
+                {
+                    self.open_profiles();
+                }
                 if self.tv.on {
                     if ui.button(format!("{}  {}", icons::MONITOR, t!("Leave TV mode"))).clicked() {
                         self.set_tv(false);
@@ -486,6 +509,8 @@ impl CorrentApp {
         let aspect = kind_aspect(item.kind);
         let h = width / aspect;
         let (rect, resp) = ui.allocate_exact_size(vec2(width, h + 44.0), Sense::click());
+        // Screen readers (and UI tests) know the card by its title.
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &item.title));
         // TV mode starts with the first card focused; a focused card is kept in view.
         if self.tv.on && ui.ctx().memory(|m| m.focused()).is_none() {
             resp.request_focus();
@@ -1037,27 +1062,44 @@ impl CorrentApp {
                 ui.add_space(32.0);
                 ui.label(RichText::new(t!("Cast")).size(17.0).strong().color(p.text));
             });
+            let mut open_person = None;
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(32.0);
                 for c in cast {
                     ui.vertical(|ui| {
                         ui.set_width(150.0);
-                        ui.label(RichText::new(&c.name).strong().color(p.text));
+                        let name = egui::Button::new(RichText::new(&c.name).strong().color(p.text)).frame(false);
+                        if ui.add(name).clicked() {
+                            open_person = Some((c.person_id, c.name.clone()));
+                        }
                         if let Some(ch) = &c.character {
                             ui.label(RichText::new(ch).small().color(p.text_dim));
                         }
                     });
                 }
             });
+            if let Some((id, name)) = open_person {
+                self.open(Page::Person(id, name));
+                return;
+            }
         }
-        let crew: Vec<String> =
-            d.credits.iter().filter(|c| c.role != "actor").map(|c| format!("{} ({})", c.name, c.role)).collect();
+        let crew: Vec<_> = d.credits.iter().filter(|c| c.role != "actor").collect();
         if !crew.is_empty() {
             ui.add_space(10.0);
+            let mut open_person = None;
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(32.0);
-                ui.label(RichText::new(crew.join(" · ")).color(p.text_dim));
+                for c in crew {
+                    let text = RichText::new(format!("{} ({})", c.name, c.role)).color(p.text_dim);
+                    if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                        open_person = Some((c.person_id, c.name.clone()));
+                    }
+                }
             });
+            if let Some((id, name)) = open_person {
+                self.open(Page::Person(id, name));
+                return;
+            }
         }
         if let Some(f) = d.files.first() {
             ui.add_space(14.0);
@@ -1178,10 +1220,71 @@ impl CorrentApp {
                 ui.vertical_centered(|ui| ui.spinner());
             }
             Some(Err(e)) => crate::ui::widgets::empty_state(ui, p, icons::WARNING_CIRCLE, t!("Search failed"), &e),
-            Some(Ok(r)) if r.items.is_empty() => {
+            Some(Ok(r)) if r.items.is_empty() && r.people.is_empty() => {
                 crate::ui::widgets::empty_state(ui, p, icons::MAGNIFYING_GLASS, t!("No matches"), &q)
             }
-            Some(Ok(r)) => self.row_of_cards(ui, p, client, t!("Results"), &r.items, 150.0),
+            Some(Ok(r)) => {
+                if !r.people.is_empty() {
+                    let mut open_person = None;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add_space(24.0);
+                        ui.label(RichText::new(t!("People")).strong().color(p.text));
+                        for c in r.people.iter().take(20) {
+                            if ui.button(format!("{}  {}", icons::USER, c.name)).clicked() {
+                                open_person = Some((c.person_id, c.name.clone()));
+                            }
+                        }
+                    });
+                    ui.add_space(8.0);
+                    if let Some((id, name)) = open_person {
+                        self.open(Page::Person(id, name));
+                        return;
+                    }
+                }
+                if !r.items.is_empty() {
+                    self.row_of_cards(ui, p, client, t!("Results"), &r.items, 150.0);
+                }
+            }
+        }
+    }
+
+    /// Everything a person is credited in, as a wrapping grid of cards.
+    fn person_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, id: i64) {
+        if self.media.person.as_ref().is_none_or(|(pid, _)| *pid != id) {
+            let c = client.clone();
+            self.media.person =
+                Some((
+                    id,
+                    fetch(&self.rt, &self.ctx, async move {
+                        c.get(&format!("/api/v1/items?person_id={id}&limit=500")).await
+                    }),
+                ));
+        }
+        match self.media.person.as_ref().and_then(|(_, s)| ready(s)) {
+            None => {
+                ui.vertical_centered(|ui| ui.spinner());
+            }
+            Some(Err(e)) => {
+                crate::ui::widgets::empty_state(ui, p, icons::WARNING_CIRCLE, t!("Couldn't load this item"), &e)
+            }
+            Some(Ok(page)) if page.items.is_empty() => {
+                crate::ui::widgets::empty_state(ui, p, icons::USER, t!("Nothing here yet"), "")
+            }
+            Some(Ok(page)) => {
+                let mut clicked = None;
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(24.0);
+                    ui.spacing_mut().item_spacing = vec2(16.0, 18.0);
+                    for it in &page.items {
+                        if self.card(ui, p, client, it, 150.0).clicked() {
+                            clicked = Some(it.clone());
+                        }
+                    }
+                });
+                if let Some(it) = clicked {
+                    self.open(Page::Item(it.id));
+                }
+            }
         }
     }
 
