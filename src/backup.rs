@@ -63,7 +63,8 @@ pub fn export(paths: &Paths, dest: &Path) -> anyhow::Result<usize> {
 pub fn stage_import(paths: &Paths, src: &Path) -> anyhow::Result<Vec<&'static str>> {
     let file = std::fs::File::open(src).with_context(|| format!("opening {}", src.display()))?;
     let mut zip = zip::ZipArchive::new(file).context("not a valid backup file")?;
-    let names: Vec<String> = zip.file_names().map(String::from).collect();
+    let names: Vec<String> =
+        zip.file_names().map(|n| n.map(String::from)).collect::<Result<_, _>>().context("not a valid backup file")?;
     anyhow::ensure!(
         names.iter().any(|n| n == "settings.toml" || n == "store.json"),
         "this zip is not a Corrent backup"

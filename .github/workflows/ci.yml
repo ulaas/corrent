@@ -36,8 +36,11 @@ jobs:
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
-      - run: cargo clippy --all-targets
-      - run: cargo test
+      - name: libmpv for the corrent-mpv tests (they skip when it is missing)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libmpv2
+      - run: cargo clippy --workspace --all-targets
+      - run: cargo test --workspace
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
@@ -54,7 +57,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev
-      - run: cargo check --all-targets
+      - run: cargo check --workspace --all-targets
 
   deny:
     runs-on: ubuntu-latest

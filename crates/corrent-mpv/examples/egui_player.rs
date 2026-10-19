@@ -139,7 +139,10 @@ impl App {
             let gpa = cc.get_proc_address.clone().expect("get_proc_address");
             let rc = RenderContext::new_gl(mpv.clone(), move |name| gpa(name)).expect("gl render");
             let (fbo, tex) = create_target(&gl);
-            Video::Gl { state: Arc::new(Mutex::new(GlVideo { rc, gl, fbo, tex, size: [16, 16], renders: 0 })), id: None }
+            Video::Gl {
+                state: Arc::new(Mutex::new(GlVideo { rc, gl, fbo, tex, size: [16, 16], renders: 0 })),
+                id: None,
+            }
         };
         let repaint = {
             let ctx = ctx.clone();
@@ -251,10 +254,16 @@ impl eframe::App for App {
                 Video::Gl { state, .. } => state.lock().unwrap().renders,
                 Video::Sw { renders, .. } => *renders,
             };
-            let bar = egui::Rect::from_min_size(rect.left_bottom() - egui::vec2(-16.0, 72.0), egui::vec2(rect.width() - 32.0, 56.0));
+            let bar = egui::Rect::from_min_size(
+                rect.left_bottom() - egui::vec2(-16.0, 72.0),
+                egui::vec2(rect.width() - 32.0, 56.0),
+            );
             ui.painter().rect_filled(bar, 12.0, egui::Color32::from_black_alpha(170));
             let frac = if s.duration > 0.0 { (s.pos / s.duration) as f32 } else { 0.0 };
-            let track = egui::Rect::from_min_size(bar.left_bottom() + egui::vec2(16.0, -16.0), egui::vec2(bar.width() - 32.0, 4.0));
+            let track = egui::Rect::from_min_size(
+                bar.left_bottom() + egui::vec2(16.0, -16.0),
+                egui::vec2(bar.width() - 32.0, 4.0),
+            );
             ui.painter().rect_filled(track, 2.0, egui::Color32::from_white_alpha(60));
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(track.min, egui::vec2(track.width() * frac.clamp(0.0, 1.0), 4.0)),
@@ -316,10 +325,8 @@ fn main() -> eframe::Result {
         args.remove(i);
         p
     });
-    let input = args
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "av://lavfi:testsrc2=size=1280x720:rate=30:duration=30".to_string());
+    let input =
+        args.first().cloned().unwrap_or_else(|| "av://lavfi:testsrc2=size=1280x720:rate=30:duration=30".to_string());
     eframe::run_native(
         "corrent-mpv spike",
         eframe::NativeOptions {
