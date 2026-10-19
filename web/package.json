@@ -1,0 +1,30 @@
+{
+  "name": "corrent-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && node scripts/check-i18n.mjs && vitest run",
+    "test": "vitest run",
+    "shots": "node scripts/screenshots.mjs"
+  },
+  "devDependencies": {
+    "@phosphor-icons/core": "^2.1.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tsconfig/svelte": "^5.0.8",
+    "@types/node": "^24.19.2",
+    "playwright-core": "^1.64.1",
+    "smol-toml": "^1.9.1",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.7",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  },
+  "dependencies": {
+    "blurhash": "^2.0.5",
+    "hls.js": "^1.7.3"
+  }
+}

@@ -1,0 +1,2 @@
+# Turkish translations of the web client (web/src). Keys are the English text; strings shared
+# with the desktop app come from ../tr.toml. Checked by web/scripts/check-i18n.mjs.
