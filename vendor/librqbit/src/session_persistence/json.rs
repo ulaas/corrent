@@ -31,6 +31,9 @@ pub struct JsonSessionPersistenceStore {
     db_filename: PathBuf,
     db_content: tokio::sync::RwLock<SerializedSessionDatabase>,
     spawner: BlockingSpawner,
+    // Corrent patch: ids handed out but not stored yet. Without it, adds running at the same
+    // time all got `max + 1` and every one after the first was refused as already managed.
+    next_free: std::sync::Mutex<TorrentId>,
 }
 
 impl std::fmt::Debug for JsonSessionPersistenceStore {
@@ -67,6 +70,7 @@ impl JsonSessionPersistenceStore {
             output_folder,
             db_content: tokio::sync::RwLock::new(db),
             spawner,
+            next_free: std::sync::Mutex::new(0),
         })
     }
 
@@ -242,7 +246,7 @@ impl BitVFactory for JsonSessionPersistenceStore {
 #[async_trait]
 impl SessionPersistenceStore for JsonSessionPersistenceStore {
     async fn next_id(&self) -> anyhow::Result<TorrentId> {
-        Ok(self
+        let stored = self
             .db_content
             .read()
             .await
@@ -251,7 +255,11 @@ impl SessionPersistenceStore for JsonSessionPersistenceStore {
             .copied()
             .max()
             .map(|max| max + 1)
-            .unwrap_or(0))
+            .unwrap_or(0);
+        let mut next = self.next_free.lock().unwrap_or_else(|e| e.into_inner());
+        let id = stored.max(*next);
+        *next = id + 1;
+        Ok(id)
     }
 
     async fn delete(&self, id: TorrentId) -> anyhow::Result<()> {

@@ -11,6 +11,10 @@ used by the `webui`/`http-api` features Corrent doesn't enable), plus runtime co
   limit under 16 KiB/s made governor reject every chunk and transfers stopped.
 - `set_file_priorities(Vec<usize>)` / `file_priorities()` — the order files are downloaded in
   (librqbit otherwise always uses file-name order).
+- JSON session persistence reserves ids (`next_free` in `src/session_persistence/json.rs`):
+  `next_id` returned "largest stored id + 1", and ids are stored only after an add finishes, so
+  concurrent adds got the same id and all but one were refused as "already managed" (found by
+  the soak adding 500 torrents at once). Diff: `docs/upstream/librqbit-json-next-id.patch`.
 
 librqbit rebuilds these from the add-time options whenever a torrent goes live again, so Corrent
 stores them itself and re-applies them (`Actor::apply_torrent_limits`).

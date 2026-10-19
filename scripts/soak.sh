@@ -4,6 +4,7 @@
 # transcodes, sampling its memory, threads, open files and /metrics into a CSV.
 #
 #   scripts/soak.sh [minutes=10] [scratch dir=target/soak]
+#   SOAK_TORRENTS=5000 scripts/soak.sh 4320    # the 72 h run: also 5k torrents (half paused)
 #
 # Pass: the server answers throughout, RSS and open files level off, no task failures, no
 # panics in the log. Uses only generated media; deletes nothing outside the scratch dir.
@@ -13,8 +14,11 @@ minutes=${1:-10}
 dir=${2:-target/soak}
 port=18999
 rm -rf "$dir" && mkdir -p "$dir/data" "$dir/media/Photos" "$dir/media/Movies"
+torrents=${SOAK_TORRENTS:-0}
 cargo build --release -p correntd -p corrent-mpv --bin correntd --bin corrent-mpvw >/dev/null
-bin=target/release/correntd
+# A copy, so builds during a long run don't touch the running binary.
+mkdir -p "$dir/bin" && cp target/release/correntd target/release/corrent-mpvw "$dir/bin/"
+bin=$dir/bin/correntd
 cat > "$dir/data/settings.toml" <<TOML
 [connection]
 upnp = false
@@ -51,6 +55,38 @@ TOK=$(curl -sf -X POST "$B/auth/login" -H 'content-type: application/json' \
 api() { curl -sf -H "authorization: Bearer $TOK" -H 'content-type: application/json' "$@"; }
 api -X POST "$B/libraries" -d "{\"name\":\"Photos\",\"kind\":\"photos\",\"folders\":[\"$PWD/$dir/media/Photos\"]}" >/dev/null
 api -X POST "$B/libraries" -d "{\"name\":\"Movies\",\"kind\":\"movies\",\"folders\":[\"$PWD/$dir/media/Movies\"]}" >/dev/null
+if [ "$torrents" -gt 0 ]; then
+  # Synthetic single-file torrents (16 KiB, random piece hashes; no peers: DHT, LSD and UPnP are
+  # off and there are no trackers), added 100 per request; every other batch paused.
+  mkdir -p "$dir/torrents" "$dir/downloads"
+  python3 - "$dir/torrents" "$torrents" <<'PY'
+import sys, os
+def b(x):
+    if isinstance(x, int): return b'i%de' % x
+    if isinstance(x, bytes): return b'%d:%s' % (len(x), x)
+    if isinstance(x, str): return b(x.encode())
+    if isinstance(x, dict): return b'd' + b''.join(b(k) + b(v) for k, v in sorted(x.items())) + b'e'
+for i in range(int(sys.argv[2])):
+    info = {'name': f'soak-{i:05}.bin', 'piece length': 16384, 'length': 16384, 'pieces': os.urandom(20)}
+    open(f"{sys.argv[1]}/{i:05}.torrent", 'wb').write(b({'info': info}))
+PY
+  ls "$dir/torrents" | split -l 100 - "$dir/batch-"
+  n=0
+  for f in "$dir"/batch-*; do
+    n=$((n + 1)); paused=$([ $((n % 2)) -eq 0 ] && echo true || echo false)
+    args=(-F "options={\"paused\":$paused,\"save_path\":\"$PWD/$dir/downloads\"}")
+    while read -r t; do args+=(-F "file=@$dir/torrents/$t;filename=$t"); done < "$f"
+    curl -sf -H "authorization: Bearer $TOK" "${args[@]}" "$B/torrents" >/dev/null || { echo "adding torrents failed"; exit 1; }
+  done
+  rm -f "$dir"/batch-*
+  # Wait until the engine has them all (up to 2 h), reporting the rate.
+  added_at=$(date +%s)
+  for _ in $(seq 1440); do
+    have=$(api "$B/torrents" | python3 -c 'import sys,json;print(len(json.load(sys.stdin)["torrents"]))')
+    [ "$have" -ge "$torrents" ] && break; sleep 5
+  done
+  echo "torrents: $have after $(( $(date +%s) - added_at )) s"
+fi
 csv="$dir/samples.csv"
 echo "t_secs,rss_kib,threads,fds,ws_clients,transcodes,errors" > "$csv"
 start=$(date +%s); end=$((start + minutes * 60)); errors=0; round=0

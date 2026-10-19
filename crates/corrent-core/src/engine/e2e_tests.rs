@@ -578,3 +578,37 @@ async fn interrupted_readd_is_recovered_at_start() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn many_adds_at_once_all_arrive() {
+    // librqbit's JSON persistence used to give concurrent adds the same id, refusing all but one.
+    let dir = temp_dir("batch-add");
+    let l = start(&dir);
+    let n = 40;
+    for i in 0..n {
+        let name = format!("batch-{i:03}.bin");
+        let mut info =
+            format!("d6:lengthi16384e4:name{}:{name}12:piece lengthi16384e6:pieces20:", name.len()).into_bytes();
+        info.extend_from_slice(&[i as u8; 20]);
+        info.push(b'e');
+        let mut bytes = b"d4:info".to_vec();
+        bytes.extend_from_slice(&info);
+        bytes.push(b'e');
+        l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+            source: AddSource::Bytes { name: format!("{i}.torrent"), bytes },
+            torrent_bytes: None,
+            save_path: dir.join("dl"),
+            create_subfolder: false,
+            category: None,
+            tags: Vec::new(),
+            paused: true,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        })));
+    }
+    wait_for(&l, "every torrent", 60, |sn| sn.torrents.len() == n).await;
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

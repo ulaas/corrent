@@ -1278,6 +1278,8 @@ impl Actor {
                         self.emit(EngineEvent::Added { hash, name });
                     }
                     Err(e) => {
+                        // Logged too: a headless server has no one reading the toasts.
+                        tracing::warn!("could not add {}: {e}", req.source.describe());
                         self.toast(
                             ToastKind::Error,
                             t!("Could not add {name}: {e}", name = req.source.describe(), e = e),
