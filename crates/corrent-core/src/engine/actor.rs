@@ -353,6 +353,11 @@ impl Actor {
                 self.handle_internal(msg);
             }
         }
+        // Results that already arrived, e.g. an add that finished just now: without this its
+        // category and tags would never be recorded.
+        while let Ok(msg) = internal.try_recv() {
+            self.handle_internal(msg);
+        }
         for (_, h) in self.previews.drain() {
             h.abort();
         }

@@ -773,9 +773,11 @@ async fn add_tiny_torrents(l: &Leecher, dir: &Path, n: u8) -> Vec<InfoHash> {
             added_by: None,
         })));
     }
-    let snap =
-        wait_for(l, "the tiny torrents", 30, |sn| sn.torrents.iter().filter(|t| !t.pending).count() == n as usize)
-            .await;
+    // Recorded too (category set), not only visible in the engine.
+    let snap = wait_for(l, "the tiny torrents", 30, |sn| {
+        sn.torrents.len() == n as usize && sn.torrents.iter().all(|t| t.category.as_deref() == Some("Kept"))
+    })
+    .await;
     snap.torrents.iter().filter(|t| !t.pending).map(|t| t.hash).collect()
 }
 
