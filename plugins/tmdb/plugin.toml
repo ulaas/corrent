@@ -1,0 +1,18 @@
+id = "tmdb"
+name = "The Movie Database (TMDB)"
+version = "1.0.0"
+description = "Titles, overviews, cast, posters and backdrops for movies and TV shows, and episode lists."
+author = "Corrent"
+host_api = "1"
+kinds = ["metadata"]
+
+[permissions]
+hosts = ["api.themoviedb.org", "image.tmdb.org"]
+rate_per_sec = 4
+
+[[settings]]
+key = "api_key"
+label = "API key or read access token"
+help = "Create a free account at themoviedb.org, then Settings → API. Either the API key (v3) or the read access token works."
+secret = true
+required = true

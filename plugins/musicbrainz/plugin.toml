@@ -1,0 +1,12 @@
+id = "musicbrainz"
+name = "MusicBrainz and Cover Art Archive"
+version = "1.0.0"
+description = "Albums and artists from MusicBrainz, with album covers from the Cover Art Archive. No key needed."
+author = "Corrent"
+host_api = "1"
+kinds = ["metadata"]
+
+[permissions]
+hosts = ["musicbrainz.org", "coverartarchive.org", "archive.org", "*.archive.org"]
+# MusicBrainz asks for at most one request per second.
+rate_per_sec = 1

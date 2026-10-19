@@ -1,0 +1,137 @@
+/// Corrent plugin API, version 1.
+///
+/// Plugins are WebAssembly components. They reach the outside world only through `host`:
+/// HTTP to the hosts their manifest declares, a per-plugin key-value store, their settings
+/// (secrets included, never shown back to people), and the server log.
+package corrent:plugin@1.0.0;
+
+interface types {
+    record http-request {
+        method: string,
+        url: string,
+        headers: list<tuple<string, string>>,
+        body: option<list<u8>>,
+    }
+
+    record http-response {
+        status: u16,
+        headers: list<tuple<string, string>>,
+        body: list<u8>,
+    }
+}
+
+interface host {
+    use types.{http-request, http-response};
+
+    /// An HTTP request to a host the manifest declares (others are refused).
+    http: func(req: http-request) -> result<http-response, string>;
+    /// level: "error" | "warn" | "info" | "debug"
+    log: func(level: string, message: string);
+    /// A setting from the plugin's manifest, as the admin entered it.
+    setting: func(key: string) -> option<string>;
+    kv-get: func(key: string) -> option<string>;
+    kv-set: func(key: string, value: string) -> result<_, string>;
+}
+
+interface metadata {
+    enum media-kind { movie, show, season, episode, artist, album, track, book, person }
+
+    record search-query {
+        kind: media-kind,
+        title: string,
+        year: option<u32>,
+        /// BCP 47 language for titles and overviews ("en", "tr", …).
+        language: string,
+        /// Ids already known (`("imdb", "tt0133093")`).
+        ids: list<tuple<string, string>>,
+        /// Artist, for albums and tracks.
+        artist: option<string>,
+    }
+
+    record candidate {
+        id: string,
+        title: string,
+        year: option<u32>,
+        overview: option<string>,
+        poster-url: option<string>,
+    }
+
+    record credit {
+        name: string,
+        /// "actor" | "director" | "writer" | "composer" | "artist" | "author"
+        role: string,
+        character: option<string>,
+        image-url: option<string>,
+    }
+
+    record artwork {
+        /// "poster" | "backdrop" | "logo" | "thumb" | "banner"
+        kind: string,
+        url: string,
+        language: option<string>,
+    }
+
+    record item-details {
+        title: option<string>,
+        original-title: option<string>,
+        overview: option<string>,
+        year: option<u32>,
+        premiered: option<string>,
+        runtime-minutes: option<u32>,
+        rating: option<f32>,
+        official-rating: option<string>,
+        genres: list<string>,
+        credits: list<credit>,
+        artwork: list<artwork>,
+        ids: list<tuple<string, string>>,
+        collection: option<string>,
+    }
+
+    record episode {
+        season: u32,
+        episode: u32,
+        title: option<string>,
+        overview: option<string>,
+        aired: option<string>,
+        still-url: option<string>,
+        runtime-minutes: option<u32>,
+    }
+
+    /// The kinds this provider knows.
+    kinds: func() -> list<media-kind>;
+    search: func(q: search-query) -> result<list<candidate>, string>;
+    details: func(kind: media-kind, id: string, language: string) -> result<item-details, string>;
+    /// Episodes of a season (shows only; others return an empty list).
+    episodes: func(show-id: string, season: u32, language: string) -> result<list<episode>, string>;
+}
+
+interface indexer {
+    record release {
+        title: string,
+        link: string,
+        size: option<u64>,
+        seeders: option<u32>,
+        published: option<s64>,
+    }
+
+    search: func(query: string) -> result<list<release>, string>;
+}
+
+interface notifier {
+    notify: func(title: string, body: string) -> result<_, string>;
+}
+
+world metadata-provider {
+    import host;
+    export metadata;
+}
+
+world indexer-plugin {
+    import host;
+    export indexer;
+}
+
+world notifier-plugin {
+    import host;
+    export notifier;
+}

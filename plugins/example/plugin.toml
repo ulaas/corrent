@@ -1,0 +1,14 @@
+id = "example"
+name = "Example provider"
+version = "1.0.0"
+description = "Answers with made-up metadata. For tests."
+host_api = "1"
+kinds = ["metadata"]
+
+[permissions]
+hosts = ["example.com", "127.0.0.1"]
+
+[[settings]]
+key = "greeting"
+label = "Greeting"
+default = "Hello"

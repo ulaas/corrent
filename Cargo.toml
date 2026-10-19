@@ -9,6 +9,8 @@ publish = false
 
 [workspace]
 members = [".", "crates/*"]
+# WebAssembly plugins build for wasm32-wasip2 in their own workspace (scripts/build-plugins.sh).
+exclude = ["plugins"]
 resolver = "3"
 
 [features]
