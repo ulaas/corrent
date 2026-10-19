@@ -13,6 +13,22 @@ mod imp {
     use std::time::Duration;
 
     static FS_DELAY: Mutex<Vec<(PathBuf, Duration)>> = Mutex::new(Vec::new());
+    static CALL_DELAY: Mutex<Vec<([u8; 20], Duration)>> = Mutex::new(Vec::new());
+
+    pub fn set_call_delay(hash: [u8; 20], delay: Duration) {
+        let mut v = CALL_DELAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        v.retain(|(h, _)| *h != hash);
+        v.push((hash, delay));
+    }
+
+    pub fn clear_call_delay(hash: [u8; 20]) {
+        CALL_DELAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(h, _)| *h != hash);
+    }
+
+    pub fn call_delay(hash: [u8; 20]) -> Option<Duration> {
+        let v = CALL_DELAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        v.iter().find(|(h, _)| *h == hash).map(|(_, d)| *d)
+    }
 
     pub fn set_fs_delay(prefix: &Path, delay: Duration) {
         let mut v = FS_DELAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -31,7 +47,20 @@ mod imp {
 }
 
 #[cfg(any(test, feature = "testkit"))]
-pub use imp::{clear, set_fs_delay};
+pub use imp::{clear, clear_call_delay, set_call_delay, set_fs_delay};
+
+/// A test's stalled engine: librqbit calls for the torrent `hash` hang this long first.
+pub fn call_delay(hash: [u8; 20]) -> Option<Duration> {
+    #[cfg(any(test, feature = "testkit"))]
+    {
+        imp::call_delay(hash)
+    }
+    #[cfg(not(any(test, feature = "testkit")))]
+    {
+        let _ = hash;
+        None
+    }
+}
 
 /// A test's slow disk: file system work on `path` waits this long first.
 pub fn fs_delay(path: &Path) {
@@ -42,7 +71,3 @@ pub fn fs_delay(path: &Path) {
     #[cfg(not(any(test, feature = "testkit")))]
     let _ = path;
 }
-
-/// Unused outside tests; keeps `Duration` imported in every configuration.
-#[allow(dead_code)]
-const _UNIT: Duration = Duration::ZERO;

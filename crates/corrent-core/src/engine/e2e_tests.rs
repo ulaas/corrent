@@ -1240,3 +1240,42 @@ async fn a_slow_disk_does_not_stall_the_engine() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stalled_engine_call_leaves_the_engine_responsive() {
+    let dir = temp_dir("stalled-call");
+    let l = start(&dir);
+    let h = add_tiny_torrents(&l, &dir, 1).await[0];
+    // librqbit hangs on this torrent: the resume waits 5 s.
+    crate::faults::set_call_delay(h.0, Duration::from_secs(5));
+    l.engine.send(EngineCommand::Resume(vec![h]));
+    let asked = Instant::now();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    l.engine.send(EngineCommand::Detail { hash: h, reply: tx });
+    assert!(rx.await.unwrap().is_some());
+    assert!(asked.elapsed() < Duration::from_secs(1), "the engine answered after {:?}", asked.elapsed());
+    assert!(l.engine.snapshot().session.tick_max_ms < 50);
+    // The call still happens, late.
+    wait_for(&l, "resumed", 20, |sn| find(sn, h).is_some_and(|t| t.state != TorrentState::Paused)).await;
+    crate::faults::clear_call_delay(h.0);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pause_and_resume_in_a_burst_end_as_last_asked() {
+    let dir = temp_dir("burst");
+    let l = start(&dir);
+    let h = add_tiny_torrents(&l, &dir, 1).await[0];
+    for _ in 0..3 {
+        l.engine.send(EngineCommand::Resume(vec![h]));
+        l.engine.send(EngineCommand::Pause(vec![h]));
+    }
+    // Let every call run, then the torrent must be paused in the engine too.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for(&l, "paused", 10, |sn| find(sn, h).is_some_and(|t| t.state == TorrentState::Paused)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(find(&l.engine.snapshot(), h).map(|t| t.state), Some(TorrentState::Paused));
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

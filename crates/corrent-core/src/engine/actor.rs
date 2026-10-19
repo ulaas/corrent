@@ -152,6 +152,8 @@ pub struct Actor {
     undo: HashMap<InfoHash, UndoEntry>,
     /// Pruning the store waits until failed restores have been identified.
     restore_checked: bool,
+    /// The engine-call worker (see `engine_call`), started with the first call.
+    calls: Option<mpsc::UnboundedSender<EngineCall>>,
     /// Size of the last refused prune (see `logic::prune_allowed`), so it is reported once.
     prune_refused: Option<usize>,
     /// The engine's list was restored from an older copy this run: torrents added since are
@@ -245,6 +247,7 @@ impl Actor {
             undo: HashMap::new(),
             restore_checked: false,
             prune_refused: None,
+            calls: None,
             prune_suspended: false,
             first_start: true,
             free_space_running: false,
@@ -565,7 +568,7 @@ impl Actor {
             }
             EngineCommand::Pause(hashes) => {
                 for h in hashes {
-                    self.pause(h, PauseReason::User).await;
+                    self.pause(h, PauseReason::User);
                 }
             }
             EngineCommand::Resume(hashes) => {
@@ -573,7 +576,7 @@ impl Actor {
                     if self.failed.contains_key(&h) {
                         self.retry_failed(h);
                     } else {
-                        self.resume(h, false).await;
+                        self.resume(h, false);
                     }
                 }
             }
@@ -582,20 +585,20 @@ impl Actor {
                     if self.failed.contains_key(&h) {
                         self.retry_failed(h);
                     } else {
-                        self.resume(h, true).await;
+                        self.resume(h, true);
                     }
                 }
             }
             EngineCommand::PauseAll => {
                 let all: Vec<InfoHash> = self.store.data.torrents.keys().copied().collect();
                 for h in all {
-                    self.pause(h, PauseReason::User).await;
+                    self.pause(h, PauseReason::User);
                 }
             }
             EngineCommand::ResumeAll => {
                 let all: Vec<InfoHash> = self.store.data.torrents.keys().copied().collect();
                 for h in all {
-                    self.resume(h, false).await;
+                    self.resume(h, false);
                 }
             }
             EngineCommand::Delete { hashes, with_data } => {
@@ -619,8 +622,8 @@ impl Actor {
                     let set: HashSet<usize> = included.into_iter().collect();
                     if set.is_empty() {
                         self.toast(ToastKind::Warning, t!("At least one file must stay selected."));
-                    } else if let Err(e) = sess.update_only_files(&h, &set).await {
-                        self.toast(ToastKind::Error, t!("Could not update file selection: {e}", e = format!("{e:#}")));
+                    } else {
+                        self.engine_call(sess, h, CallKind::OnlyFiles(set));
                     }
                 }
             }
@@ -793,7 +796,7 @@ impl Actor {
                         .map(|(h, _)| *h)
                         .collect();
                     for h in queued {
-                        self.resume(h, false).await;
+                        self.resume(h, false);
                     }
                 }
                 self.settings = *new;
@@ -900,7 +903,7 @@ impl Actor {
         self.store.mark_dirty();
     }
 
-    async fn pause(&mut self, hash: InfoHash, reason: PauseReason) {
+    fn pause(&mut self, hash: InfoHash, reason: PauseReason) {
         let (Some(sess), Some(h)) = (self.session.clone(), self.handle_for(&hash)) else { return };
         let m = self.store.meta_mut(hash);
         // A user pause overrides queue/limit pauses; automatic pauses never override a user pause.
@@ -910,16 +913,10 @@ impl Actor {
         if reason == PauseReason::User {
             m.force_started = false;
         }
-        // Don't trust `is_paused()`: librqbit sets it when a pause is requested during
-        // initialization even if the torrent then goes live anyway.
-        if !matches!(h.stats().state, TorrentStatsState::Paused)
-            && let Err(e) = sess.pause(&h).await
-        {
-            tracing::debug!("pause failed: {e:#}");
-        }
+        self.engine_call(sess, h, CallKind::Pause);
     }
 
-    async fn resume(&mut self, hash: InfoHash, force: bool) {
+    fn resume(&mut self, hash: InfoHash, force: bool) {
         let (Some(sess), Some(h)) = (self.session.clone(), self.handle_for(&hash)) else { return };
         let m = self.store.meta_mut(hash);
         if m.pause_reason == Some(PauseReason::SeedLimit) {
@@ -930,14 +927,26 @@ impl Actor {
         m.inactive_seeding_secs = 0;
         self.resumed_at.insert(hash, Instant::now());
         self.resume_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if matches!(h.stats().state, TorrentStatsState::Paused)
-            && let Err(e) = sess.unpause(&h).await
-        {
-            self.toast(ToastKind::Error, t!("Could not resume: {e}", e = format!("{e:#}")));
-        }
-        // Going live resets the limiter to the add-time limits.
+        // Going live resets the limiter to the add-time limits, so they go with the call.
         let m = self.store.get(&hash).map(|m| (m.down_limit_kib, m.up_limit_kib)).unwrap_or((0, 0));
-        h.set_ratelimits(session::limits(m.0, m.1));
+        self.engine_call(sess, h, CallKind::Resume(session::limits(m.0, m.1)));
+    }
+
+    /// Hand a librqbit call to the engine-call worker: it never blocks the actor, calls run in the
+    /// order they were made, and each has a deadline.
+    fn engine_call(&mut self, sess: Arc<Session>, h: Arc<ManagedTorrent>, kind: CallKind) {
+        let call = EngineCall { sess, h, kind };
+        let call = match &self.calls {
+            Some(tx) => match tx.send(call) {
+                Ok(()) => return,
+                Err(e) => e.0,
+            },
+            None => call,
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(run_engine_calls(rx, self.events.clone(), self.wake.clone()));
+        let _ = tx.send(call);
+        self.calls = Some(tx);
     }
 
     fn delete(&mut self, hash: InfoHash, with_data: bool) {
@@ -2380,15 +2389,12 @@ impl Actor {
                 find(hash).map(|h| (h, session::limits(m.0, m.1)))
             })
             .collect();
-        tokio::spawn(async move {
-            for h in pause {
-                let _ = sess.pause(&h).await;
-            }
-            for (h, limits) in resume {
-                let _ = sess.unpause(&h).await;
-                h.set_ratelimits(limits);
-            }
-        });
+        for h in pause {
+            self.engine_call(sess.clone(), h, CallKind::Pause);
+        }
+        for (h, limits) in resume {
+            self.engine_call(sess.clone(), h, CallKind::Resume(limits));
+        }
     }
 
     fn run_seed_limits(&mut self, views: &[TorrentView]) {
@@ -2405,9 +2411,7 @@ impl Actor {
                 SeedAction::Pause => {
                     self.store.meta_mut(hash).pause_reason = Some(PauseReason::SeedLimit);
                     if let (Some(sess), Some(h)) = (self.session.clone(), self.handle_for(&hash)) {
-                        tokio::spawn(async move {
-                            let _ = sess.pause(&h).await;
-                        });
+                        self.engine_call(sess, h, CallKind::Pause);
                     }
                     self.toast(ToastKind::Info, t!("Stopped seeding “{name}”: {why}.", name = name, why = why));
                 }
@@ -2880,4 +2884,70 @@ struct ReaddNote {
     /// Files already moved to `new_output`, recorded (and synced) as each one finishes.
     #[serde(default)]
     moved: Vec<PathBuf>,
+}
+
+/// A librqbit call that changes a torrent's state.
+enum CallKind {
+    Pause,
+    /// Unpause, then apply these limits (going live resets them).
+    Resume(librqbit::limits::LimitsConfig),
+    OnlyFiles(HashSet<usize>),
+}
+
+struct EngineCall {
+    sess: Arc<Session>,
+    h: Arc<ManagedTorrent>,
+    kind: CallKind,
+}
+
+/// One librqbit call may take this long (pausing rewrites and syncs session.json).
+const ENGINE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Runs engine calls one at a time, in order (a pause, resume, pause from the user ends paused).
+/// Whether a torrent is paused is checked right before each call, not when it was made.
+async fn run_engine_calls(
+    mut rx: mpsc::UnboundedReceiver<EngineCall>,
+    events: std::sync::mpsc::Sender<EngineEvent>,
+    wake: Wake,
+) {
+    while let Some(EngineCall { sess, h, kind }) = rx.recv().await {
+        let hash = h.info_hash().0;
+        let work = async {
+            if let Some(d) = crate::faults::call_delay(hash) {
+                tokio::time::sleep(d).await;
+            }
+            // Don't trust `is_paused()`: librqbit sets it when a pause is requested during
+            // initialization even if the torrent then goes live anyway.
+            let paused = matches!(h.stats().state, TorrentStatsState::Paused);
+            match &kind {
+                CallKind::Pause if !paused => sess.pause(&h).await,
+                CallKind::Pause => Ok(()),
+                CallKind::Resume(limits) => {
+                    if paused {
+                        sess.unpause(&h).await?;
+                    }
+                    h.set_ratelimits(*limits);
+                    Ok(())
+                }
+                CallKind::OnlyFiles(set) => sess.update_only_files(&h, set).await,
+            }
+        };
+        let toast = |text: String| {
+            let _ = events.send(EngineEvent::Toast(ToastKind::Error, text));
+            wake.wake();
+        };
+        match tokio::time::timeout(ENGINE_CALL_TIMEOUT, work).await {
+            Ok(Ok(())) => {}
+            Err(_) => tracing::warn!(
+                "an engine call for {} didn't finish in {ENGINE_CALL_TIMEOUT:?}",
+                InfoHash(hash).to_hex()
+            ),
+            // A torrent removed or re-added since the call was made: nothing to report.
+            Ok(Err(e)) => match kind {
+                CallKind::Pause => tracing::debug!("pause failed: {e:#}"),
+                CallKind::Resume(_) => toast(t!("Could not resume: {e}", e = format!("{e:#}"))),
+                CallKind::OnlyFiles(_) => toast(t!("Could not update file selection: {e}", e = format!("{e:#}"))),
+            },
+        }
+    }
 }
