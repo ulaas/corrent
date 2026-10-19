@@ -1,0 +1,17 @@
+[package]
+name = "corrent-db"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Corrent's SQLite database: writer thread, read pool, migrations"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+tokio = { version = "1.53", features = ["rt", "sync"] }
+tracing = "0.1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros"] }
