@@ -65,6 +65,8 @@ pub struct AppState {
     pub podcasts: crate::podcasts::Podcasts,
     /// Internet radio stations (`radio.json`).
     pub radio: crate::radio::Stations,
+    /// The Jellyfin-compatible API's play sessions and device profiles.
+    pub jellyfin: crate::jellyfin::JfState,
     pub remote_status: ArcSwap<corrent_proto::server::RemoteStatus>,
     /// Set when a hosted server stops: its background tasks end (they hold the state).
     pub stopping: tokio::sync::watch::Sender<bool>,

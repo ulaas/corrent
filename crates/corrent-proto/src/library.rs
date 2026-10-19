@@ -75,6 +75,20 @@ pub enum ItemKind {
 }
 
 impl ItemKind {
+    pub const ALL: [ItemKind; 11] = [
+        ItemKind::Movie,
+        ItemKind::Show,
+        ItemKind::Season,
+        ItemKind::Episode,
+        ItemKind::Artist,
+        ItemKind::Album,
+        ItemKind::Track,
+        ItemKind::Book,
+        ItemKind::Video,
+        ItemKind::Photo,
+        ItemKind::Folder,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             ItemKind::Movie => "movie",

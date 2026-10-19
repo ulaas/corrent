@@ -34,7 +34,7 @@ pub fn routes() -> Router<Arc<AppState>> {
 
 const TEXT_SUBS: &[&str] = &["srt", "subrip", "ass", "ssa", "vtt", "webvtt"];
 
-fn facts(f: &MediaFile) -> MediaFacts {
+pub(crate) fn facts(f: &MediaFile) -> MediaFacts {
     let video = f.streams.iter().find(|s| s.kind == "video").map(|s| VideoFacts {
         codec: s.codec.clone().unwrap_or_default(),
         profile: s.profile.clone(),
@@ -114,7 +114,7 @@ async fn start(
     Path(item): Path<i64>,
     body: Option<Json<PlaybackRequest>>,
 ) -> ApiResult<PlaybackInfo> {
-    Ok(Json(prepare(&st, &auth, item, body.map(|b| b.0).unwrap_or_default()).await?))
+    Ok(Json(prepare(&st, &auth, item, body.map(|b| b.0).unwrap_or_default(), None).await?))
 }
 
 /// How `auth` plays `item` with `req` (starting an HLS session when it transcodes).
@@ -123,6 +123,7 @@ pub(crate) async fn prepare(
     auth: &Auth,
     item: i64,
     req: PlaybackRequest,
+    profile: Option<ClientProfile>,
 ) -> Result<PlaybackInfo, ApiErr> {
     let st = st.clone();
     let user = auth.0.user.id;
@@ -135,7 +136,7 @@ pub(crate) async fn prepare(
     .clone();
     // A file of an unfinished download plays through the engine (reads wait for pieces).
     let downloading = crate::integrate::downloading_file(&st, std::path::Path::new(&file.path)).await;
-    let profile = ClientProfile::named(req.profile.as_deref().unwrap_or("web"));
+    let profile = profile.unwrap_or_else(|| ClientProfile::named(req.profile.as_deref().unwrap_or("web")));
     let facts = facts(&file);
     let decision = decide::decide(
         &facts,

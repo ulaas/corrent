@@ -19,6 +19,7 @@ pub use corrent_proto::event as events_api;
 pub mod backups;
 pub mod identity;
 pub mod integrate;
+pub mod jellyfin;
 pub mod local;
 pub mod metadata;
 pub mod metrics;
@@ -151,6 +152,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         casts: Default::default(),
         podcasts: Default::default(),
         radio: Default::default(),
+        jellyfin: Default::default(),
         remote_status: Default::default(),
     });
     metadata::start(state.clone());
@@ -190,6 +192,7 @@ pub fn router(st: Arc<AppState>) -> Router {
     if st.cfg.load().metrics {
         app = app.route("/metrics", axum::routing::get(metrics::serve).with_state(st.clone()));
     }
+    app = app.nest_service("/jellyfin", jellyfin::service(st.clone()));
     app.fallback(webclient::serve)
         .layer(axum::middleware::from_fn_with_state(st.clone(), v1::guard))
         // Small by default; the routes that take uploads raise it for themselves.

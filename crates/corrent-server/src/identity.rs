@@ -456,6 +456,78 @@ impl Identity {
         Ok((user, issued))
     }
 
+    /// A session for a Jellyfin app: its own device id (`external_id`) identifies the device, so
+    /// signing in again from the same app replaces the device instead of adding one.
+    pub async fn issue_external(
+        &self,
+        user_id: i64,
+        device: DeviceInfo,
+        external_id: String,
+        ip: String,
+        user_agent: String,
+    ) -> Result<Issued, ApiError> {
+        let ext: String = external_id.chars().take(200).collect();
+        let e2 = ext.clone();
+        self.db
+            .write(move |t| {
+                t.execute("DELETE FROM devices WHERE user_id = ?1 AND external_id = ?2", params![user_id, e2])
+            })
+            .await
+            .map_err(db_err)?;
+        let issued = self.issue(user_id, Some(device), ip, user_agent).await?;
+        if let Some(d) = issued.device_id {
+            self.db
+                .write(move |t| t.execute("UPDATE devices SET external_id = ?1 WHERE id = ?2", params![ext, d]))
+                .await
+                .map_err(db_err)?;
+        }
+        Ok(issued)
+    }
+
+    /// Enabled accounts that have a password (people can pick them on a sign-in screen).
+    pub async fn signin_users(&self) -> Result<Vec<User>, ApiError> {
+        let ids: Vec<i64> = self
+            .db
+            .read(|c| {
+                let mut st = c.prepare("SELECT id FROM users WHERE disabled = 0 AND pw_hash != '' ORDER BY name")?;
+                st.query_map([], |r| r.get(0))?.collect::<corrent_db::rusqlite::Result<Vec<i64>>>()
+            })
+            .await
+            .map_err(db_err)?;
+        let all = self.users().await?;
+        Ok(ids.into_iter().filter_map(|id| all.iter().find(|u| u.id == id).cloned()).collect())
+    }
+
+    /// A stored Jellyfin document of a user.
+    pub async fn jf_pref(&self, user_id: i64, key: &str) -> Result<Option<String>, ApiError> {
+        let key = key.to_string();
+        self.db
+            .read(move |c| {
+                c.query_row("SELECT json FROM jf_prefs WHERE user_id = ?1 AND key = ?2", params![user_id, key], |r| {
+                    r.get(0)
+                })
+                .optional()
+            })
+            .await
+            .map_err(db_err)
+    }
+
+    pub async fn set_jf_pref(&self, user_id: i64, key: &str, json: String) -> Result<(), ApiError> {
+        let key: String = key.chars().take(200).collect();
+        let now = now_unix();
+        self.db
+            .write(move |t| {
+                t.execute(
+                    "INSERT INTO jf_prefs(user_id, key, json, updated_at) VALUES (?1, ?2, ?3, ?4) \
+                     ON CONFLICT(user_id, key) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at",
+                    params![user_id, key, json, now],
+                )
+                .map(drop)
+            })
+            .await
+            .map_err(db_err)
+    }
+
     /// Checks a user's current password (self-service password changes).
     pub async fn check_password(&self, id: i64, password: &str) -> Result<bool, ApiError> {
         let stored: Option<String> = self

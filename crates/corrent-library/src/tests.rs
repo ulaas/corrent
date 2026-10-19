@@ -168,7 +168,15 @@ async fn scans_movies_shows_and_music() {
 
     // Query filters: kinds, everything below a show, ids, titles, parent fields.
     let below = lib
-        .items(user, ItemQuery { ancestor_id: Some(show.id), kinds: vec![ItemKind::Episode], sort: SortBy::Index, ..Default::default() })
+        .items(
+            user,
+            ItemQuery {
+                ancestor_id: Some(show.id),
+                kinds: vec![ItemKind::Episode],
+                sort: SortBy::Index,
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     assert_eq!(below.total, 2);
@@ -179,11 +187,15 @@ async fn scans_movies_shows_and_music() {
     let none = lib.items(user, ItemQuery { ids: Some(vec![]), ..Default::default() }).await.unwrap();
     assert_eq!(none.total, 0);
     let named = lib
-        .items(user, ItemQuery { title_contains: Some("bunny".into()), kinds: vec![ItemKind::Movie], ..Default::default() })
+        .items(
+            user,
+            ItemQuery { title_contains: Some("bunny".into()), kinds: vec![ItemKind::Movie], ..Default::default() },
+        )
         .await
         .unwrap();
     assert_eq!(named.items.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(), vec!["Big Buck Bunny"]);
-    let weird = lib.items(user, ItemQuery { title_contains: Some("50%_'".into()), ..Default::default() }).await.unwrap();
+    let weird =
+        lib.items(user, ItemQuery { title_contains: Some("50%_'".into()), ..Default::default() }).await.unwrap();
     assert_eq!(weird.total, 0);
 
     // Search.

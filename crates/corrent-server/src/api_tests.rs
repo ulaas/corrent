@@ -19,14 +19,14 @@ use crate::identity::{HashCost, Identity};
 use crate::state::AppState;
 use crate::{ServerConfig, ServerParts, build_state, router};
 
-struct H {
-    app: Router,
-    st: Arc<AppState>,
+pub(crate) struct H {
+    pub(crate) app: Router,
+    pub(crate) st: Arc<AppState>,
     l: Leecher,
-    dir: std::path::PathBuf,
+    pub(crate) dir: std::path::PathBuf,
 }
 
-async fn harness(name: &str, cfg: ServerConfig) -> H {
+pub(crate) async fn harness(name: &str, cfg: ServerConfig) -> H {
     let dir = testkit::temp_dir(&format!("api-{name}"));
     let l = testkit::start(&dir);
     let db = Db::open(&dir.join("corrent.db")).unwrap();
@@ -55,7 +55,7 @@ impl H {
         std::mem::replace(&mut self.l.events, std::sync::mpsc::channel().1)
     }
 
-    async fn stop(self) {
+    pub(crate) async fn stop(self) {
         drop(self.app);
         drop(self.st);
         testkit::stop(self.l).await;
@@ -64,16 +64,16 @@ impl H {
 }
 
 #[derive(Default)]
-struct Call<'a> {
-    peer: Option<&'a str>,
-    host: Option<&'a str>,
-    bearer: Option<&'a str>,
-    cookie: Option<&'a str>,
-    csrf: Option<&'a str>,
-    body: Option<Value>,
+pub(crate) struct Call<'a> {
+    pub(crate) peer: Option<&'a str>,
+    pub(crate) host: Option<&'a str>,
+    pub(crate) bearer: Option<&'a str>,
+    pub(crate) cookie: Option<&'a str>,
+    pub(crate) csrf: Option<&'a str>,
+    pub(crate) body: Option<Value>,
 }
 
-async fn call(app: &Router, method: Method, uri: &str, c: Call<'_>) -> (StatusCode, Value, HeaderMap) {
+pub(crate) async fn call(app: &Router, method: Method, uri: &str, c: Call<'_>) -> (StatusCode, Value, HeaderMap) {
     let peer: SocketAddr = format!("{}:50000", c.peer.unwrap_or("127.0.0.1")).parse().unwrap();
     let mut b = Request::builder().method(method).uri(uri).header(header::HOST, c.host.unwrap_or("127.0.0.1:8443"));
     if let Some(t) = c.bearer {
@@ -102,21 +102,31 @@ async fn call(app: &Router, method: Method, uri: &str, c: Call<'_>) -> (StatusCo
     (status, v, headers)
 }
 
-fn get(app: &Router, uri: &str, bearer: &str) -> impl std::future::Future<Output = (StatusCode, Value, HeaderMap)> {
+pub(crate) fn get(
+    app: &Router,
+    uri: &str,
+    bearer: &str,
+) -> impl std::future::Future<Output = (StatusCode, Value, HeaderMap)> {
     let (app, uri, bearer) = (app.clone(), uri.to_string(), bearer.to_string());
     async move { call(&app, Method::GET, &uri, Call { bearer: Some(&bearer), ..Default::default() }).await }
 }
 
-async fn send(app: &Router, method: Method, uri: &str, bearer: &str, body: Value) -> (StatusCode, Value, HeaderMap) {
+pub(crate) async fn send(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    bearer: &str,
+    body: Value,
+) -> (StatusCode, Value, HeaderMap) {
     call(app, method, uri, Call { bearer: Some(bearer), body: Some(body), ..Default::default() }).await
 }
 
-fn device() -> Value {
+pub(crate) fn device() -> Value {
     json!({ "name": "test", "platform": "linux", "client": "tests" })
 }
 
 /// Creates the admin through first-run setup and returns a device token for it.
-async fn admin_token(app: &Router) -> String {
+pub(crate) async fn admin_token(app: &Router) -> String {
     let (s, v, h) = call(
         app,
         Method::POST,

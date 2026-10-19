@@ -752,6 +752,15 @@ fn next_up(c: &Connection, user: i64) -> rusqlite::Result<Vec<Item>> {
     let shows: Vec<i64> = st.query_map([user], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let mut out = Vec::new();
     for show in shows {
+        out.extend(next_in_show(c, user, show, false)?);
+    }
+    Ok(out)
+}
+
+/// The next unwatched episode of a show after the last watched one (`first`: S01E01 when
+/// nothing was watched).
+fn next_in_show(c: &Connection, user: i64, show: i64, first: bool) -> rusqlite::Result<Vec<Item>> {
+    {
         // Last played (season, episode) in the show.
         let last: Option<(i64, i64)> = c
             .query_row(
@@ -761,8 +770,12 @@ fn next_up(c: &Connection, user: i64) -> rusqlite::Result<Vec<Item>> {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        let Some((sn, en)) = last else { continue };
-        let next = items_by_sql(
+        let (sn, en) = match last {
+            Some(l) => l,
+            None if first => (0, 0),
+            None => return Ok(Vec::new()),
+        };
+        items_by_sql(
             c,
             user,
             "i.kind = 'episode' AND p.parent_id = ?2 AND coalesce(ws.played, 0) = 0 AND p.index_no > 0 \
@@ -770,10 +783,22 @@ fn next_up(c: &Connection, user: i64) -> rusqlite::Result<Vec<Item>> {
             "p.index_no, i.index_no",
             1,
             &[show.into(), sn.into(), en.into()],
-        )?;
-        out.extend(next);
+        )
     }
-    Ok(out)
+}
+
+impl Library {
+    /// "Next up": per recently watched show its next episode, or for one show (`series`) its
+    /// next one (S01E01 when nothing was watched and `first`).
+    pub async fn next_up(&self, user: i64, series: Option<i64>, first: bool) -> Result<Vec<Item>> {
+        Ok(self
+            .db()
+            .read(move |c| match series {
+                Some(s) => next_in_show(c, user, s, first),
+                None => next_up(c, user),
+            })
+            .await?)
+    }
 }
 
 #[cfg(test)]

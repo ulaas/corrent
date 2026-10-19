@@ -56,6 +56,18 @@ pub struct ServerConfig {
     pub dlna_port: u16,
     /// The account whose libraries DLNA shows; empty = the first administrator.
     pub dlna_user: String,
+    /// The Jellyfin-compatible API (Jellyfin Web, Android TV, Swiftfin, Findroid, Kodi add-on).
+    pub jellyfin_api: bool,
+    /// Its plain-HTTP, local-network-only listener (the apps' default port; 0 = off).
+    pub jellyfin_port: u16,
+    /// Answer Jellyfin apps' "who is JellyfinServer?" on UDP 7359.
+    pub jellyfin_discovery: bool,
+    /// The Jellyfin version reported (apps refuse servers older than they support).
+    pub jellyfin_version: String,
+    /// Serve artwork without a token even when the request has no image tag (as Jellyfin does).
+    pub jellyfin_public_images: bool,
+    /// CORS for a Jellyfin Web hosted elsewhere.
+    pub jellyfin_cors: bool,
 }
 
 impl Default for ServerConfig {
@@ -86,6 +98,12 @@ impl Default for ServerConfig {
             dlna: false,
             dlna_port: 8201,
             dlna_user: String::new(),
+            jellyfin_api: false,
+            jellyfin_port: 8096,
+            jellyfin_discovery: true,
+            jellyfin_version: "12.2.0".into(),
+            jellyfin_public_images: false,
+            jellyfin_cors: false,
         }
     }
 }
