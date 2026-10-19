@@ -98,6 +98,7 @@ impl Nets {
     pub fn from(cfg: &ServerConfig) -> Nets {
         let host = crate::config_file::hostname().to_ascii_lowercase();
         let mut hostnames: Vec<String> = cfg.hostnames.iter().map(|h| h.to_ascii_lowercase()).collect();
+        hostnames.extend(crate::acme::domains(cfg));
         hostnames.push(format!("{host}.local"));
         hostnames.push(host);
         Nets {

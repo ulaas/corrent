@@ -72,7 +72,7 @@ pub fn with_config(mut c: ServerConfig, r: RemoteConfig) -> ServerConfig {
     c
 }
 
-fn loopback_only(bind: &str) -> bool {
+pub(crate) fn loopback_only(bind: &str) -> bool {
     bind.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback()) || bind == "localhost"
 }
 

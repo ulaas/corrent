@@ -210,7 +210,14 @@ async fn pair_code(
         _ => auth.0.user.id,
     };
     let (code, expires) = st.identity.pairing_code(uid).await?;
-    let host = req.host.unwrap_or(host.0);
+    let host = match req.host {
+        Some(h) => h,
+        None => {
+            let cfg = st.cfg.load_full();
+            let ips = tokio::task::spawn_blocking(|| crate::tls::local_names(&[]).1).await.unwrap_or_default();
+            crate::acme::pairing_host(&cfg, &host.0, &ips)
+        }
+    };
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "pairing_code", &uid.to_string(), true, "").await;
     Ok(Json(Identity::pairing_link(
         &code,

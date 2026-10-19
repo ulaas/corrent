@@ -16,6 +16,7 @@ pub mod dlna;
 pub mod events;
 /// Wire event types, re-exported for hosts.
 pub use corrent_proto::event as events_api;
+pub mod acme;
 pub mod backups;
 pub mod identity;
 pub mod integrate;
@@ -254,6 +255,15 @@ pub async fn serve_https(app: Router, addr: SocketAddr, tls: &tls::TlsMaterial) 
         tls.key_pem.as_bytes().to_vec(),
     )
     .await?;
+    serve_https_config(app, addr, config).await
+}
+
+/// Serves `app` over HTTPS with ready TLS settings.
+pub(crate) async fn serve_https_config(
+    app: Router,
+    addr: SocketAddr,
+    config: axum_server::tls_rustls::RustlsConfig,
+) -> anyhow::Result<Listener> {
     let std_listener = std::net::TcpListener::bind(addr)?;
     std_listener.set_nonblocking(true)?;
     let addr = std_listener.local_addr()?;

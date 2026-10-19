@@ -68,6 +68,14 @@ pub struct ServerConfig {
     pub jellyfin_public_images: bool,
     /// CORS for a Jellyfin Web hosted elsewhere.
     pub jellyfin_cors: bool,
+    /// Public domains to get a Let's Encrypt certificate for (TLS-ALPN-01: port 443 on the
+    /// internet must reach the HTTPS port). Browsers asking for these names get it; everything
+    /// else (pinned apps, LAN addresses) keeps the server's own certificate. Empty: off.
+    pub acme_domains: Vec<String>,
+    /// Contact address for the certificate authority (optional).
+    pub acme_email: String,
+    /// Use Let's Encrypt's staging directory (testing; browsers don't trust it).
+    pub acme_staging: bool,
 }
 
 impl Default for ServerConfig {
@@ -104,6 +112,9 @@ impl Default for ServerConfig {
             jellyfin_version: "12.2.0".into(),
             jellyfin_public_images: false,
             jellyfin_cors: false,
+            acme_domains: Vec::new(),
+            acme_email: String::new(),
+            acme_staging: false,
         }
     }
 }

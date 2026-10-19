@@ -64,6 +64,29 @@ shown in the clients, embedded in pairing links, and printed by `correntd --prin
 Browsers show a warning for the self-signed certificate; to avoid it, install `tls/ca.pem` as a
 trusted authority on your devices (compare the fingerprint first).
 
+**A certificate browsers trust (ACME, Let's Encrypt):** with a public domain pointing at the
+server, set it in `server.toml` and restart:
+
+```toml
+acme_domains = ["media.example.org"]
+acme_email = "you@example.org"   # optional, for expiry notices from the authority
+acme_staging = false              # true: Let's Encrypt's test directory while setting up
+remote_access = true              # browsers on the internet are outside the LAN
+```
+
+The certificate is requested over the HTTPS port itself (TLS-ALPN-01), so port **443** on the
+internet must reach `https_port` (a router forward 443 → 8443, or `https_port = 443`). It is
+renewed automatically and cached in `tls/acme/` (staging and production certificates
+separately). Only connections that ask for one of these names get it; LAN addresses, other
+names and Corrent Connect keep the own certificate. The apps pin the server's own CA, so they
+must use one of those, not an ACME name: pairing links made from a browser at an ACME name
+therefore carry a LAN address of the server (and the Connect id, when Connect is on). The names
+are also accepted in the Host check (no need to add them to `hostnames`). `bind` must not be a
+loopback address, international names go in their punycode form (`xn--…`), and the challenge
+works even with `remote_access = false` (only HTTP requests are refused then). A failed order
+is retried after 15 minutes (an hour when Let's Encrypt reports a rate limit). `correntd` is
+built with this by default (feature `acme`).
+
 ## Accounts, devices and pairing
 
 Users have a role (`admin`, `user`, `guest`, `kids`) with default permissions that an admin can

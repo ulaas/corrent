@@ -7,6 +7,11 @@ description = "Corrent's headless media and torrent server"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[features]
+default = ["acme"]
+# Let's Encrypt certificates for `acme_domains` in server.toml.
+acme = ["corrent-server/acme"]
+
 [dependencies]
 corrent-core = { path = "../corrent-core" }
 corrent-db = { path = "../corrent-db" }

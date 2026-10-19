@@ -550,6 +550,7 @@ async fn serve(
     tls_material: Option<tls::TlsMaterial>,
 ) -> anyhow::Result<()> {
     let cfg = parts.cfg.clone();
+    let data_dir = parts.paths.data_dir.clone();
     let state = corrent_server::build_state(parts).await?;
     // Events queued while the server was starting are handled now.
     corrent_server::forward_engine_events(events, state.clone());
@@ -560,7 +561,7 @@ async fn serve(
     let mut listeners = Vec::new();
     let scheme = match &tls_material {
         Some(t) => {
-            listeners.push(corrent_server::serve_https(app.clone(), main_addr, t).await?);
+            listeners.push(corrent_server::acme::serve_https(app.clone(), main_addr, t, &cfg, &data_dir).await?);
             "https"
         }
         None => {
