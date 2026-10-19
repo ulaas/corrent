@@ -147,6 +147,8 @@ pub struct Actor {
     undo: HashMap<InfoHash, UndoEntry>,
     /// Pruning the store waits until failed restores have been identified.
     restore_checked: bool,
+    /// Size of the last refused prune (see `logic::prune_allowed`), so it is reported once.
+    prune_refused: Option<usize>,
     low_space_warned: bool,
     stream: Option<Arc<super::stream::StreamServer>>,
     /// Per stream session: last sample (time, bytes served) and smoothed rate.
@@ -228,6 +230,7 @@ impl Actor {
             undo_pending: HashMap::new(),
             undo: HashMap::new(),
             restore_checked: false,
+            prune_refused: None,
             low_space_warned: false,
             stream: None,
             stream_rates: HashMap::new(),
@@ -1534,8 +1537,36 @@ impl Actor {
                 .filter(|h| !present.contains(h) && !pending.contains(h) && !self.busy.contains_key(h))
                 .copied()
                 .collect();
-            if !orphans.is_empty() {
+            let total = self.store.data.torrents.len();
+            if orphans.is_empty() {
+                self.prune_refused = None;
+            } else if !super::logic::prune_allowed(total, orphans.len()) {
+                if self.prune_refused.replace(orphans.len()) != Some(orphans.len()) {
+                    tracing::warn!(
+                        "{} of {total} store entries have no torrent in the engine; not pruning",
+                        orphans.len()
+                    );
+                    self.emit(EngineEvent::DataWarning(t!(
+                        "{n} of {total} torrents are missing from the engine's database, so Corrent kept their \
+                         categories, tags and history instead of deleting them. If this is unexpected, restore a \
+                         backup of the session folder.",
+                        n = orphans.len(),
+                        total = total
+                    )));
+                }
+            } else {
                 tracing::info!("pruning {} stale store entries", orphans.len());
+                self.prune_refused = None;
+                // A dated copy of the complete data first (rare: only after outside changes).
+                match serde_json::to_vec_pretty(&self.store.data) {
+                    Ok(bytes) => {
+                        if let Err(e) = crate::util::keep_generations(&self.paths.store_file(), "pre-prune", &bytes, 3)
+                        {
+                            tracing::warn!("could not keep a copy of store.json before pruning: {e:#}");
+                        }
+                    }
+                    Err(e) => tracing::warn!("could not serialize the store: {e}"),
+                }
                 for h in orphans {
                     self.forget_hash(&h);
                 }

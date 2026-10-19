@@ -747,3 +747,96 @@ async fn engine_panic_stops_the_old_session() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Add `n` tiny paused torrents (made-up piece hashes; nothing to download) and wait for them.
+async fn add_tiny_torrents(l: &Leecher, dir: &Path, n: u8) -> Vec<InfoHash> {
+    for i in 0..n {
+        let name = format!("tiny-{i:03}.bin");
+        let mut info =
+            format!("d6:lengthi16384e4:name{}:{name}12:piece lengthi16384e6:pieces20:", name.len()).into_bytes();
+        info.extend_from_slice(&[i.wrapping_add(100); 20]);
+        info.push(b'e');
+        let mut bytes = b"d4:info".to_vec();
+        bytes.extend_from_slice(&info);
+        bytes.push(b'e');
+        l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+            source: AddSource::Bytes { name: format!("{i}.torrent"), bytes },
+            torrent_bytes: None,
+            save_path: dir.join("dl"),
+            create_subfolder: false,
+            category: Some("Kept".into()),
+            tags: Vec::new(),
+            paused: true,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        })));
+    }
+    let snap =
+        wait_for(l, "the tiny torrents", 30, |sn| sn.torrents.iter().filter(|t| !t.pending).count() == n as usize)
+            .await;
+    snap.torrents.iter().filter(|t| !t.pending).map(|t| t.hash).collect()
+}
+
+fn read_store(paths: &Paths) -> crate::store::StoreData {
+    serde_json::from_slice(&std::fs::read(paths.store_file()).unwrap()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_emptied_engine_database_does_not_wipe_the_store() {
+    let dir = temp_dir("prune-refused");
+    let l = start(&dir);
+    let hashes = add_tiny_torrents(&l, &dir, 3).await;
+    let paths = stop(l).await;
+    assert_eq!(read_store(&paths).torrents.len(), 3);
+    // The engine's database comes back empty (restored from an old backup, rewritten, …).
+    std::fs::write(paths.session_dir().join("session.json"), br#"{"torrents":{}}"#).unwrap();
+    let l = start(&dir);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match l.events.try_recv() {
+            Ok(EngineEvent::DataWarning(w)) if w.contains("missing from the engine") => break,
+            Ok(_) => {}
+            Err(_) => {
+                assert!(Instant::now() < deadline, "no warning about the refused prune");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    assert!(l.engine.snapshot().torrents.is_empty(), "the engine really lost them");
+    let paths = stop(l).await;
+    let store = read_store(&paths);
+    for h in &hashes {
+        assert_eq!(store.torrents.get(h).and_then(|m| m.category.as_deref()), Some("Kept"), "kept {h:?}");
+    }
+    assert!(crate::util::generations(&paths.store_file(), "pre-prune").is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stray_store_entry_is_pruned_after_a_snapshot() {
+    let dir = temp_dir("prune-one");
+    let l = start(&dir);
+    let hashes = add_tiny_torrents(&l, &dir, 2).await;
+    let paths = stop(l).await;
+    let stray = InfoHash([0xee; 20]);
+    let mut store = read_store(&paths);
+    store.torrents.insert(stray, Default::default());
+    std::fs::write(paths.store_file(), serde_json::to_vec(&store).unwrap()).unwrap();
+    let l = start(&dir);
+    let store_file = paths.store_file();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while crate::util::generations(&store_file, "pre-prune").is_empty() {
+        assert!(Instant::now() < deadline, "no snapshot before the prune");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let paths = stop(l).await;
+    let store = read_store(&paths);
+    assert!(!store.torrents.contains_key(&stray), "pruned");
+    assert!(hashes.iter().all(|h| store.torrents.contains_key(h)));
+    let (_, snap) = &crate::util::generations(&paths.store_file(), "pre-prune")[0];
+    let snap: crate::store::StoreData = serde_json::from_slice(&std::fs::read(snap).unwrap()).unwrap();
+    assert!(snap.torrents.contains_key(&stray), "the snapshot has everything");
+    let _ = std::fs::remove_dir_all(dir);
+}

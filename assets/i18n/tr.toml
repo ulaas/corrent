@@ -871,6 +871,7 @@
 "{need} needed · {free} free" = "{need} gerekli · {free} boş"
 "{n} blocked ranges loaded" = "{n} engellenen aralık yüklendi"
 "{n} nodes" = "{n} düğüm"
+"{n} of {total} torrents are missing from the engine's database, so Corrent kept their categories, tags and history instead of deleting them. If this is unexpected, restore a backup of the session folder." = "{total} torrentten {n} tanesi motorun veritabanında yok; Corrent bu yüzden kategorilerini, etiketlerini ve geçmişlerini silmek yerine korudu. Bu beklenmedik bir durumsa oturum klasörünün bir yedeğini geri yükleyin."
 "{n} peers" = "{n} eş"
 "{n} providers" = "{n} sağlayıcı"
 "{n} results" = "{n} sonuç"

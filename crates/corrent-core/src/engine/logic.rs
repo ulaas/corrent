@@ -7,6 +7,13 @@ use super::types::{InfoHash, TorrentState, TorrentView};
 use crate::config::{Queue, Schedule, Seeding};
 use crate::store::{PauseReason, TorrentMeta};
 
+/// Whether `orphans` of the store's `total` entries (torrents the engine no longer has) may be
+/// dropped in one pass: at most 10% (at least 1, at most 50). More than that means the engine's
+/// database came back empty or stale, not that the user removed torrents.
+pub fn prune_allowed(total: usize, orphans: usize) -> bool {
+    orphans <= (total / 10).clamp(1, 50)
+}
+
 /// Engine-level state of a torrent, independent of librqbit's types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineStatus {
@@ -383,5 +390,19 @@ pub mod tests {
         assert!(!downloads_active(&[v(TorrentState::Queued, 1.0)]), "queued for seeding");
         assert!(!downloads_active(&[]));
         assert!(downloads_active(&[v(TorrentState::Error, 0.4)]), "an errored download isn't finished");
+    }
+
+    #[test]
+    fn prune_is_capped() {
+        assert!(prune_allowed(2, 1));
+        assert!(prune_allowed(100, 1));
+        assert!(prune_allowed(100, 10));
+        assert!(!prune_allowed(100, 11));
+        assert!(!prune_allowed(11, 10));
+        assert!(prune_allowed(1000, 50));
+        assert!(!prune_allowed(1000, 51));
+        for n in 2..200 {
+            assert!(!prune_allowed(n, n), "never all of {n}");
+        }
     }
 }
