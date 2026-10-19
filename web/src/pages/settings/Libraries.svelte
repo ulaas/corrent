@@ -30,19 +30,28 @@
   let busy = $state(false);
   let error = $state('');
 
+  // Every field set: a toggle bound to a missing one throws (Svelte's props_invalid_value).
+  // Matches LibrarySettings::defaults on the server.
+  const DEFAULTS: Required<LibrarySettings> = {
+    import_categories: [],
+    import_mode: 'in_place',
+    watch: true,
+    fetch_metadata: true,
+    language: '',
+    played_threshold: 90,
+    stop_seeding_when_watched: false,
+    write_nfo: false,
+  };
+
   function create() {
     error = '';
-    edit = {
-      id: null,
-      name: '',
-      kind: 'movies',
-      folders: [''],
-      settings: { import_categories: [], import_mode: 'in_place', watch: true, fetch_metadata: true, language: '', played_threshold: 90 },
-    };
+    edit = { id: null, name: '', kind: 'movies', folders: [''], settings: structuredClone(DEFAULTS) };
   }
   function open(l: Library) {
     error = '';
-    edit = { id: l.id, name: l.name, kind: l.kind, folders: l.folders.length ? [...l.folders] : [''], settings: structuredClone($state.snapshot(l.settings)) as LibrarySettings };
+    // A server from before a setting existed doesn't send it.
+    const settings = { ...structuredClone(DEFAULTS), ...(structuredClone($state.snapshot(l.settings)) as LibrarySettings) };
+    edit = { id: l.id, name: l.name, kind: l.kind, folders: l.folders.length ? [...l.folders] : [''], settings };
   }
 
   async function save(e: Event) {
