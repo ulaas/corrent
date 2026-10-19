@@ -10,6 +10,7 @@ pub mod config;
 pub mod crash;
 pub mod engine;
 pub mod import;
+pub mod lock;
 pub mod logbuf;
 pub mod migrate;
 pub mod rss;

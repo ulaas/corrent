@@ -424,6 +424,27 @@ fn run(args: Args) -> anyhow::Result<()> {
     init_logging(&paths);
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("correntd-rt").build()?;
+    if let Some(name) = &args.init_admin {
+        // Works while the server runs (SQLite serializes the write), so it neither takes the
+        // profile lock nor applies a staged restore.
+        let db = corrent_db::Db::open(&paths.data_dir.join("corrent.db"))?;
+        let identity = Identity::new(db, HashCost::STANDARD);
+        let password = read_password()?;
+        let u = rt.block_on(identity.create_user(corrent_server::identity::new_admin(name, &password)))?;
+        println!("created administrator {:?}", u.name);
+        return Ok(());
+    }
+
+    // One process per profile (the desktop app takes the same lock): two engines on one session
+    // would corrupt it, and both would apply a staged restore. Released last.
+    let lock = match corrent_core::lock::lock_data_dir(&paths.data_dir) {
+        Ok(l) => l,
+        Err(corrent_core::lock::LockError::Held) => {
+            anyhow::bail!("another Corrent process is already using {}", paths.data_dir.display())
+        }
+        Err(e) => return Err(e.into()),
+    };
+
     // A restore staged from the web client is applied before anything opens the database.
     match corrent_server::backups::apply_pending(&paths.data_dir) {
         Some(Ok(m)) => {
@@ -438,28 +459,6 @@ fn run(args: Args) -> anyhow::Result<()> {
     }
     let db = corrent_db::Db::open(&paths.data_dir.join("corrent.db"))?;
     let identity = Identity::new(db.clone(), HashCost::STANDARD);
-
-    if let Some(name) = &args.init_admin {
-        // Works while the server runs (SQLite serializes the write).
-        let password = read_password()?;
-        let u = rt.block_on(identity.create_user(corrent_server::identity::new_admin(name, &password)))?;
-        println!("created administrator {:?}", u.name);
-        return Ok(());
-    }
-
-    // One server per profile: two engines on one session would corrupt it.
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(paths.data_dir.join("correntd.lock"))?;
-    match lock.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => {
-            anyhow::bail!("another correntd is already using {}", paths.data_dir.display())
-        }
-        Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
-    }
 
     let mut cfg = ServerConfig::load(&paths.data_dir)?;
     if !ServerConfig::file(&paths.data_dir).exists() {

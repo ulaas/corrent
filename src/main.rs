@@ -57,9 +57,43 @@ fn main() -> eframe::Result {
     }
 
     let items: Vec<String> = args.iter().filter(|a| !a.starts_with("--")).cloned().collect();
-    let listener = match integration::single_instance::acquire(&paths, &items) {
+    let (listener, unresponsive) = match integration::single_instance::acquire(&paths, &items) {
         integration::single_instance::Acquire::Forwarded => return Ok(()),
-        integration::single_instance::Acquire::Primary(l) => l,
+        integration::single_instance::Acquire::Primary(l) => (l, false),
+        integration::single_instance::Acquire::Unresponsive => (None, true),
+    };
+    // One process per data folder, locked before anything in it is restored or read (correntd
+    // takes the same lock). Never run without it.
+    let _data_lock = match corrent_core::lock::lock_data_dir(&paths.data_dir) {
+        Ok(_) if unresponsive => {
+            // The other side took our items but doesn't hold the lock: a Corrent from before
+            // confirmations, which gets them anyway. Never start a second engine next to it.
+            eprintln!("forwarded to a running Corrent that did not confirm");
+            return Ok(());
+        }
+        Ok(lock) => lock,
+        Err(e) => {
+            let text = match &e {
+                corrent_core::lock::LockError::Held if unresponsive => t!(
+                    "Corrent is already running but isn't responding, so this link or file couldn't be handed to it. \
+                     Close it and try again."
+                )
+                .to_string(),
+                corrent_core::lock::LockError::Held => {
+                    t!("Corrent is already running with this data folder. Close it and try again.").to_string()
+                }
+                corrent_core::lock::LockError::Io(err) => {
+                    t!("Corrent couldn't lock its data folder {path}: {e}", path = paths.data_dir.display(), e = err)
+                }
+            };
+            eprintln!("{text}");
+            rfd::MessageDialog::new()
+                .set_title("Corrent")
+                .set_description(&text)
+                .set_level(rfd::MessageLevel::Error)
+                .show();
+            std::process::exit(1);
+        }
     };
 
     let _log_guard = init_logging(&paths);
