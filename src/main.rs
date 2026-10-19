@@ -118,7 +118,7 @@ fn main() -> eframe::Result {
     crash::install_hook(paths.log_dir());
     let previous_run = crash::start(&paths.log_dir());
     if previous_run.unclean {
-        tracing::warn!("previous run did not shut down cleanly");
+        tracing::warn!("previous run did not shut down cleanly (computer restarted since: {})", previous_run.rebooted);
     }
     let log_dir = paths.log_dir();
     std::thread::spawn(util::local_offset_secs);

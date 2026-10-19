@@ -127,6 +127,8 @@
 "Check for new versions automatically" = "Yeni sürümleri otomatik denetle"
 "Check for updates" = "Güncellemeleri denetle"
 "Check now" = "Şimdi denetle"
+"Checking 1 download that was in progress when the computer stopped unexpectedly." = "Bilgisayar beklenmedik şekilde durduğunda devam eden 1 indirme denetleniyor."
+"Checking {n} downloads that were in progress when the computer stopped unexpectedly." = "Bilgisayar beklenmedik şekilde durduğunda devam eden {n} indirme denetleniyor."
 "Checking" = "Denetleniyor"
 "Checking / warning" = "Denetleniyor / uyarı"
 "Checking {pct}%" = "Denetleniyor %{pct}"

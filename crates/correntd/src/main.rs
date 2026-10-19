@@ -494,7 +494,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     corrent_core::crash::install_hook(paths.log_dir());
     let previous = corrent_core::crash::start(&paths.log_dir());
     if previous.unclean {
-        tracing::warn!("the previous run did not shut down cleanly");
+        tracing::warn!("the previous run did not shut down cleanly (computer restarted since: {})", previous.rebooted);
     }
     if let Some(note) = corrent_core::backup::apply_pending(&paths) {
         tracing::info!("{note}");

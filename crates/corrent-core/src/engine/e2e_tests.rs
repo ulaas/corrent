@@ -1106,3 +1106,59 @@ fn multi_file_torrent_any(name: &str) -> Vec<u8> {
     bytes.push(b'e');
     bytes
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_a_power_loss_only_recently_written_torrents_are_checked() {
+    let dir = temp_dir("power-loss");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    let tiny = add_tiny_torrents(&l, &dir, 1).await[0];
+    download(&l, &s, &dir).await;
+    let paths = stop(l).await;
+    let now = crate::util::now_unix();
+    // The download finished an hour ago; the tiny one was transferring just before power went.
+    let mut store = read_store(&paths);
+    store.torrents.get_mut(&s.hash).unwrap().completed_at = Some(now - 3600);
+    let t = store.torrents.get_mut(&tiny).unwrap();
+    t.completed_at = None;
+    t.last_activity = now - 10;
+    std::fs::write(paths.store_file(), serde_json::to_vec(&store).unwrap()).unwrap();
+    let bitv = |h: InfoHash| paths.session_dir().join(format!("{}.bitv", h.to_hex()));
+    assert!(bitv(tiny).exists() && bitv(s.hash).exists());
+    std::fs::create_dir_all(paths.log_dir()).unwrap();
+    std::fs::write(paths.log_dir().join("power-loss.pending"), now.to_string()).unwrap();
+
+    let l = start(&dir);
+    let notices = notices_until(&l, 30, |sn| find(sn, tiny).is_some_and(|t| !t.pending) && complete(sn, s.hash)).await;
+    assert!(notices.iter().any(|n| n.contains("Checking 1 download")), "{notices:?}");
+    assert!(!paths.log_dir().join("power-loss.pending").exists(), "taken once");
+    stop(l).await;
+    assert!(bitv(tiny).exists(), "rebuilt by the full check");
+    assert_eq!(
+        std::fs::read(find_file(&dir.join("dl"), "data.bin")).unwrap(),
+        s.content,
+        "the finished download is untouched"
+    );
+
+    let l = start(&dir);
+    let notices = notices_until(&l, 5, |_| false).await;
+    assert!(!notices.iter().any(|n| n.contains("Checking")), "{notices:?}");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The first file named `name` under `dir`.
+fn find_file(dir: &Path, name: &str) -> std::path::PathBuf {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().is_some_and(|n| n == name) {
+                return p;
+            }
+        }
+    }
+    panic!("{name} not found under {}", dir.display())
+}

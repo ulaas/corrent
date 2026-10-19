@@ -121,6 +121,36 @@ pub fn recover(session_dir: &Path, known: &HashSet<InfoHash>) -> Option<Result<R
     Some(Ok(Recovered { saved_at, torrents: db.torrents.len() }))
 }
 
+/// Data written within this long before a power loss may not have reached the disk.
+const UNSAFE_WINDOW: i64 = 300;
+
+/// After a power loss: remove the saved piece state (`<hash>.bitv`) of every torrent that was
+/// downloading shortly before `alive_at`, so the engine checks its data in full (as a manual
+/// Recheck would). Torrents that were finished or idle by then keep their fast resume. Returns
+/// how many will be checked.
+pub fn clear_unfinished_bitfields(session_dir: &Path, store: &crate::store::StoreData, alive_at: i64) -> usize {
+    let Ok(rd) = std::fs::read_dir(session_dir) else { return 0 };
+    let mut cleared = 0;
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.extension().is_none_or(|x| x != "bitv") {
+            continue;
+        }
+        let Some(hash) = p.file_stem().and_then(|s| s.to_str()).and_then(InfoHash::from_hex) else { continue };
+        // When data was last written: a finished torrent when it finished (seeding only reads),
+        // an unfinished one when it last transferred.
+        let safe = store.torrents.get(&hash).is_some_and(|m| {
+            let last_write = m.completed_at.unwrap_or(m.last_activity);
+            last_write + UNSAFE_WINDOW < alive_at
+        });
+        if !safe && std::fs::remove_file(&p).is_ok() {
+            tracing::info!("after a power loss: {} will be checked in full", hash.to_hex());
+            cleared += 1;
+        }
+    }
+    cleared
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +273,37 @@ mod tests {
         good(&dir, 100, "also garbage");
         assert!(matches!(recover(&dir, &HashSet::new()), Some(Err(_))));
         assert_eq!(std::fs::read(&path).unwrap(), b"garbage");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_torrents_written_shortly_before_the_power_loss_lose_their_bitfield() {
+        let dir = scratch("bitv");
+        let now = 1_000_000;
+        let mut store = crate::store::StoreData::default();
+        let cases = [
+            ("1", Some(now - 3600), now - 5, true), // finished an hour before, seeding now
+            ("2", Some(now - 60), now - 60, false), // finished a minute before
+            ("3", None, now - 10, false),           // downloading
+            ("4", None, now - 3600, true),          // paused for an hour
+            ("5", None, 0, true),                   // never downloaded anything
+        ];
+        for (c, completed, active, _) in cases {
+            let h = c.repeat(40);
+            std::fs::write(dir.join(format!("{h}.bitv")), b"x").unwrap();
+            let m = store.torrents.entry(hash(&h)).or_default();
+            m.completed_at = completed;
+            m.last_activity = active;
+        }
+        // Not in the store: checked.
+        std::fs::write(dir.join(format!("{}.bitv", "6".repeat(40))), b"x").unwrap();
+        std::fs::write(dir.join("other.bitv"), b"x").unwrap();
+        assert_eq!(clear_unfinished_bitfields(&dir, &store, now), 3);
+        for (c, _, _, kept) in cases {
+            assert_eq!(dir.join(format!("{}.bitv", c.repeat(40))).exists(), kept, "{c}");
+        }
+        assert!(!dir.join(format!("{}.bitv", "6".repeat(40))).exists());
+        assert!(dir.join("other.bitv").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

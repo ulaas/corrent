@@ -152,6 +152,9 @@ pub struct Actor {
     /// The engine's list was restored from an older copy this run: torrents added since are
     /// missing from it, so nothing is pruned (their records and metainfo are kept).
     prune_suspended: bool,
+    /// The first session start of this process (D14 runs only then).
+    first_start: bool,
+    last_heartbeat: Option<Instant>,
     low_space_warned: bool,
     stream: Option<Arc<super::stream::StreamServer>>,
     /// Per stream session: last sample (time, bytes served) and smoothed rate.
@@ -235,6 +238,8 @@ impl Actor {
             restore_checked: false,
             prune_refused: None,
             prune_suspended: false,
+            first_start: true,
+            last_heartbeat: None,
             low_space_warned: false,
             stream: None,
             stream_rates: HashMap::new(),
@@ -296,6 +301,9 @@ impl Actor {
         self.engine_state = if self.session.is_some() { EngineState::Restarting } else { EngineState::Starting };
         self.publish();
         self.recover_session_db();
+        if std::mem::take(&mut self.first_start) {
+            self.check_after_power_loss();
+        }
         super::session_db::snapshot(&self.paths.session_dir());
         self.purge_pending();
         let mut last_err = String::new();
@@ -1146,6 +1154,25 @@ impl Actor {
         }
     }
 
+    /// D14: after a power loss, torrents that were writing data shortly before it are checked in
+    /// full; the rest keep fast resume.
+    fn check_after_power_loss(&mut self) {
+        let Some(alive_at) = crate::crash::take_power_loss(&self.paths.log_dir()) else { return };
+        let n = super::session_db::clear_unfinished_bitfields(&self.paths.session_dir(), &self.store.data, alive_at);
+        tracing::warn!("the computer restarted without a clean exit; {n} torrent(s) will be checked in full");
+        match n {
+            0 => {}
+            1 => self.toast(
+                ToastKind::Info,
+                t!("Checking 1 download that was in progress when the computer stopped unexpectedly."),
+            ),
+            n => self.toast(
+                ToastKind::Info,
+                t!("Checking {n} downloads that were in progress when the computer stopped unexpectedly.", n = n),
+            ),
+        }
+    }
+
     fn purge_pending(&mut self) {
         if self.store.data.purge.is_empty() {
             return;
@@ -1747,6 +1774,11 @@ impl Actor {
             )));
         }
         self.check_free_space();
+        if self.last_heartbeat.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+            // For D14: when this run was last alive, should the computer lose power.
+            crate::crash::heartbeat(&self.paths.log_dir());
+            self.last_heartbeat = Some(Instant::now());
+        }
         self.wake.wake();
     }
 
