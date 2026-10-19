@@ -617,3 +617,23 @@ fn perf_50k_grid() {
     println!("50k grid: frame p50 {p50:.2} ms, p99 {p99:.2} ms");
     assert!(p99 < 16.0, "frame p99 {p99:.2} ms");
 }
+
+#[test]
+fn saving_settings_never_waits_on_the_disk() {
+    let (f, mut app) = app("slow-save", vec![]);
+    // Every write under this test's folder takes 3 s.
+    corrent_core::faults::set_fs_delay(&f.dir, std::time::Duration::from_secs(3));
+    app.settings.speed.download_limit = 123;
+    let t = std::time::Instant::now();
+    app.save_settings();
+    assert!(t.elapsed() < std::time::Duration::from_millis(500), "the UI waited {:?}", t.elapsed());
+    let mut h = harness(app);
+    let t = std::time::Instant::now();
+    h.run_steps(5);
+    assert!(t.elapsed() < std::time::Duration::from_secs(2), "frames waited {:?}", t.elapsed());
+    // It still reaches the disk.
+    let file = h.state().paths.settings_file();
+    assert!(corrent_core::writer::global().flush(&file, std::time::Duration::from_secs(10)));
+    corrent_core::faults::clear(&f.dir);
+    assert!(std::fs::read_to_string(&file).unwrap().contains("download_limit = 123"));
+}

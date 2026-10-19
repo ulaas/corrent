@@ -4,7 +4,6 @@ use egui::{Align2, Color32, Context, FontId, Id, LayerId, Order, vec2};
 use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
-use crate::engine::ToastKind;
 use crate::engine::types::AddSource;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::dashed_rect;
@@ -49,29 +48,58 @@ impl CorrentApp {
         if dropped.is_empty() {
             return;
         }
-        let mut ignored = 0;
-        for f in dropped {
-            let path = f.path().to_path_buf();
-            let is_torrent = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("torrent"));
-            if is_torrent && path.is_file() {
-                self.launch_queue.push_back(AddSource::File(path));
+        // Read off the UI thread (a file on a sleeping disk or a share); `drain_background` adds
+        // what was found.
+        let paths: Vec<std::path::PathBuf> = dropped.iter().map(|f| f.path().to_path_buf()).collect();
+        let (tx, ctx) = (self.dropped_tx.clone(), ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let _ = tx.send(read_dropped(&paths));
+            ctx.request_repaint();
+        });
+    }
+}
+
+/// What to add from dropped files, and how many weren't torrents (blocking file reads).
+fn read_dropped(paths: &[std::path::PathBuf]) -> (Vec<AddSource>, usize) {
+    let mut add = Vec::new();
+    let mut ignored = 0;
+    for path in paths {
+        let is_torrent = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("torrent"));
+        if is_torrent && path.is_file() {
+            add.push(AddSource::File(path.clone()));
+            continue;
+        }
+        // Text files with magnet links / URLs, one per line.
+        let small = std::fs::metadata(path).map(|m| m.len() < 512 * 1024).unwrap_or(false);
+        if small && let Ok(text) = std::fs::read_to_string(path) {
+            let sources: Vec<AddSource> =
+                text.lines().filter_map(AddSource::parse).filter(|s| !matches!(s, AddSource::File(_))).collect();
+            if !sources.is_empty() {
+                add.extend(sources);
                 continue;
             }
-            // Text files with magnet links / URLs, one per line.
-            let small = std::fs::metadata(&path).map(|m| m.len() < 512 * 1024).unwrap_or(false);
-            if small && let Ok(text) = std::fs::read_to_string(&path) {
-                let sources: Vec<AddSource> =
-                    text.lines().filter_map(AddSource::parse).filter(|s| !matches!(s, AddSource::File(_))).collect();
-                if !sources.is_empty() {
-                    self.launch_queue.extend(sources);
-                    continue;
-                }
-            }
-            ignored += 1;
         }
-        if ignored > 0 {
-            self.toasts
-                .push(ToastKind::Warning, t!("Ignored {ignored} file(s) that aren't torrents.", ignored = ignored));
-        }
+        ignored += 1;
+    }
+    (add, ignored)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dropped_files_are_sorted_into_adds_and_ignored() {
+        let dir = std::env::temp_dir().join(format!("corrent-dnd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = dir.join("a.torrent");
+        std::fs::write(&t, b"d4:infoe").unwrap();
+        let links = dir.join("links.txt");
+        std::fs::write(&links, "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567\nnot a link\n").unwrap();
+        let other = dir.join("photo.jpg");
+        std::fs::write(&other, b"\xff\xd8").unwrap();
+        let (add, ignored) = super::read_dropped(&[t, links, other]);
+        assert_eq!(add.len(), 2);
+        assert_eq!(ignored, 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

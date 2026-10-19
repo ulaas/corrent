@@ -154,6 +154,7 @@ impl Writer {
 }
 
 fn write(path: &Path, job: &Job) -> Result<(), String> {
+    crate::faults::fs_delay(path);
     if let Some(g) = &job.generation
         && let Err(e) = crate::util::keep_generations(path, g.tag, &job.bytes, g.keep)
     {

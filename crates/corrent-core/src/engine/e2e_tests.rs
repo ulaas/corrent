@@ -618,6 +618,13 @@ async fn many_adds_at_once_all_arrive() {
     wait_for(&l, "every torrent", 60, |sn| sn.torrents.len() == n && sn.torrents.iter().all(|t| !t.pending)).await;
     // The store is saved on the writer thread with a 2 s debounce: a batch costs a write or two,
     // not one (plus an fsync) per torrent on the engine's thread.
+    // The writer thread is shared with the other tests (some of which slow their own disk down):
+    // wait for the first save instead of a fixed time, then let the debounce settle.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while crate::writer::global().writes(&l.paths.store_file()) == 0 {
+        assert!(Instant::now() < deadline, "store.json was never saved");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     tokio::time::sleep(Duration::from_secs(3)).await;
     let writes = crate::writer::global().writes(&l.paths.store_file());
     assert!((1..=5).contains(&writes), "{writes} store writes for {n} adds");

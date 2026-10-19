@@ -158,14 +158,21 @@ impl CorrentApp {
     }
 
     pub fn open_magnet_dialog(&mut self) {
-        // Pre-fill from the clipboard when it holds something addable.
-        let clip = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()).unwrap_or_default();
-        let text = if clip.lines().any(|l| AddSource::parse(l).is_some_and(|s| !matches!(s, AddSource::File(_)))) {
-            clip.trim().to_string()
-        } else {
-            String::new()
-        };
-        self.modal = Some(Modal::Magnet { text });
+        self.modal = Some(Modal::Magnet { text: String::new() });
+        // Pre-fill from the clipboard when it holds something addable. Read on its own thread: a
+        // clipboard owner that doesn't answer must not freeze the window (`drain_background`).
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        let spawned = std::thread::Builder::new().name("corrent-clipboard".into()).spawn(move || {
+            let clip = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()).unwrap_or_default();
+            if clip.lines().any(|l| AddSource::parse(l).is_some_and(|s| !matches!(s, AddSource::File(_)))) {
+                let _ = tx.send(clip.trim().to_string());
+                ctx.request_repaint();
+            }
+        });
+        if spawned.is_ok() {
+            self.clipboard = Some((rx, std::time::Instant::now()));
+        }
     }
 
     pub fn request_delete(&mut self, hashes: Vec<InfoHash>, with_data: bool) {

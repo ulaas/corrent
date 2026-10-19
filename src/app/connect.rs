@@ -186,7 +186,7 @@ impl CorrentApp {
         let (engine, link) =
             start_engine(&self.rt, &self.paths, &self.settings, wake, self.ui_events_tx.clone(), entry);
         self.engine = engine;
-        crate::integration::end_session::track(&self.engine, self.paths.log_dir());
+        crate::integration::end_session::track(&self.engine, &self.paths);
         self.server = link;
         self.snap = Arc::new(crate::engine::types::Snapshot::default());
         self.selected.clear();

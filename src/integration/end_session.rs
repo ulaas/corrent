@@ -2,7 +2,6 @@
 //! `WM_ENDSESSION`) and `SIGTERM`/`SIGHUP` on Unix. Corrent often sits hidden in the tray then,
 //! and without this the store's debounced changes and the engine's piece state are lost.
 
-use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -10,12 +9,12 @@ use crate::engine::EngineHandle;
 
 /// The engine the app uses right now (it changes when the app connects to a server).
 static ENGINE: Mutex<Option<EngineHandle>> = Mutex::new(None);
-static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
+static PATHS: OnceLock<crate::config::Paths> = OnceLock::new();
 
 /// Remember the current engine; call again whenever the app switches engines.
-pub fn track(engine: &EngineHandle, log_dir: PathBuf) {
+pub fn track(engine: &EngineHandle, paths: &crate::config::Paths) {
     *ENGINE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(engine.clone());
-    let _ = LOG_DIR.set(log_dir);
+    let _ = PATHS.set(paths.clone());
 }
 
 fn current() -> Option<EngineHandle> {
@@ -35,11 +34,15 @@ fn flush() {
 /// The session ends: stop the engine within the few seconds Windows allows, then leave.
 fn end() -> ! {
     tracing::info!("the session is ending; stopping");
+    // A settings save may still be queued on the writer thread.
+    if let Some(p) = PATHS.get() {
+        corrent_core::writer::global().flush(&p.settings_file(), Duration::from_secs(1));
+    }
     if let Some(e) = current() {
         e.shutdown_blocking(Duration::from_secs(3));
     }
-    if let Some(dir) = LOG_DIR.get() {
-        crate::crash::finish(dir);
+    if let Some(p) = PATHS.get() {
+        crate::crash::finish(&p.log_dir());
     }
     std::process::exit(0)
 }

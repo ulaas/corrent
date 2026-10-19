@@ -791,6 +791,20 @@ impl Settings {
         crate::util::write_atomic(&paths.settings_file(), text.as_bytes())
     }
 
+    /// Like `save`, but written on the writer thread (the UI must never wait on the disk). The
+    /// outcome comes back through `writer::global().take_result(&paths.settings_file())`.
+    pub fn save_in_background(&self, paths: &Paths) -> anyhow::Result<()> {
+        if crate::migrate::settings_read_only() {
+            tracing::warn!("not saving settings: the file belongs to a newer version of Corrent");
+            return Ok(());
+        }
+        let mut s = self.clone();
+        s.schema_version = crate::migrate::SETTINGS_VERSION;
+        let text = toml::to_string_pretty(&s)?;
+        crate::writer::global().submit(&paths.settings_file(), text.into_bytes(), None);
+        Ok(())
+    }
+
     /// True if switching from `self` to `other` requires the engine session to be rebuilt.
     pub fn requires_restart(&self, other: &Settings) -> bool {
         self.connection != other.connection

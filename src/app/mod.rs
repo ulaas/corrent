@@ -321,6 +321,11 @@ pub struct CorrentApp {
 
     // launch / add
     pub launch_queue: VecDeque<AddSource>,
+    /// Dropped files read off the UI thread: (what to add, how many were ignored).
+    dropped_tx: std::sync::mpsc::Sender<(Vec<AddSource>, usize)>,
+    dropped_rx: std::sync::mpsc::Receiver<(Vec<AddSource>, usize)>,
+    /// The clipboard read for the magnet dialog, and when it was asked.
+    clipboard: Option<(std::sync::mpsc::Receiver<String>, std::time::Instant)>,
     pub modal: Option<dialogs::Modal>,
     pub add_dialogs: VecDeque<dialogs::AddDialog>,
     pub next_req: u64,
@@ -433,7 +438,7 @@ impl CorrentApp {
 
     /// Save and stop when the OS ends the session (see `integration::end_session`).
     fn with_end_session(self, cc: &eframe::CreationContext<'_>) -> Self {
-        crate::integration::end_session::track(&self.engine, self.paths.log_dir());
+        crate::integration::end_session::track(&self.engine, &self.paths);
         #[cfg(windows)]
         crate::integration::end_session::install(cc);
         #[cfg(not(windows))]
@@ -479,6 +484,7 @@ impl CorrentApp {
             let _ = settings.save(&paths);
         }
         let remote = remote::RemoteCtl::new(&settings);
+        let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
         CorrentApp {
             paths,
             settings,
@@ -498,6 +504,9 @@ impl CorrentApp {
             scroll_to_focus: false,
             column_menu: None,
             launch_queue: launch.into(),
+            dropped_tx,
+            dropped_rx,
+            clipboard: None,
             modal: None,
             add_dialogs: VecDeque::new(),
             next_req: 0,
@@ -776,10 +785,46 @@ impl CorrentApp {
 
     pub fn save_settings(&mut self) {
         self.sync_remote();
-        if let Err(e) = self.settings.save(&self.paths) {
-            let msg = t!("Your settings couldn't be saved: {why}", why = crate::util::explain_io(&format!("{e:#}")));
-            if !self.data_notes.contains(&msg) {
-                self.data_notes.push(msg);
+        // On the writer thread: a slow or sleeping disk must not freeze the window. The outcome
+        // comes back in `drain_background`.
+        if let Err(e) = self.settings.save_in_background(&self.paths) {
+            self.settings_save_failed(&format!("{e:#}"));
+        }
+    }
+
+    fn settings_save_failed(&mut self, why: &str) {
+        let msg = t!("Your settings couldn't be saved: {why}", why = crate::util::explain_io(why));
+        if !self.data_notes.contains(&msg) {
+            self.data_notes.push(msg);
+        }
+    }
+
+    /// Results of work done off the UI thread: settings saves, dropped files, the clipboard.
+    fn drain_background(&mut self) {
+        if let Some(Err(e)) = corrent_core::writer::global().take_result(&self.paths.settings_file()) {
+            self.settings_save_failed(&e);
+        }
+        while let Ok((sources, ignored)) = self.dropped_rx.try_recv() {
+            self.launch_queue.extend(sources);
+            if ignored > 0 {
+                self.toasts
+                    .push(ToastKind::Warning, t!("Ignored {ignored} file(s) that aren't torrents.", ignored = ignored));
+            }
+        }
+        if let Some((rx, asked)) = &self.clipboard {
+            match rx.try_recv() {
+                Ok(clip) => {
+                    // Only into an untouched dialog.
+                    if let Some(dialogs::Modal::Magnet { text }) = &mut self.modal
+                        && text.is_empty()
+                    {
+                        *text = clip;
+                    }
+                    self.clipboard = None;
+                }
+                // A clipboard that hasn't answered by now is left alone.
+                Err(_) if asked.elapsed() > std::time::Duration::from_millis(500) => self.clipboard = None,
+                Err(_) => {}
             }
         }
     }
@@ -1023,6 +1068,7 @@ impl eframe::App for CorrentApp {
         #[cfg(debug_assertions)]
         self.dev_hooks(ctx);
         self.drain_ipc(ctx);
+        self.drain_background();
         self.drain_pickers();
         self.drain_events(ctx);
         self.media_tick(ctx);
@@ -1053,6 +1099,10 @@ impl eframe::App for CorrentApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // The last settings save is queued on the writer thread.
+        if !corrent_core::writer::global().flush(&self.paths.settings_file(), std::time::Duration::from_secs(2)) {
+            tracing::warn!("the settings were still being saved when Corrent quit");
+        }
         let power = self.power_after_exit.take();
         when_done::exit_steps(
             || {
