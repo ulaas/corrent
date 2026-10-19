@@ -24,7 +24,8 @@ const MAX_ROOMS: usize = 200;
 
 pub struct Room {
     state: RoomState,
-    members: BTreeSet<String>,
+    /// (account, device or session): one account on two devices is in twice.
+    members: BTreeSet<(String, i64)>,
     touched: Instant,
 }
 
@@ -33,7 +34,11 @@ pub struct Rooms(std::sync::Mutex<HashMap<String, Room>>);
 
 impl Rooms {
     pub fn is_member(&self, room: &str, user: &str) -> bool {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).get(room).is_some_and(|r| r.members.contains(user))
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(room)
+            .is_some_and(|r| r.members.iter().any(|(n, _)| n == user))
     }
 }
 
@@ -41,8 +46,15 @@ pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
+/// Who is in a room: the account and its device (or browser session).
+fn key(auth: &Auth) -> (String, i64) {
+    (auth.name().to_string(), auth.0.device_id.unwrap_or(-auth.0.session_id))
+}
+
 fn snapshot(r: &Room) -> RoomState {
-    RoomState { members: r.members.iter().cloned().collect(), server_now_ms: now_ms(), ..r.state.clone() }
+    let mut names: Vec<String> = r.members.iter().map(|(n, _)| n.clone()).collect();
+    names.dedup();
+    RoomState { members: names, server_now_ms: now_ms(), ..r.state.clone() }
 }
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -93,7 +105,7 @@ async fn create(State(st): State<Arc<AppState>>, auth: Auth, Json(r): Json<NewRo
             by: auth.name().to_string(),
             ..Default::default()
         },
-        members: BTreeSet::from([auth.name().to_string()]),
+        members: BTreeSet::from([key(&auth)]),
         touched: Instant::now(),
     };
     let s = snapshot(&room);
@@ -105,7 +117,7 @@ async fn state(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<Strin
     let rooms = st.rooms.0.lock().unwrap_or_else(|e| e.into_inner());
     let r = rooms
         .get(&id)
-        .filter(|r| r.members.contains(auth.name()))
+        .filter(|r| r.members.iter().any(|(n, _)| n == auth.name()))
         .ok_or_else(|| err(ErrorCode::NotFound, "no such room"))?;
     Ok(Json(snapshot(r)))
 }
@@ -117,10 +129,10 @@ async fn join(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<String
     let mut rooms = st.rooms.0.lock().unwrap_or_else(|e| e.into_inner());
     rooms.retain(|_, room| room.touched.elapsed() < IDLE);
     let r = rooms.get_mut(&id).ok_or_else(|| err(ErrorCode::NotFound, "no such room"))?;
-    if r.members.len() >= 20 && !r.members.contains(auth.name()) {
+    if r.members.len() >= 20 && !r.members.contains(&key(&auth)) {
         return Err(err(ErrorCode::Conflict, "the room is full"));
     }
-    r.members.insert(auth.name().to_string());
+    r.members.insert(key(&auth));
     r.touched = Instant::now();
     Ok(Json(publish(&st, r)))
 }
@@ -128,7 +140,7 @@ async fn join(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<String
 async fn leave(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<String>) -> ApiResult<serde_json::Value> {
     let mut rooms = st.rooms.0.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = rooms.get_mut(&id) {
-        r.members.remove(auth.name());
+        r.members.remove(&key(&auth));
         if r.members.is_empty() {
             rooms.remove(&id);
         } else {
@@ -147,7 +159,7 @@ async fn command(
     let mut rooms = st.rooms.0.lock().unwrap_or_else(|e| e.into_inner());
     let r = rooms
         .get_mut(&id)
-        .filter(|r| r.members.contains(auth.name()))
+        .filter(|r| r.members.iter().any(|(n, _)| n == auth.name()))
         .ok_or_else(|| err(ErrorCode::NotFound, "no such room"))?;
     let now = now_ms();
     let (paused, pos) = match c {

@@ -189,7 +189,7 @@ computed from the server's clock, so late joiners start at the right place. Ever
 account that may see the item. Rooms close when the last person leaves or after six idle hours
 (at most 200 rooms, 20 people each). API: `POST /api/v1/syncplay`, `GET /syncplay/{code}`,
 `POST /syncplay/{code}/join|leave|command`; WebSocket topic `room` with the code as argument. Membership is per
-account: two devices of one account count once (leaving on one leaves both).
+device: one account on two devices is in the room on both until each leaves.
 
 ## DLNA for TVs and players
 
