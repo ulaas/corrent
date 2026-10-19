@@ -806,7 +806,7 @@ Portable mode (`--portable`) keeps all of it under `target/debug/corrent-data` a
   N+1; counts cached per library with invalidation by the writer. Writes are queued; a scan's
   inserts are batched 500 per transaction.
 - **Caching:** `moka` 0.12 (in the local cache; or an own LRU) for item DTOs and decisions;
-  HTTP ETags everywhere; artwork immutable; the web client caches via service worker (opt).
+  HTTP ETags everywhere; artwork immutable; the web client caches via service worker (opt). — done (`web/public/sw.js`: cached shell and hashed assets, network-first pages, never the API).
 - **Serving:** Range reads with 256 KiB buffered chunks, `tokio::fs` on the blocking pool;
   per-connection write timeouts (STABILITY F5) and a global concurrent-stream cap; HLS segments
   served from disk with `immutable` caching per session.
