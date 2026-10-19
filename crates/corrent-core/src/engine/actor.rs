@@ -156,6 +156,9 @@ pub struct Actor {
     rss: crate::rss::Rss,
     /// Adds started by feed rules (pending id → article), so a failed add can be retried.
     rss_adds: HashMap<u64, crate::rss::Download>,
+    /// Cancels the session's tasks when the actor goes away, even by unwinding after a panic
+    /// (`stop_session` only runs on a clean stop).
+    session_cancel: tokio_util::sync::DropGuard,
     /// Watch-folder files behind pending adds, with their folder's after-add action.
     watch_adds: HashMap<u64, (PathBuf, crate::config::AfterAdd)>,
     rss_failures: HashMap<String, u32>,
@@ -231,6 +234,7 @@ impl Actor {
             stream_haves: HashMap::new(),
             rss,
             rss_adds: HashMap::new(),
+            session_cancel: tokio_util::sync::CancellationToken::new().drop_guard(),
             watch_adds: HashMap::new(),
             rss_failures: HashMap::new(),
             category_limits: HashMap::new(),
@@ -287,7 +291,8 @@ impl Actor {
         self.purge_pending();
         let mut last_err = String::new();
         for attempt in 0..3 {
-            match session::create(&self.paths, &self.settings, self.alt).await {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            match session::create(&self.paths, &self.settings, self.alt, &cancel).await {
                 Ok((sess, warning)) => {
                     if let Some(w) = &warning {
                         self.toast(ToastKind::Warning, w.clone());
@@ -298,6 +303,8 @@ impl Actor {
                         st.set_session(Some(sess.clone()));
                     }
                     self.session = Some(sess);
+                    // The old guard (a stopped or never-started session) fires harmlessly.
+                    self.session_cancel = cancel.drop_guard();
                     self.engine_state = EngineState::Running;
                     self.apply_rate_limits();
                     tracing::info!("engine session started");

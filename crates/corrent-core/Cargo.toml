@@ -18,6 +18,7 @@ librqbit = { version = "=9.0.1", default-features = false, features = ["rust-tls
 librqbit-bencode = "=9.0.1"
 librqbit-core = { version = "=9.0.1", default-features = false }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net", "io-util"] }
+tokio-util = "0.7.19"
 arc-swap = "1"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

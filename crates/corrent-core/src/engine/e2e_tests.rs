@@ -722,3 +722,28 @@ async fn files_differing_only_in_case_are_refused() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn engine_panic_stops_the_old_session() {
+    let dir = temp_dir("panic-session");
+    let l = start(&dir);
+    let snap = wait_for(&l, "a listening session", 30, |sn| sn.session.listen_port.is_some()).await;
+    let port = snap.session.listen_port.unwrap();
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok(), "listening before the panic");
+    l.engine.send(EngineCommand::DevPanic);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while l.engine.is_alive() {
+        assert!(Instant::now() < deadline, "engine should have died");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Without a restart nothing may keep running on the old session (and its files).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_millis(500)).is_ok() {
+        assert!(Instant::now() < deadline, "the dead engine's session still listens on {port}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    l.engine.restart(settings(&dir));
+    wait_for(&l, "a new session", 30, |sn| sn.session.listen_port.is_some()).await;
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

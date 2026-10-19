@@ -5,6 +5,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 use librqbit::dht::DhtPersistenceConfig;
 use librqbit::limits::LimitsConfig;
@@ -29,6 +30,7 @@ fn options(
     port_override: Option<u16>,
     alt: bool,
     lists: &super::ipfilter::Prepared,
+    cancel: &CancellationToken,
 ) -> SessionOptions {
     let c = &s.connection;
     let bt = &s.bittorrent;
@@ -89,26 +91,35 @@ fn options(
         disable_local_service_discovery: !bt.lsd,
         ipv4_only: c.ipv4_only,
         client_name_and_version: Some(format!("Corrent {}", env!("CARGO_PKG_VERSION"))),
+        // A child per attempt: a session that fails half-way cancels its own token when dropped.
+        cancellation_token: Some(cancel.child_token()),
         ..Default::default()
     }
 }
 
 /// Create a session. If the configured port is unavailable, fall back to a random port so the
 /// client still starts (the status bar shows the real port).
-pub async fn create(paths: &Paths, s: &Settings, alt: bool) -> anyhow::Result<(Arc<Session>, Option<String>)> {
+/// Cancelling `cancel` stops every task of the session, also when no one calls `stop()` (an
+/// engine task that panicked).
+pub async fn create(
+    paths: &Paths,
+    s: &Settings,
+    alt: bool,
+    cancel: &CancellationToken,
+) -> anyhow::Result<(Arc<Session>, Option<String>)> {
     std::fs::create_dir_all(paths.session_dir())?;
     let out = s.downloads.save_path.clone();
     let _ = std::fs::create_dir_all(&out);
     let lists = super::ipfilter::prepare(paths, &s.connection).await;
     let list_warning = (!lists.warnings.is_empty()).then(|| lists.warnings.join(" "));
-    match Session::new_with_opts(out.clone(), options(paths, s, None, alt, &lists)).await {
+    match Session::new_with_opts(out.clone(), options(paths, s, None, alt, &lists, cancel)).await {
         Ok(sess) => Ok((sess, list_warning)),
         Err(e) if !s.connection.random_port => {
             tracing::warn!(
                 "could not start session on port {}: {e:#}; retrying on a random port",
                 s.connection.listen_port
             );
-            let sess = Session::new_with_opts(out, options(paths, s, Some(0), alt, &lists)).await?;
+            let sess = Session::new_with_opts(out, options(paths, s, Some(0), alt, &lists, cancel)).await?;
             Ok((
                 sess,
                 Some(t!(
