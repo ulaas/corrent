@@ -76,7 +76,7 @@ pub struct Settings {
     pub watch: Vec<WatchFolder>,
     pub rss: crate::rss::RssSettings,
     pub search: crate::search::SearchSettings,
-    pub web_api: crate::webapi::WebApiSettings,
+    pub web_api: WebApiSettings,
     pub updates: crate::updates::UpdateSettings,
     pub appearance: Appearance,
     pub advanced: Advanced,
@@ -436,7 +436,7 @@ pub struct Appearance {
     pub striped_rows: bool,
     pub preset: PalettePreset,
     /// The user's own palette (used with `PalettePreset::Custom`).
-    pub custom_palette: Option<crate::ui::theme::PaletteDef>,
+    pub custom_palette: Option<PaletteDef>,
     /// Switch to the high-contrast palette while the OS high-contrast mode is on.
     pub follow_os_high_contrast: bool,
     /// Interface language code ("" = follow the system).
@@ -647,6 +647,55 @@ impl Settings {
             || self.bittorrent != other.bittorrent
             || self.advanced.concurrent_init_limit != other.advanced.concurrent_init_limit
     }
+}
+
+/// Settings of the qBittorrent-compatible Web API (served by the GUI or the server).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct WebApiSettings {
+    pub enabled: bool,
+    pub port: u16,
+    /// Listen on all interfaces instead of only this computer.
+    pub allow_lan: bool,
+    pub username: String,
+    /// PBKDF2 hash (see `webapi::auth::hash_password`); empty = not set, the API stays off.
+    pub password_hash: String,
+}
+
+impl Default for WebApiSettings {
+    fn default() -> Self {
+        WebApiSettings {
+            enabled: false,
+            port: 8080,
+            allow_lan: false,
+            username: "admin".into(),
+            password_hash: String::new(),
+        }
+    }
+}
+
+/// A palette as stored in `theme.toml` (colors as `#rrggbb`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PaletteDef {
+    pub name: String,
+    pub dark: bool,
+    pub bg0: String,
+    pub bg1: String,
+    pub bg2: String,
+    pub bg3: String,
+    pub border: String,
+    pub border_hi: String,
+    pub text: String,
+    pub text_dim: String,
+    pub text_mute: String,
+    pub accent: String,
+    pub success: String,
+    pub warn: String,
+    pub error: String,
+    pub queued: String,
+    pub paused: String,
+    pub completed: String,
 }
 
 #[cfg(test)]

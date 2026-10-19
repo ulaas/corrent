@@ -101,7 +101,7 @@ pub fn parse(xml: &[u8], provider: &str) -> Result<Vec<SearchResult>, String> {
     let mut text = String::new();
     let mut seen_rss = false;
     loop {
-        let ev = reader.read_event_into(&mut buf).map_err(|e| format!("not a valid Torznab answer ({e})"))?;
+        let ev = reader.read_event_into(&mut buf).map_err(|e| t!("not a valid Torznab answer ({why})", why = e))?;
         match ev {
             Event::Eof => break,
             Event::Start(e) | Event::Empty(e) => {
@@ -115,9 +115,9 @@ pub fn parse(xml: &[u8], provider: &str) -> Result<Vec<SearchResult>, String> {
                     "rss" | "channel" => seen_rss = true,
                     "error" => {
                         let code = attr("code").unwrap_or_default();
-                        let desc = attr("description").unwrap_or_else(|| "unknown error".into());
+                        let desc = attr("description").unwrap_or_else(|| t!("unknown error").into());
                         return Err(match code.as_str() {
-                            "100" | "101" | "102" => format!("the API key was rejected ({desc})"),
+                            "100" | "101" | "102" => t!("the API key was rejected ({why})", why = desc),
                             _ => desc,
                         });
                     }

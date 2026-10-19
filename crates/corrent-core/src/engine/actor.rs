@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 
 use super::session::{self, kib_limit};
 use super::types::*;
-use super::{AddRequest, EngineCommand, EngineEvent, Preview, PreviewFile, ToastKind};
+use super::{AddRequest, EngineCommand, EngineEvent, Preview, PreviewFile, ToastKind, Wake};
 use crate::config::{Paths, SeedAction, Settings};
 use crate::store::{PauseReason, Store};
 use crate::util::now_unix;
@@ -93,7 +93,7 @@ struct StaticInfo {
 pub struct Actor {
     paths: Paths,
     settings: Settings,
-    ctx: egui::Context,
+    wake: Wake,
     events: std::sync::mpsc::Sender<EngineEvent>,
     snapshot: Arc<ArcSwap<Snapshot>>,
     internal_tx: mpsc::UnboundedSender<Internal>,
@@ -159,7 +159,7 @@ impl Actor {
     pub fn new(
         paths: Paths,
         settings: Settings,
-        ctx: egui::Context,
+        wake: Wake,
         events: std::sync::mpsc::Sender<EngineEvent>,
         snapshot: Arc<ArcSwap<Snapshot>>,
         self_tx: mpsc::UnboundedSender<EngineCommand>,
@@ -172,7 +172,7 @@ impl Actor {
         Actor {
             paths,
             settings,
-            ctx,
+            wake,
             events,
             snapshot,
             internal_tx,
@@ -350,12 +350,12 @@ impl Actor {
 
     fn toast(&self, kind: ToastKind, text: impl Into<String>) {
         let _ = self.events.send(EngineEvent::Toast(kind, text.into()));
-        self.ctx.request_repaint();
+        self.wake.wake();
     }
 
     fn emit(&self, ev: EngineEvent) {
         let _ = self.events.send(ev);
-        self.ctx.request_repaint();
+        self.wake.wake();
     }
 
     fn handle_for(&self, hash: &InfoHash) -> Option<Arc<ManagedTorrent>> {
@@ -397,7 +397,7 @@ impl Actor {
                 let sess = self.session.clone();
                 let id = req.id;
                 let events = self.events.clone();
-                let ctx = self.ctx.clone();
+                let wake = self.wake.clone();
                 let self_tx = self.self_tx.clone();
                 tokio::spawn(async move {
                     let result = async {
@@ -440,7 +440,7 @@ impl Actor {
                     .await
                     .map_err(|e| format!("{e:#}"));
                     let _ = events.send(EngineEvent::Created { id, result });
-                    ctx.request_repaint();
+                    wake.wake();
                 });
             }
             EngineCommand::UndoRemove(hashes) => {
@@ -767,11 +767,11 @@ impl Actor {
         }
         let client = self.rss_client.as_ref().map(|(_, c)| c.clone()).expect("client was just set");
         for url in due {
-            let (tx, client, ctx) = (self.internal_tx.clone(), client.clone(), self.ctx.clone());
+            let (tx, client, wake) = (self.internal_tx.clone(), client.clone(), self.wake.clone());
             tokio::spawn(async move {
                 let result = crate::rss::feed::fetch(&client, &url).await;
                 let _ = tx.send(Internal::RssFetched { url, result });
-                ctx.request_repaint();
+                wake.wake();
             });
         }
         self.publish();
@@ -899,13 +899,13 @@ impl Actor {
             return;
         };
         let events = self.events.clone();
-        let ctx = self.ctx.clone();
+        let wake = self.wake.clone();
         let tx = self.internal_tx.clone();
         let handle = tokio::spawn(async move {
             let result = preview(&sess, &source).await.map(Box::new).map_err(|e| format!("{e:#}"));
             let _ = events.send(EngineEvent::PreviewReady { req, result });
             let _ = tx.send(Internal::PreviewFinished { req });
-            ctx.request_repaint();
+            wake.wake();
         });
         self.previews.insert(req, handle);
     }
@@ -1586,7 +1586,7 @@ impl Actor {
             )));
         }
         self.check_free_space();
-        self.ctx.request_repaint();
+        self.wake.wake();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1978,7 +1978,7 @@ impl Actor {
         self.generation += 1;
         snap.generation = self.generation;
         self.snapshot.store(Arc::new(snap));
-        self.ctx.request_repaint();
+        self.wake.wake();
     }
 
     // ---------------------------------------------------------------- automation

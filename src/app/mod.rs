@@ -422,7 +422,16 @@ impl CorrentApp {
         prefs.tracker_filter = GroupFilter::All;
         let (tx, rx) = std::sync::mpsc::channel();
         let ui_events_tx = tx.clone();
-        let engine = EngineHandle::start(&rt, paths.clone(), settings.clone(), ctx.clone(), tx);
+        let engine = EngineHandle::start(
+            &rt,
+            paths.clone(),
+            settings.clone(),
+            {
+                let ctx = ctx.clone();
+                crate::engine::Wake::new(move || ctx.request_repaint())
+            },
+            tx,
+        );
         if first_run {
             let _ = settings.save(&paths);
         }

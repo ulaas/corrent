@@ -1,5 +1,6 @@
 //! The settings window: left navigation, searchable card sections, Apply/OK/Cancel.
 
+use crate::ui::theme::PaletteDefExt;
 use crate::ui::widgets::Labeled;
 use std::path::PathBuf;
 

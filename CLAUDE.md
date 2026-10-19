@@ -29,8 +29,8 @@ librqbit 9.0.1 engine. Goal: full-featured, beautiful, stable, easy to use, full
 ```sh
 cargo build                 # debug
 cargo build --release       # target/release/corrent.exe (owner runs this build)
-cargo test                  # unit + loopback engine integration tests (src/engine/e2e_tests.rs)
-cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo deny check   # CI gates
+cargo test --workspace      # unit + loopback engine integration tests (crates/corrent-core/src/engine/e2e_tests.rs)
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo deny check   # CI gates
 ./target/debug/corrent.exe --portable [magnet|url|file]
 corrent --status | --register | --unregister | --write-icons <dir> | --help
 ```
@@ -53,26 +53,28 @@ Nothing has run on real Linux/macOS yet — `docs/PLATFORM-TESTING.md` is the ch
 ## Architecture
 
 ```
+Cargo workspace: the root package is the `corrent` GUI; library crates live in `crates/`.
 src/main.rs                 CLI flags, single-instance negotiation, tokio runtime, run_native
-src/engine/actor.rs         Actor task owning the librqbit Session; commands in, ArcSwap<Snapshot> out
-src/engine/{session,types,automation,restore}.rs
+crates/corrent-core/src/    Everything without UI (the GUI and the server both use it):
+  engine/actor.rs           Actor task owning the librqbit Session; commands in, ArcSwap<Snapshot> out;
+                            `Wake` callback instead of egui (the GUI passes request_repaint)
+  engine/{session,types,automation,restore}.rs
                             SessionOptions from Settings; view types; watch folders & run-on-complete;
                             recovery of torrents the engine failed to load at startup
-src/engine/{creator,stream}.rs
-                            Torrent creation; token-protected loopback HTTP streaming
-src/rss/                    Feeds (fetch/parse), download rules, persisted state (rss.json)
-src/search.rs               Torznab client (user-configured providers only)
-src/webapi/                 qBittorrent-compatible Web API (axum) for Sonarr/Radarr
+  engine/{creator,stream}.rs Torrent creation; token-protected loopback HTTP streaming
+  engine/testkit.rs         Loopback seeder/leecher helpers (feature `testkit` for other crates' tests)
+  rss/, search.rs           Feeds + download rules (rss.json); Torznab client (user-configured providers)
+  import.rs, updates.rs     Import from other clients; opt-in GitHub release check
+  backup.rs, crash.rs, migrate.rs, logbuf.rs
+                            Backup/restore, panic hook + crash reports, schema migrations, in-memory log
+  store.rs                  Per-torrent data (categories, tags, dates, queue, pause reasons, counters)
+  config.rs                 Settings (TOML, serde defaults), paths (portable vs OS dirs)
 crates/corrent-i18n + assets/i18n/
                             Translations: t!("English text", name = x) / tk! in consts; tr.toml catalog
                             (the source of truth — edit it directly)
-src/import.rs, updates.rs   Import from other clients; opt-in GitHub release check
-src/backup.rs, crash.rs, migrate.rs
-                            Backup/restore, panic hook + crash reports, schema migrations
+crates/corrent-mpv/         Runtime-loaded libmpv (dlopen): probe, encode, GL/SW render; spike examples
+src/webapi/                 qBittorrent-compatible Web API (axum) for Sonarr/Radarr
 assets/webui/               Web interface served by src/webapi at /
-src/store.rs                App-side per-torrent data (categories, tags, dates, queue, pause reasons,
-                            cumulative counters) — atomic JSON with .bak
-src/config.rs               Settings (TOML, serde defaults), paths (portable vs OS dirs)
 src/integration/            single_instance (local socket IPC), os_handler(+_windows) magnet/.torrent
                             registration, macos_events (Apple Events), app_identity, power (when done)
 src/app/                    eframe App: titlebar/toolbar, sidebar, table, details, dialogs, settings

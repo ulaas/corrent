@@ -3,21 +3,11 @@
 
 #[macro_use]
 extern crate corrent_i18n;
+use corrent_core::{backup, config, crash, engine, import, rss, search, store, updates, util};
 use corrent_i18n as i18n;
 mod app;
-mod backup;
-mod config;
-mod crash;
-mod engine;
-mod import;
 mod integration;
-mod migrate;
-mod rss;
-mod search;
-mod store;
 mod ui;
-mod updates;
-mod util;
 mod webapi;
 
 use std::sync::Arc;

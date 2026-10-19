@@ -929,3 +929,6 @@
 "{size} buffered ahead" = "{size} ileride arabellekte"
 "{used} of {max} slots in use" = "{max} yuvadan {used} tanesi kullanımda"
 "“{name}” to {player}" = "“{name}” → {player}"
+"not a valid Torznab answer ({why})" = "geçerli bir Torznab yanıtı değil ({why})"
+"the API key was rejected ({why})" = "API anahtarı reddedildi ({why})"
+"unknown error" = "bilinmeyen hata"

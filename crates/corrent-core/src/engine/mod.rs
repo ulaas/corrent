@@ -11,6 +11,8 @@ pub mod logic;
 mod restore;
 mod session;
 pub mod stream;
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;
 pub mod types;
 
 use std::collections::BTreeMap;
@@ -231,6 +233,23 @@ struct Inner {
     stopping: bool,
 }
 
+/// Called by the engine whenever a new snapshot or event is ready (the GUI passes
+/// `egui::Context::request_repaint`; the server wakes its event fan-out).
+#[derive(Clone)]
+pub struct Wake(Arc<dyn Fn() + Send + Sync>);
+
+impl Wake {
+    pub fn new(f: impl Fn() + Send + Sync + 'static) -> Wake {
+        Wake(Arc::new(f))
+    }
+    pub fn noop() -> Wake {
+        Wake::new(|| {})
+    }
+    pub fn wake(&self) {
+        (self.0)()
+    }
+}
+
 /// Cheap, cloneable handle used by the UI. Survives engine restarts.
 #[derive(Clone)]
 pub struct EngineHandle {
@@ -238,7 +257,7 @@ pub struct EngineHandle {
     snapshot: Arc<ArcSwap<Snapshot>>,
     rt: tokio::runtime::Handle,
     paths: Paths,
-    ctx: egui::Context,
+    wake: Wake,
     events: std::sync::mpsc::Sender<EngineEvent>,
 }
 
@@ -247,17 +266,17 @@ impl EngineHandle {
         rt: &tokio::runtime::Handle,
         paths: Paths,
         settings: Settings,
-        ctx: egui::Context,
+        wake: Wake,
         events: std::sync::mpsc::Sender<EngineEvent>,
     ) -> EngineHandle {
         let snapshot = Arc::new(ArcSwap::from_pointee(Snapshot::default()));
-        let (tx, task) = Self::spawn(rt, &paths, settings, &ctx, &events, &snapshot);
+        let (tx, task) = Self::spawn(rt, &paths, settings, &wake, &events, &snapshot);
         EngineHandle {
             inner: Arc::new(std::sync::Mutex::new(Inner { tx, task, backlog: Default::default(), stopping: false })),
             snapshot,
             rt: rt.clone(),
             paths,
-            ctx,
+            wake,
             events,
         }
     }
@@ -266,18 +285,19 @@ impl EngineHandle {
         rt: &tokio::runtime::Handle,
         paths: &Paths,
         settings: Settings,
-        ctx: &egui::Context,
+        wake: &Wake,
         events: &std::sync::mpsc::Sender<EngineEvent>,
         snapshot: &Arc<ArcSwap<Snapshot>>,
     ) -> (mpsc::UnboundedSender<EngineCommand>, tokio::task::JoinHandle<()>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let (paths, ctx, events, snapshot, self_tx) =
-            (paths.clone(), ctx.clone(), events.clone(), snapshot.clone(), tx.clone());
+        let (paths, wake, events, snapshot, self_tx) =
+            (paths.clone(), wake.clone(), events.clone(), snapshot.clone(), tx.clone());
         // Loading the store and feed history does file I/O (with retries): not on the UI thread.
         let task = rt.spawn(async move {
-            let actor =
-                tokio::task::spawn_blocking(move || actor::Actor::new(paths, settings, ctx, events, snapshot, self_tx))
-                    .await;
+            let actor = tokio::task::spawn_blocking(move || {
+                actor::Actor::new(paths, settings, wake, events, snapshot, self_tx)
+            })
+            .await;
             match actor {
                 Ok(actor) => actor.run(rx).await,
                 Err(e) => std::panic::resume_unwind(e.into_panic()),
@@ -321,7 +341,7 @@ impl EngineHandle {
         if !inner.task.is_finished() {
             return;
         }
-        let (tx, task) = Self::spawn(&self.rt, &self.paths, settings, &self.ctx, &self.events, &self.snapshot);
+        let (tx, task) = Self::spawn(&self.rt, &self.paths, settings, &self.wake, &self.events, &self.snapshot);
         for cmd in inner.backlog.drain(..) {
             let _ = tx.send(cmd);
         }

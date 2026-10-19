@@ -3,6 +3,7 @@
 //! Dialogs run as `rfd::AsyncFileDialog` futures on the tokio runtime; results come back through
 //! a channel and are applied to whichever field asked for them.
 
+use crate::ui::theme::PaletteDefExt;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 

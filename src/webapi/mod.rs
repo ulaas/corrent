@@ -17,36 +17,13 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
 
 pub use auth::{hash_password, verify_password};
 
 use crate::config::Settings;
 use crate::engine::EngineHandle;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct WebApiSettings {
-    pub enabled: bool,
-    pub port: u16,
-    /// Listen on all interfaces instead of only this computer.
-    pub allow_lan: bool,
-    pub username: String,
-    /// PBKDF2 hash (see `auth::hash_password`); empty = not set, the API stays off.
-    pub password_hash: String,
-}
-
-impl Default for WebApiSettings {
-    fn default() -> Self {
-        WebApiSettings {
-            enabled: false,
-            port: 8080,
-            allow_lan: false,
-            username: "admin".into(),
-            password_hash: String::new(),
-        }
-    }
-}
+pub use corrent_core::config::WebApiSettings;
 
 pub(crate) struct ApiState {
     engine: EngineHandle,
@@ -277,3 +254,6 @@ mod tests {
         assert_eq!(sid_from(&h).as_deref(), Some("abc"));
     }
 }
+
+#[cfg(test)]
+mod e2e_tests;

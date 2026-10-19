@@ -8,8 +8,6 @@ use egui::{
     Theme, ThemePreference, Visuals, vec2,
 };
 
-use serde::{Deserialize, Serialize};
-
 use crate::config::{Accent, Appearance, PalettePreset, ThemeMode};
 use crate::engine::types::TorrentState;
 
@@ -293,29 +291,7 @@ impl Palette {
     }
 }
 
-/// A palette as stored in `theme.toml` (colors as `#rrggbb`).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct PaletteDef {
-    pub name: String,
-    pub dark: bool,
-    pub bg0: String,
-    pub bg1: String,
-    pub bg2: String,
-    pub bg3: String,
-    pub border: String,
-    pub border_hi: String,
-    pub text: String,
-    pub text_dim: String,
-    pub text_mute: String,
-    pub accent: String,
-    pub success: String,
-    pub warn: String,
-    pub error: String,
-    pub queued: String,
-    pub paused: String,
-    pub completed: String,
-}
+pub use corrent_core::config::PaletteDef;
 
 pub fn color_hex(c: Color32) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
@@ -374,8 +350,17 @@ impl Palette {
     }
 }
 
-impl PaletteDef {
-    pub fn from_palette(name: &str, p: &Palette) -> PaletteDef {
+/// Conversions between the stored palette (core config) and the UI palette.
+pub trait PaletteDefExt: Sized {
+    fn from_palette(name: &str, p: &Palette) -> PaletteDef;
+    fn to_palette(&self) -> Result<Palette, String>;
+    /// Parse a `theme.toml`, with errors a person can act on.
+    fn from_toml(text: &str) -> Result<PaletteDef, String>;
+    fn to_toml(&self) -> String;
+}
+
+impl PaletteDefExt for PaletteDef {
+    fn from_palette(name: &str, p: &Palette) -> PaletteDef {
         let h = color_hex;
         PaletteDef {
             name: name.to_string(),
@@ -399,7 +384,7 @@ impl PaletteDef {
         }
     }
 
-    pub fn to_palette(&self) -> Result<Palette, String> {
+    fn to_palette(&self) -> Result<Palette, String> {
         let c = |field: &str, v: &str| {
             parse_color(v).ok_or_else(|| t!("“{field}” is not a #rrggbb color: {v}", field = field, v = v))
         };
@@ -426,14 +411,14 @@ impl PaletteDef {
     }
 
     /// Parse a `theme.toml`, with errors a person can act on.
-    pub fn from_toml(text: &str) -> Result<PaletteDef, String> {
+    fn from_toml(text: &str) -> Result<PaletteDef, String> {
         let def: PaletteDef =
             toml::from_str(text).map_err(|e| t!("not a Corrent theme file ({why})", why = e.message()))?;
         def.to_palette()?;
         Ok(def)
     }
 
-    pub fn to_toml(&self) -> String {
+    fn to_toml(&self) -> String {
         format!("# Corrent theme\n{}", toml::to_string_pretty(self).unwrap_or_default())
     }
 }

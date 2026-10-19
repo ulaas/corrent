@@ -100,7 +100,7 @@ fn write_report(log_dir: &Path, info: &std::panic::PanicHookInfo<'_>) -> std::io
     }
     writeln!(f, "\nbacktrace:\n{}", std::backtrace::Backtrace::force_capture())?;
     // Never block inside a panic: skip the log tail if the lock is held.
-    if let Ok(lines) = crate::app::log::LINES.try_lock() {
+    if let Ok(lines) = crate::logbuf::LINES.try_lock() {
         writeln!(f, "\nrecent log:")?;
         let skip = lines.len().saturating_sub(200);
         for l in lines.iter().skip(skip) {

@@ -986,6 +986,7 @@ dependencies = [
  "axum",
  "bytes",
  "chrono",
+ "corrent-core",
  "corrent-i18n",
  "directories",
  "eframe",
@@ -1020,6 +1021,35 @@ dependencies = [
  "url",
  "windows-registry",
  "winresource",
+ "zip",
+]
+
+[[package]]
+name = "corrent-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "aws-lc-rs",
+ "chrono",
+ "corrent-i18n",
+ "directories",
+ "feed-rs",
+ "flate2",
+ "fs4",
+ "librqbit",
+ "librqbit-bencode",
+ "open",
+ "quick-xml 0.42.0",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "url",
  "zip",
 ]
 
