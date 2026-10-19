@@ -36,6 +36,12 @@ pub struct AppState {
     pub library: corrent_library::Library,
     /// Folder watchers of the libraries (replaced when libraries change).
     pub watching: tokio::sync::Mutex<Option<corrent_library::watch::Watching>>,
+    pub hls: Arc<corrent_transcode::hls::HlsManager>,
+    /// The working H.264 encoder (None until detected, or when there is none).
+    pub hls_encoder: Mutex<Option<String>>,
+    /// Files whose trickplay is being made, and the one-at-a-time slot.
+    pub trickplay_busy: Mutex<std::collections::HashSet<i64>>,
+    pub trickplay_slot: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]

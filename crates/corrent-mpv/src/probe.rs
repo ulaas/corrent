@@ -108,7 +108,16 @@ pub(crate) fn track_from_node(n: &Node) -> Track {
 /// Opens `input` (a path or URL mpv understands) and reads its structure. Blocking; run it on a
 /// worker thread or in the `corrent-mpvw` process.
 pub fn probe(input: &str, timeout: Duration) -> Result<ProbeResult> {
-    let mpv = Mpv::headless(&[("vo", "null"), ("ao", "null"), ("pause", "yes"), ("audio-display", "no")])?;
+    let mpv = Mpv::headless(&[
+        ("vo", "null"),
+        ("ao", "null"),
+        ("pause", "yes"),
+        ("audio-display", "no"),
+        // Sidecar files are the library's business, not part of this file.
+        ("sub-auto", "no"),
+        ("audio-file-auto", "no"),
+        ("cover-art-auto", "no"),
+    ])?;
     mpv.command(&["loadfile", input])?;
     let deadline = Instant::now() + timeout;
     loop {

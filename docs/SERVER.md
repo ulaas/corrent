@@ -84,6 +84,7 @@ All JSON; errors are `{ "code": "...", "message": "...", "params": {...} }` with
 | Torrents | `GET/POST torrents` (JSON or multipart), `GET/PATCH torrents/{hash}`, `GET torrents/{hash}/detail`, `POST torrents/{hash}/files`, `POST torrents/{hash}/trackers`, `POST torrents/actions`, `POST torrents/move`, `GET/PUT torrents/categories`, `PUT torrents/tags` |
 | RSS, search | `GET rss`, `GET/PUT rss/config`, `POST rss/refresh`, `POST rss/download`, `GET search?q=` |
 | Library | `GET/POST libraries`, `GET/PATCH/DELETE libraries/{id}`, `GET/POST/DELETE libraries/{id}/scan`, `GET items?library_id=&parent_id=&kind=&genre=&person_id=&favorite=&played=&sort=title\|added\|year\|played\|index&desc=&offset=&limit=`, `GET/PATCH items/{id}`, `PUT items/{id}/state`, `GET items/{id}/file` and `GET files/{id}` (Range), `GET images/{sha}?w=`, `GET home`, `GET library/search?q=`, `GET/PUT users/{id}/libraries` |
+| Playback | `POST playback/{item}` `{profile: "web"\|"safari"\|"native", audio_track?, burn_subtitle?, max_bitrate?, max_height?, force_transcode?, file_id?}` → `{method: "direct"\|"hls", url, session_id?, subtitles[{url?}], trickplay?, reasons}`, `GET hls/{session}/index.m3u8`, `GET hls/{session}/{n}.ts`, `GET/DELETE playback/sessions[/{id}]`, `GET files/{id}/subtitles/{idx}.vtt`, `GET files/{id}/trickplay/index.vtt` |
 | Events | `GET events` (WebSocket; see below) |
 
 **Events:** send `{"t":"subscribe","topics":[{"topic":"torrents"},{"topic":"session"}]}`. The
@@ -103,6 +104,17 @@ it libmpv is used in-process, and without libmpv files are added unprobed). Fold
 for changes and every library is rescanned every six hours. Files that disappear are marked
 missing and removed after 30 days; a folder that can't be read at all (unplugged drive, offline
 share) leaves the library untouched. Admins can limit which libraries a user sees.
+
+## Playback and transcoding
+
+Clients ask `POST /api/v1/playback/{item}` how to play: files the client can play are served as
+they are (Range requests); anything else becomes an HLS stream encoded by libmpv in the
+`corrent-mpvw` worker (H.264 + AAC, hardware NVENC/QSV when a trial encode works, else
+libx264). The playlist covers the whole file from the start; seeking far ahead restarts the
+encoder at that point. External text subtitles are served as WebVTT; image subtitles (and
+others on request) are burned into the picture. Seek-bar thumbnails (trickplay) are made in the
+background the first time a video is played. Transcodes need the `playback.transcode`
+permission; at most three run at once and idle ones stop after 90 seconds.
 
 ## systemd
 

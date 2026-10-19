@@ -391,6 +391,22 @@ impl Library {
             .ok_or(LibError::NotFound)
     }
 
+    /// The file of an external subtitle stream, if the user may see the media file.
+    pub async fn subtitle_path(&self, user: i64, file_id: i64, idx: i64) -> Result<String> {
+        self.file_path(user, file_id).await?;
+        self.db()
+            .read(move |c| {
+                c.query_row(
+                    "SELECT external_path FROM streams WHERE file_id = ?1 AND idx = ?2 AND kind = 'subtitle' AND external_path IS NOT NULL",
+                    params![file_id, idx],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await?
+            .ok_or(LibError::NotFound)
+    }
+
     pub async fn search(&self, user: i64, q: &str) -> Result<SearchResults> {
         let Some(fts) = fts_query(q) else { return Ok(SearchResults::default()) };
         let like = format!("%{}%", q.trim().replace(['%', '_'], ""));

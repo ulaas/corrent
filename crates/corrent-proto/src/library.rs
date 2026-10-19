@@ -374,3 +374,65 @@ pub struct ScanStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+
+/// `POST /api/v1/playback/{item}`: how should this client play the item?
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlaybackRequest {
+    /// "web" (Chromium/Firefox), "safari" or "native".
+    pub profile: Option<String>,
+    /// A specific file of the item (versions); default: its main file.
+    pub file_id: Option<i64>,
+    pub audio_track: Option<i64>,
+    /// Burn this subtitle stream into the picture (image subtitles on the web).
+    pub burn_subtitle: Option<i64>,
+    pub max_bitrate: Option<i64>,
+    pub max_height: Option<i64>,
+    pub force_transcode: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SubtitleTrack {
+    pub index: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub forced: bool,
+    pub external: bool,
+    /// WebVTT URL (text subtitles only); image subtitles must be burned in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlaybackInfo {
+    /// "direct" or "hls".
+    pub method: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub file_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    pub subtitles: Vec<SubtitleTrack>,
+    /// WebVTT index of seek-bar thumbnails, when generated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trickplay: Option<String>,
+    pub reasons: Vec<String>,
+}
+
+/// A running transcode (Sessions page).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlaybackSession {
+    pub id: String,
+    pub user: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<i64>,
+    pub encoder: String,
+    pub video: bool,
+    pub segments: u64,
+    pub produced: u64,
+    pub idle_secs: u64,
+}

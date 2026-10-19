@@ -715,3 +715,93 @@ async fn library_endpoints() {
     assert_eq!(s, StatusCode::FORBIDDEN);
     h.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn playback_direct_and_hls() {
+    if !corrent_mpv::Library::available() {
+        eprintln!("libmpv not found; skipping");
+        return;
+    }
+    let h = harness("playback", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let movies = h.dir.join("dl/Movies/Clip (2024)");
+    std::fs::create_dir_all(&movies).unwrap();
+    let job = corrent_mpv::encode::EncodeJob {
+        input: "av://lavfi:testsrc=duration=12:size=320x240:rate=25".into(),
+        audio_file: Some("av://lavfi:sine=duration=12".into()),
+        output: movies.join("Clip.2024.mkv").display().to_string(),
+        options: vec![
+            ("of".into(), "matroska".into()),
+            ("ovc".into(), "libx264".into()),
+            ("ovcopts".into(), "preset=ultrafast".into()),
+            ("oac".into(), "aac".into()),
+        ],
+    };
+    corrent_mpv::encode::run(&job, std::time::Duration::from_secs(60), &mut |_| true).unwrap();
+    std::fs::write(movies.join("Clip.2024.en.srt"), "1\n00:00:01,000 --> 00:00:02,000\nHello\n").unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Movies", "kind": "movies", "folders": [h.dir.join("dl/Movies")] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let item = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if v["total"] == 1 && h.st.hls_encoder.lock().unwrap().is_some() {
+            break v["items"][0]["id"].as_i64().unwrap();
+        }
+        assert!(std::time::Instant::now() < deadline, "scan and encoder detection finished: {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    // Native: direct.
+    let (s, v, _) =
+        send(app, Method::POST, &format!("/api/v1/playback/{item}"), &admin, json!({ "profile": "native" })).await;
+    assert_eq!((s, v["method"].as_str()), (StatusCode::OK, Some("direct")), "{v}");
+    // Web: H.264 in Matroska needs a transcode; the subtitle is offered as WebVTT.
+    let (s, v, _) =
+        send(app, Method::POST, &format!("/api/v1/playback/{item}"), &admin, json!({ "profile": "web" })).await;
+    assert_eq!((s, v["method"].as_str()), (StatusCode::OK, Some("hls")), "{v}");
+    let sub_url = v["subtitles"][0]["url"].as_str().unwrap_or_else(|| panic!("{v}")).to_string();
+    let (s, vtt, _) = get(app, &sub_url, &admin).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(vtt.as_str().unwrap().contains("00:00:01.000 --> 00:00:02.000\nHello"));
+    let url = v["url"].as_str().unwrap().to_string();
+    let (s, pl, _) = get(app, &url, &admin).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(pl.as_str().unwrap().contains("0.ts"), "{pl}");
+    let seg = url.replace("index.m3u8", "1.ts");
+    let res = h
+        .app
+        .clone()
+        .oneshot({
+            let mut r = Request::builder()
+                .uri(&seg)
+                .header(header::HOST, "127.0.0.1:8443")
+                .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                .body(Body::empty())
+                .unwrap();
+            r.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+            r
+        })
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.into_body().collect().await.unwrap().to_bytes().len() > 1000);
+    let (_, v, _) = get(app, "/api/v1/playback/sessions", &admin).await;
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    let sid = v[0]["id"].as_str().unwrap().to_string();
+    let (s, _, _) = call(
+        app,
+        Method::DELETE,
+        &format!("/api/v1/playback/sessions/{sid}"),
+        Call { bearer: Some(&admin), ..Default::default() },
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    h.stop().await;
+}

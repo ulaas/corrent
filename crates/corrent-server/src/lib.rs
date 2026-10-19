@@ -73,6 +73,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
             }
         }
     });
+    let transcode_root = p.paths.data_dir.join("transcode");
     let state = Arc::new(AppState {
         nets: ArcSwap::from_pointee(Nets::from(&p.cfg)),
         tls: p.cfg.tls,
@@ -90,6 +91,24 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         library_roots: Default::default(),
         library: p.library.clone(),
         watching: Default::default(),
+        hls: corrent_transcode::hls::HlsManager::new(corrent_transcode::hls::HlsConfig {
+            root: transcode_root,
+            ..Default::default()
+        }),
+        hls_encoder: Default::default(),
+        trickplay_busy: Default::default(),
+        trickplay_slot: Default::default(),
+    });
+    // Find a working H.264 encoder in the background (hardware first).
+    let st2 = state.clone();
+    tokio::spawn(async move {
+        let scratch = st2.paths.data_dir.join("transcode-probe");
+        let found = corrent_transcode::hw::detect(None, corrent_mpv::worker_path(), &scratch).await;
+        let _ = std::fs::remove_dir_all(&scratch);
+        if let Some(e) = &found {
+            st2.hls.set_encoder(e);
+        }
+        *st2.hls_encoder.lock().unwrap_or_else(|e| e.into_inner()) = found;
     });
     v1::library::refresh_roots(&state).await;
     Ok(state)

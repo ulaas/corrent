@@ -12,6 +12,8 @@ corrent-core = { path = "../corrent-core" }
 corrent-proto = { path = "../corrent-proto" }
 corrent-db = { path = "../corrent-db" }
 corrent-library = { path = "../corrent-library" }
+corrent-transcode = { path = "../corrent-transcode" }
+corrent-mpv = { path = "../corrent-mpv" }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", default-features = false, features = ["fs"] }
 mime_guess = "2"

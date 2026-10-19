@@ -175,7 +175,7 @@ fn matches_container(fmt: &str, list: &[String]) -> bool {
 
 /// mpv names Matroska and WebM alike ("matroska,webm"): it is WebM only with WebM codecs.
 fn effective_container(c: &str, m: &MediaFacts, audio: Option<&AudioFacts>) -> String {
-    if !c.contains("matroska") {
+    if !(c.contains("matroska") || c.split(',').any(|x| x.trim() == "mkv")) {
         return c.to_string();
     }
     let video_webm = m.video.as_ref().is_none_or(|v| ["vp8", "vp9", "av1"].contains(&v.codec.as_str()));
@@ -315,6 +315,9 @@ mod tests {
         assert!(reasons.iter().any(|r| r.contains("container")) && reasons.iter().any(|r| r.contains("ac3")));
         assert_eq!(video.unwrap().height, None, "no downscale without a limit");
         assert_eq!(audio.unwrap().channels, 2);
+        // mpv's short name for Matroska.
+        assert!(matches!(decide(&facts("mkv", "h264", "aac", 2), &web, &none), Decision::Transcode { .. }));
+        assert!(matches!(decide(&facts("mkv", "vp9", "opus", 2), &web, &none), Decision::Direct { .. }));
         // WebM with VP9/Opus plays directly.
         assert!(matches!(decide(&facts("matroska,webm", "vp9", "opus", 2), &web, &none), Decision::Direct { .. }));
         // Audio-only FLAC plays directly, ALAC does not.
