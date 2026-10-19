@@ -5,6 +5,7 @@
 
 pub mod client;
 pub mod images;
+pub mod libraries;
 pub mod player;
 pub mod profiles;
 
@@ -29,6 +30,8 @@ pub enum Page {
     Search,
     /// Everything a person is credited in (id, name).
     Person(i64, String),
+    /// Adding, scanning and removing libraries.
+    Libraries,
 }
 
 const PAGE: i64 = 120;
@@ -60,6 +63,8 @@ pub struct MediaState {
     children: HashMap<i64, Slot<ItemPage<Item>>>,
     person: Option<(i64, Slot<ItemPage<Item>>)>,
     pub profiles: profiles::Profiles,
+    pub library_form: Option<libraries::LibraryForm>,
+    remove_library: Option<(i64, String)>,
     /// The user's client preferences on the server (home row order and hidden rows).
     user_prefs: Option<Slot<serde_json::Value>>,
     pub query: String,
@@ -161,6 +166,10 @@ impl CorrentApp {
             self.media_dev_done = true;
             if std::env::var("CORRENT_DEV_VIEW").as_deref() == Ok("media") {
                 self.main_view = super::feeds::MainView::Media;
+            }
+            if std::env::var("CORRENT_DEV_VIEW").as_deref() == Ok("libraries") {
+                self.main_view = super::feeds::MainView::Media;
+                self.open(Page::Libraries);
             }
             if let Some(id) = std::env::var("CORRENT_DEV_ITEM").ok().and_then(|v| v.parse().ok()) {
                 self.main_view = super::feeds::MainView::Media;
@@ -438,6 +447,7 @@ impl CorrentApp {
                     Page::Item(id) => self.item_page(ui, p, &client, id),
                     Page::Search => self.search_page(ui, p, &client),
                     Page::Person(id, _) => self.person_page(ui, p, &client, id),
+                    Page::Libraries => self.libraries_page(ui, p, &client),
                 }
                 ui.add_space(24.0);
                 if let Some(r) = self.media.focus_rect.take() {
@@ -473,6 +483,7 @@ impl CorrentApp {
                 Page::Item(_) => String::new(),
                 Page::Search => t!("Search").to_string(),
                 Page::Person(_, name) => name.clone(),
+                Page::Libraries => t!("Libraries").to_string(),
             };
             ui.label(RichText::new(title).size(20.0).strong().color(p.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -778,7 +789,7 @@ impl CorrentApp {
                         icons::FILM_REEL,
                         t!("Your media library is empty"),
                         t!(
-                            "Add a library (movies, shows, music…) in the web interface or Settings → Media, pointing at your folders."
+                            "Add a library (movies, shows, music…) with Manage libraries in the sidebar, pointing at your folders."
                         ),
                     );
                 } else {
@@ -1365,6 +1376,20 @@ impl CorrentApp {
                 self.main_view = super::feeds::MainView::Media;
                 self.open(Page::Library(l.id));
             }
+        }
+        if super::sidebar::row(
+            ui,
+            p,
+            icons::GEAR_SIX,
+            p.text_mute,
+            t!("Manage libraries"),
+            None,
+            in_media && page == Page::Libraries,
+        )
+        .clicked()
+        {
+            self.main_view = super::feeds::MainView::Media;
+            self.open(Page::Libraries);
         }
         ui.add_space(10.0);
     }

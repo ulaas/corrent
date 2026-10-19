@@ -33,6 +33,7 @@ pub enum PickTarget {
     ThemeImport,
     ThemeExport,
     ImportFolder,
+    LibraryFolder,
 }
 
 type PickResult = (u64, PickTarget, Vec<PathBuf>);
@@ -199,6 +200,7 @@ impl CorrentApp {
                 PickTarget::BackupExport => self.export_backup(first),
                 PickTarget::BackupImport => self.import_backup(first),
                 PickTarget::ImportFolder => self.import_folder_picked(first),
+                PickTarget::LibraryFolder => self.library_folder_picked(first),
                 PickTarget::ThemeImport => {
                     let result = std::fs::read_to_string(&first)
                         .map_err(|e| e.to_string())
