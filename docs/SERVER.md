@@ -86,6 +86,7 @@ All JSON; errors are `{ "code": "...", "message": "...", "params": {...} }` with
 | Library | `GET/POST libraries`, `GET/PATCH/DELETE libraries/{id}`, `GET/POST/DELETE libraries/{id}/scan`, `GET items?library_id=&parent_id=&kind=&genre=&person_id=&favorite=&played=&sort=title\|added\|year\|played\|index&desc=&offset=&limit=`, `GET/PATCH items/{id}`, `PUT items/{id}/state`, `GET items/{id}/file` and `GET files/{id}` (Range), `GET images/{sha}?w=`, `GET home`, `GET library/search?q=`, `GET/PUT users/{id}/libraries` |
 | Playback | `POST playback/{item}` `{profile: "web"\|"safari"\|"native", audio_track?, burn_subtitle?, max_bitrate?, max_height?, force_transcode?, file_id?}` → `{method: "direct"\|"hls", url, session_id?, subtitles[{url?}], trickplay?, reasons}`, `GET hls/{session}/index.m3u8`, `GET hls/{session}/{n}.ts`, `GET/DELETE playback/sessions[/{id}]`, `GET files/{id}/subtitles/{idx}.vtt`, `GET files/{id}/trickplay/index.vtt` |
 | Wanted | `GET/POST wanted`, `DELETE wanted/{id}`, `POST wanted/{id}/search` → judged releases, `POST wanted/{id}/grab {link}`, `GET/POST quality-profiles`, `PUT/DELETE quality-profiles/{id}`, `GET items/{id}/releases`, `POST items/{id}/grab {link}`, `GET torrents/{hash}/files/{i}/stream` (Range; waits for pieces) |
+| Plugins, metadata | `GET/POST plugins` (install: multipart `manifest` + `wasm`), `DELETE plugins/{id}`, `PUT plugins/{id}/settings`, `PUT plugins/{id}/enabled`, `GET/POST items/{id}/identify`, `POST items/{id}/refresh-metadata`, `POST libraries/{id}/refresh-metadata` |
 | Events | `GET events` (WebSocket; see below) |
 
 **Events:** send `{"t":"subscribe","topics":[{"topic":"torrents"},{"topic":"session"}]}`. The
@@ -123,6 +124,18 @@ and seasons you want; every 15 minutes the server searches entries not searched 
 hours and, when the profile allows auto-grab, adds the best acceptable release. A finished
 download marks its wanted entry done. Files that are still downloading play right away: the
 player (or the transcoder) reads them through the engine, which fetches the needed pieces first.
+
+## Plugins and metadata
+
+Plugins are WebAssembly components (`crates/corrent-plugins/wit/corrent.wit`) running in a
+sandbox: no files, no sockets, HTTP only to the hosts their manifest declares (and only to
+public addresses unless allowed), 64 MiB of memory and 30 seconds per call; a plugin that
+crashes three times is switched off. Built in: **TMDB** (movies and shows — enter a free API key
+under Plugins) and **MusicBrainz + Cover Art Archive** (albums and artists, no key). After every
+scan, items without metadata are looked up; only clear matches (same title, and year) are applied
+automatically — the rest can be matched with "Identify…". Provider details never overwrite
+locked fields, and local artwork always wins over downloaded artwork. Admins can install other
+plugins (a `plugin.toml` and the `.wasm` component); see `plugins/example` for a minimal one.
 
 ## Playback and transcoding
 

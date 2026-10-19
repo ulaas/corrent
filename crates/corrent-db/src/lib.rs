@@ -14,6 +14,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("identity", include_str!("../migrations/0001_identity.sql")),
     ("library", include_str!("../migrations/0002_library.sql")),
     ("wanted", include_str!("../migrations/0003_wanted.sql")),
+    ("plugins", include_str!("../migrations/0004_plugins.sql")),
 ];
 
 pub fn schema_version() -> u32 {

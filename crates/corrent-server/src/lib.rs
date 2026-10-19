@@ -12,8 +12,10 @@ pub mod events;
 pub use corrent_proto::event as events_api;
 pub mod identity;
 pub mod integrate;
+pub mod metadata;
 pub mod net;
 pub mod paths;
+pub mod plugins;
 pub mod state;
 pub mod tls;
 pub mod v1;
@@ -75,6 +77,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         }
     });
     let transcode_root = p.paths.data_dir.join("transcode");
+    let plugin_host = plugins::start(p.identity.db(), &p.paths.data_dir).await;
     let state = Arc::new(AppState {
         nets: ArcSwap::from_pointee(Nets::from(&p.cfg)),
         tls: p.cfg.tls,
@@ -99,7 +102,10 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         hls_encoder: Default::default(),
         trickplay_busy: Default::default(),
         trickplay_slot: Default::default(),
+        plugins: plugin_host,
+        metadata_slot: Default::default(),
     });
+    metadata::start(state.clone());
     // Find a working H.264 encoder in the background (hardware first).
     let st2 = state.clone();
     tokio::spawn(async move {

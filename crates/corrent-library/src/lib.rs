@@ -6,6 +6,7 @@
 extern crate corrent_i18n;
 
 pub mod artwork;
+pub mod meta;
 pub mod nfo;
 pub mod parse;
 pub mod probe;
@@ -112,6 +113,11 @@ impl Library {
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<LibraryEvent> {
         self.inner.events.subscribe()
+    }
+
+    /// Tells clients a library's items changed (e.g. after a metadata refresh).
+    pub fn emit_changed(&self, library_id: i64) {
+        self.emit(LibraryEvent::Changed { library_id });
     }
 
     pub(crate) fn emit(&self, e: LibraryEvent) {

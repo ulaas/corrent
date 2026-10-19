@@ -969,3 +969,96 @@ async fn wanted_list_and_profiles() {
     }
     h.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plugins_identify_library_items() {
+    let h = harness("plugins", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    // Built-in providers are listed; TMDB needs its key first.
+    let (_, v, _) = get(app, "/api/v1/plugins", &admin).await;
+    let tmdb = v.as_array().unwrap().iter().find(|p| p["manifest"]["id"] == "tmdb").cloned().unwrap();
+    assert_eq!(tmdb["missing"], json!(["api_key"]));
+    // Install the example provider (multipart: manifest + wasm).
+    let boundary = "plugin-boundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"manifest\"\r\n\r\n").as_bytes(),
+    );
+    body.extend_from_slice(include_bytes!("../../corrent-plugins/builtin/example.toml"));
+    body.extend_from_slice(
+        format!("\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"wasm\"; filename=\"plugin.wasm\"\r\n\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(include_bytes!("../../corrent-plugins/builtin/example.wasm"));
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/plugins")
+        .header(header::HOST, "127.0.0.1:8443")
+        .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+        .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+        .body(Body::from(body))
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    // Only the example answers in tests (no network, no keys): turn MusicBrainz off.
+    let (s, _, _) =
+        send(app, Method::PUT, "/api/v1/plugins/musicbrainz/enabled", &admin, json!({ "enabled": false })).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v, _) =
+        send(app, Method::PUT, "/api/v1/plugins/example/settings", &admin, json!({ "greeting": "Merhaba" })).await;
+    assert_eq!((s, v["settings"]["greeting"].as_str()), (StatusCode::OK, Some("Merhaba")));
+
+    // A movie (the file doesn't need to be real media for naming and metadata).
+    let movies = h.dir.join("dl/Movies");
+    std::fs::create_dir_all(movies.join("Sintel (2010)")).unwrap();
+    std::fs::write(movies.join("Sintel (2010)/Sintel.2010.mkv"), b"not really a movie").unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Movies", "kind": "movies", "folders": [movies] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let id = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if v["items"][0]["title"].as_str().is_some_and(|t| t.starts_with("Example")) {
+            break v["items"][0]["id"].as_i64().unwrap();
+        }
+        assert!(std::time::Instant::now() < deadline, "identified: {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
+    assert_eq!(d["overview"], "Merhaba (en)", "{d}");
+    assert_eq!(d["genres"], json!(["Animation", "Fantasy"]));
+    assert_eq!(d["provider_ids"]["example"], "ex-sintel");
+    assert!(d["credits"].as_array().unwrap().iter().any(|c| c["name"] == "Colin Levy"));
+    // Identify by hand: candidates, then apply another one.
+    let (s, c, _) = get(app, &format!("/api/v1/items/{id}/identify?title=Big%20Buck%20Bunny&year=2008"), &admin).await;
+    assert_eq!(s, StatusCode::OK, "{c}");
+    assert_eq!(c[0]["provider"], "example");
+    let (s, _, _) = send(
+        app,
+        Method::POST,
+        &format!("/api/v1/items/{id}/identify"),
+        &admin,
+        json!({ "provider": "example", "id": c[0]["id"] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
+    assert_eq!(d["provider_ids"]["example"], "ex-big-buck-bunny");
+    // Built-in plugins can't be removed; installed ones can.
+    let (s, _, _) =
+        call(app, Method::DELETE, "/api/v1/plugins/tmdb", Call { bearer: Some(&admin), ..Default::default() }).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _, _) =
+        call(app, Method::DELETE, "/api/v1/plugins/example", Call { bearer: Some(&admin), ..Default::default() }).await;
+    assert_eq!(s, StatusCode::OK);
+    h.stop().await;
+}

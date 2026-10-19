@@ -1335,6 +1335,7 @@ dependencies = [
  "corrent-db",
  "corrent-library",
  "corrent-mpv",
+ "corrent-plugins",
  "corrent-proto",
  "corrent-transcode",
  "directories",

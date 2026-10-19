@@ -412,6 +412,11 @@ impl PluginHost {
         v
     }
 
+    /// The stored settings with secrets (for persisting them; never send these to clients).
+    pub fn settings_raw(&self, id: &str) -> Option<HashMap<String, String>> {
+        self.get(id).ok().map(|l| l.ctx.settings.read().unwrap_or_else(|e| e.into_inner()).clone())
+    }
+
     /// Replaces settings (masked secrets sent back keep their stored value).
     pub fn set_settings(&self, id: &str, new: HashMap<String, String>) -> Result<HashMap<String, String>, PluginError> {
         let l = self.get(id)?;
@@ -671,5 +676,27 @@ mod tests {
         let tmdb = h.list().into_iter().find(|p| p.manifest.id == "tmdb").unwrap();
         assert_eq!(tmdb.missing, vec!["api_key".to_string()], "needs a key before it is used");
         assert_eq!(h.ready(Kind::Metadata), vec!["musicbrainz".to_string()]);
+    }
+
+    /// Talks to musicbrainz.org (run by hand: `cargo test -p corrent-plugins -- --ignored`).
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn live_musicbrainz() {
+        let h = PluginHost::new(Arc::new(MemoryKv::default()), tokio::runtime::Handle::current()).unwrap();
+        let (m, w) = builtins().into_iter().find(|(m, _)| m.id == "musicbrainz").unwrap();
+        h.load(m, w, HashMap::new(), true, true).unwrap();
+        let q = SearchQuery {
+            kind: MediaKind::Album,
+            title: "Abbey Road".into(),
+            year: None,
+            language: "en".into(),
+            ids: vec![],
+            artist: Some("The Beatles".into()),
+        };
+        let found = h.metadata_search("musicbrainz", q).await.unwrap();
+        assert!(found.iter().any(|c| c.title == "Abbey Road" && c.year == Some(1969)), "{found:?}");
+        let d = h.metadata_details("musicbrainz", MediaKind::Album, found[0].id.clone(), "en".into()).await.unwrap();
+        assert!(d.credits.iter().any(|c| c.name.contains("Beatles")), "{d:?}");
+        assert!(d.artwork[0].url.contains("coverartarchive.org"));
     }
 }
