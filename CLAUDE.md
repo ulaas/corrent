@@ -108,6 +108,12 @@ Key invariants:
 - Fast resume must stay on by default; never rewrite the engine's `session.json` while it runs.
 - Fonts in `assets/fonts` are subset without Private-Use-Area glyphs (they shadowed Phosphor icons).
 
+## Media server work and handover (2026-10-19)
+
+The media server (plan `docs/MEDIASERVER.md`, all milestones done) was built on Linux; development
+continues on Windows. Start with `docs/HANDOVER.md`: Windows build steps, open items (including the
+remuxer review list) and conventions. Gate: `scripts/gate.ps1` (Windows) / `scripts/gate.sh`.
+
 ## Status (2026-10-08)
 
 Done and committed: engine actor and snapshots; add flow with metadata preview; magnet/.torrent

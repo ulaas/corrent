@@ -77,7 +77,8 @@
         // Copied streams the browser can't take after all: transcode instead.
         if (info?.method === 'remux' && !retried) {
           retried = true;
-          void start(itemId, { ...o, force_transcode: true }, el.currentTime || at);
+          opts = { ...opts, force_transcode: true };
+          void start(itemId, opts, el.currentTime || at);
           return;
         }
         error = t('Playback failed ({reason}).', { reason: msg });

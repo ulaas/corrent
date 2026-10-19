@@ -322,16 +322,23 @@ fn unlace(flags: u8, b: &[u8]) -> Result<Vec<&[u8]>> {
                 let (raw, l) = vint(&mut cur, false)?.ok_or(MkvError::Invalid("lace"))?;
                 pos += l;
                 let bias = (1i64 << (7 * l - 1)) - 1;
-                last += raw as i64 - bias;
-                if last < 0 {
+                last = last.checked_add(raw as i64 - bias).ok_or(MkvError::Invalid("lace"))?;
+                if last < 0 || last as usize > b.len() {
                     return Err(MkvError::Invalid("lace"));
                 }
                 sizes.push(last as usize);
             }
         }
     }
-    let used: usize = sizes.iter().sum();
-    let last = b.len().checked_sub(pos + used).ok_or(MkvError::Invalid("lace sizes"))?;
+    // Sizes come from the file: bound them before adding (crafted ones could wrap the sum).
+    let mut used = 0usize;
+    for s in &sizes {
+        used = used.checked_add(*s).filter(|u| *u <= b.len()).ok_or(MkvError::Invalid("lace sizes"))?;
+    }
+    let last = b
+        .len()
+        .checked_sub(pos.checked_add(used).ok_or(MkvError::Invalid("lace sizes"))?)
+        .ok_or(MkvError::Invalid("lace sizes"))?;
     sizes.push(last);
     let mut out = Vec::with_capacity(count);
     for s in sizes {
@@ -749,6 +756,11 @@ pub(crate) mod tests {
         // EBML: sizes 2, then +1 (0xC0 = 1 + bias 63... as a 1-byte signed vint: 63 + 1 = 64 → 0xC0).
         assert_eq!(unlace(0x06, &[2, 0x82, 0xC0, 1, 1, 2, 2, 2, 3]).unwrap(), vec![&[1, 1][..], &[2, 2, 2], &[3]]);
         assert!(unlace(0x02, &[1, 200, 1]).is_err());
+        // EBML lace sizes that wrap when summed (255 frames of 2^56 - 2 bytes) are refused.
+        let mut huge = vec![254u8, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE];
+        huge.extend(std::iter::repeat_n(0xBF, 253));
+        huge.extend([0u8; 64]);
+        assert!(unlace(0x06, &huge).is_err());
         assert!(open(Path::new("/nonexistent/x.mkv")).is_err());
     }
 
