@@ -1,0 +1,448 @@
+//! Torrents: list, details, add, actions, edits, files, trackers, categories and tags.
+//!
+//! `torrents.manage_all` may act on any torrent; `torrents.manage_own` only on torrents the
+//! same user added through the server.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use axum::extract::{FromRequest, Multipart, Path, Request, State};
+use axum::http::header;
+use axum::routing::{get, post, put};
+use axum::{Json, Router};
+use corrent_core::engine::types::{AddSource, wire};
+use corrent_core::engine::{AddRequest, EngineCommand};
+use corrent_core::store::{CategoryInfo, QueueMove};
+use corrent_proto::auth::Perms;
+use corrent_proto::torrent::{Labels, Torrent, TorrentDetail};
+use corrent_proto::{ErrorCode, InfoHash};
+use serde::{Deserialize, Serialize};
+
+use super::{ApiErr, ApiResult, Auth, ClientIp, err};
+use crate::state::AppState;
+
+pub fn routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/torrents", get(list).post(add))
+        .route("/torrents/actions", post(action))
+        .route("/torrents/move", post(move_storage))
+        .route("/torrents/categories", get(labels).put(set_categories))
+        .route("/torrents/tags", put(set_tags))
+        .route("/torrents/{hash}", get(one).patch(edit))
+        .route("/torrents/{hash}/detail", get(detail))
+        .route("/torrents/{hash}/files", post(files))
+        .route("/torrents/{hash}/trackers", post(trackers))
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TorrentList {
+    pub torrents: Vec<Torrent>,
+    pub labels: Labels,
+}
+
+fn ok() -> ApiResult<serde_json::Value> {
+    Ok(Json(serde_json::json!({})))
+}
+
+fn parse_hash(s: &str) -> Result<InfoHash, ApiErr> {
+    InfoHash::from_hex(s).ok_or_else(|| err(ErrorCode::BadRequest, "not an info hash"))
+}
+
+/// Users who may only manage their own torrents see every torrent but act only on theirs.
+fn may_manage(st: &AppState, auth: &Auth, hashes: &[InfoHash]) -> Result<(), ApiErr> {
+    if auth.0.can(Perms::TORRENTS_MANAGE_ALL) {
+        return Ok(());
+    }
+    if !auth.0.can(Perms::TORRENTS_MANAGE_OWN) {
+        return Err(err(ErrorCode::Forbidden, "permission denied"));
+    }
+    let snap = st.engine.snapshot();
+    let me = auth.name();
+    for h in hashes {
+        let owned = snap.torrents.iter().find(|t| t.hash == *h).is_some_and(|t| t.added_by.as_deref() == Some(me));
+        if !owned {
+            return Err(err(ErrorCode::Forbidden, "not your torrent").with_param_hash(*h));
+        }
+    }
+    Ok(())
+}
+
+trait WithHash {
+    fn with_param_hash(self, h: InfoHash) -> Self;
+}
+
+impl WithHash for ApiErr {
+    fn with_param_hash(self, h: InfoHash) -> Self {
+        ApiErr(self.0.with("hash", h.to_hex()))
+    }
+}
+
+async fn list(State(st): State<Arc<AppState>>, _auth: Auth) -> ApiResult<TorrentList> {
+    let snap = st.engine.snapshot();
+    Ok(Json(TorrentList { torrents: wire::torrents(&snap), labels: wire::labels(&snap) }))
+}
+
+async fn labels(State(st): State<Arc<AppState>>, _auth: Auth) -> ApiResult<Labels> {
+    Ok(Json(wire::labels(&st.engine.snapshot())))
+}
+
+async fn one(State(st): State<Arc<AppState>>, _auth: Auth, Path(hash): Path<String>) -> ApiResult<Torrent> {
+    let h = parse_hash(&hash)?;
+    let snap = st.engine.snapshot();
+    let t = snap.torrents.iter().find(|t| t.hash == h).ok_or_else(|| err(ErrorCode::NotFound, "no such torrent"))?;
+    Ok(Json(wire::torrent(t)))
+}
+
+async fn detail(State(st): State<Arc<AppState>>, _auth: Auth, Path(hash): Path<String>) -> ApiResult<TorrentDetail> {
+    let h = parse_hash(&hash)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    st.engine.send(EngineCommand::Detail { hash: h, reply: tx });
+    let d = tokio::time::timeout(std::time::Duration::from_secs(10), rx)
+        .await
+        .map_err(|_| err(ErrorCode::EngineUnavailable, "engine did not answer"))?
+        .map_err(|_| err(ErrorCode::EngineUnavailable, "engine stopped"))?
+        .ok_or_else(|| err(ErrorCode::NotFound, "no such torrent"))?;
+    Ok(Json(wire::detail(&d)))
+}
+
+/// Options for adding torrents (JSON body, or the `options` field of a multipart upload whose
+/// file parts are `.torrent` files).
+#[derive(Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct AddOptions {
+    /// Magnet links, http(s) URLs of .torrent files, or bare info hashes.
+    pub urls: Vec<String>,
+    pub save_path: Option<String>,
+    pub category: Option<String>,
+    pub tags: Vec<String>,
+    pub paused: Option<bool>,
+    pub create_subfolder: Option<bool>,
+    pub add_to_top: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Added {
+    pub count: usize,
+}
+
+const MAX_TORRENT_FILE: usize = 16 * 1024 * 1024;
+
+async fn add(State(st): State<Arc<AppState>>, auth: Auth, ip: ClientIp, req: Request) -> ApiResult<Added> {
+    auth.require(Perms::TORRENTS_ADD)?;
+    let ctype = req.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let mut opts = AddOptions::default();
+    let mut sources: Vec<AddSource> = Vec::new();
+    if ctype.starts_with("multipart/form-data") {
+        let mut mp = Multipart::from_request(req, &()).await.map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
+        while let Some(f) = mp.next_field().await.map_err(|e| err(ErrorCode::BadRequest, e.to_string()))? {
+            match (f.name().unwrap_or("").to_string(), f.file_name().map(str::to_string)) {
+                (_, Some(name)) => {
+                    let bytes = f.bytes().await.map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
+                    if bytes.len() > MAX_TORRENT_FILE {
+                        return Err(err(ErrorCode::PayloadTooLarge, "torrent file too large"));
+                    }
+                    sources.push(AddSource::Bytes { name, bytes: bytes.to_vec() });
+                }
+                (n, None) if n == "options" => {
+                    let text = f.text().await.map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
+                    opts = serde_json::from_str(&text).map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
+                }
+                _ => {}
+            }
+        }
+    } else {
+        let Json(o) =
+            Json::<AddOptions>::from_request(req, &()).await.map_err(|e| err(ErrorCode::BadRequest, e.body_text()))?;
+        opts = o;
+    }
+    for u in opts.urls.iter().map(|u| u.trim()).filter(|u| !u.is_empty()) {
+        if u.starts_with("magnet:") {
+            sources.push(AddSource::Magnet(u.to_string()));
+        } else if u.starts_with("http://") || u.starts_with("https://") {
+            sources.push(AddSource::Url(u.to_string()));
+        } else if let Some(h) = InfoHash::from_hex(u) {
+            sources.push(AddSource::Magnet(format!("magnet:?xt=urn:btih:{}", h.to_hex())));
+        } else {
+            return Err(err(ErrorCode::BadRequest, "not a magnet link, URL or info hash").with_text("url", u));
+        }
+    }
+    if sources.is_empty() {
+        return Err(err(ErrorCode::BadRequest, "nothing to add"));
+    }
+    let settings = st.settings.load_full();
+    let snap = st.engine.snapshot();
+    let category = opts.category.filter(|c| !c.trim().is_empty());
+    let save_path = match opts.save_path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => {
+            let p = PathBuf::from(p);
+            if !p.is_absolute() {
+                return Err(err(ErrorCode::BadRequest, "absolute save path required"));
+            }
+            p
+        }
+        None => category
+            .as_ref()
+            .and_then(|c| snap.categories.get(c))
+            .and_then(|c| c.save_path.clone())
+            .unwrap_or_else(|| settings.downloads.save_path.clone()),
+    };
+    let count = sources.len();
+    for source in sources {
+        tracing::info!("API: {} adds {}", auth.name(), source.describe());
+        st.engine.send(EngineCommand::Add(Box::new(AddRequest {
+            source,
+            torrent_bytes: None,
+            save_path: save_path.clone(),
+            create_subfolder: opts.create_subfolder.unwrap_or(settings.downloads.create_subfolder),
+            category: category.clone(),
+            tags: opts.tags.clone(),
+            paused: opts.paused.unwrap_or(settings.downloads.start_paused),
+            only_files: None,
+            add_to_top: opts.add_to_top,
+            initial_peers: None,
+            added_by: Some(auth.name().to_string()),
+        })));
+    }
+    st.identity.audit(Some(auth.name()), &ip.0.to_string(), "torrent_add", &format!("{count}"), true, "").await;
+    Ok(Json(Added { count }))
+}
+
+trait WithText {
+    fn with_text(self, k: &str, v: &str) -> Self;
+}
+
+impl WithText for ApiErr {
+    fn with_text(self, k: &str, v: &str) -> Self {
+        ApiErr(self.0.with(k, v))
+    }
+}
+
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    Pause,
+    Resume,
+    ForceStart,
+    Recheck,
+    Remove,
+    RemoveWithData,
+    QueueTop,
+    QueueUp,
+    QueueDown,
+    QueueBottom,
+    PauseAll,
+    ResumeAll,
+    UndoRemove,
+}
+
+#[derive(Deserialize)]
+struct ActionRequest {
+    action: Action,
+    #[serde(default)]
+    hashes: Vec<InfoHash>,
+}
+
+async fn action(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    ip: ClientIp,
+    Json(r): Json<ActionRequest>,
+) -> ApiResult<serde_json::Value> {
+    let hashes = r.hashes;
+    match r.action {
+        Action::PauseAll | Action::ResumeAll | Action::UndoRemove => auth.require(Perms::TORRENTS_MANAGE_ALL)?,
+        _ => {
+            if hashes.is_empty() {
+                return Err(err(ErrorCode::BadRequest, "no torrents given"));
+            }
+            may_manage(&st, &auth, &hashes)?;
+        }
+    }
+    let queue = |mv| EngineCommand::QueueMove { hashes: hashes.clone(), mv };
+    let cmd = match r.action {
+        Action::Pause => EngineCommand::Pause(hashes.clone()),
+        Action::Resume => EngineCommand::Resume(hashes.clone()),
+        Action::ForceStart => EngineCommand::ForceStart(hashes.clone()),
+        Action::Recheck => EngineCommand::Recheck(hashes.clone()),
+        Action::Remove => EngineCommand::Delete { hashes: hashes.clone(), with_data: false },
+        Action::RemoveWithData => EngineCommand::Delete { hashes: hashes.clone(), with_data: true },
+        Action::QueueTop => queue(QueueMove::Top),
+        Action::QueueUp => queue(QueueMove::Up),
+        Action::QueueDown => queue(QueueMove::Down),
+        Action::QueueBottom => queue(QueueMove::Bottom),
+        Action::PauseAll => EngineCommand::PauseAll,
+        Action::ResumeAll => EngineCommand::ResumeAll,
+        Action::UndoRemove => {
+            let snap = st.engine.snapshot();
+            EngineCommand::UndoRemove(snap.undoable.iter().map(|(h, _)| *h).collect())
+        }
+    };
+    st.engine.send(cmd);
+    if matches!(r.action, Action::Remove | Action::RemoveWithData) {
+        let what = hashes.iter().map(|h| h.to_hex()).collect::<Vec<_>>().join(",");
+        let details = if r.action == Action::RemoveWithData { "with data" } else { "" };
+        st.identity.audit(Some(auth.name()), &ip.0.to_string(), "torrent_remove", &what, true, details).await;
+    }
+    ok()
+}
+
+/// Changes to one torrent; absent fields stay as they are.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Edit {
+    /// Empty string = back to the torrent's own name.
+    name: Option<String>,
+    /// Empty string = no category.
+    category: Option<String>,
+    tags: Option<Vec<String>>,
+    down_limit_kib: Option<u32>,
+    up_limit_kib: Option<u32>,
+    /// Seeding limits: absent = unchanged; `null` inside `seed` = use the global setting.
+    seed: Option<SeedLimits>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SeedLimits {
+    ratio: Option<f32>,
+    minutes: Option<u32>,
+}
+
+async fn edit(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Path(hash): Path<String>,
+    Json(e): Json<Edit>,
+) -> ApiResult<serde_json::Value> {
+    let h = parse_hash(&hash)?;
+    may_manage(&st, &auth, &[h])?;
+    if let Some(n) = e.name {
+        st.engine.send(EngineCommand::Rename { hash: h, name: Some(n).filter(|n| !n.trim().is_empty()) });
+    }
+    if let Some(c) = e.category {
+        st.engine
+            .send(EngineCommand::SetCategory { hashes: vec![h], category: Some(c).filter(|c| !c.trim().is_empty()) });
+    }
+    if let Some(t) = e.tags {
+        st.engine.send(EngineCommand::SetTags { hashes: vec![h], tags: t });
+    }
+    if e.down_limit_kib.is_some() || e.up_limit_kib.is_some() {
+        let snap = st.engine.snapshot();
+        let cur = snap.torrents.iter().find(|t| t.hash == h);
+        st.engine.send(EngineCommand::SetTorrentLimits {
+            hashes: vec![h],
+            down_kib: e.down_limit_kib.or(cur.map(|t| t.down_limit_kib)).unwrap_or(0),
+            up_kib: e.up_limit_kib.or(cur.map(|t| t.up_limit_kib)).unwrap_or(0),
+        });
+    }
+    if let Some(s) = e.seed {
+        st.engine.send(EngineCommand::SetSeedLimits { hashes: vec![h], ratio: s.ratio, minutes: s.minutes });
+    }
+    ok()
+}
+
+#[derive(Deserialize)]
+struct FilesRequest {
+    files: Vec<usize>,
+    /// Download only these files (the others are skipped)…
+    #[serde(default)]
+    only: bool,
+    /// …or set their priority (1 high, 0 normal, -1 low).
+    #[serde(default)]
+    priority: Option<i8>,
+}
+
+async fn files(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Path(hash): Path<String>,
+    Json(r): Json<FilesRequest>,
+) -> ApiResult<serde_json::Value> {
+    let h = parse_hash(&hash)?;
+    may_manage(&st, &auth, &[h])?;
+    if r.only {
+        st.engine.send(EngineCommand::SetFiles { hash: h, included: r.files.clone() });
+    }
+    if let Some(p) = r.priority {
+        st.engine.send(EngineCommand::SetFilePriority { hash: h, files: r.files, priority: p.clamp(-1, 1) });
+    }
+    ok()
+}
+
+#[derive(Deserialize)]
+struct TrackersRequest {
+    trackers: Vec<String>,
+}
+
+async fn trackers(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Path(hash): Path<String>,
+    Json(r): Json<TrackersRequest>,
+) -> ApiResult<serde_json::Value> {
+    let h = parse_hash(&hash)?;
+    may_manage(&st, &auth, &[h])?;
+    let list: Vec<String> = r.trackers.into_iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+    if list.iter().any(|t| url::Url::parse(t).is_err()) {
+        return Err(err(ErrorCode::BadRequest, "not a tracker URL"));
+    }
+    st.engine.send(EngineCommand::AddTrackers { hash: h, trackers: list });
+    ok()
+}
+
+#[derive(Deserialize)]
+struct MoveRequest {
+    hashes: Vec<InfoHash>,
+    to: String,
+}
+
+async fn move_storage(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    ip: ClientIp,
+    Json(r): Json<MoveRequest>,
+) -> ApiResult<serde_json::Value> {
+    may_manage(&st, &auth, &r.hashes)?;
+    let to = PathBuf::from(&r.to);
+    if !to.is_absolute() {
+        return Err(err(ErrorCode::BadRequest, "absolute path required"));
+    }
+    st.identity.audit(Some(auth.name()), &ip.0.to_string(), "torrent_move", &r.to, true, "").await;
+    st.engine.send(EngineCommand::MoveStorage { hashes: r.hashes, to });
+    ok()
+}
+
+async fn set_categories(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Json(cats): Json<BTreeMap<String, corrent_proto::torrent::Category>>,
+) -> ApiResult<serde_json::Value> {
+    auth.require(Perms::TORRENTS_MANAGE_ALL)?;
+    let map = cats
+        .into_iter()
+        .filter(|(k, _)| !k.trim().is_empty())
+        .map(|(k, c)| {
+            (
+                k,
+                CategoryInfo {
+                    save_path: c.save_path.filter(|p| !p.trim().is_empty()).map(PathBuf::from),
+                    down_limit_kib: c.down_limit_kib,
+                    up_limit_kib: c.up_limit_kib,
+                },
+            )
+        })
+        .collect();
+    st.engine.send(EngineCommand::SetCategories(map));
+    ok()
+}
+
+async fn set_tags(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Json(tags): Json<Vec<String>>,
+) -> ApiResult<serde_json::Value> {
+    auth.require(Perms::TORRENTS_MANAGE_ALL)?;
+    st.engine.send(EngineCommand::SetTagList(tags.into_iter().filter(|t| !t.trim().is_empty()).collect()));
+    ok()
+}

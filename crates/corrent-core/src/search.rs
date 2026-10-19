@@ -26,7 +26,8 @@ impl Default for TorznabProvider {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SearchResult {
     pub provider: String,
     pub title: String,

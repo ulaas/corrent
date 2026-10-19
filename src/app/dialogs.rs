@@ -1049,6 +1049,7 @@ impl CorrentApp {
                 only_files,
                 add_to_top: d.add_to_top,
                 initial_peers: None,
+                added_by: None,
             };
             self.engine.send(EngineCommand::CancelPreview(d.req));
             self.engine.send(EngineCommand::Add(Box::new(req)));

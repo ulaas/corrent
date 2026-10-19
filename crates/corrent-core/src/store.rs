@@ -23,6 +23,8 @@ pub struct TorrentMeta {
     pub completed_at: Option<i64>,
     pub category: Option<String>,
     pub tags: Vec<String>,
+    /// The server user who added the torrent (see `AddRequest::added_by`).
+    pub added_by: Option<String>,
     pub display_name: Option<String>,
     pub queue_pos: u32,
     pub pause_reason: Option<PauseReason>,

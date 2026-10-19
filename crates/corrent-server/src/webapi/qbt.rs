@@ -515,6 +515,7 @@ async fn add(State(st): St, req: Request) -> Response {
             only_files: None,
             add_to_top: false,
             initial_peers: None,
+            added_by: None,
         })));
     }
     ok()

@@ -427,6 +427,7 @@ impl Actor {
                                 only_files: None,
                                 add_to_top: false,
                                 initial_peers: None,
+                                added_by: None,
                             };
                             if sess.is_none() {
                                 anyhow::bail!(t!(
@@ -813,6 +814,7 @@ impl Actor {
             only_files: None,
             add_to_top: false,
             initial_peers: None,
+            added_by: None,
         }));
         match pending {
             Some(id) => {
@@ -1251,6 +1253,7 @@ impl Actor {
                         m.name = name.clone();
                         m.category = req.category.clone();
                         m.tags = req.tags.clone();
+                        m.added_by = req.added_by.clone();
                         m.added_at = now_unix();
                         m.pause_reason = req.paused.then_some(PauseReason::User);
                         if let AddSource::Magnet(s) = &req.source {
@@ -1442,6 +1445,7 @@ impl Actor {
                     only_files: None,
                     add_to_top: false,
                     initial_peers: None,
+                    added_by: None,
                 }));
             }
         }
@@ -1764,6 +1768,7 @@ impl Actor {
             added_at: m.added_at,
             completed_at: m.completed_at,
             queue_pos: m.queue_pos,
+            added_by: m.added_by.clone(),
             trackers: h.shared().trackers.iter().map(|u| u.to_string()).collect(),
             has_metadata,
             file_count: si.file_count,
@@ -2000,6 +2005,7 @@ impl Actor {
         for t in &mut snap.torrents {
             if let Some(m) = self.store.get(&t.hash) {
                 t.category = m.category.clone();
+                t.added_by = m.added_by.clone();
                 t.tags = m.tags.clone();
                 t.queue_pos = m.queue_pos;
                 if let Some(n) = &m.display_name {
@@ -2168,6 +2174,7 @@ fn pending_view(p: &PendingAdd) -> TorrentView {
         added_at: p.started,
         completed_at: None,
         queue_pos: u32::MAX,
+        added_by: None,
         trackers: Vec::new(),
         has_metadata: false,
         file_count: 0,
@@ -2205,6 +2212,7 @@ fn failed_view(f: &super::restore::FailedRestore, m: Option<&crate::store::Torre
     v.id = f.id;
     if let Some(m) = m {
         v.category = m.category.clone();
+        v.added_by = m.added_by.clone();
         v.tags = m.tags.clone();
         v.queue_pos = m.queue_pos;
         v.uploaded = m.uploaded_total;

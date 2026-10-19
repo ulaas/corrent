@@ -1,0 +1,153 @@
+//! Who is calling: client addresses behind trusted proxies, and the LAN-only guard.
+
+use std::net::IpAddr;
+use std::str::FromStr;
+
+/// An IPv4 or IPv6 network in CIDR form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cidr {
+    net: IpAddr,
+    prefix: u8,
+}
+
+impl FromStr for Cidr {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Cidr, String> {
+        let (ip, prefix) = match s.trim().split_once('/') {
+            Some((ip, p)) => (ip, Some(p)),
+            None => (s.trim(), None),
+        };
+        let net: IpAddr = ip.parse().map_err(|_| format!("not an address: {ip}"))?;
+        let max = if net.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            Some(p) => p.parse::<u8>().ok().filter(|p| *p <= max).ok_or_else(|| format!("bad prefix: {p}"))?,
+            None => max,
+        };
+        Ok(Cidr { net: normalize(net), prefix })
+    }
+}
+
+impl Cidr {
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.net, normalize(ip)) {
+            (IpAddr::V4(n), IpAddr::V4(a)) => {
+                let mask = if self.prefix == 0 { 0 } else { u32::MAX << (32 - self.prefix as u32) };
+                u32::from(n) & mask == u32::from(a) & mask
+            }
+            (IpAddr::V6(n), IpAddr::V6(a)) => {
+                let mask = if self.prefix == 0 { 0 } else { u128::MAX << (128 - self.prefix as u32) };
+                u128::from(n) & mask == u128::from(a) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+/// `::ffff:a.b.c.d` → `a.b.c.d`, so IPv4 rules apply to dual-stack sockets.
+pub fn normalize(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+        v4 => v4,
+    }
+}
+
+pub fn parse_cidrs(list: &[String]) -> Vec<Cidr> {
+    list.iter().filter_map(|s| s.parse().map_err(|e| tracing::warn!("ignoring network {s:?}: {e}")).ok()).collect()
+}
+
+/// Loopback, private (RFC 1918 / ULA), link-local and CGNAT (100.64.0.0/10, where Tailscale
+/// addresses live), plus `extra`.
+pub fn is_local(ip: IpAddr, extra: &[Cidr]) -> bool {
+    let ip = normalize(ip);
+    let builtin = match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments()[0];
+            v6.is_loopback() || (s & 0xfe00) == 0xfc00 || (s & 0xffc0) == 0xfe80
+        }
+    };
+    builtin || extra.iter().any(|c| c.contains(ip))
+}
+
+/// The client's address: the socket peer, or — only when the peer is a trusted proxy — the
+/// right-most address in `X-Forwarded-For` that isn't a trusted proxy itself.
+pub fn client_ip(peer: IpAddr, forwarded_for: Option<&str>, trusted: &[Cidr]) -> IpAddr {
+    let peer = normalize(peer);
+    if !trusted.iter().any(|c| c.contains(peer)) {
+        return peer;
+    }
+    let Some(xff) = forwarded_for else { return peer };
+    for hop in xff.rsplit(',') {
+        match hop.trim().parse::<IpAddr>() {
+            Ok(ip) if trusted.iter().any(|c| c.contains(ip)) => continue,
+            Ok(ip) => return normalize(ip),
+            Err(_) => return peer,
+        }
+    }
+    peer
+}
+
+/// Host header check against DNS rebinding: IP literals, `localhost`, and known names.
+pub fn host_allowed(host_header: &str, names: &[String]) -> bool {
+    let host = if let Some(rest) = host_header.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host_header.rsplit_once(':').map(|(h, _)| h).unwrap_or(host_header)
+    };
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    h == "localhost" || h.parse::<IpAddr>().is_ok() || names.iter().any(|n| n.eq_ignore_ascii_case(&h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn local_networks() {
+        for a in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.20.0.1",
+            "192.168.1.9",
+            "169.254.3.3",
+            "100.101.102.103",
+            "::1",
+            "fd00::5",
+            "fe80::1",
+            "::ffff:192.168.0.2",
+        ] {
+            assert!(is_local(ip(a), &[]), "{a}");
+        }
+        for a in ["8.8.8.8", "100.128.0.1", "2001:db8::1", "::ffff:8.8.8.8", "172.32.0.1"] {
+            assert!(!is_local(ip(a), &[]), "{a}");
+        }
+        let extra = parse_cidrs(&["203.0.113.0/24".into(), "garbage".into()]);
+        assert!(is_local(ip("203.0.113.77"), &extra));
+        assert!(!is_local(ip("203.0.114.1"), &extra));
+    }
+
+    #[test]
+    fn forwarded_for_only_from_trusted_proxies() {
+        let trusted = parse_cidrs(&["10.0.0.2".into()]);
+        assert_eq!(client_ip(ip("8.8.8.8"), Some("1.2.3.4"), &trusted), ip("8.8.8.8"), "spoofed header ignored");
+        assert_eq!(client_ip(ip("10.0.0.2"), Some("1.2.3.4, 10.0.0.2"), &trusted), ip("1.2.3.4"));
+        assert_eq!(client_ip(ip("10.0.0.2"), None, &trusted), ip("10.0.0.2"));
+    }
+
+    #[test]
+    fn hosts() {
+        let names = vec!["media.example".to_string()];
+        assert!(host_allowed("localhost:8443", &names));
+        assert!(host_allowed("192.168.1.4:8443", &names));
+        assert!(host_allowed("[::1]:8443", &names));
+        assert!(host_allowed("Media.Example", &names));
+        assert!(!host_allowed("evil.example:8443", &names));
+    }
+}

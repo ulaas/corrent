@@ -127,6 +127,7 @@ pub fn add(l: &Leecher, s: &Seeder, dir: &Path) {
         only_files: None,
         add_to_top: false,
         initial_peers: Some(vec![s.addr]),
+        added_by: None,
     })));
 }
 

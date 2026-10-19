@@ -903,6 +903,7 @@ impl CorrentApp {
             only_files: None,
             add_to_top: false,
             initial_peers: None,
+            added_by: None,
         };
         self.engine.send(crate::engine::EngineCommand::Add(Box::new(req)));
     }

@@ -40,6 +40,8 @@ pub struct AddRequest {
     pub add_to_top: bool,
     /// Peers to connect to right away (besides trackers/DHT).
     pub initial_peers: Option<Vec<std::net::SocketAddr>>,
+    /// The server user who added it (None: the desktop app, RSS, watch folders).
+    pub added_by: Option<String>,
 }
 
 #[derive(Clone, Debug)]

@@ -173,6 +173,7 @@ impl CorrentApp {
                     only_files: None,
                     add_to_top: false,
                     initial_peers: None,
+                    added_by: None,
                 })));
             }
             if self.settings.downloads.remember_last_path {

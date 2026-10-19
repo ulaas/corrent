@@ -91,12 +91,12 @@ pub struct FeedCache {
 }
 
 /// What the UI shows.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RssView {
     pub feeds: Vec<FeedView>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct FeedView {
     pub url: String,
     pub title: String,
@@ -107,7 +107,7 @@ pub struct FeedView {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ArticleView {
     pub article: Article,
     pub downloaded: bool,

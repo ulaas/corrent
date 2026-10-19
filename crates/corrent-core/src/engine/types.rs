@@ -30,6 +30,8 @@ pub struct TorrentView {
     pub content_path: PathBuf,
     pub category: Option<String>,
     pub tags: Vec<String>,
+    /// The server user who added it (None for the desktop app, RSS and watch folders).
+    pub added_by: Option<String>,
     pub added_at: i64,
     pub completed_at: Option<i64>,
     pub queue_pos: u32,
@@ -425,6 +427,7 @@ pub mod wire {
             content_path: t.content_path.display().to_string(),
             category: t.category.clone(),
             tags: t.tags.clone(),
+            added_by: t.added_by.clone(),
             added_at: t.added_at,
             completed_at: t.completed_at,
             queue_pos: t.queue_pos,

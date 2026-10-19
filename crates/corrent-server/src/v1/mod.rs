@@ -1,0 +1,172 @@
+//! API v1 (`/api/v1`): JSON over HTTP(S), typed by `corrent-proto`.
+//!
+//! Authentication: `Authorization: Bearer <token>` (apps, device tokens) or the
+//! `corrent_session` cookie (the web client) — cookie requests that change something must echo
+//! the session's CSRF token in `X-Corrent-CSRF`. Errors are `ApiError` JSON with a stable code.
+
+mod auth;
+mod devices;
+mod rss;
+mod search;
+mod server;
+mod torrents;
+mod users;
+
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+
+use axum::extract::{ConnectInfo, FromRequestParts, Request, State};
+use axum::http::request::Parts;
+use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::{Json, Router};
+use corrent_proto::auth::Perms;
+use corrent_proto::{ApiError, ErrorCode};
+
+use crate::identity::Principal;
+use crate::state::AppState;
+
+pub const COOKIE: &str = "corrent_session";
+pub const CSRF_HEADER: &str = "x-corrent-csrf";
+
+/// An `ApiError` as an HTTP response.
+#[derive(Debug)]
+pub struct ApiErr(pub ApiError);
+
+impl From<ApiError> for ApiErr {
+    fn from(e: ApiError) -> Self {
+        ApiErr(e)
+    }
+}
+
+impl IntoResponse for ApiErr {
+    fn into_response(self) -> Response {
+        let status = StatusCode::from_u16(self.0.code.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        (status, Json(self.0)).into_response()
+    }
+}
+
+pub fn err(code: ErrorCode, msg: impl Into<String>) -> ApiErr {
+    ApiErr(ApiError::new(code, msg))
+}
+
+pub type ApiResult<T> = Result<Json<T>, ApiErr>;
+
+/// The client's address (after trusted proxies), put into request extensions by the guard.
+#[derive(Clone, Copy, Debug)]
+pub struct ClientIp(pub IpAddr);
+
+impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
+    type Rejection = ApiErr;
+    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, ApiErr> {
+        parts.extensions.get::<ClientIp>().copied().ok_or_else(|| err(ErrorCode::Internal, "no client address"))
+    }
+}
+
+fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).find_map(|c| {
+        let (k, v) = c.trim().split_once('=')?;
+        (k == name).then(|| v.to_string())
+    })
+}
+
+/// A signed-in caller.
+pub struct Auth(pub Principal);
+
+impl FromRequestParts<Arc<AppState>> for Auth {
+    type Rejection = ApiErr;
+    async fn from_request_parts(parts: &mut Parts, st: &Arc<AppState>) -> Result<Self, ApiErr> {
+        let ip = parts.extensions.get::<ClientIp>().map(|c| c.0.to_string()).unwrap_or_default();
+        let bearer = parts
+            .headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(|s| s.trim().to_string());
+        let (token, from_cookie) = match bearer {
+            Some(t) => (t, false),
+            None => match cookie(&parts.headers, COOKIE) {
+                Some(t) => (t, true),
+                None => return Err(err(ErrorCode::Unauthorized, "not signed in")),
+            },
+        };
+        let p = st
+            .identity
+            .verify_token(&token, &ip)
+            .await?
+            .ok_or_else(|| err(ErrorCode::Unauthorized, "session expired"))?;
+        if from_cookie && !matches!(parts.method, Method::GET | Method::HEAD | Method::OPTIONS) {
+            let sent = parts.headers.get(CSRF_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("");
+            if sent.is_empty() || sent != p.csrf {
+                return Err(err(ErrorCode::Forbidden, "missing or wrong CSRF token"));
+            }
+        }
+        Ok(Auth(p))
+    }
+}
+
+impl Auth {
+    pub fn require(&self, p: Perms) -> Result<(), ApiErr> {
+        if self.0.can(p) { Ok(()) } else { Err(err(ErrorCode::Forbidden, "permission denied").with_param("needs", p)) }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.0.user.name
+    }
+}
+
+trait WithParam {
+    fn with_param(self, k: &str, p: Perms) -> Self;
+}
+
+impl WithParam for ApiErr {
+    fn with_param(self, k: &str, p: Perms) -> Self {
+        ApiErr(self.0.with(k, p.names().join(",")))
+    }
+}
+
+/// Every request: work out the client address, refuse non-local clients unless remote access
+/// is on, refuse unknown Host names (DNS rebinding), and add protective headers.
+pub async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
+    let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
+    let Some(peer) = peer else { return err(ErrorCode::Internal, "no peer address").into_response() };
+    let nets = st.nets.load();
+    let xff = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok());
+    let ip = crate::net::client_ip(peer, xff, &nets.proxies);
+    if !st.cfg.load().remote_access && !crate::net::is_local(ip, &nets.allowed) {
+        tracing::info!("refused {ip}: remote access is off");
+        return err(ErrorCode::RemoteAccessDisabled, "remote access is off").into_response();
+    }
+    let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
+    if !crate::net::host_allowed(host, &nets.hostnames) {
+        return err(ErrorCode::Forbidden, "unknown host name").into_response();
+    }
+    req.extensions_mut().insert(ClientIp(ip));
+    let mut res = next.run(req).await;
+    let h = res.headers_mut();
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().expect("static"));
+    h.insert(header::REFERRER_POLICY, "no-referrer".parse().expect("static"));
+    h.insert(header::X_FRAME_OPTIONS, "DENY".parse().expect("static"));
+    if !h.contains_key(header::CACHE_CONTROL) {
+        h.insert(header::CACHE_CONTROL, "no-store".parse().expect("static"));
+    }
+    res
+}
+
+#[cfg(test)]
+pub fn server_mask() -> &'static str {
+    server::SECRET_MASK
+}
+
+pub fn router() -> Router<Arc<AppState>> {
+    Router::new()
+        .merge(auth::routes())
+        .merge(users::routes())
+        .merge(devices::routes())
+        .merge(server::routes())
+        .merge(torrents::routes())
+        .merge(rss::routes())
+        .merge(search::routes())
+        .fallback(|| async { err(ErrorCode::NotFound, "no such endpoint") })
+}

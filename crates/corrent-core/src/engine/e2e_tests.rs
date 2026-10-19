@@ -240,6 +240,7 @@ async fn created_torrent_seeds_and_downloads() {
         only_files: None,
         add_to_top: false,
         initial_peers: Some(vec![format!("127.0.0.1:{port}").parse().unwrap()]),
+        added_by: None,
     })));
     let snap = wait_for(&b, "download from creator", 60, |sn| complete(sn, seeded.hash)).await;
     let got = find(&snap, seeded.hash).unwrap();

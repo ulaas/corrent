@@ -31,6 +31,9 @@ pub(crate) struct ApiState {
     cfg: WebApiSettings,
     sessions: Mutex<auth::Sessions>,
     rid: std::sync::atomic::AtomicU64,
+    /// Inside the media server: sign-in checks server users, and the server's own guard has
+    /// already checked the Host header.
+    identity: Option<crate::identity::Identity>,
 }
 
 /// A running server; stops when dropped.
@@ -75,6 +78,7 @@ impl WebApiServer {
             cfg: cfg.clone(),
             sessions: Default::default(),
             rid: Default::default(),
+            identity: None,
         });
         let app = router(state);
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -90,6 +94,24 @@ impl WebApiServer {
         tracing::info!("web API listening on {addr}");
         Ok(WebApiServer { addr, cfg, stop: Some(tx) })
     }
+}
+
+/// The qBittorrent-compatible API and the classic web UI as part of the media server: users sign
+/// in with their server account (it needs the `downloader` or `torrents.manage_all` permission).
+pub fn media_server_router(
+    engine: EngineHandle,
+    settings: Arc<ArcSwap<Settings>>,
+    identity: crate::identity::Identity,
+) -> Router {
+    let cfg = WebApiSettings { enabled: true, allow_lan: true, ..Default::default() };
+    router(Arc::new(ApiState {
+        engine,
+        settings,
+        cfg,
+        sessions: Default::default(),
+        rid: Default::default(),
+        identity: Some(identity),
+    }))
 }
 
 fn router(state: Arc<ApiState>) -> Router {
@@ -141,7 +163,7 @@ fn host_of(v: &str) -> &str {
 /// Reject cross-site requests and (when local-only) foreign Host names (DNS rebinding).
 async fn check_origin(State(st): State<Arc<ApiState>>, headers: HeaderMap, req: Request, next: Next) -> Response {
     let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
-    if !host_allowed(host, st.cfg.allow_lan) {
+    if st.identity.is_none() && !host_allowed(host, st.cfg.allow_lan) {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
     for h in [header::ORIGIN, header::REFERER] {
@@ -210,18 +232,34 @@ async fn login(State(st): State<Arc<ApiState>>, ConnectInfo(peer): ConnectInfo<S
         )
             .into_response();
     }
-    // Verify outside the lock: PBKDF2 takes a while.
-    let cfg = st.cfg.clone();
-    let user_ok = user == cfg.username;
     let pass = pass.to_string();
-    // PBKDF2 is deliberately slow: at most two checks at a time, so a flood of attempts from the
-    // network can't keep every core busy.
-    static VERIFY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-    let Ok(_permit) = VERIFY.acquire().await else { return (StatusCode::SERVICE_UNAVAILABLE, "").into_response() };
-    let pass_ok =
-        tokio::task::spawn_blocking(move || verify_password(&cfg.password_hash, &pass)).await.unwrap_or(false);
+    let ok = match &st.identity {
+        Some(identity) => match identity.authenticate(user, &pass).await {
+            Ok(u) => {
+                let allowed = u.perms.contains(corrent_proto::auth::Perms::DOWNLOADER)
+                    || u.perms.contains(corrent_proto::auth::Perms::TORRENTS_MANAGE_ALL);
+                identity.audit(Some(&u.name), &ip.to_string(), "login", "qbittorrent api", allowed, "").await;
+                allowed
+            }
+            Err(_) => false,
+        },
+        None => {
+            // Verify outside the lock: PBKDF2 takes a while.
+            let cfg = st.cfg.clone();
+            let user_ok = user == cfg.username;
+            // PBKDF2 is deliberately slow: at most two checks at a time, so a flood of attempts
+            // from the network can't keep every core busy.
+            static VERIFY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+            let Ok(_permit) = VERIFY.acquire().await else {
+                return (StatusCode::SERVICE_UNAVAILABLE, "").into_response();
+            };
+            let pass_ok =
+                tokio::task::spawn_blocking(move || verify_password(&cfg.password_hash, &pass)).await.unwrap_or(false);
+            user_ok && pass_ok
+        }
+    };
     let mut sessions = st.sessions.lock().unwrap_or_else(|e| e.into_inner());
-    if !(user_ok && pass_ok) {
+    if !ok {
         sessions.failed(ip);
         tracing::info!("web API: failed login from {ip}");
         return (StatusCode::OK, "Fails.").into_response();
