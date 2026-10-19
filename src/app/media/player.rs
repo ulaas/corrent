@@ -55,6 +55,23 @@ struct Status {
     error: Option<String>,
     hwdec: String,
     aspect: f64,
+    speed: f64,
+    sub_delay: f64,
+    audio_delay: f64,
+    sub_scale: f64,
+    stats: Stats,
+}
+
+/// "Stats for nerds".
+#[derive(Clone, Debug, Default)]
+struct Stats {
+    video_codec: String,
+    audio_codec: String,
+    width: i64,
+    height: i64,
+    fps: f64,
+    dropped: i64,
+    cache_secs: f64,
 }
 
 struct GlVideo {
@@ -146,6 +163,12 @@ pub struct Player {
     /// Watching together, and the code typed to join a room.
     pub room: Option<super::syncplay::Room>,
     room_code: String,
+    /// Showing "Stats for nerds".
+    stats: bool,
+    /// Picture in picture: the window small and on top (the size to go back to).
+    pip: Option<egui::Vec2>,
+    /// The end-of-episode countdown was dismissed for this item.
+    no_countdown: Option<i64>,
     cast: super::cast::CastCtl,
     /// Where progress goes while the server can't be reached (remote servers).
     pub offline: Option<(Arc<super::offline::Store>, String)>,
@@ -320,7 +343,7 @@ impl Player {
             }
             Video::None => Video::None,
         };
-        let status = Arc::new(Mutex::new(Status { volume: 100.0, ..Default::default() }));
+        let status = Arc::new(Mutex::new(Status { volume: 100.0, speed: 1.0, sub_scale: 1.0, ..Default::default() }));
         for (i, p) in [
             "time-pos",
             "duration",
@@ -332,6 +355,17 @@ impl Player {
             "paused-for-cache",
             "hwdec-current",
             "video-params/aspect",
+            "speed",
+            "sub-delay",
+            "audio-delay",
+            "sub-scale",
+            "video-codec",
+            "video-params/w",
+            "video-params/h",
+            "estimated-vf-fps",
+            "frame-drop-count",
+            "demuxer-cache-duration",
+            "audio-codec-name",
         ]
         .iter()
         .enumerate()
@@ -368,6 +402,17 @@ impl Player {
                             "paused-for-cache" => s.buffering = value.as_bool().unwrap_or(false),
                             "hwdec-current" => s.hwdec = value.as_str().unwrap_or("no").to_string(),
                             "video-params/aspect" => s.aspect = value.as_f64().unwrap_or(0.0),
+                            "speed" => s.speed = value.as_f64().unwrap_or(1.0),
+                            "sub-delay" => s.sub_delay = value.as_f64().unwrap_or(0.0),
+                            "audio-delay" => s.audio_delay = value.as_f64().unwrap_or(0.0),
+                            "sub-scale" => s.sub_scale = value.as_f64().unwrap_or(1.0),
+                            "video-codec" => s.stats.video_codec = value.as_str().unwrap_or("").to_string(),
+                            "audio-codec-name" => s.stats.audio_codec = value.as_str().unwrap_or("").to_string(),
+                            "video-params/w" => s.stats.width = value.as_i64().unwrap_or(0),
+                            "video-params/h" => s.stats.height = value.as_i64().unwrap_or(0),
+                            "estimated-vf-fps" => s.stats.fps = value.as_f64().unwrap_or(0.0),
+                            "frame-drop-count" => s.stats.dropped = value.as_i64().unwrap_or(0),
+                            "demuxer-cache-duration" => s.stats.cache_secs = value.as_f64().unwrap_or(0.0),
                             _ => {}
                         },
                         Event::FileLoaded => {
@@ -403,6 +448,9 @@ impl Player {
             sheets: Default::default(),
             room: None,
             room_code: String::new(),
+            stats: false,
+            pip: None,
+            no_countdown: None,
             cast,
             casting: None,
             lyrics: None,
@@ -610,7 +658,10 @@ impl Player {
             if let Ok(mut s) = self.status.lock() {
                 s.ended = false;
             }
-            self.next();
+            // "Cancel" on the countdown: stay at the end.
+            if self.no_countdown != self.current().map(|e| e.item_id) || self.audio_only {
+                self.next();
+            }
         }
     }
 
@@ -723,8 +774,81 @@ impl Player {
             action = self.controls(ui, p, rect, k, pos, dur, paused).or(action);
         }
         action = self.skip_button(ui, p, rect, pos, dur, k).or(action);
+        self.countdown(ui, p, rect, pos, dur);
+        if self.stats {
+            self.stats_overlay(ui, rect);
+        }
         self.keys(&ctx, &mut action);
+        self.extra_keys(&ctx);
         action
+    }
+
+    /// mpv's keys for the less common things: `[` `]` speed (Backspace resets), `z`/`x`
+    /// subtitle delay, `,`/`.` frame step, `s` screenshot, `i` stats, `n`/`p` next/previous.
+    fn extra_keys(&mut self, ctx: &egui::Context) {
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let typed: Vec<String> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect()
+        });
+        let backspace = ctx.input(|i| i.key_pressed(egui::Key::Backspace));
+        if backspace {
+            self.cmd(&["set", "speed", "1"]);
+        }
+        for t in typed {
+            match t.as_str() {
+                "[" => self.cmd(&["multiply", "speed", "0.9"]),
+                "]" => self.cmd(&["multiply", "speed", "1.1"]),
+                "z" => self.cmd(&["add", "sub-delay", "-0.1"]),
+                "x" => self.cmd(&["add", "sub-delay", "0.1"]),
+                "," => self.cmd(&["frame-back-step"]),
+                "." => self.cmd(&["frame-step"]),
+                "s" => self.screenshot(),
+                "i" => self.stats = !self.stats,
+                "n" => {
+                    self.next();
+                }
+                "p" => self.previous(),
+                _ => {}
+            }
+        }
+    }
+
+    /// A screenshot into the Pictures folder (mpv names the file).
+    fn screenshot(&self) {
+        let dir = directories::UserDirs::new()
+            .and_then(|u| u.picture_dir().map(|p| p.join("Corrent")))
+            .unwrap_or_else(std::env::temp_dir);
+        let mpv = self.mpv.clone();
+        // The folder is made off the UI thread.
+        self.rt.spawn_blocking(move || {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = mpv.command_async(0, &["set", "screenshot-directory", &dir.display().to_string()]);
+            let _ = mpv.command_async(0, &["screenshot", "video"]);
+        });
+    }
+
+    /// Picture in picture: a small window on top of the others, and back.
+    fn toggle_pip(&mut self, ctx: &egui::Context) {
+        match self.pip.take() {
+            Some(size) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+            }
+            None => {
+                let size = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size())).unwrap_or(vec2(1280.0, 720.0));
+                self.pip = Some(size);
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(480.0, 270.0)));
+            }
+        }
     }
 
     fn keys(&mut self, ctx: &egui::Context, action: &mut PlayerAction) {
@@ -965,6 +1089,20 @@ impl Player {
         );
         self.room_button(ui, pos2(rect.right() - 140.0, y), white, paused, pos);
         self.cast_button(ui, pos2(rect.right() - 188.0, y), white, pos);
+        self.settings_button(ui, pos2(rect.right() - 236.0, y), white);
+        let pip = Rect::from_center_size(pos2(rect.right() - 284.0, y), vec2(30.0, 30.0));
+        let pip_r = ui.interact(pip, ui.id().with("pip"), Sense::click()).on_hover_text(t!("Picture in picture"));
+        ui.painter().text(
+            pip.center(),
+            egui::Align2::CENTER_CENTER,
+            pr::PICTURE_IN_PICTURE,
+            egui::FontId::proportional(22.0),
+            white,
+        );
+        if pip_r.clicked() {
+            let ctx = ui.ctx().clone();
+            self.toggle_pip(&ctx);
+        }
         if let Some(c) = &self.casting {
             let line = match self.cast.status() {
                 Some(s) if s.state == "error" => s
@@ -1012,6 +1150,186 @@ impl Player {
             }
         });
         action
+    }
+
+    /// Speed, delays, subtitle size, picture shape, screenshot and stats.
+    fn settings_button(&mut self, ui: &mut Ui, at: egui::Pos2, white: Color32) {
+        let r = Rect::from_center_size(at, vec2(30.0, 30.0));
+        let resp = ui.interact(r, ui.id().with("psettings"), Sense::click()).on_hover_text(t!("Playback settings"));
+        ui.painter().text(
+            r.center(),
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::regular::GEAR_SIX,
+            egui::FontId::proportional(22.0),
+            white,
+        );
+        let s = self
+            .status
+            .lock()
+            .map(|s| (s.speed, s.sub_delay, s.audio_delay, s.sub_scale))
+            .unwrap_or((1.0, 0.0, 0.0, 1.0));
+        let mut cmds: Vec<Vec<String>> = Vec::new();
+        let mut shot = false;
+        egui::Popup::from_toggle_button_response(&resp)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(300.0);
+                let row = |ui: &mut Ui,
+                           label: &str,
+                           value: String,
+                           minus: [&str; 3],
+                           plus: [&str; 3],
+                           cmds: &mut Vec<Vec<String>>| {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("+").clicked() {
+                                cmds.push(plus.iter().map(|s| s.to_string()).collect());
+                            }
+                            ui.label(egui::RichText::new(value).monospace());
+                            if ui.small_button("−").clicked() {
+                                cmds.push(minus.iter().map(|s| s.to_string()).collect());
+                            }
+                        });
+                    });
+                };
+                row(
+                    ui,
+                    t!("Speed"),
+                    format!("{:.2}×", s.0),
+                    ["multiply", "speed", "0.9"],
+                    ["multiply", "speed", "1.1"],
+                    &mut cmds,
+                );
+                row(
+                    ui,
+                    t!("Subtitle delay"),
+                    format!("{:+.1} s", s.1),
+                    ["add", "sub-delay", "-0.1"],
+                    ["add", "sub-delay", "0.1"],
+                    &mut cmds,
+                );
+                row(
+                    ui,
+                    t!("Audio delay"),
+                    format!("{:+.2} s", s.2),
+                    ["add", "audio-delay", "-0.05"],
+                    ["add", "audio-delay", "0.05"],
+                    &mut cmds,
+                );
+                row(
+                    ui,
+                    t!("Subtitle size"),
+                    format!("{:.0}%", s.3 * 100.0),
+                    ["add", "sub-scale", "-0.1"],
+                    ["add", "sub-scale", "0.1"],
+                    &mut cmds,
+                );
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(t!("Picture"));
+                    for (label, aspect) in
+                        [(t!("Original"), "-1"), ("16:9", "16:9"), ("4:3", "4:3"), ("2.35:1", "2.35:1")]
+                    {
+                        if ui.small_button(label).clicked() {
+                            cmds.push(vec!["set".into(), "video-aspect-override".into(), aspect.into()]);
+                        }
+                    }
+                    if ui.small_button(t!("Fill")).clicked() {
+                        cmds.push(vec!["cycle-values".into(), "panscan".into(), "1.0".into(), "0.0".into()]);
+                    }
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button(t!("Reset")).clicked() {
+                        for (k, v) in [
+                            ("speed", "1"),
+                            ("sub-delay", "0"),
+                            ("audio-delay", "0"),
+                            ("sub-scale", "1"),
+                            ("video-aspect-override", "-1"),
+                            ("panscan", "0"),
+                        ] {
+                            cmds.push(vec!["set".into(), k.into(), v.into()]);
+                        }
+                    }
+                    if ui.button(t!("Screenshot")).clicked() {
+                        shot = true;
+                    }
+                    ui.checkbox(&mut self.stats, t!("Stats"));
+                });
+            });
+        for c in cmds {
+            let args: Vec<&str> = c.iter().map(String::as_str).collect();
+            self.cmd(&args);
+        }
+        if shot {
+            self.screenshot();
+        }
+    }
+
+    /// "Stats for nerds": what is playing and how.
+    fn stats_overlay(&self, ui: &mut Ui, rect: Rect) {
+        let Ok(s) = self.status.lock() else { return };
+        let st = &s.stats;
+        let text = format!(
+            "{} {}×{}  {:.2} fps  {}\n{}\n{} {} · {} {:.1} s · {} {}",
+            st.video_codec,
+            st.width,
+            st.height,
+            st.fps,
+            if s.hwdec.is_empty() || s.hwdec == "no" { t!("software decoding").to_string() } else { s.hwdec.clone() },
+            st.audio_codec,
+            t!("Speed"),
+            format_args!("{:.2}×", s.speed),
+            t!("Buffered"),
+            st.cache_secs,
+            t!("Dropped frames"),
+            st.dropped,
+        );
+        let pos = rect.left_top() + vec2(20.0, 90.0);
+        let galley = ui.painter().layout_no_wrap(text, egui::FontId::monospace(12.0), Color32::WHITE);
+        let bg = Rect::from_min_size(pos - vec2(8.0, 6.0), galley.size() + vec2(16.0, 12.0));
+        ui.painter().rect_filled(bg, CornerRadius::same(6), Color32::from_black_alpha(170));
+        ui.painter().galley(pos, galley, Color32::WHITE);
+    }
+
+    /// The last seconds of an episode: what comes next, with "Play now" and "Cancel".
+    fn countdown(&mut self, ui: &mut Ui, p: &Palette, rect: Rect, pos: f64, dur: f64) {
+        let Some(cur) = self.current().map(|e| e.item_id) else { return };
+        let Some(next) = self.queue.get(self.index + 1).cloned() else { return };
+        if self.audio_only || dur <= 0.0 || dur - pos > 10.0 || self.no_countdown == Some(cur) || self.casting.is_some()
+        {
+            return;
+        }
+        let left = (dur - pos).ceil().max(0.0) as i64;
+        let area = Rect::from_min_size(pos2(rect.right() - 380.0, rect.bottom() - 220.0), vec2(350.0, 90.0));
+        let mut play = false;
+        let mut cancel = false;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+            egui::Frame::new()
+                .fill(Color32::from_black_alpha(200))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(12)
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(t!("Up next in {n} s", n = left)).color(p.text_dim));
+                    ui.label(egui::RichText::new(&next.title).strong().color(Color32::WHITE));
+                    ui.horizontal(|ui| {
+                        if ui.button(t!("Play now")).clicked() {
+                            play = true;
+                        }
+                        if ui.button(t!("Cancel")).clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+        });
+        if play {
+            self.next();
+        }
+        if cancel {
+            self.no_countdown = Some(cur);
+        }
     }
 
     /// "Cast to a device": the devices the server found; casting pauses the local player.
