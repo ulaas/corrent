@@ -268,7 +268,7 @@ async fn browse_photos_and_user_data() {
 fn encode(path: &std::path::Path, secs: u32) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let job = corrent_mpv::encode::EncodeJob {
-        input: format!("av://lavfi:testsrc=duration={secs}:size=320x240:rate=25"),
+        input: format!("av://lavfi:testsrc=duration={secs}:size=320x240:rate=25,format=yuv420p"),
         audio_file: Some(format!("av://lavfi:sine=duration={secs}")),
         output: path.display().to_string(),
         options: vec![

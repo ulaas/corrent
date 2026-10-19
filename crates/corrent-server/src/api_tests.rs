@@ -1062,7 +1062,7 @@ async fn intros_are_found_by_their_sound() {
         wav(&w, &audio);
         let secs = (before + 30.0 + after) as u32;
         let job = corrent_mpv::encode::EncodeJob {
-            input: format!("av://lavfi:testsrc=duration={secs}:size=160x120:rate=5"),
+            input: format!("av://lavfi:testsrc=duration={secs}:size=160x120:rate=5,format=yuv420p"),
             audio_file: Some(w.display().to_string()),
             output: season.join(format!("Theme Show - S01E0{n}.mkv")).display().to_string(),
             options: vec![
@@ -1118,7 +1118,7 @@ async fn playlists_and_collections() {
         let ok = std::process::Command::new("mpv")
             .args([
                 "--really-quiet",
-                "av://lavfi:testsrc=duration=1:size=64x48:rate=5",
+                "av://lavfi:testsrc=duration=1:size=64x48:rate=5,format=yuv420p",
                 "--of=matroska",
                 "--ovc=libx264",
                 "--ovcopts=preset=ultrafast",
@@ -1969,7 +1969,7 @@ async fn watched_by_everyone_counts_every_account() {
     let made = std::process::Command::new("mpv")
         .args([
             "--really-quiet",
-            "av://lavfi:testsrc=duration=2:size=160x120:rate=10",
+            "av://lavfi:testsrc=duration=2:size=160x120:rate=10,format=yuv420p",
             "--of=matroska",
             "--ovc=libx264",
             "--ovcopts=preset=ultrafast",
@@ -2031,7 +2031,7 @@ async fn nfo_files_are_written_and_foreign_ones_kept() {
     let made = std::process::Command::new("mpv")
         .args([
             "--really-quiet",
-            "av://lavfi:testsrc=duration=2:size=160x120:rate=10",
+            "av://lavfi:testsrc=duration=2:size=160x120:rate=10,format=yuv420p",
             "--of=matroska",
             "--ovc=libx264",
             "--ovcopts=preset=ultrafast",
@@ -2228,7 +2228,7 @@ async fn playback_direct_and_hls() {
     let movies = h.dir.join("dl/Movies/Clip (2024)");
     std::fs::create_dir_all(&movies).unwrap();
     let job = corrent_mpv::encode::EncodeJob {
-        input: "av://lavfi:testsrc=duration=12:size=320x240:rate=25".into(),
+        input: "av://lavfi:testsrc=duration=12:size=320x240:rate=25,format=yuv420p".into(),
         audio_file: Some("av://lavfi:sine=duration=12".into()),
         output: movies.join("Clip.2024.mkv").display().to_string(),
         options: vec![
@@ -2363,7 +2363,7 @@ async fn completed_downloads_import_into_libraries() {
     // A movie to seed.
     let src = h.dir.join("src.mkv");
     let job = corrent_mpv::encode::EncodeJob {
-        input: "av://lavfi:testsrc=duration=4:size=160x120:rate=10".into(),
+        input: "av://lavfi:testsrc=duration=4:size=160x120:rate=10,format=yuv420p".into(),
         audio_file: None,
         output: src.display().to_string(),
         options: vec![
