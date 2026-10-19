@@ -1222,6 +1222,8 @@ impl CorrentApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(egui::Color32::BLACK))
                 .show(ui, |ui| self.media_view(ui, &p));
+            // No title bar while a video plays, but the edges still resize the window.
+            self.window_frame(&ctx, &p);
             self.dialogs(&ctx, &p);
             let actions = self.toasts.show(&ctx, &p);
             self.run_toast_actions(&ctx, actions);

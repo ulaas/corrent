@@ -247,6 +247,11 @@ enum Sheet {
     Failed,
 }
 
+/// Below this width the player's controls drop the volume slider (the time moves above the bar).
+const NARROW: f32 = 760.0;
+/// Below this width they also drop previous/next, watch together and cast.
+const TINY: f32 = 560.0;
+
 pub fn fmt_time(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
     if s >= 3600 {
@@ -731,7 +736,12 @@ impl Player {
         }
 
         // Controls appear on mouse movement and hide after 3 s of stillness (not while paused).
-        let resp = ui.interact(rect, ui.id().with("player-area"), Sense::click());
+        // The window has no title bar while a video plays: dragging the picture moves it, as in
+        // mpv's own window (the edges resize it, see `window_frame`).
+        let resp = ui.interact(rect, ui.id().with("player-area"), Sense::click_and_drag());
+        if resp.drag_started_by(egui::PointerButton::Primary) && !self.fullscreen {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
         if ctx.input(|i| i.pointer.delta() != egui::Vec2::ZERO)
             || resp.hovered() && ctx.input(|i| i.pointer.any_pressed())
         {
@@ -904,6 +914,9 @@ impl Player {
         dur: f64,
         paused: bool,
     ) -> PlayerAction {
+        if self.pip.is_some() {
+            return self.pip_controls(ui, p, rect, k, pos, dur, paused);
+        }
         let mut action = PlayerAction::None;
         let painter = ui.painter();
         let alpha = (k * 255.0) as u8;
@@ -1018,7 +1031,10 @@ impl Player {
                 white,
             );
         }
-        // Buttons row.
+        // Buttons row. A narrow window drops the extras instead of overlapping them: below
+        // NARROW the volume slider goes and the time moves above the seek bar, below TINY also
+        // previous/next, watch together and cast.
+        let (narrow, tiny) = (rect.width() < NARROW, rect.width() < TINY);
         let y = rect.bottom() - 32.0;
         let mut x = rect.left() + 28.0;
         let mut button = |ui: &mut Ui, icon: &str, size: f32, id: &str| -> bool {
@@ -1031,42 +1047,53 @@ impl Player {
         };
         use egui_phosphor::regular as pf;
         use egui_phosphor::regular as pr;
-        if button(ui, pf::SKIP_BACK, 22.0, "prev") {
+        if !tiny && button(ui, pf::SKIP_BACK, 22.0, "prev") {
             self.previous();
         }
         if button(ui, if paused { pf::PLAY } else { pf::PAUSE }, 30.0, "pp") {
             self.toggle_pause();
         }
-        if button(ui, pf::SKIP_FORWARD, 22.0, "next") {
+        if !tiny && button(ui, pf::SKIP_FORWARD, 22.0, "next") {
             self.next();
         }
         let (vol, muted) = self.status.lock().map(|s| (s.volume, s.muted)).unwrap_or((100.0, false));
         if button(ui, if muted { pr::SPEAKER_X } else { pr::SPEAKER_HIGH }, 22.0, "mute") {
             self.cmd(&["cycle", "mute"]);
         }
-        // Volume slider.
-        let vr = Rect::from_min_size(pos2(x - 8.0, y - 3.0), vec2(90.0, 6.0));
-        let resp = ui.interact(vr.expand(8.0), ui.id().with("vol"), Sense::click_and_drag());
-        if let Some(pp) = resp.interact_pointer_pos() {
-            let v = ((pp.x - vr.left()) / vr.width()).clamp(0.0, 1.0) * 100.0;
-            self.cmd(&["set", "volume", &format!("{v:.0}")]);
+        let time = format!("{} / {}", fmt_time(shown), fmt_time(dur));
+        if narrow {
+            ui.painter().text(
+                pos2(bar.right(), bar.top() - 4.0),
+                egui::Align2::RIGHT_BOTTOM,
+                time,
+                egui::FontId::monospace(12.0),
+                white,
+            );
+        } else {
+            // Volume slider.
+            let vr = Rect::from_min_size(pos2(x - 8.0, y - 3.0), vec2(90.0, 6.0));
+            let resp = ui.interact(vr.expand(8.0), ui.id().with("vol"), Sense::click_and_drag());
+            if let Some(pp) = resp.interact_pointer_pos() {
+                let v = ((pp.x - vr.left()) / vr.width()).clamp(0.0, 1.0) * 100.0;
+                self.cmd(&["set", "volume", &format!("{v:.0}")]);
+            }
+            ui.painter().rect_filled(vr, CornerRadius::same(3), Color32::from_white_alpha((k * 70.0) as u8));
+            ui.painter().rect_filled(
+                Rect::from_min_size(vr.min, vec2(vr.width() * (vol as f32 / 100.0).clamp(0.0, 1.0), vr.height())),
+                CornerRadius::same(3),
+                white,
+            );
+            x += 106.0;
+            ui.painter().text(pos2(x, y), egui::Align2::LEFT_CENTER, time, egui::FontId::monospace(13.0), white);
         }
-        ui.painter().rect_filled(vr, CornerRadius::same(3), Color32::from_white_alpha((k * 70.0) as u8));
-        ui.painter().rect_filled(
-            Rect::from_min_size(vr.min, vec2(vr.width() * (vol as f32 / 100.0).clamp(0.0, 1.0), vr.height())),
-            CornerRadius::same(3),
-            white,
-        );
-        x += 106.0;
-        ui.painter().text(
-            pos2(x, y),
-            egui::Align2::LEFT_CENTER,
-            format!("{} / {}", fmt_time(shown), fmt_time(dur)),
-            egui::FontId::monospace(13.0),
-            white,
-        );
-        // Right side: tracks, fullscreen.
-        let right = Rect::from_center_size(pos2(rect.right() - 44.0, y), vec2(30.0, 30.0));
+        // Right side, from the edge inwards.
+        let mut rx = rect.right() - 44.0;
+        let mut slot = || {
+            let c = pos2(rx, y);
+            rx -= 48.0;
+            c
+        };
+        let right = Rect::from_center_size(slot(), vec2(30.0, 30.0));
         let r = ui.interact(right, ui.id().with("fs"), Sense::click());
         ui.painter().text(
             right.center(),
@@ -1078,7 +1105,7 @@ impl Player {
         if r.clicked() {
             action = PlayerAction::ToggleFullscreen;
         }
-        let tracks_btn = Rect::from_center_size(pos2(rect.right() - 92.0, y), vec2(30.0, 30.0));
+        let tracks_btn = Rect::from_center_size(slot(), vec2(30.0, 30.0));
         let r = ui.interact(tracks_btn, ui.id().with("tracks"), Sense::click());
         ui.painter().text(
             tracks_btn.center(),
@@ -1087,10 +1114,12 @@ impl Player {
             egui::FontId::proportional(22.0),
             white,
         );
-        self.room_button(ui, pos2(rect.right() - 140.0, y), white, paused, pos);
-        self.cast_button(ui, pos2(rect.right() - 188.0, y), white, pos);
-        self.settings_button(ui, pos2(rect.right() - 236.0, y), white);
-        let pip = Rect::from_center_size(pos2(rect.right() - 284.0, y), vec2(30.0, 30.0));
+        if !tiny {
+            self.room_button(ui, slot(), white, paused, pos);
+            self.cast_button(ui, slot(), white, pos);
+        }
+        self.settings_button(ui, slot(), white);
+        let pip = Rect::from_center_size(slot(), vec2(30.0, 30.0));
         let pip_r = ui.interact(pip, ui.id().with("pip"), Sense::click()).on_hover_text(t!("Picture in picture"));
         ui.painter().text(
             pip.center(),
@@ -1132,7 +1161,7 @@ impl Player {
         }
         let tracks = self.status.lock().map(|s| s.tracks.clone()).unwrap_or_default();
         let mpv = self.mpv.clone();
-        egui::Popup::from_toggle_button_response(&r).show(|ui| {
+        crate::ui::widgets::popup(egui::Popup::from_toggle_button_response(&r), |ui| {
             ui.set_min_width(260.0);
             for (kind, label, prop) in [("audio", t!("Audio"), "aid"), ("sub", t!("Subtitles"), "sid")] {
                 ui.label(egui::RichText::new(label).strong());
@@ -1149,6 +1178,86 @@ impl Player {
                 ui.separator();
             }
         });
+        action
+    }
+
+    /// Picture in picture: a small window, so only what a small window needs. Back to the window
+    /// (top left), close (top right), play/pause in the middle and a thin seek bar along the
+    /// bottom. Dragging anywhere else moves the window.
+    #[allow(clippy::too_many_arguments)]
+    fn pip_controls(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        rect: Rect,
+        k: f32,
+        pos: f64,
+        dur: f64,
+        paused: bool,
+    ) -> PlayerAction {
+        use egui_phosphor::regular as pr;
+        let mut action = PlayerAction::None;
+        let white = Color32::from_white_alpha((k * 255.0) as u8);
+        ui.painter().rect_filled(rect, 0.0, Color32::from_black_alpha((k * 90.0) as u8));
+        let icon_button = |ui: &mut Ui, at: egui::Pos2, icon: &str, size: f32, id: &str, tip: &str| -> bool {
+            let r = Rect::from_center_size(at, vec2(size + 12.0, size + 12.0));
+            let resp = ui.interact(r, ui.id().with(id), Sense::click()).on_hover_text(tip);
+            let c = if resp.hovered() { Color32::WHITE } else { white };
+            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(size), c);
+            resp.clicked()
+        };
+        let back = icon_button(
+            ui,
+            rect.left_top() + vec2(24.0, 24.0),
+            pr::ARROWS_OUT_SIMPLE,
+            18.0,
+            "pip-back",
+            t!("Back to the window"),
+        );
+        if back {
+            let ctx = ui.ctx().clone();
+            self.toggle_pip(&ctx);
+        }
+        if icon_button(ui, rect.right_top() + vec2(-24.0, 24.0), pr::X, 18.0, "pip-close", t!("Close")) {
+            let ctx = ui.ctx().clone();
+            self.toggle_pip(&ctx);
+            action = PlayerAction::Close;
+        }
+        let (pp, tip) = if paused { (pr::PLAY, t!("Play")) } else { (pr::PAUSE, t!("Pause")) };
+        if icon_button(ui, rect.center(), pp, 40.0, "pip-pp", tip) {
+            self.toggle_pause();
+        }
+        // Seek bar along the bottom edge.
+        let bar = Rect::from_min_max(
+            pos2(rect.left() + 12.0, rect.bottom() - 18.0),
+            pos2(rect.right() - 12.0, rect.bottom() - 6.0),
+        );
+        let r = ui.interact(bar, ui.id().with("pip-seek"), Sense::click_and_drag());
+        let frac_at = |x: f32| ((x - bar.left()) / bar.width()).clamp(0.0, 1.0);
+        if let Some(pt) = r.interact_pointer_pos() {
+            self.seek_drag = Some(frac_at(pt.x));
+        }
+        if (r.drag_stopped() || r.clicked())
+            && let Some(f) = self.seek_drag.take()
+        {
+            self.seek(f as f64 * dur, false);
+        }
+        let shown = self.seek_drag.map(|f| f as f64 * dur).unwrap_or(pos);
+        let frac = if dur > 0.0 { (shown / dur) as f32 } else { 0.0 };
+        let line = Rect::from_center_size(bar.center(), vec2(bar.width(), 3.0));
+        ui.painter().rect_filled(line, CornerRadius::same(2), Color32::from_white_alpha((k * 70.0) as u8));
+        ui.painter().rect_filled(
+            Rect::from_min_size(line.min, vec2(line.width() * frac.clamp(0.0, 1.0), 3.0)),
+            CornerRadius::same(2),
+            p.accent.gamma_multiply(k),
+        );
+        ui.painter().text(
+            pos2(bar.left(), bar.top() - 2.0),
+            egui::Align2::LEFT_BOTTOM,
+            format!("{} / {}", fmt_time(shown), fmt_time(dur)),
+            egui::FontId::monospace(11.0),
+            white,
+        );
         action
     }
 
@@ -1170,9 +1279,10 @@ impl Player {
             .unwrap_or((1.0, 0.0, 0.0, 1.0));
         let mut cmds: Vec<Vec<String>> = Vec::new();
         let mut shot = false;
-        egui::Popup::from_toggle_button_response(&resp)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| {
+        crate::ui::widgets::popup(
+            egui::Popup::from_toggle_button_response(&resp)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+            |ui| {
                 ui.set_min_width(300.0);
                 let row = |ui: &mut Ui,
                            label: &str,
@@ -1258,7 +1368,8 @@ impl Player {
                     }
                     ui.checkbox(&mut self.stats, t!("Stats"));
                 });
-            });
+            },
+        );
         for c in cmds {
             let args: Vec<&str> = c.iter().map(String::as_str).collect();
             self.cmd(&args);
@@ -1348,7 +1459,7 @@ impl Player {
             self.cast.find(ui.ctx(), false);
         }
         let item = self.current().map(|e| e.item_id);
-        egui::Popup::from_toggle_button_response(&resp).show(|ui| {
+        crate::ui::widgets::popup(egui::Popup::from_toggle_button_response(&resp), |ui| {
             ui.set_min_width(260.0);
             ui.label(egui::RichText::new(t!("Cast to")).strong());
             if let Some(c) = &self.casting {
@@ -1401,9 +1512,10 @@ impl Player {
             if self.room.is_some() { egui_phosphor::regular::USERS_THREE } else { egui_phosphor::regular::USERS };
         ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(22.0), white);
         let item = self.current().map(|e| e.item_id);
-        egui::Popup::from_toggle_button_response(&resp)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| {
+        crate::ui::widgets::popup(
+            egui::Popup::from_toggle_button_response(&resp)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+            |ui| {
                 ui.set_min_width(280.0);
                 ui.label(egui::RichText::new(t!("Watch together")).strong());
                 if let Some(room) = &self.room {
@@ -1465,7 +1577,8 @@ impl Player {
                         }
                     });
                 }
-            });
+            },
+        );
     }
 
     /// The bottom bar while music plays and the UI is browsing.
@@ -1544,7 +1657,7 @@ impl Player {
             self.lyrics = Some((item, slot));
         }
         let got = self.lyrics.as_ref().and_then(|(_, s)| super::client::ready(s));
-        egui::Popup::from_toggle_button_response(button).show(|ui| {
+        crate::ui::widgets::popup(egui::Popup::from_toggle_button_response(button), |ui| {
             ui.set_width(340.0);
             ui.label(egui::RichText::new(t!("Lyrics")).strong());
             match got {
