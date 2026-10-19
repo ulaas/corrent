@@ -28,6 +28,7 @@
   define('torrents', '/torrents');
   define('search', '/search');
   define('rss', '/rss');
+  define('radio', '/radio');
   define('settings', '/settings');
   define('settings', '/settings/:section');
 
@@ -40,6 +41,7 @@
     torrents: () => import('./pages/Torrents.svelte'),
     search: () => import('./pages/Search.svelte'),
     rss: () => import('./pages/Rss.svelte'),
+    radio: () => import('./pages/Radio.svelte'),
     settings: () => import('./pages/Settings.svelte'),
     notfound: () => import('./pages/NotFound.svelte'),
   };

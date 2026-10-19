@@ -1147,3 +1147,7 @@
 "Lyrics" = "Şarkı sözleri"
 "No lyrics for this track." = "Bu parçanın sözleri yok."
 "Podcasts" = "Podcast'ler"
+"Radio" = "Radyo"
+"Couldn't load the stations" = "İstasyonlar yüklenemedi"
+"No stations yet" = "Henüz istasyon yok"
+"Stations are added in the web interface (Radio)." = "İstasyonlar web arayüzünden eklenir (Radyo)."

@@ -146,6 +146,8 @@ export function resumeAt(item: Item, durationMs?: number): number {
 
 export interface QueueEntry {
   id: number;
+  /** A live stream (internet radio) instead of a library item. */
+  stream?: string;
   title: string;
   artist: string;
   album: string;
@@ -225,7 +227,7 @@ class Music {
         void a.play();
       } else this.next(true);
     });
-    this.stopReport = reportProgress(a, () => this.current?.id ?? null);
+    this.stopReport = reportProgress(a, () => (this.current?.stream ? null : (this.current?.id ?? null)));
     this.el = a;
     return a;
   }
@@ -282,8 +284,14 @@ class Music {
     this.loading = true;
     try {
       stopSession(this.info);
-      this.info = await resolveSource(cur.id);
-      this.detach = await attachSource(a, this.info);
+      if (cur.stream) {
+        this.info = null;
+        a.src = cur.stream;
+        this.detach = () => a.removeAttribute('src');
+      } else {
+        this.info = await resolveSource(cur.id);
+        this.detach = await attachSource(a, this.info);
+      }
       if (autoplay) await a.play();
     } catch (e) {
       if (!(e instanceof DOMException && e.name === 'AbortError')) this.error = String(e);

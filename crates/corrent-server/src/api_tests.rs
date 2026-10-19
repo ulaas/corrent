@@ -1616,6 +1616,43 @@ async fn podcasts_download_into_their_library() {
     h.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn radio_stations_relay_their_stream() {
+    let h = harness("radio", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let pls = format!("[playlist]\nFile1={base}/live\n");
+    let radio = axum::Router::new()
+        .route(
+            "/listen.pls",
+            axum::routing::get(move || async move { ([(header::CONTENT_TYPE, "audio/x-scpls")], pls) }),
+        )
+        .route("/live", axum::routing::get(|| async { ([(header::CONTENT_TYPE, "audio/mpeg")], "ID3 stream bytes") }));
+    tokio::spawn(async move { axum::serve(listener, radio).await.unwrap() });
+    let (s, _, _) = send(app, Method::POST, "/api/v1/radio", &admin, json!({ "name": "", "url": "ftp://x" })).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/radio",
+        &admin,
+        json!({ "name": "Test FM", "url": format!("{base}/listen.pls") }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let id = v["id"].as_str().unwrap().to_string();
+    assert_eq!(get(app, "/api/v1/radio", &admin).await.1[0]["name"], "Test FM");
+    let (s, body, hd) = get(app, &format!("/api/v1/radio/{id}/stream"), &admin).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(hd[header::CONTENT_TYPE], "audio/mpeg");
+    assert_eq!(body, "ID3 stream bytes");
+    send(app, Method::DELETE, &format!("/api/v1/radio/{id}"), &admin, json!({})).await;
+    assert_eq!(get(app, "/api/v1/radio", &admin).await.1, json!([]));
+    h.stop().await;
+}
+
 async fn v_id(app: &Router, admin: &str) -> String {
     get(app, "/api/v1/podcasts", admin).await.1[0]["id"].as_str().unwrap().to_string()
 }

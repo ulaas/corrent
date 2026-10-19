@@ -30,6 +30,7 @@ pub mod p2p;
 pub mod paths;
 pub mod plugins;
 pub mod podcasts;
+pub mod radio;
 pub mod remote;
 pub mod state;
 pub mod tasks;
@@ -149,6 +150,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         rooms: Default::default(),
         casts: Default::default(),
         podcasts: Default::default(),
+        radio: Default::default(),
         remote_status: Default::default(),
     });
     metadata::start(state.clone());

@@ -201,4 +201,57 @@ impl CorrentApp {
             self.play_item(&item, std::slice::from_ref(&item));
         }
     }
+
+    /// Internet radio: the server's stations, played by mpv straight from their address.
+    pub(super) fn radio_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient) {
+        if self.media.radio.is_none() {
+            let c = client.clone();
+            self.media.radio =
+                Some(super::client::fetch(&self.rt, &self.ctx, async move { c.get("/api/v1/radio").await }));
+        }
+        let list = match self.media.radio.as_ref().and_then(super::client::ready) {
+            None => {
+                ui.vertical_centered(|ui| ui.spinner());
+                return;
+            }
+            Some(Err(e)) => {
+                crate::ui::widgets::empty_state(ui, p, icons::WARNING_CIRCLE, t!("Couldn't load the stations"), &e);
+                return;
+            }
+            Some(Ok(l)) => l,
+        };
+        if list.is_empty() {
+            crate::ui::widgets::empty_state(
+                ui,
+                p,
+                icons::BROADCAST,
+                t!("No stations yet"),
+                t!("Stations are added in the web interface (Radio)."),
+            );
+            return;
+        }
+        let mut play = None;
+        for s in &list {
+            ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                if crate::ui::widgets::primary_button(ui, p, icons::PLAY).on_hover_text(t!("Play")).clicked() {
+                    play = Some(s.clone());
+                }
+                ui.label(RichText::new(&s.name).size(16.0).color(p.text));
+            });
+            ui.add_space(6.0);
+        }
+        if let Some(s) = play {
+            let e = super::player::QueueEntry {
+                item_id: -1,
+                title: s.name,
+                subtitle: t!("Radio").to_string(),
+                resume_ms: 0,
+                poster: None,
+                local: None,
+                stream: Some(s.url),
+            };
+            self.play_queue(vec![e], true);
+        }
+    }
 }

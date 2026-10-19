@@ -41,6 +41,8 @@ pub enum Page {
     Downloads,
     /// TV mode's settings.
     TvSettings,
+    /// Internet radio stations.
+    Radio,
 }
 
 const PAGE: i64 = 120;
@@ -90,6 +92,7 @@ pub struct MediaState {
     focus_rect: Option<Rect>,
     offline: Option<Arc<offline::Store>>,
     offline_loading: Option<Slot<Arc<offline::Store>>>,
+    radio: Option<Slot<Vec<corrent_server::radio::Station>>>,
     /// Sound devices for the Playback settings (asked once).
     pub audio_devices: Option<Slot<Vec<(String, String)>>>,
     /// Waiting downloads were restarted (once per session).
@@ -240,6 +243,7 @@ impl CorrentApp {
                 resume_ms: 0,
                 poster: None,
                 local: None,
+                stream: None,
             };
             self.play_queue(vec![e], false);
         }
@@ -437,6 +441,7 @@ impl CorrentApp {
             resume_ms: if i.state.played { 0 } else { i.state.position_ms },
             poster: i.images.first().map(|im| im.sha.clone()),
             local: None,
+            stream: None,
         }
     }
 
@@ -512,6 +517,7 @@ impl CorrentApp {
                     Page::Libraries => self.libraries_page(ui, p, &client),
                     Page::Downloads => self.downloads_page(ui, p, &client),
                     Page::TvSettings => self.tv_settings_page(ui, p),
+                    Page::Radio => self.radio_page(ui, p, &client),
                 }
                 ui.add_space(24.0);
                 if let Some(r) = self.media.focus_rect.take() {
@@ -539,6 +545,13 @@ impl CorrentApp {
             {
                 self.open(Page::Home);
             }
+            if ui
+                .add(egui::Button::new(RichText::new(icons::BROADCAST).size(18.0)).frame(false))
+                .on_hover_text(t!("Radio"))
+                .clicked()
+            {
+                self.open(Page::Radio);
+            }
             if self.server.is_some()
                 && ui
                     .add(egui::Button::new(RichText::new(icons::DOWNLOAD_SIMPLE).size(18.0)).frame(false))
@@ -558,6 +571,7 @@ impl CorrentApp {
                 Page::Libraries => t!("Libraries").to_string(),
                 Page::Downloads => t!("Downloads").to_string(),
                 Page::TvSettings => t!("Settings").to_string(),
+                Page::Radio => t!("Radio").to_string(),
             };
             ui.label(RichText::new(title).size(20.0).strong().color(p.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

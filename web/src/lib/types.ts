@@ -712,3 +712,11 @@ export interface Podcast {
   error?: string | null;
   episodes: number;
 }
+
+export interface Station {
+  id: string;
+  name: string;
+  url: string;
+  image?: string | null;
+  added_at: number;
+}

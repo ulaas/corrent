@@ -26,6 +26,8 @@ pub struct QueueEntry {
     pub poster: Option<String>,
     /// An offline copy to play instead of asking the server.
     pub local: Option<std::path::PathBuf>,
+    /// A live stream (internet radio): played as it is, no progress kept.
+    pub stream: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -414,6 +416,11 @@ impl Player {
 
     fn load_current(&mut self) {
         let Some(e) = self.current().cloned() else { return };
+        if let Some(url) = &e.stream {
+            let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
+            let _ = self.mpv.command_async(0, &["loadfile", url, "replace", "-1", &title]);
+            return;
+        }
         if let Some(path) = &e.local {
             if let Ok(mut t) = self.trick.lock() {
                 t.clear();
@@ -561,6 +568,9 @@ impl Player {
     /// Tells the server how far we got (`done`: the item ended or we moved on).
     pub fn report(&mut self, done: bool) {
         let Some(e) = self.current() else { return };
+        if e.stream.is_some() {
+            return;
+        }
         let (pos, dur, ended) = self.status.lock().map(|s| (s.pos, s.duration, s.ended)).unwrap_or_default();
         let body = if ended || (done && dur > 0.0 && pos / dur > 0.9) {
             serde_json::json!({ "played": true })

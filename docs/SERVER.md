@@ -119,6 +119,11 @@ files (`2026-10-01 Title.mp3`). Settings → Podcasts subscribes to feeds; the `
 only files it named are removed). API: `GET/POST /api/v1/podcasts`, `DELETE /podcasts/{id}`,
 `POST /podcasts/{id}/refresh`.
 
+**Radio**: administrators add internet radio stations (name and stream or `.pls`/`.m3u`
+address) on the web client's Radio page; everyone can play them there (relayed by the server at
+`/api/v1/radio/{id}/stream`, so HTTPS pages can play HTTP streams) or in the desktop app (Radio
+in the media top bar; mpv plays the address itself).
+
 Lyrics come from a `.lrc` (synced) or `.txt` file named like the track, else the track's lyrics
 tag (`GET /api/v1/items/{id}/lyrics`); the web player shows them in its queue panel (synced lines
 follow the music, click one to jump), the desktop player behind the microphone button.
