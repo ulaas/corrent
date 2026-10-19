@@ -144,3 +144,28 @@ export function homeRowTitle(id: string, fallback: string, libraryName?: string)
   if (id.startsWith('recent:') && libraryName) return t('Recently added in {library}', { library: libraryName });
   return fallback;
 }
+
+export type SkipKind = 'intro' | 'recap' | 'credits';
+
+/** What a chapter is, by its title (same rules as the server's `chapter_kind`). */
+export function chapterKind(title: string | null | undefined): SkipKind | null {
+  if (!title) return null;
+  const t = title.trim().toLowerCase();
+  const words = t.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const has = (w: string) => words.includes(w);
+  if (has('recap') || t.startsWith('previously')) return 'recap';
+  if (has('intro') || has('opening') || has('op') || t === 'title sequence' || t === 'theme song') return 'intro';
+  if (has('credits') || has('outro') || has('ending') || has('ed') || (has('end') && has('titles'))) return 'credits';
+  return null;
+}
+
+/** The skippable chapter at `pos` seconds and where it ends. */
+export function skipAt(chapters: { start_ms: number; title?: string | null }[], pos: number, duration: number): { kind: SkipKind; end: number } | null {
+  let i = -1;
+  for (let k = 0; k < chapters.length; k++) if (chapters[k].start_ms / 1000 <= pos) i = k;
+  if (i < 0) return null;
+  const kind = chapterKind(chapters[i].title);
+  if (!kind) return null;
+  const end = i + 1 < chapters.length ? chapters[i + 1].start_ms / 1000 : duration;
+  return end - pos > 2 ? { kind, end } : null;
+}

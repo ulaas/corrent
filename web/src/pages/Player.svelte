@@ -8,12 +8,12 @@
   import { back, go, route } from '../lib/router.svelte';
   import { attachSource, reportProgress, resolveSource, resumeAt, stopSession, type PlaybackInfo, type PlaybackOptions } from '../lib/player.svelte';
   import { music } from '../lib/player.svelte';
-  import { backdrop, image } from '../lib/media';
+  import { backdrop, image, skipAt } from '../lib/media';
   import { clock } from '../lib/format';
   import { cueAt, parseTrickplay, type TrickCue } from '../lib/trickplay';
   import { imageUrl } from '../lib/api';
   import { ms, prefs } from '../lib/prefs.svelte';
-  import { t } from '../lib/i18n.svelte';
+  import { t, tk } from '../lib/i18n.svelte';
   import type { Item, ItemDetail, Page } from '../lib/types';
 
   let { params }: { params: Record<string, string> } = $props();
@@ -49,6 +49,8 @@
 
   const file = $derived(item?.files.find((f) => f.role === 'main') ?? item?.files[0]);
   const chapters = $derived(file?.chapters ?? []);
+  const skippable = $derived(skipAt(chapters, time, duration));
+  const SKIP_LABEL = { intro: tk('Skip intro'), recap: tk('Skip recap'), credits: tk('Skip credits') };
   const audioTracks = $derived(file?.streams.filter((s) => s.kind === 'audio') ?? []);
   const subStreams = $derived(file?.streams.filter((s) => s.kind === 'subtitle') ?? []);
   const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
@@ -426,6 +428,12 @@
     <button class="bigplay" aria-label={t('Play')} onclick={toggle} transition:fade={{ duration: ms(150) }}><Icon name="play-fill" size={40} /></button>
   {/if}
 
+  {#if skippable}
+    <button class="btn skipbtn" class:raised={chrome} onclick={() => (skippable!.kind === 'credits' && duration - skippable!.end < 5 && nextUp ? playNext() : seek(skippable!.end))} transition:fade={{ duration: ms(150) }}>
+      <Icon name="skip-forward-fill" size={16} />{t(SKIP_LABEL[skippable.kind])}
+    </button>
+  {/if}
+
   <div class="bottom">
     <Seek value={time} max={duration} onseek={seek} label={t('Seek')} {chapters} {buffered} thumb={trick.length ? thumbAt : undefined} big />
     <div class="bar">
@@ -499,6 +507,20 @@
 </div>
 
 <style>
+  .skipbtn {
+    position: absolute;
+    right: 32px;
+    bottom: 32px;
+    z-index: 5;
+    background: rgba(0, 0, 0, 0.75);
+    border: 1px solid var(--accent);
+    color: #fff;
+    padding: 10px 18px;
+    transition: bottom var(--motion-page, 0.25s);
+  }
+  .skipbtn.raised {
+    bottom: 128px;
+  }
   .stage {
     position: fixed;
     inset: 0;

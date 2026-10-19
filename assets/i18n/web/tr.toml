@@ -548,3 +548,6 @@
 "Installed {v}" = "Kurulu {v}"
 "Update" = "Güncelle"
 "Install" = "Kur"
+"Skip intro" = "Girişi atla"
+"Skip recap" = "Özeti atla"
+"Skip credits" = "Jeneriği atla"

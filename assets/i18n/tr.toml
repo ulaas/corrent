@@ -1076,3 +1076,6 @@
 "Languages" = "Diller"
 "No subtitles found. Subtitle providers (like OpenSubtitles) need their keys in the server's plugin settings." = "Altyazı bulunamadı. Altyazı sağlayıcılarının (OpenSubtitles gibi) sunucunun eklenti ayarlarında anahtarları olmalıdır."
 "Subtitle saved next to the video." = "Altyazı videonun yanına kaydedildi."
+"Skip intro" = "Girişi atla"
+"Skip recap" = "Özeti atla"
+"Skip credits" = "Jeneriği atla"

@@ -40,7 +40,8 @@ struct Status {
     volume: f64,
     muted: bool,
     tracks: Vec<Track>,
-    chapters: Vec<f64>,
+    /// (start in seconds, title)
+    chapters: Vec<(f64, Option<String>)>,
     ended: bool,
     buffering: bool,
     error: Option<String>,
@@ -339,7 +340,10 @@ impl Player {
                                 s.chapters = value
                                     .as_array()
                                     .iter()
-                                    .filter_map(|c| c.get("time").and_then(Node::as_f64))
+                                    .filter_map(|c| {
+                                        let t = c.get("time").and_then(Node::as_f64)?;
+                                        Some((t, c.get("title").and_then(Node::as_str).map(str::to_string)))
+                                    })
                                     .collect()
                             }
                             "paused-for-cache" => s.buffering = value.as_bool().unwrap_or(false),
@@ -598,6 +602,7 @@ impl Player {
         if k > 0.0 {
             action = self.controls(ui, p, rect, k, pos, dur, paused).or(action);
         }
+        action = self.skip_button(ui, p, rect, pos, dur, k).or(action);
         self.keys(&ctx, &mut action);
         action
     }
@@ -734,7 +739,7 @@ impl Player {
             p.accent.gamma_multiply(k),
         );
         if let Ok(s) = self.status.lock() {
-            for c in &s.chapters {
+            for (c, _) in &s.chapters {
                 if dur > 0.0 {
                     let x = line.left() + line.width() * (*c / dur) as f32;
                     painter.rect_filled(
@@ -947,6 +952,43 @@ impl Player {
             Sheet::Ready(t) => Some(t.clone()),
             _ => None,
         }
+    }
+
+    /// "Skip intro / recap / credits" while such a chapter plays (shown even with the controls
+    /// hidden; above them when they are up).
+    fn skip_button(&mut self, ui: &mut Ui, p: &Palette, rect: Rect, pos: f64, dur: f64, k: f32) -> PlayerAction {
+        use corrent_proto::library::SkipKind;
+        let chapters = self.status.lock().map(|s| s.chapters.clone()).unwrap_or_default();
+        let Some((kind, end)) = corrent_proto::library::skip_at(&chapters, pos, dur) else { return PlayerAction::None };
+        let label = match kind {
+            SkipKind::Intro => t!("Skip intro"),
+            SkipKind::Recap => t!("Skip recap"),
+            SkipKind::Credits => t!("Skip credits"),
+        };
+        let lift = 96.0 * k;
+        let at = egui::pos2(rect.right() - 40.0, rect.bottom() - 40.0 - lift);
+        let mut action = PlayerAction::None;
+        egui::Area::new(ui.id().with("skip"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .show(ui.ctx(), |ui| {
+                let b = egui::Button::new(
+                    egui::RichText::new(format!("{}  {label}", egui_phosphor::regular::SKIP_FORWARD)).size(16.0),
+                )
+                .fill(Color32::from_black_alpha(190))
+                .stroke(egui::Stroke::new(1.0, p.accent))
+                .min_size(vec2(150.0, 40.0));
+                if ui.add(b).clicked() {
+                    // Credits at the end: on to the next item when there is one.
+                    if kind == SkipKind::Credits && dur - end < 5.0 && self.next() {
+                        return;
+                    }
+                    self.seek(end, false);
+                    action = PlayerAction::None;
+                }
+            });
+        action
     }
 
     /// Registers the native texture (needs eframe's `Frame`).

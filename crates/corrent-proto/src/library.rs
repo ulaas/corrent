@@ -569,3 +569,61 @@ pub struct MonitorRequest {
     /// First season to fill in (default 1).
     pub from_season: Option<i64>,
 }
+
+/// What a chapter is, for "Skip intro" buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipKind {
+    Intro,
+    Recap,
+    Credits,
+}
+
+/// Classifies a chapter title ("Opening", "Intro", "Previously on…", "End Credits"…).
+pub fn chapter_kind(title: &str) -> Option<SkipKind> {
+    let t = title.trim().to_lowercase();
+    let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let has = |w: &str| words.contains(&w);
+    if has("recap") || t.starts_with("previously") {
+        Some(SkipKind::Recap)
+    } else if has("intro") || has("opening") || has("op") || t == "title sequence" || t == "theme song" {
+        Some(SkipKind::Intro)
+    } else if has("credits") || has("outro") || has("ending") || has("ed") || has("end") && has("titles") {
+        // "Opening credits" was caught above as an intro.
+        Some(SkipKind::Credits)
+    } else {
+        None
+    }
+}
+
+/// The skippable chapter playing at `pos` (seconds) and where it ends: chapters are
+/// `(start, title)` in order; the last one ends at `duration`.
+pub fn skip_at(chapters: &[(f64, Option<String>)], pos: f64, duration: f64) -> Option<(SkipKind, f64)> {
+    let i = chapters.iter().rposition(|(start, _)| *start <= pos)?;
+    let kind = chapter_kind(chapters[i].1.as_deref()?)?;
+    let end = chapters.get(i + 1).map(|(s, _)| *s).unwrap_or(duration);
+    // Not in the last two seconds of it (the button would flash).
+    (end - pos > 2.0).then_some((kind, end))
+}
+
+#[cfg(test)]
+mod skip_tests {
+    use super::*;
+
+    #[test]
+    fn chapter_titles() {
+        assert_eq!(chapter_kind("Opening"), Some(SkipKind::Intro));
+        assert_eq!(chapter_kind("Intro"), Some(SkipKind::Intro));
+        assert_eq!(chapter_kind("OP"), Some(SkipKind::Intro));
+        assert_eq!(chapter_kind("Opening Credits"), Some(SkipKind::Intro));
+        assert_eq!(chapter_kind("Previously on Show"), Some(SkipKind::Recap));
+        assert_eq!(chapter_kind("End Credits"), Some(SkipKind::Credits));
+        assert_eq!(chapter_kind("ED"), Some(SkipKind::Credits));
+        assert_eq!(chapter_kind("Chapter 3"), None);
+        assert_eq!(chapter_kind("The Opening Night"), Some(SkipKind::Intro), "word match is simple by design");
+        let ch = vec![(0.0, Some("Cold open".into())), (60.0, Some("Opening".into())), (150.0, Some("Part A".into()))];
+        assert_eq!(skip_at(&ch, 70.0, 1300.0), Some((SkipKind::Intro, 150.0)));
+        assert_eq!(skip_at(&ch, 149.0, 1300.0), None, "too close to its end");
+        assert_eq!(skip_at(&ch, 20.0, 1300.0), None);
+    }
+}
