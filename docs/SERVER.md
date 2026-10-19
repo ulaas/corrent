@@ -268,8 +268,12 @@ the server's language.
 **Backups** (`GET/POST /api/v1/backups`, `GET /backups/{name}`, admins): zips in
 `<data>/backups/` holding a consistent copy of `corrent.db` (`VACUUM INTO`), `server.toml`,
 `settings.toml`, `store.json`, `rss.json`, `connect.key` and `tls/`; the newest seven are kept.
-They contain private keys (owner-only files). Restore: stop the server, unzip into the data folder,
-start it.
+They contain private keys (owner-only files). Restore: **Restore** next to a backup (or **Upload…**
+one from another server) in Settings → Tasks and backups stages it
+(`POST /backups/{name}/restore`, `POST /backups/upload`, `GET/DELETE /backups/restore`); the next
+start applies it before opening the database and keeps the replaced files in
+`<data>/before-restore-<time>/` (a failed restore puts them back). By hand: stop the server,
+unzip into the data folder, start it.
 
 **Metrics**: `metrics = true` in `server.toml` serves Prometheus text at `/metrics` (torrents by
 state, rates, totals, peers, DHT, free space, library items, transcode sessions, WebSocket

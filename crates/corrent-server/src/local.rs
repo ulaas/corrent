@@ -39,6 +39,11 @@ pub async fn start(
     settings: Arc<ArcSwap<Settings>>,
     paths: Paths,
 ) -> anyhow::Result<LocalServer> {
+    match crate::backups::apply_pending(&paths.data_dir) {
+        Some(Ok(m)) => tracing::info!("{m}"),
+        Some(Err(e)) => tracing::error!("{e}"),
+        None => {}
+    }
     let db = corrent_db::Db::open(&paths.data_dir.join("corrent.db"))?;
     let identity = Identity::new(db.clone(), HashCost::STANDARD);
     let library = corrent_library::Library::new(

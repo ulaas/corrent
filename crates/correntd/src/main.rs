@@ -280,6 +280,18 @@ fn run(args: Args) -> anyhow::Result<()> {
     init_logging(&paths);
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("correntd-rt").build()?;
+    // A restore staged from the web client is applied before anything opens the database.
+    match corrent_server::backups::apply_pending(&paths.data_dir) {
+        Some(Ok(m)) => {
+            tracing::info!("{m}");
+            println!("{m}");
+        }
+        Some(Err(e)) => {
+            tracing::error!("{e}");
+            eprintln!("{e}");
+        }
+        None => {}
+    }
     let db = corrent_db::Db::open(&paths.data_dir.join("corrent.db"))?;
     let identity = Identity::new(db.clone(), HashCost::STANDARD);
 

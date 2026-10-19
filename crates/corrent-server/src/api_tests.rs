@@ -708,6 +708,16 @@ async fn tasks_notifications_backups_metrics() {
     assert_eq!(hd[header::CONTENT_TYPE], "application/zip");
     let (s, _, _) = get(app, "/api/v1/backups/..%2Fcorrent.db", &admin).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+    // Restore: staged for the next start, cancellable; uploads must be backups.
+    let (s, v, _) = send(app, Method::POST, &format!("/api/v1/backups/{name}/restore"), &admin, json!({})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(get(app, "/api/v1/backups/restore", &admin).await.1["pending"], name.as_str());
+    let (s, v, _) = send(app, Method::DELETE, "/api/v1/backups/restore", &admin, json!({})).await;
+    assert_eq!((s, v["pending"].clone()), (StatusCode::OK, Value::Null));
+    let (s, _, _) = send(app, Method::POST, "/api/v1/backups/nope.zip/restore", &admin, json!({})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _, _) = send(app, Method::POST, "/api/v1/backups/upload", &admin, json!({ "not": "a zip" })).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
 
     // Notifications: a webhook receives the test message and events.
     let got: Arc<std::sync::Mutex<Vec<Value>>> = Arc::default();

@@ -90,6 +90,9 @@ async function request<T>(method: string, path: string, o: RequestOptions = {}):
   let body: BodyInit | undefined;
   if (o.body instanceof FormData) {
     body = o.body;
+  } else if (o.body instanceof Blob) {
+    headers['Content-Type'] = o.body.type || 'application/octet-stream';
+    body = o.body;
   } else if (o.body !== undefined) {
     headers['Content-Type'] = 'application/json';
     body = JSON.stringify(o.body);

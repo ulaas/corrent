@@ -25,6 +25,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/notifications/{id}/test", post(test_target))
         .route("/backups", get(backups).post(backup_now))
         .route("/backups/{name}", get(download_backup))
+        .route("/backups/{name}/restore", post(restore_backup))
+        .route("/backups/upload", post(upload_backup).layer(axum::extract::DefaultBodyLimit::max(2 << 30)))
+        .route("/backups/restore", get(restore_status).delete(cancel_restore))
 }
 
 async fn tasks(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<Vec<TaskInfo>> {
@@ -166,4 +169,54 @@ async fn download_backup(
         bytes,
     )
         .into_response())
+}
+
+#[derive(serde::Serialize)]
+struct RestoreStatus {
+    /// The backup a restart will restore.
+    pending: Option<String>,
+}
+
+async fn restore_status(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<RestoreStatus> {
+    admin(&auth)?;
+    Ok(Json(RestoreStatus { pending: crate::backups::pending(&st.paths.data_dir) }))
+}
+
+/// Stages a restore: the server applies it at its next start.
+async fn restore_backup(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    ip: ClientIp,
+    Path(name): Path<String>,
+) -> ApiResult<RestoreStatus> {
+    admin(&auth)?;
+    let data = st.paths.data_dir.clone();
+    let n = name.clone();
+    let r = tokio::task::spawn_blocking(move || crate::backups::stage_restore(&data, &n))
+        .await
+        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+    st.identity.audit(Some(auth.name()), &ip.0.to_string(), "backup_restore", &name, r.is_ok(), "").await;
+    r.map_err(|e| err(ErrorCode::BadRequest, e))?;
+    Ok(Json(RestoreStatus { pending: Some(name) }))
+}
+
+async fn cancel_restore(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<RestoreStatus> {
+    admin(&auth)?;
+    crate::backups::cancel_restore(&st.paths.data_dir);
+    Ok(Json(RestoreStatus { pending: None }))
+}
+
+async fn upload_backup(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    ip: ClientIp,
+    body: axum::body::Bytes,
+) -> ApiResult<BackupFile> {
+    admin(&auth)?;
+    let data = st.paths.data_dir.clone();
+    let r = tokio::task::spawn_blocking(move || crate::backups::store_upload(&data, &body))
+        .await
+        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+    st.identity.audit(Some(auth.name()), &ip.0.to_string(), "backup_upload", "", r.is_ok(), "").await;
+    r.map(Json).map_err(|e| err(ErrorCode::BadRequest, e))
 }

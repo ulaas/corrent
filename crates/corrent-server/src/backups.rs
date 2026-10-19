@@ -1,8 +1,10 @@
 //! Server backups: a consistent copy of `corrent.db` (`VACUUM INTO`) plus the configuration,
 //! certificates and keys, zipped into `<data>/backups/` (the newest seven are kept).
 //!
-//! Restore: stop the server, unzip a backup into an empty data folder (or over the old one),
-//! start it again. The zip holds private keys: on Unix it is readable by the owner only; on
+//! Restore: from the web client (Settings → Tasks and backups → Restore, or upload a backup),
+//! which stages it; the next start applies it before opening the database, keeping the files it
+//! replaces in `<data>/before-restore-<stamp>/` (put back if the restore fails). By hand: stop
+//! the server, unzip a backup into its data folder, start it again. The zip holds private keys: on Unix it is readable by the owner only; on
 //! Windows the data folder's ACL applies (`correntd service install` limits it to SYSTEM,
 //! Administrators and the service account).
 
@@ -122,4 +124,165 @@ pub async fn create(st: &AppState) -> Result<BackupFile, String> {
         let _ = std::fs::remove_file(out_dir.join(old.name));
     }
     Ok(BackupFile { name, size, created: corrent_core::util::now_unix() })
+}
+
+/// Files a backup may contain (anything else in a zip is refused).
+const FILES: [&str; 6] = ["corrent.db", "server.toml", "settings.toml", "store.json", "rss.json", "connect.key"];
+
+fn pending_marker(data_dir: &Path) -> PathBuf {
+    data_dir.join("restore-pending")
+}
+
+/// Checks that a zip is a server backup: a database and only known files.
+pub fn validate(path: &Path) -> Result<(), String> {
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut z = zip::ZipArchive::new(f).map_err(|_| "not a zip file".to_string())?;
+    let mut has_db = false;
+    for i in 0..z.len() {
+        let e = z.by_index(i).map_err(|e| e.to_string())?;
+        let name = e.name().map_err(|e| e.to_string())?.to_string();
+        let ok = FILES.contains(&name.as_str())
+            || name
+                .strip_prefix("tls/")
+                .is_some_and(|f| !f.is_empty() && !f.contains(['/', '\\']) && !f.starts_with('.'));
+        if !ok {
+            return Err(format!("unexpected file in the backup: {name}"));
+        }
+        has_db |= name == "corrent.db";
+    }
+    if !has_db {
+        return Err("the backup has no database".into());
+    }
+    Ok(())
+}
+
+/// Saves an uploaded backup next to the others (validated).
+pub fn store_upload(data_dir: &Path, bytes: &[u8]) -> Result<BackupFile, String> {
+    let out = dir(data_dir);
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let name = format!("corrent-server-{}-uploaded.zip", stamp(corrent_core::util::now_unix()));
+    let partial = out.join(format!(".{name}.partial"));
+    let _ = std::fs::remove_file(&partial);
+    {
+        let mut f = private_file(&partial).map_err(|e| e.to_string())?;
+        f.write_all(bytes).map_err(|e| e.to_string())?;
+    }
+    if let Err(e) = validate(&partial) {
+        let _ = std::fs::remove_file(&partial);
+        return Err(e);
+    }
+    std::fs::rename(&partial, out.join(&name)).map_err(|e| e.to_string())?;
+    Ok(BackupFile { name, size: bytes.len() as u64, created: corrent_core::util::now_unix() })
+}
+
+/// Stages a restore for the next start.
+pub fn stage_restore(data_dir: &Path, name: &str) -> Result<(), String> {
+    let path = path_of(data_dir, name).ok_or("no such backup")?;
+    validate(&path)?;
+    corrent_core::util::write_atomic(&pending_marker(data_dir), name.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// The staged restore, if any.
+pub fn pending(data_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(pending_marker(data_dir)).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+pub fn cancel_restore(data_dir: &Path) {
+    let _ = std::fs::remove_file(pending_marker(data_dir));
+}
+
+/// Applies a staged restore (at startup, before the database is opened). Returns what happened
+/// for the log; the marker is removed either way so a broken backup can't block every start.
+pub fn apply_pending(data_dir: &Path) -> Option<Result<String, String>> {
+    let name = pending(data_dir)?;
+    cancel_restore(data_dir);
+    let Some(zip_path) = path_of(data_dir, &name) else { return Some(Err(format!("backup {name} is gone"))) };
+    if let Err(e) = validate(&zip_path) {
+        return Some(Err(e));
+    }
+    let aside = data_dir.join(format!("before-restore-{}", stamp(corrent_core::util::now_unix())));
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let r = (|| -> Result<(), String> {
+        std::fs::create_dir_all(aside.join("tls")).map_err(|e| e.to_string())?;
+        let mut names: Vec<String> = FILES.iter().map(|s| s.to_string()).collect();
+        names.extend(["corrent.db-wal".into(), "corrent.db-shm".into()]);
+        for e in std::fs::read_dir(data_dir.join("tls")).into_iter().flatten().flatten() {
+            names.push(format!("tls/{}", e.file_name().to_string_lossy()));
+        }
+        for n in names {
+            let from = data_dir.join(&n);
+            if from.is_file() {
+                let to = aside.join(&n);
+                std::fs::rename(&from, &to).map_err(|e| format!("{n}: {e}"))?;
+                moved.push((from, to));
+            }
+        }
+        let f = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
+        let mut z = zip::ZipArchive::new(f).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(data_dir.join("tls")).map_err(|e| e.to_string())?;
+        for i in 0..z.len() {
+            let mut e = z.by_index(i).map_err(|e| e.to_string())?;
+            let target = data_dir.join(e.name().map_err(|e| e.to_string())?.as_ref());
+            let mut out = std::fs::File::create(&target).map_err(|e| e.to_string())?;
+            std::io::copy(&mut e, &mut out).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })();
+    Some(match r {
+        Ok(()) => Ok(format!("restored {name}; the previous files are in {}", aside.display())),
+        Err(e) => {
+            // Put back what was moved.
+            for (from, to) in moved.iter().rev() {
+                let _ = std::fs::remove_file(from);
+                let _ = std::fs::rename(to, from);
+            }
+            Err(format!("restoring {name} failed ({e}); nothing was changed"))
+        }
+    })
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+
+    fn zip_with(path: &Path, files: &[(&str, &[u8])]) {
+        let mut z = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (n, b) in files {
+            z.start_file(*n, zip::write::SimpleFileOptions::default()).unwrap();
+            z.write_all(b).unwrap();
+        }
+        z.finish().unwrap();
+    }
+
+    #[test]
+    fn stages_applies_and_refuses_strangers() {
+        let d = std::env::temp_dir().join(format!("corrent-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(dir(&d)).unwrap();
+        std::fs::write(d.join("corrent.db"), b"current").unwrap();
+        std::fs::write(d.join("server.toml"), b"name = 'now'").unwrap();
+        let good = dir(&d).join("corrent-server-20260101-000000.zip");
+        zip_with(&good, &[("corrent.db", b"old db"), ("server.toml", b"name = 'then'"), ("tls/ca.pem", b"ca")]);
+        let bad = dir(&d).join("corrent-server-20260102-000000.zip");
+        zip_with(&bad, &[("corrent.db", b"x"), ("../../evil", b"x")]);
+        assert!(stage_restore(&d, "corrent-server-20260102-000000.zip").unwrap_err().contains("unexpected"));
+        assert!(stage_restore(&d, "../corrent.db").is_err());
+        assert!(store_upload(&d, b"not a zip").is_err());
+
+        stage_restore(&d, "corrent-server-20260101-000000.zip").unwrap();
+        assert!(pending(&d).is_some());
+        let r = apply_pending(&d).unwrap().unwrap();
+        assert!(r.contains("restored"), "{r}");
+        assert_eq!(std::fs::read(d.join("corrent.db")).unwrap(), b"old db");
+        assert_eq!(std::fs::read(d.join("tls/ca.pem")).unwrap(), b"ca");
+        assert!(pending(&d).is_none());
+        let aside = std::fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().starts_with("before-restore-"))
+            .unwrap();
+        assert_eq!(std::fs::read(aside.path().join("corrent.db")).unwrap(), b"current");
+        assert!(apply_pending(&d).is_none());
+        let _ = std::fs::remove_dir_all(d);
+    }
 }
