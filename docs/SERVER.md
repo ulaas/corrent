@@ -23,6 +23,12 @@ setup only works from the server's own computer) or with
 read from standard input). An existing qBittorrent-API account of the profile becomes the first
 administrator automatically.
 
+Chores from a terminal (also next to a running server; add `--data-dir`/`--portable` as for the
+server): `correntd admin status` (users, libraries, last backup, a staged restore), `admin users`,
+`admin reset-password <name>` (password like `--init-admin`), `admin enable|disable <name>`, and
+`admin scan` (asks the running server to scan every library, with a device token it deletes
+afterwards).
+
 ## Listening and access
 
 | Setting (`server.toml`) | Default | Meaning |

@@ -19,6 +19,8 @@ Usage: correntd [OPTIONS]
        correntd service install [--data-dir <dir>] [--account <user> --password <pw>]
        correntd service uninstall | run [OPTIONS]      (Windows)
        correntd plugin keygen | sign <archive.zip> <secret-key-file>   (plugin catalogs)
+       correntd admin status | users | reset-password <name> | enable <name> | disable <name>
+                      | scan     [--data-dir <dir> | --portable]   (works next to a running server)
 
 Options:
   --portable              keep all data in correntd-data next to the executable
@@ -165,6 +167,141 @@ fn read_password() -> anyhow::Result<String> {
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
+/// `correntd admin …`: account and library chores from a terminal, on the server's own data
+/// (SQLite takes care of a running server); `scan` asks the running server through its API.
+fn admin_tool(args: &[String]) -> anyhow::Result<()> {
+    let mut portable = false;
+    let mut data_dir = None;
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--portable" => portable = true,
+            "--data-dir" => {
+                data_dir = Some(PathBuf::from(it.next().ok_or_else(|| anyhow::anyhow!("--data-dir needs a value"))?))
+            }
+            _ => rest.push(a.clone()),
+        }
+    }
+    let paths = Paths::resolve_server(portable, data_dir);
+    let db_path = paths.data_dir.join("corrent.db");
+    if !db_path.exists() {
+        anyhow::bail!("no server data in {} (start correntd once, or pass --data-dir)", paths.data_dir.display());
+    }
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let db = corrent_db::Db::open(&db_path)?;
+    let identity = Identity::new(db.clone(), HashCost::STANDARD);
+    let user_named = |name: &str| -> anyhow::Result<corrent_proto::auth::User> {
+        let users = rt.block_on(identity.users()).map_err(|e| anyhow::anyhow!(e.message))?;
+        users
+            .into_iter()
+            .find(|u| u.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| anyhow::anyhow!("no user called {name:?}"))
+    };
+    let update = |id: i64, u: corrent_proto::auth::UserUpdate| -> anyhow::Result<()> {
+        rt.block_on(identity.update_user(id, u)).map(drop).map_err(|e| anyhow::anyhow!(e.message))
+    };
+    match rest.first().map(String::as_str) {
+        Some("users") => {
+            for u in rt.block_on(identity.users()).map_err(|e| anyhow::anyhow!(e.message))? {
+                let role = format!("{:?}", u.role).to_lowercase();
+                println!("{:<24} {:<8} {}", u.name, role, if u.disabled { "disabled" } else { "" });
+            }
+        }
+        Some("reset-password") => {
+            let name = rest.get(1).ok_or_else(|| anyhow::anyhow!("reset-password needs a user name"))?;
+            let u = user_named(name)?;
+            let password = read_password()?;
+            update(u.id, corrent_proto::auth::UserUpdate { password: Some(password), ..Default::default() })?;
+            println!("new password set for {:?}; their devices stay signed in", u.name);
+        }
+        Some(cmd @ ("enable" | "disable")) => {
+            let name = rest.get(1).ok_or_else(|| anyhow::anyhow!("{cmd} needs a user name"))?;
+            let u = user_named(name)?;
+            update(u.id, corrent_proto::auth::UserUpdate { disabled: Some(cmd == "disable"), ..Default::default() })?;
+            println!("{} {cmd}d", u.name);
+        }
+        Some("status") => {
+            let cfg = corrent_server::ServerConfig::load(&paths.data_dir)?;
+            let users = rt.block_on(identity.users()).map_err(|e| anyhow::anyhow!(e.message))?;
+            let library = corrent_library::Library::new(
+                db.clone(),
+                &paths.data_dir,
+                corrent_library::probe::Prober::new(None, 1),
+            );
+            let libs = rt.block_on(library.list())?;
+            let running = std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], cfg.https_port)),
+                std::time::Duration::from_millis(500),
+            )
+            .is_ok();
+            println!("data folder   {}", paths.data_dir.display());
+            println!("server        {} (port {})", if running { "running" } else { "not running" }, cfg.https_port);
+            println!(
+                "users         {} ({} administrators)",
+                users.len(),
+                users.iter().filter(|u| u.role == corrent_proto::auth::Role::Admin).count()
+            );
+            for l in &libs {
+                println!("library       {} — {} items", l.name, l.item_count);
+            }
+            match corrent_server::backups::list(&paths.data_dir).first() {
+                Some(b) => println!("last backup   {}", b.name),
+                None => println!("last backup   none"),
+            }
+            if let Some(p) = corrent_server::backups::pending(&paths.data_dir) {
+                println!("restore       {p} at the next start");
+            }
+        }
+        Some("scan") => {
+            let cfg = corrent_server::ServerConfig::load(&paths.data_dir)?;
+            let admin = rt
+                .block_on(identity.users())
+                .map_err(|e| anyhow::anyhow!(e.message))?
+                .into_iter()
+                .find(|u| u.role == corrent_proto::auth::Role::Admin && !u.disabled)
+                .ok_or_else(|| anyhow::anyhow!("no administrator"))?;
+            let dev = corrent_proto::auth::DeviceInfo {
+                name: "correntd admin".into(),
+                platform: std::env::consts::OS.into(),
+                client: "correntd-admin".into(),
+            };
+            let issued = rt
+                .block_on(identity.issue(admin.id, Some(dev), "127.0.0.1".into(), "correntd admin".into()))
+                .map_err(|e| anyhow::anyhow!(e.message))?;
+            let scheme = if cfg.tls { "https" } else { "http" };
+            let base = format!("{scheme}://127.0.0.1:{}/api/v1", cfg.https_port);
+            // Loopback to our own server: its certificate is self-signed.
+            let http = reqwest::Client::builder().tls_danger_accept_invalid_certs(true).build()?;
+            let r: anyhow::Result<()> = rt.block_on(async {
+                let libs: Vec<corrent_proto::library::Library> = http
+                    .get(format!("{base}/libraries"))
+                    .bearer_auth(&issued.token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                for l in libs {
+                    http.post(format!("{base}/libraries/{}/scan", l.id))
+                        .bearer_auth(&issued.token)
+                        .send()
+                        .await?
+                        .error_for_status()?;
+                    println!("scanning {}", l.name);
+                }
+                Ok(())
+            });
+            if let Some(d) = issued.device_id {
+                let _ = rt.block_on(identity.delete_device(d, None));
+            }
+            r.map_err(|e| anyhow::anyhow!("is the server running? {e}"))?;
+        }
+        _ => anyhow::bail!("admin needs status, users, reset-password <name>, enable <name>, disable <name> or scan"),
+    }
+    Ok(())
+}
+
 /// `correntd plugin keygen|sign`: tools for publishing a signed plugin catalog.
 fn plugin_tool(args: &[String]) -> anyhow::Result<()> {
     use corrent_server::plugins::signing;
@@ -202,6 +339,13 @@ fn serde_json_line(fields: &[(&str, &str)]) -> String {
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some("admin") {
+        if let Err(e) = admin_tool(&raw[1..]) {
+            eprintln!("correntd: {e:#}");
+            std::process::exit(2);
+        }
+        return;
+    }
     if raw.first().map(String::as_str) == Some("plugin") {
         if let Err(e) = plugin_tool(&raw[1..]) {
             eprintln!("correntd: {e:#}");

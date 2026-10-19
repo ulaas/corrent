@@ -61,7 +61,7 @@ of the existing client must stay green at every commit.
 | `corrent` | root package (today's crate) | The native egui client. By default it hosts the server **in-process** ("Local" mode: today's experience, zero sockets required), or connects to a remote `correntd`. One binary, so OS handler registration, packaging and single-instance IPC stay as they are. |
 | `correntd` | `crates/correntd` | Headless cross-platform server: torrent engine + library + API + web client. Runs as a systemd/launchd service or a Windows service, or in the foreground (`--portable`). No GUI dependencies at all (no egui, no winit, no GL). |
 | `corrent-mpvw` | `crates/corrent-mpv` (`[[bin]]`) | Small worker process around libmpv for server-side jobs: probe, thumbnails/trickplay, encode/transcode. One process per job; a decoder crash or leak never takes the server down. |
-| `correntctl` (opt) | `crates/correntd` (`[[bin]]`) | Admin CLI over the API: create admin, reset password, scan, status. [S] |
+| `correntctl` (opt) | `crates/correntd` (`[[bin]]`) | Admin CLI over the API: create admin, reset password, scan, status. [S] — done as `correntd admin …` (`--init-admin` creates the admin) |
 
 The native client has three ways to reach a server, behind one trait (`ServerLink`):
 
