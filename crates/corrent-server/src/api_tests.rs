@@ -2103,6 +2103,27 @@ async fn https_with_the_servers_own_ca() {
     assert_eq!(v["api_version"], 1);
     // Without the CA the connection is refused (self-signed).
     assert!(reqwest::Client::new().get(&url).send().await.is_err());
+    // A client that never finishes its request headers is dropped after HEADER_TIMEOUT.
+    {
+        use rustls::pki_types::pem::PemObject;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(rustls::pki_types::CertificateDer::from_pem_slice(tls.ca_pem.as_bytes()).unwrap()).unwrap();
+        let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let tcp = tokio::net::TcpStream::connect(("127.0.0.1", listener.addr.port())).await.unwrap();
+        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let mut s = tokio_rustls::TlsConnector::from(Arc::new(cfg)).connect(name, tcp).await.unwrap();
+        s.write_all(b"GET /api/v1/server/info HTTP/1.1\r\nHost: localhost\r\n").await.unwrap();
+        let started = std::time::Instant::now();
+        let mut buf = [0u8; 512];
+        let r = tokio::time::timeout(crate::HEADER_TIMEOUT + std::time::Duration::from_secs(5), s.read(&mut buf)).await;
+        assert!(r.is_ok(), "the half-sent request was still open after {:?}", started.elapsed());
+        assert!(started.elapsed() >= crate::HEADER_TIMEOUT - std::time::Duration::from_secs(1));
+    }
     drop(listener);
     h.stop().await;
 }

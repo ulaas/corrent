@@ -259,6 +259,9 @@ pub async fn serve_https(app: Router, addr: SocketAddr, tls: &tls::TlsMaterial) 
     serve_https_config(app, addr, config).await
 }
 
+/// How long a client may take to send its request headers (HTTPS).
+pub(crate) const HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Serves `app` over HTTPS with ready TLS settings.
 pub(crate) async fn serve_https_config(
     app: Router,
@@ -269,7 +272,11 @@ pub(crate) async fn serve_https_config(
     std_listener.set_nonblocking(true)?;
     let addr = std_listener.local_addr()?;
     let handle = axum_server::Handle::new();
-    let server = axum_server::from_tcp_rustls(std_listener, config)?.handle(handle.clone());
+    let mut server = axum_server::from_tcp_rustls(std_listener, config)?.handle(handle.clone());
+    // A client that opens a connection and never finishes its request headers (slow loris) is
+    // dropped instead of holding a connection forever; also ends idle keep-alive connections.
+    // hyper needs a timer for that, and has none by default.
+    server.http_builder().http1().timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(HEADER_TIMEOUT);
     tokio::spawn(async move {
         if let Err(e) = server.serve(app.into_make_service_with_connect_info::<SocketAddr>()).await {
             tracing::warn!("HTTPS listener stopped: {e}");
