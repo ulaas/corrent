@@ -66,34 +66,56 @@ async fn remove(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<Stri
     Ok(Json(serde_json::json!({})))
 }
 
-/// Relays the station's stream (following `.pls`/`.m3u` playlists once).
+/// Why a station can't be reached: too slow, or anything else (a bad or private address, an
+/// error page).
+fn upstream(e: String) -> ApiErr {
+    let code =
+        if e.contains("timed out") || e.contains("timeout") { ErrorCode::Timeout } else { ErrorCode::BadRequest };
+    err(code, e)
+}
+
+/// Playlists (`.pls`/`.m3u`) larger than this aren't playlists.
+const MAX_PLAYLIST: usize = 64 * 1024;
+
+/// Relays the station's stream (following a `.pls`/`.m3u` playlist once; HLS stations aren't
+/// supported). Only public addresses are fetched.
 async fn stream(State(st): State<Arc<AppState>>, _auth: Auth, Path(id): Path<String>) -> Result<Response, ApiErr> {
     let s = crate::radio::load(&st.paths.data_dir)
         .into_iter()
         .find(|s| s.id == id)
         .ok_or_else(|| err(ErrorCode::NotFound, "no such station"))?;
-    let http = reqwest::Client::builder()
-        .user_agent(concat!("Corrent/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(15))
-        .read_timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
-    let open = |u: String| {
-        let http = http.clone();
-        async move { http.get(u).send().await.and_then(|r| r.error_for_status()) }
-    };
-    let mut res = open(s.url.clone()).await.map_err(|e| err(ErrorCode::EngineUnavailable, e.to_string()))?;
+    let open = |u: String| async move { crate::net::get_public(&u, Duration::from_secs(30), None).await };
+    let mut res = open(s.url.clone()).await.map_err(upstream)?;
     let ct = res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+    let path = res.url().path().to_ascii_lowercase();
     if ct.contains("mpegurl")
         || ct.contains("scpls")
         || ct.contains("x-pls")
-        || s.url.ends_with(".pls")
-        || s.url.ends_with(".m3u")
+        || path.ends_with(".pls")
+        || path.ends_with(".m3u")
+        || path.ends_with(".m3u8")
     {
-        let body = res.text().await.map_err(|e| err(ErrorCode::EngineUnavailable, e.to_string()))?;
+        let mut body = Vec::new();
+        let read = async {
+            while let Some(c) = res.chunk().await.map_err(|e| e.to_string())? {
+                body.extend_from_slice(&c);
+                if body.len() > MAX_PLAYLIST {
+                    return Err("the playlist is too large".to_string());
+                }
+            }
+            Ok(())
+        };
+        tokio::time::timeout(Duration::from_secs(30), read)
+            .await
+            .map_err(|_| err(ErrorCode::Timeout, "the playlist timed out"))?
+            .map_err(upstream)?;
+        let body = String::from_utf8_lossy(&body);
+        if body.contains("#EXT-X-") {
+            return Err(err(ErrorCode::BadRequest, "HLS stations aren't supported"));
+        }
         let target = crate::radio::playlist_target(&body)
-            .ok_or_else(|| err(ErrorCode::EngineUnavailable, "the playlist names no stream"))?;
-        res = open(target).await.map_err(|e| err(ErrorCode::EngineUnavailable, e.to_string()))?;
+            .ok_or_else(|| err(ErrorCode::BadRequest, "the playlist names no stream"))?;
+        res = open(target).await.map_err(upstream)?;
     }
     let ct = res.headers().get(header::CONTENT_TYPE).cloned().unwrap_or(HeaderValue::from_static("audio/mpeg"));
     Ok((

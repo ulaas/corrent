@@ -156,23 +156,39 @@ pub fn validate(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Saves an uploaded backup next to the others (validated).
-pub fn store_upload(data_dir: &Path, bytes: &[u8]) -> Result<BackupFile, String> {
+/// Where an upload is written while it arrives: (final name, the private partial file).
+pub fn start_upload(data_dir: &Path) -> Result<(String, PathBuf, std::fs::File), String> {
     let out = dir(data_dir);
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-    let name = format!("corrent-server-{}-uploaded.zip", stamp(corrent_core::util::now_unix()));
+    // Unique even for two uploads in the same second.
+    let name = format!(
+        "corrent-server-{}-uploaded-{}.zip",
+        stamp(corrent_core::util::now_unix()),
+        corrent_core::util::random_hex(3)
+    );
     let partial = out.join(format!(".{name}.partial"));
-    let _ = std::fs::remove_file(&partial);
-    {
-        let mut f = private_file(&partial).map_err(|e| e.to_string())?;
-        f.write_all(bytes).map_err(|e| e.to_string())?;
-    }
-    if let Err(e) = validate(&partial) {
-        let _ = std::fs::remove_file(&partial);
+    let f = private_file(&partial).map_err(|e| e.to_string())?;
+    Ok((name, partial, f))
+}
+
+/// Validates a finished upload and puts it next to the other backups.
+pub fn finish_upload(data_dir: &Path, name: String, partial: &Path) -> Result<BackupFile, String> {
+    if let Err(e) = validate(partial) {
+        let _ = std::fs::remove_file(partial);
         return Err(e);
     }
-    std::fs::rename(&partial, out.join(&name)).map_err(|e| e.to_string())?;
-    Ok(BackupFile { name, size: bytes.len() as u64, created: corrent_core::util::now_unix() })
+    let size = std::fs::metadata(partial).map(|m| m.len()).unwrap_or(0);
+    std::fs::rename(partial, dir(data_dir).join(&name)).map_err(|e| e.to_string())?;
+    Ok(BackupFile { name, size, created: corrent_core::util::now_unix() })
+}
+
+/// Saves an uploaded backup next to the others (validated; tests).
+#[cfg(test)]
+pub fn store_upload(data_dir: &Path, bytes: &[u8]) -> Result<BackupFile, String> {
+    let (name, partial, mut f) = start_upload(data_dir)?;
+    f.write_all(bytes).map_err(|e| e.to_string())?;
+    drop(f);
+    finish_upload(data_dir, name, &partial)
 }
 
 /// Stages a restore for the next start.
@@ -202,6 +218,7 @@ pub fn apply_pending(data_dir: &Path) -> Option<Result<String, String>> {
     }
     let aside = data_dir.join(format!("before-restore-{}", stamp(corrent_core::util::now_unix())));
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut created: Vec<PathBuf> = Vec::new();
     let r = (|| -> Result<(), String> {
         std::fs::create_dir_all(aside.join("tls")).map_err(|e| e.to_string())?;
         let mut names: Vec<String> = FILES.iter().map(|s| s.to_string()).collect();
@@ -223,6 +240,7 @@ pub fn apply_pending(data_dir: &Path) -> Option<Result<String, String>> {
         for i in 0..z.len() {
             let mut e = z.by_index(i).map_err(|e| e.to_string())?;
             let target = data_dir.join(e.name().map_err(|e| e.to_string())?.as_ref());
+            created.push(target.clone());
             let mut out = std::fs::File::create(&target).map_err(|e| e.to_string())?;
             std::io::copy(&mut e, &mut out).map_err(|e| e.to_string())?;
         }
@@ -231,11 +249,16 @@ pub fn apply_pending(data_dir: &Path) -> Option<Result<String, String>> {
     Some(match r {
         Ok(()) => Ok(format!("restored {name}; the previous files are in {}", aside.display())),
         Err(e) => {
-            // Put back what was moved.
+            // Remove what the backup wrote, put back what was moved.
+            for f in &created {
+                let _ = std::fs::remove_file(f);
+            }
             for (from, to) in moved.iter().rev() {
-                let _ = std::fs::remove_file(from);
                 let _ = std::fs::rename(to, from);
             }
+            // The aside folder is empty now (remove_dir refuses otherwise).
+            let _ = std::fs::remove_dir(aside.join("tls"));
+            let _ = std::fs::remove_dir(&aside);
             Err(format!("restoring {name} failed ({e}); nothing was changed"))
         }
     })

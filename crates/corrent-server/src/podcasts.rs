@@ -28,11 +28,18 @@ pub struct Podcast {
     pub error: Option<String>,
     /// Episodes on disk after the last check.
     pub episodes: u32,
+    /// The files Corrent downloaded (only these are ever removed).
+    pub files: Vec<String>,
 }
 
-/// The JSON file, one writer at a time.
+/// The JSON file, one writer at a time; and the podcasts being checked right now.
 #[derive(Default)]
-pub struct Podcasts(tokio::sync::Mutex<()>);
+pub struct Podcasts(tokio::sync::Mutex<()>, std::sync::Mutex<std::collections::HashSet<String>>);
+
+/// Largest episode (4 GiB) and cover (10 MiB) accepted; downloads stop below 2 GiB free.
+const MAX_EPISODE: u64 = 4 << 30;
+const MAX_COVER: usize = 10 * 1024 * 1024;
+const MIN_FREE: u64 = 2 << 30;
 
 fn file(data: &Path) -> PathBuf {
     data.join("podcasts.json")
@@ -163,20 +170,8 @@ pub fn episode_file(e: &Episode) -> String {
     format!("{date} {}.{}", safe_name(&e.title), e.ext)
 }
 
-fn http() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent(concat!("Corrent/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(20))
-        .read_timeout(Duration::from_secs(60))
-        .build()
-        .unwrap_or_default()
-}
-
 pub async fn fetch(url: &str) -> Result<Feed, String> {
-    let mut res = http().get(url).timeout(Duration::from_secs(60)).send().await.map_err(|e| e.to_string())?;
-    if !res.status().is_success() {
-        return Err(res.status().to_string());
-    }
+    let mut res = crate::net::get_public(url, Duration::from_secs(60), Some(Duration::from_secs(60))).await?;
     let mut body = Vec::new();
     while let Some(c) = res.chunk().await.map_err(|e| e.to_string())? {
         body.extend_from_slice(&c);
@@ -188,15 +183,20 @@ pub async fn fetch(url: &str) -> Result<Feed, String> {
 }
 
 async fn download(url: &str, to: &Path) -> Result<(), String> {
-    let mut res = http().get(url).send().await.map_err(|e| e.to_string())?;
-    if !res.status().is_success() {
-        return Err(res.status().to_string());
+    let mut res = crate::net::get_public(url, Duration::from_secs(60), None).await?;
+    if res.content_length().is_some_and(|l| l > MAX_EPISODE) {
+        return Err("the episode is too large".into());
     }
     let part = to.with_extension("part");
     let mut f = tokio::fs::File::create(&part).await.map_err(|e| e.to_string())?;
     use tokio::io::AsyncWriteExt;
     let r: Result<(), String> = async {
+        let mut n = 0u64;
         while let Some(c) = res.chunk().await.map_err(|e| e.to_string())? {
+            n += c.len() as u64;
+            if n > MAX_EPISODE {
+                return Err("the episode is too large".into());
+            }
             f.write_all(&c).await.map_err(|e| e.to_string())?;
         }
         f.flush().await.map_err(|e| e.to_string())
@@ -212,75 +212,127 @@ async fn download(url: &str, to: &Path) -> Result<(), String> {
     }
 }
 
-/// Files this module wrote in a podcast folder (dated names), newest first.
-fn ours(dir: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let b = n.as_bytes();
-            p.is_file()
-                && !n.ends_with(".part")
-                && b.len() > 11
-                && b[..10]
-                    .iter()
-                    .enumerate()
-                    .all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
-        })
-        .collect();
-    v.sort();
-    v.reverse();
-    v
+/// The feed's picture as `cover.jpg` (at most 10 MiB).
+async fn cover(url: &str, to: &Path) {
+    let Ok(mut res) = crate::net::get_public(url, Duration::from_secs(30), Some(Duration::from_secs(30))).await else {
+        return;
+    };
+    let mut body = Vec::new();
+    while let Ok(Some(c)) = res.chunk().await {
+        body.extend_from_slice(&c);
+        if body.len() > MAX_COVER {
+            return;
+        }
+    }
+    // Only an image.
+    if image_kind(&body) {
+        let _ = tokio::fs::write(to, &body).await;
+    }
 }
 
-/// Checks one podcast: new episodes are downloaded, old ones beyond `keep` removed.
-pub async fn check(st: &Arc<AppState>, p: &Podcast) -> Result<(String, u32, u32), String> {
+fn image_kind(b: &[u8]) -> bool {
+    b.starts_with(&[0xff, 0xd8, 0xff]) || b.starts_with(b"\x89PNG") || (b.len() > 12 && &b[8..12] == b"WEBP")
+}
+
+/// Marks a podcast as being checked until dropped.
+struct Running<'a>(&'a Podcasts, String);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.0.1.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.1);
+    }
+}
+
+/// Checks one podcast and records the outcome: new episodes are downloaded, old ones beyond
+/// `keep` removed (only files Corrent downloaded). Returns the episodes added.
+pub async fn check(st: &Arc<AppState>, id: &str) -> Result<u32, String> {
+    if !st.podcasts.1.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string()) {
+        return Err("this podcast is being checked already".into());
+    }
+    let _running = Running(&st.podcasts, id.to_string());
+    let p = load(&st.paths.data_dir).into_iter().find(|x| x.id == id).ok_or("no such podcast")?;
+    let mut files = p.files.clone();
+    let r = check_one(st, &p, &mut files).await;
+    let _ = edit(st, |l| {
+        if let Some(x) = l.iter_mut().find(|x| x.id == id) {
+            x.checked_at = Some(corrent_core::util::now_unix());
+            x.files = files.clone();
+            x.episodes = files.len() as u32;
+            match &r {
+                Ok((title, _)) => {
+                    x.title = title.clone();
+                    x.error = None;
+                }
+                Err(e) => x.error = Some(e.clone()),
+            }
+        }
+    })
+    .await;
+    r.map(|(_, n)| n)
+}
+
+/// `files` (paths Corrent wrote) is kept up to date even when the check fails halfway.
+async fn check_one(st: &Arc<AppState>, p: &Podcast, files: &mut Vec<String>) -> Result<(String, u32), String> {
     let lib = st.library.get(p.library_id).await.map_err(|e| e.to_string())?;
     let root = lib.folders.first().ok_or("the library has no folder")?;
     let feed = fetch(&p.url).await?;
     let dir = Path::new(root).join(safe_name(&feed.title));
     tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
     if let Some(img) = &feed.image
-        && !dir.join("cover.jpg").exists()
-        && let Ok(r) = http().get(img).timeout(Duration::from_secs(30)).send().await
-        && r.status().is_success()
-        && let Ok(b) = r.bytes().await
-        && b.len() < 10 * 1024 * 1024
+        && !tokio::fs::try_exists(dir.join("cover.jpg")).await.unwrap_or(true)
     {
-        let _ = tokio::fs::write(dir.join("cover.jpg"), &b).await;
+        cover(img, &dir.join("cover.jpg")).await;
     }
     let wanted: Vec<&Episode> =
         if p.keep == 0 { feed.episodes.iter().collect() } else { feed.episodes.iter().take(p.keep as usize).collect() };
+    let mut keep: Vec<String> = Vec::new();
     let mut added = 0;
+    let mut result = Ok(());
     for e in &wanted {
         let path = dir.join(episode_file(e));
-        if path.exists() {
+        let name = path.display().to_string();
+        keep.push(name.clone());
+        if tokio::fs::try_exists(&path).await.unwrap_or(true) {
             continue;
         }
-        download(&e.url, &path).await?;
+        let d = dir.clone();
+        let free = tokio::task::spawn_blocking(move || corrent_core::engine::free_space_for(&d)).await.ok().flatten();
+        if free.is_some_and(|f| f < MIN_FREE) {
+            result = Err("not enough free space for new episodes".to_string());
+            break;
+        }
+        if let Err(err) = download(&e.url, &path).await {
+            result = Err(err);
+            break;
+        }
+        files.push(name);
         added += 1;
     }
-    // Keep the newest `keep` files of ours.
-    if p.keep > 0 {
-        let d = dir.clone();
-        let keep = p.keep as usize;
-        tokio::task::spawn_blocking(move || {
-            for old in ours(&d).into_iter().skip(keep) {
-                let _ = std::fs::remove_file(old);
+    // Files we wrote that are gone, or (with a limit) no longer among the newest, go.
+    let limit = p.keep > 0 && result.is_ok();
+    let list = std::mem::take(files);
+    *files = tokio::task::spawn_blocking(move || {
+        let mut left = Vec::new();
+        for f in list {
+            if !Path::new(&f).exists() {
+                continue;
             }
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    }
-    let d = dir.clone();
-    let on_disk = tokio::task::spawn_blocking(move || ours(&d).len() as u32).await.unwrap_or(0);
+            if limit && !keep.contains(&f) {
+                if std::fs::remove_file(&f).is_err() {
+                    left.push(f);
+                }
+                continue;
+            }
+            left.push(f);
+        }
+        left
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     if added > 0 {
         st.library.start_scan(p.library_id);
     }
-    Ok((feed.title, added, on_disk))
+    result.map(|()| (feed.title, added))
 }
 
 /// The `podcasts` task.
@@ -288,24 +340,8 @@ pub async fn check_all(st: &Arc<AppState>) -> Result<String, String> {
     let list = load(&st.paths.data_dir);
     let (mut added, mut failed) = (0, 0);
     for p in &list {
-        let r = check(st, p).await;
-        let id = p.id.clone();
-        let _ = edit(st, |l| {
-            if let Some(x) = l.iter_mut().find(|x| x.id == id) {
-                x.checked_at = Some(corrent_core::util::now_unix());
-                match &r {
-                    Ok((title, _, n)) => {
-                        x.title = title.clone();
-                        x.episodes = *n;
-                        x.error = None;
-                    }
-                    Err(e) => x.error = Some(e.clone()),
-                }
-            }
-        })
-        .await;
-        match r {
-            Ok((_, n, _)) => added += n,
+        match check(st, &p.id).await {
+            Ok(n) => added += n,
             Err(_) => failed += 1,
         }
     }
@@ -339,18 +375,5 @@ mod tests {
         assert_eq!(episode_file(&f.episodes[0]), "2026-10-01 Episode 2_ Rust.mp3");
         assert_eq!(episode_file(&f.episodes[1]), "2026-09-01 Episode 1.m4a");
         assert!(parse(b"<html></html>", "https://x").is_err());
-    }
-
-    #[test]
-    fn keeps_only_dated_files() {
-        let d = std::env::temp_dir().join(format!("corrent-pod-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        for n in ["2026-01-01 a.mp3", "2026-02-01 b.mp3", "cover.jpg", "notes.txt", "2026-03-01 c.part"] {
-            std::fs::write(d.join(n), b"x").unwrap();
-        }
-        let names: Vec<String> =
-            ours(&d).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
-        assert_eq!(names, vec!["2026-02-01 b.mp3", "2026-01-01 a.mp3"]);
-        let _ = std::fs::remove_dir_all(d);
     }
 }

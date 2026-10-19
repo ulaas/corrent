@@ -45,7 +45,8 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(
       fetch(req)
         .then((res) => {
-          if (res.ok) {
+          // Only the app's own page becomes the offline shell (not a file or an error page).
+          if (res.ok && (res.headers.get('content-type') || '').startsWith('text/html')) {
             const copy = res.clone();
             void caches.open(CACHE).then((c) => c.put('/', copy));
           }

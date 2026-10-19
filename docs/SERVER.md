@@ -119,20 +119,26 @@ Playlists page in both clients. Collections (film series) come from metadata pro
 pages link to theirs.
 
 **Podcasts**: a library of the kind *Podcasts* holds a folder per podcast with dated episode
-files (`2026-10-01 Title.mp3`). Settings → Podcasts subscribes to feeds; the `podcasts` task
+files (`2026-10-01 Title.mp3`). Settings → Podcasts (settings permission) subscribes to feeds; the `podcasts` task
 (hourly) downloads new episodes into the library's first folder and keeps the newest N (0 = all;
-only files it named are removed). API: `GET/POST /api/v1/podcasts`, `DELETE /podcasts/{id}`,
+only episodes Corrent downloaded itself are ever removed, never other files in the folder).
+Feeds, episodes and covers are fetched from public addresses only; an episode may be at most
+4 GiB, and downloads pause while the disk has less than 2 GiB free. API: `GET/POST /api/v1/podcasts`, `DELETE /podcasts/{id}`,
 `POST /podcasts/{id}/refresh`.
 
-**Radio**: administrators add internet radio stations (name and stream or `.pls`/`.m3u`
-address) on the web client's Radio page; everyone can play them there (relayed by the server at
-`/api/v1/radio/{id}/stream`, so HTTPS pages can play HTTP streams) or in the desktop app (Radio
-in the media top bar; mpv plays the address itself).
+**Radio**: accounts with the settings permission add internet radio stations (name and stream or
+`.pls`/`.m3u` address) on the web client's Radio page; everyone can play them there (relayed by
+the server at `/api/v1/radio/{id}/stream`, so HTTPS pages can play HTTP streams) or in the
+desktop app (Radio in the media top bar; mpv plays the address itself). The relay only connects to
+public addresses (never the server's own network) and doesn't play HLS (`.m3u8`) stations.
 
 **Stop seeding once everyone has watched** (library setting, for libraries fed by torrent
 categories): the hourly `stop_watched_seeding` task pauses a finished torrent of those categories
 once every enabled account that can see the library has played all playable items whose files
-came from it.
+came from it. Every such account counts, including ones that never watch anything (a separate
+DLNA or guest account): limit their libraries, or disable them, or the torrent keeps seeding. The
+pause is an ordinary pause: a torrent resumed by hand is paused again by the next hourly check,
+so turn the setting off to keep it seeding.
 
 **`.nfo` files**: movie and show libraries can write Kodi `.nfo` files (library setting) after
 identification and edits — `<movie file>.nfo`, `tvshow.nfo`, `<episode file>.nfo`. Files Corrent
@@ -344,9 +350,11 @@ the server's language.
 `settings.toml`, `store.json`, `rss.json`, `connect.key` and `tls/`; the newest seven are kept.
 They contain private keys (owner-only files). Restore: **Restore** next to a backup (or **Upload…**
 one from another server) in Settings → Tasks and backups stages it
-(`POST /backups/{name}/restore`, `POST /backups/upload`, `GET/DELETE /backups/restore`); the next
-start applies it before opening the database and keeps the replaced files in
-`<data>/before-restore-<time>/` (a failed restore puts them back). By hand: stop the server,
+(`POST /backups/{name}/restore`, `POST /backups/upload` — the zip as the raw body, at most
+2 GiB —, `GET/DELETE /backups/restore`). Nothing changes until the next start of `correntd` (or of
+the desktop app, for its built-in server), which applies it before reading any settings or opening
+the database and moves the replaced files to `<data>/before-restore-<time>/`. If applying fails,
+the files it wrote are removed and the moved ones put back, so the server starts as it was. By hand: stop the server,
 unzip into the data folder, start it.
 
 **Metrics**: `metrics = true` in `server.toml` serves Prometheus text at `/metrics` (torrents by

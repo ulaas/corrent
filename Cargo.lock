@@ -1480,6 +1480,7 @@ dependencies = [
  "corrent-transcode",
  "directories",
  "ed25519-dalek",
+ "feed-rs",
  "flate2",
  "futures-util",
  "http-body-util",

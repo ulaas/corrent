@@ -574,6 +574,8 @@ impl CorrentApp {
                 .on_hover_text(t!("Radio"))
                 .clicked()
             {
+                // Fresh stations each time the page opens.
+                self.media.radio = None;
                 self.open(Page::Radio);
             }
             if self.server.is_some()

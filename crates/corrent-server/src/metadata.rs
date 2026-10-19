@@ -212,10 +212,18 @@ pub async fn write_nfo(st: &AppState, item: i64) {
     };
     let text = corrent_library::nfo::render(&n);
     let _ = tokio::task::spawn_blocking(move || {
-        if let Ok(old) = std::fs::read_to_string(&target)
-            && !old.contains(corrent_library::nfo::MARK)
-        {
-            return;
+        // Only a file we wrote (or none) is replaced; anything unreadable is left alone.
+        match std::fs::read(&target) {
+            Ok(old)
+                if !old
+                    .windows(corrent_library::nfo::MARK.len())
+                    .any(|w| w == corrent_library::nfo::MARK.as_bytes()) =>
+            {
+                return;
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return,
         }
         // A plain replace (no backup copies left in media folders).
         let tmp = target.with_extension("nfo.corrent-tmp");

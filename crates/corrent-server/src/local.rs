@@ -39,11 +39,7 @@ pub async fn start(
     settings: Arc<ArcSwap<Settings>>,
     paths: Paths,
 ) -> anyhow::Result<LocalServer> {
-    match crate::backups::apply_pending(&paths.data_dir) {
-        Some(Ok(m)) => tracing::info!("{m}"),
-        Some(Err(e)) => tracing::error!("{e}"),
-        None => {}
-    }
+    // A staged restore was applied by the app at startup, before its settings were read.
     let db = corrent_db::Db::open(&paths.data_dir.join("corrent.db"))?;
     let identity = Identity::new(db.clone(), HashCost::STANDARD);
     let library = corrent_library::Library::new(

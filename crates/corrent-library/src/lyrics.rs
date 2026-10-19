@@ -12,19 +12,29 @@ const MAX: u64 = 512 * 1024;
 
 /// `[mm:ss.xx]` (also `[mm:ss]`, `[mm:ss:xx]`, `[h:mm:ss.xx]`) → milliseconds.
 fn stamp(s: &str) -> Option<i64> {
+    // Short digit runs only (nothing can overflow).
+    let num = |x: &str| -> Option<i64> {
+        (!x.is_empty() && x.len() <= 4 && x.bytes().all(|b| b.is_ascii_digit())).then(|| x.parse().ok()).flatten()
+    };
     let parts: Vec<&str> = s.split(':').collect();
     let (h, m, sec) = match parts.as_slice() {
-        [m, s] => (0, m.parse::<i64>().ok()?, *s),
+        [m, s] => (0, num(m)?, *s),
         // mm:ss:xx (centiseconds after a colon) or h:mm:ss.xx
-        [a, b, c] if c.contains('.') => (a.parse::<i64>().ok()?, b.parse::<i64>().ok()?, *c),
+        [a, b, c] if c.contains('.') => (num(a)?, num(b)?, *c),
         [m, s, cs] => {
-            let cs: i64 = cs.parse().ok()?;
-            return Some((m.parse::<i64>().ok()? * 60 + s.parse::<i64>().ok()?) * 1000 + cs * 10);
+            let (m, s, cs) = (num(m)?, num(s)?, num(cs)?);
+            if m >= 600 || s >= 60 || cs >= 100 {
+                return None;
+            }
+            return Some((m * 60 + s) * 1000 + cs * 10);
         }
         _ => return None,
     };
     let (whole, frac) = sec.split_once('.').unwrap_or((sec, ""));
-    let whole: i64 = whole.parse().ok()?;
+    let whole = num(whole)?;
+    if !frac.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
     let frac_ms: i64 = match frac.len() {
         0 => 0,
         1 => frac.parse::<i64>().ok()? * 100,

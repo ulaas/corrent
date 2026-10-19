@@ -135,8 +135,79 @@ pub fn host_allowed(host_header: &str, names: &[String]) -> bool {
     h == "localhost" || h.parse::<IpAddr>().is_ok() || names.iter().any(|n| n.eq_ignore_ascii_case(&h))
 }
 
+/// A GET to the public internet only: the host must resolve to public addresses (not this
+/// server, its network, loopback or link-local), the connection goes to the address checked,
+/// and every redirect is checked again. For URLs people type (radio stations, podcast feeds),
+/// so they can't reach what only the server can.
+pub async fn get_public(
+    url: &str,
+    read_timeout: std::time::Duration,
+    total: Option<std::time::Duration>,
+) -> Result<reqwest::Response, String> {
+    let mut u = url::Url::parse(url).map_err(|e| e.to_string())?;
+    for _ in 0..6 {
+        if !matches!(u.scheme(), "http" | "https") {
+            return Err("only http and https addresses".into());
+        }
+        let host = u.host_str().ok_or("no host")?.trim_start_matches('[').trim_end_matches(']').to_string();
+        let port = u.port_or_known_default().ok_or("no port")?;
+        let addrs: Vec<std::net::SocketAddr> =
+            tokio::net::lookup_host((host.as_str(), port)).await.map_err(|e| format!("{host}: {e}"))?.collect();
+        let Some(addr) = addrs.first().copied() else { return Err(format!("{host} has no address")) };
+        // Tests serve their feeds on loopback.
+        let allowed = |ip: std::net::IpAddr| corrent_plugins::is_public(ip) || (cfg!(test) && ip.is_loopback());
+        if addrs.iter().any(|a| !allowed(a.ip())) {
+            return Err(format!("{host} is on a private network"));
+        }
+        let mut b = reqwest::Client::builder()
+            .user_agent(concat!("Corrent/", env!("CARGO_PKG_VERSION")))
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .read_timeout(read_timeout);
+        if u.host().is_some_and(|h| matches!(h, url::Host::Domain(_))) {
+            b = b.resolve(&host, addr);
+        }
+        let client = b.build().map_err(|e| e.to_string())?;
+        let mut req = client.get(u.clone());
+        if let Some(t) = total {
+            req = req.timeout(t);
+        }
+        let res = req.send().await.map_err(|e| e.to_string())?;
+        if res.status().is_redirection() {
+            let loc = res
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or("redirect without a location")?;
+            u = u.join(loc).map_err(|e| e.to_string())?;
+            continue;
+        }
+        if !res.status().is_success() {
+            return Err(res.status().to_string());
+        }
+        return Ok(res);
+    }
+    Err("too many redirects".into())
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn public_fetches_refuse_private_networks() {
+        let t = std::time::Duration::from_secs(2);
+        for u in [
+            "http://10.1.2.3/x",
+            "http://169.254.169.254/latest/meta-data",
+            "http://192.168.1.1:8096/",
+            "http://[fd00::1]/",
+            "ftp://example.org/",
+        ] {
+            let e = get_public(u, t, Some(t)).await.unwrap_err();
+            assert!(e.contains("private") || e.contains("only http"), "{u}: {e}");
+        }
+    }
+
     use super::*;
 
     fn ip(s: &str) -> IpAddr {

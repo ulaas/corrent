@@ -339,7 +339,7 @@ async fn put_remote(
     }
     let relay = r.connect_relay_url.trim();
     if !relay.is_empty() && !(relay.starts_with("https://") || relay.starts_with("http://")) {
-        return Err(err(ErrorCode::BadRequest, "a relay address starts with https://"));
+        return Err(err(ErrorCode::BadRequest, "a relay address starts with https:// (or http:// for testing)"));
     }
     {
         let _w = st.settings_lock.lock().await;

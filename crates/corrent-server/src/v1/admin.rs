@@ -206,17 +206,54 @@ async fn cancel_restore(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResul
     Ok(Json(RestoreStatus { pending: None }))
 }
 
+/// Largest backup accepted.
+const MAX_UPLOAD: u64 = 2 << 30;
+
+/// The body is only read after the permission check, and straight to disk.
 async fn upload_backup(
     State(st): State<Arc<AppState>>,
     auth: Auth,
     ip: ClientIp,
-    body: axum::body::Bytes,
+    req: axum::extract::Request,
 ) -> ApiResult<BackupFile> {
     admin(&auth)?;
     let data = st.paths.data_dir.clone();
-    let r = tokio::task::spawn_blocking(move || crate::backups::store_upload(&data, &body))
+    let d2 = data.clone();
+    let (name, partial, file) = tokio::task::spawn_blocking(move || crate::backups::start_upload(&d2))
         .await
-        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
+        .map_err(|e| err(ErrorCode::Internal, e))?;
+    let r: Result<(), String> = async {
+        use http_body_util::BodyExt;
+        use tokio::io::AsyncWriteExt;
+        let mut out = tokio::fs::File::from_std(file);
+        let mut body = req.into_body();
+        let mut n = 0u64;
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|e| e.to_string())?;
+            if let Ok(chunk) = frame.into_data() {
+                n += chunk.len() as u64;
+                if n > MAX_UPLOAD {
+                    return Err("the backup is too large".into());
+                }
+                out.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            }
+        }
+        out.flush().await.map_err(|e| e.to_string())
+    }
+    .await;
+    let r = match r {
+        Ok(()) => {
+            let p2 = partial.clone();
+            tokio::task::spawn_blocking(move || crate::backups::finish_upload(&data, name, &p2))
+                .await
+                .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&partial).await;
+            Err(e)
+        }
+    };
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "backup_upload", "", r.is_ok(), "").await;
     r.map(Json).map_err(|e| err(ErrorCode::BadRequest, e))
 }

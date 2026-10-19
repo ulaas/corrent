@@ -82,8 +82,13 @@ impl Prober {
     }
 }
 
-/// `ffprobe` from `CORRENT_FFPROBE` or the `PATH`.
+/// `ffprobe` from `CORRENT_FFPROBE` or the `PATH` (looked up once).
 pub fn ffprobe_path() -> Option<PathBuf> {
+    static PATH: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    PATH.get_or_init(find_ffprobe).clone()
+}
+
+fn find_ffprobe() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("CORRENT_FFPROBE").map(PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }

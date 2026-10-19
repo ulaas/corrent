@@ -1,7 +1,7 @@
 //! Intro detection by audio fingerprint: episodes of a season share their opening theme. The
 //! first minutes of each are decoded to 8 kHz mono, fingerprinted (16 bits per 128 ms from band
 //! energy changes, after Haitsma & Kalker), and two neighbours are compared at every alignment;
-//! the longest stretch they share (15 s to 2.5 min) is the intro.
+//! the earliest stretch they share (15 s to 2.5 min) is the intro.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -24,7 +24,11 @@ pub fn frame_secs() -> f64 {
 /// Decodes the first `secs` of `input`'s audio to 8 kHz mono samples (through the worker when
 /// there is one).
 pub async fn decode(input: &str, secs: u32, tmp: &Path, worker: Option<PathBuf>) -> Result<Vec<i16>, String> {
-    std::fs::create_dir_all(tmp).map_err(|e| e.to_string())?;
+    let t = tmp.to_path_buf();
+    tokio::task::spawn_blocking(move || std::fs::create_dir_all(t))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
     let wav = tmp.join(format!("intro-{}.wav", std::process::id() as u64 * 1_000_000 + rand_u32() as u64));
     let job = EncodeJob {
         input: input.to_string(),
@@ -44,7 +48,9 @@ pub async fn decode(input: &str, secs: u32, tmp: &Path, worker: Option<PathBuf>)
     let ok = match &worker {
         Some(w) => {
             let file = wav.with_extension("json");
-            std::fs::write(&file, serde_json::to_vec(&job).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            tokio::fs::write(&file, serde_json::to_vec(&job).map_err(|e| e.to_string())?)
+                .await
+                .map_err(|e| e.to_string())?;
             let status = tokio::process::Command::new(w)
                 .arg("encode")
                 .arg(&file)
@@ -53,7 +59,7 @@ pub async fn decode(input: &str, secs: u32, tmp: &Path, worker: Option<PathBuf>)
                 .kill_on_drop(true)
                 .status();
             let r = tokio::time::timeout(Duration::from_secs(600), status).await;
-            let _ = std::fs::remove_file(&file);
+            let _ = tokio::fs::remove_file(&file).await;
             matches!(r, Ok(Ok(s)) if s.success())
         }
         None => tokio::task::spawn_blocking(move || {
@@ -62,8 +68,8 @@ pub async fn decode(input: &str, secs: u32, tmp: &Path, worker: Option<PathBuf>)
         .await
         .unwrap_or(false),
     };
-    let bytes = std::fs::read(&wav);
-    let _ = std::fs::remove_file(&wav);
+    let bytes = tokio::fs::read(&wav).await;
+    let _ = tokio::fs::remove_file(&wav).await;
     if !ok {
         return Err("audio decoding failed".into());
     }
@@ -192,6 +198,17 @@ pub fn common(a: &[u16], b: &[u16]) -> Option<(usize, usize, usize, usize)> {
         return None;
     }
     let mut best: Option<(usize, usize, usize)> = None; // (len, a_start, offset+)
+    // A run longer than any intro is the same recording, not a theme; among the rest the
+    // earliest wins (a theme can recur later, e.g. in the credits), then the longest.
+    let blen = b.len() as isize;
+    let consider = |best: &mut Option<(usize, usize, usize)>, len: usize, s: usize, d: isize| {
+        if len < min || len > max {
+            return;
+        }
+        if best.is_none_or(|(bl, bs, _)| s + min < bs || (s < bs + min && len > bl)) {
+            *best = Some((len, s, (d + blen) as usize));
+        }
+    };
     for d in -(b.len() as isize) + 1..a.len() as isize {
         // a[i] lines up with b[i - d].
         let (lo, hi) = ((d.max(0)) as usize, (a.len() as isize).min(b.len() as isize + d) as usize);
@@ -210,22 +227,17 @@ pub fn common(a: &[u16], b: &[u16]) -> Option<(usize, usize, usize, usize)> {
                 if gap > 6 {
                     let s = run_start.take().unwrap_or(i);
                     let len = last_match + 1 - s;
-                    if len >= min && best.is_none_or(|b| len > b.0) {
-                        best = Some((len, s, (d + b.len() as isize) as usize));
-                    }
+                    consider(&mut best, len, s, d);
                     gap = 0;
                 }
             }
         }
         if let Some(s) = run_start {
             let len = last_match + 1 - s;
-            if len >= min && best.is_none_or(|b| len > b.0) {
-                best = Some((len, s, (d + b.len() as isize) as usize));
-            }
+            consider(&mut best, len, s, d);
         }
     }
     let (len, s, dd) = best?;
-    let len = len.min(max);
     let d = dd as isize - b.len() as isize;
     let bs = (s as isize - d) as usize;
     Some((s, s + len, bs, bs + len))
@@ -264,6 +276,9 @@ mod tests {
         // Nothing shared: nothing found.
         let c: Vec<i16> = noise(9, 60.0);
         assert!(common(&fa, &fingerprint(&c)).is_none());
+        // The same recording throughout isn't an intro.
+        let same = fingerprint(&noise(5, 200.0));
+        assert!(common(&same, &same).is_none());
     }
 
     #[test]

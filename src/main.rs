@@ -71,9 +71,21 @@ fn main() -> eframe::Result {
     let log_dir = paths.log_dir();
     std::thread::spawn(util::local_offset_secs);
     let restore_note = backup::apply_pending(&paths);
+    // A media-server restore staged from the web interface replaces settings.toml too, so it goes
+    // before the settings are read.
+    let server_restore = corrent_server::backups::apply_pending(&paths.data_dir);
+    match &server_restore {
+        Some(Ok(m)) => tracing::info!("{m}"),
+        Some(Err(e)) => tracing::error!("{e}"),
+        None => {}
+    }
     let (settings, first_run, settings_warning) = Settings::load(&paths);
     i18n::set_language(&settings.appearance.language);
-    let data_notes: Vec<String> = restore_note.into_iter().chain(settings_warning).collect();
+    let data_notes: Vec<String> = restore_note
+        .into_iter()
+        .chain(server_restore.map(|r| r.unwrap_or_else(|e| e)))
+        .chain(settings_warning)
+        .collect();
     let launch: Vec<AddSource> = items.iter().filter_map(|a| AddSource::parse(a)).collect();
     let start_minimized = flag("--minimized") || settings.behavior.start_minimized;
     let tv = flag("--tv");

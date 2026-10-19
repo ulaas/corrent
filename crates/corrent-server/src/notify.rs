@@ -143,13 +143,17 @@ pub fn send(st: &Arc<AppState>, event: &'static str, title: String, body: String
 pub fn send_on(rt: &tokio::runtime::Handle, st: &Arc<AppState>, event: &'static str, title: String, body: String) {
     let st = st.clone();
     rt.spawn(async move {
-        // Event plugins hear about everything notifications do.
+        // Event plugins hear about everything notifications do; each on its own task, so a slow
+        // plugin delays neither the others nor the notifications.
         if let Some(host) = st.plugins.clone() {
             for id in host.ready(corrent_plugins::Kind::Events) {
                 let e = corrent_plugins::Event { kind: event.to_string(), title: title.clone(), body: body.clone() };
-                if let Err(err) = host.on_event(&id, e).await {
-                    tracing::debug!("event plugin {id}: {err}");
-                }
+                let host = host.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = host.on_event(&id, e).await {
+                        tracing::debug!("event plugin {id}: {err}");
+                    }
+                });
             }
         }
         let Ok(targets) = list(st.identity.db()).await else { return };

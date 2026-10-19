@@ -81,21 +81,7 @@ async fn add(State(st): State<Arc<AppState>>, auth: Auth, Json(b): Json<NewPodca
 fn spawn_check(st: &Arc<AppState>, p: Podcast) {
     let st = st.clone();
     tokio::spawn(async move {
-        let r = crate::podcasts::check(&st, &p).await;
-        let _ = crate::podcasts::edit(&st, |l| {
-            if let Some(x) = l.iter_mut().find(|x| x.id == p.id) {
-                x.checked_at = Some(corrent_core::util::now_unix());
-                match r {
-                    Ok((title, _, n)) => {
-                        x.title = title;
-                        x.episodes = n;
-                        x.error = None;
-                    }
-                    Err(e) => x.error = Some(e),
-                }
-            }
-        })
-        .await;
+        let _ = crate::podcasts::check(&st, &p.id).await;
     });
 }
 
