@@ -603,3 +603,5 @@
 "Let Jellyfin apps find this server" = "Jellyfin uygulamalarının bu sunucuyu bulmasına izin ver"
 "Answers the apps’ search on this network (UDP 7359)." = "Uygulamaların bu ağdaki aramasını yanıtlar (UDP 7359)."
 "Jellyfin apps: http://<this computer>:{port}" = "Jellyfin uygulamaları: http://<bu bilgisayar>:{port}"
+"Names" = "Adlar"
+"Task" = "Görev"

@@ -1,0 +1,9 @@
+id = "example-events"
+name = "Example events"
+version = "1.0.0"
+description = "For tests: remembers the last event and what the library holds with its title."
+host_api = "1"
+kinds = ["events"]
+
+[permissions]
+library = true

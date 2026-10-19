@@ -97,6 +97,13 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
     });
     let transcode_root = p.paths.data_dir.join("transcode");
     let plugin_host = plugins::start(p.identity.db(), &p.paths.data_dir).await;
+    // Plugins with the `library` permission read the libraries (as an account that sees all).
+    if let Some(host) = &plugin_host {
+        host.set_library(Arc::new(plugins::LibraryView {
+            lib: p.library.clone(),
+            rt: tokio::runtime::Handle::current(),
+        }));
+    }
     // Name-parser plugins get a say when scans read file names.
     if let Some(host) = &plugin_host {
         let host = host.clone();

@@ -2,7 +2,7 @@
 # components are committed under crates/corrent-plugins/builtin/ (cargo build of the main
 # workspace never needs the wasm target).
 [workspace]
-members = ["example", "example-subtitles", "example-parser", "example-task", "tmdb", "musicbrainz", "fanart", "opensubtitles", "tvdb"]
+members = ["example", "example-subtitles", "example-parser", "example-task", "example-events", "tmdb", "musicbrainz", "fanart", "opensubtitles", "tvdb"]
 resolver = "3"
 
 [workspace.dependencies]

@@ -11,6 +11,8 @@ pub enum Kind {
     Subtitles,
     Parser,
     Task,
+    /// Receives server events (`event-handler` world / `events.on_event`).
+    Events,
 }
 
 /// How a plugin runs.
@@ -34,6 +36,8 @@ pub struct Permissions {
     pub allow_local_network: bool,
     /// Requests per second (burst of twice that).
     pub rate_per_sec: Option<u32>,
+    /// Read the libraries (`library` interface).
+    pub library: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -50,6 +50,17 @@ world_bindings!(notifier_bindings, "notifier-plugin");
 world_bindings!(subtitle_bindings, "subtitle-provider");
 world_bindings!(parser_bindings, "name-parser");
 world_bindings!(task_bindings, "scheduled-task");
+world_bindings!(event_bindings, "event-handler");
+
+pub use event_bindings::corrent::plugin::library::LibraryItem;
+pub use event_bindings::exports::corrent::plugin::events::Event;
+
+/// The server's libraries as plugins may read them (implemented by the server). Called on a
+/// blocking thread.
+pub trait LibraryAccess: Send + Sync {
+    fn search(&self, query: &str, limit: u32) -> Result<Vec<LibraryItem>, String>;
+    fn item(&self, id: i64) -> Result<Option<LibraryItem>, String>;
+}
 
 pub use bindings::corrent::plugin::types::{HttpRequest, HttpResponse};
 pub use bindings::exports::corrent::plugin::metadata::{
@@ -109,6 +120,8 @@ struct HostState {
     table: ResourceTable,
     limits: StoreLimits,
     plugin: Arc<PluginCtx>,
+    /// Only for plugins whose manifest asks for `library`.
+    library: Option<Arc<dyn LibraryAccess>>,
 }
 
 impl WasiView for HostState {
@@ -230,6 +243,18 @@ impl PluginCtx {
 
 impl bindings::corrent::plugin::types::Host for HostState {}
 
+impl event_bindings::corrent::plugin::library::Host for HostState {
+    fn search(&mut self, query: String, limit: u32) -> Result<Vec<LibraryItem>, String> {
+        let l = self.library.clone().ok_or("library access isn't in this plugin's permissions")?;
+        l.search(&query.chars().take(200).collect::<String>(), limit.min(100))
+    }
+
+    fn item(&mut self, id: i64) -> Result<Option<LibraryItem>, String> {
+        let l = self.library.clone().ok_or("library access isn't in this plugin's permissions")?;
+        l.item(id)
+    }
+}
+
 impl bindings::corrent::plugin::host::Host for HostState {
     fn http(&mut self, req: HttpRequest) -> Result<HttpResponse, String> {
         let p = self.plugin.clone();
@@ -338,6 +363,7 @@ pub struct PluginHost {
     plugins: RwLock<HashMap<String, Arc<Loaded>>>,
     kv: Arc<dyn KvStore>,
     rt: tokio::runtime::Handle,
+    library: RwLock<Option<Arc<dyn LibraryAccess>>>,
 }
 
 impl PluginHost {
@@ -359,6 +385,7 @@ impl PluginHost {
             plugins: RwLock::new(HashMap::new()),
             kv,
             rt,
+            library: RwLock::new(None),
         }))
     }
 
@@ -511,6 +538,11 @@ impl PluginHost {
             table: ResourceTable::new(),
             limits: StoreLimitsBuilder::new().memory_size(MEMORY_LIMIT).instances(16).tables(64).build(),
             plugin: l.ctx.clone(),
+            library: if l.ctx.manifest.permissions.library {
+                self.library.read().unwrap_or_else(|e| e.into_inner()).clone()
+            } else {
+                None
+            },
         };
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
@@ -525,6 +557,8 @@ impl PluginHost {
         bindings::corrent::plugin::host::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)
             .map_err(|e| PluginError::Trap(e.to_string()))?;
         bindings::corrent::plugin::types::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)
+            .map_err(|e| PluginError::Trap(e.to_string()))?;
+        event_bindings::corrent::plugin::library::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s)
             .map_err(|e| PluginError::Trap(e.to_string()))?;
         Ok(linker)
     }
@@ -725,6 +759,25 @@ impl PluginHost {
             let mut store = h.store(l);
             let p = parser_bindings::NameParser::instantiate(&mut store, c, &h.linker_or_err()?)?;
             p.corrent_plugin_parser().call_parse(&mut store, &name).map(Ok)
+        })
+        .await
+    }
+
+    /// What plugins with the `library` permission read (set by the server).
+    pub fn set_library(&self, l: Arc<dyn LibraryAccess>) {
+        *self.library.write().unwrap_or_else(|e| e.into_inner()) = Some(l);
+    }
+
+    /// Tells an event plugin about something that happened.
+    pub async fn on_event(self: &Arc<Self>, id: &str, e: Event) -> Result<(), PluginError> {
+        if self.is_process(id) {
+            let _: serde_json::Value = self.rpc(id, "events.on_event", serde_json::json!({ "event": e })).await?;
+            return Ok(());
+        }
+        self.call(id, move |h, l, c| {
+            let mut store = h.store(l);
+            let p = event_bindings::EventHandler::instantiate(&mut store, c, &h.linker_or_err()?)?;
+            p.corrent_plugin_events().call_on_event(&mut store, &e).map(Ok)
         })
         .await
     }

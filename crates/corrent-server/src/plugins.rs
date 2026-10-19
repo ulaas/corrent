@@ -202,3 +202,35 @@ pub mod signing {
         }
     }
 }
+
+/// The libraries as plugins see them (read-only).
+pub struct LibraryView {
+    pub lib: corrent_library::Library,
+    pub rt: tokio::runtime::Handle,
+}
+
+fn plugin_item(i: &corrent_proto::library::Item) -> corrent_plugins::LibraryItem {
+    corrent_plugins::LibraryItem {
+        id: i.id,
+        kind: i.kind.as_str().to_string(),
+        title: i.title.clone(),
+        year: i.year,
+        parent_id: i.parent_id,
+        library_id: i.library_id,
+    }
+}
+
+impl corrent_plugins::LibraryAccess for LibraryView {
+    fn search(&self, query: &str, limit: u32) -> Result<Vec<corrent_plugins::LibraryItem>, String> {
+        let r = self.rt.block_on(self.lib.search(0, query)).map_err(|e| e.to_string())?;
+        Ok(r.items.iter().take(limit as usize).map(plugin_item).collect())
+    }
+
+    fn item(&self, id: i64) -> Result<Option<corrent_plugins::LibraryItem>, String> {
+        match self.rt.block_on(self.lib.item(0, id)) {
+            Ok(d) => Ok(Some(plugin_item(&d.item))),
+            Err(corrent_library::LibError::NotFound) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}

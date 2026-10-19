@@ -1011,6 +1011,66 @@ async fn install_plugin(app: &Router, admin: &str, manifest: &str, wasm: &[u8]) 
     assert_eq!(res.status(), StatusCode::OK);
 }
 
+/// Event plugins hear what notifications do and may read the library.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn event_plugins_read_the_library() {
+    let h = harness("events-plugin", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let pics = h.dir.join("Pics");
+    std::fs::create_dir_all(&pics).unwrap();
+    image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])).save(pics.join("forest.png")).unwrap();
+    send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Pics", "kind": "photos", "folders": [pics] }),
+    )
+    .await;
+    install_plugin(
+        app,
+        &admin,
+        include_str!("../../corrent-plugins/builtin/example-events.toml"),
+        include_bytes!("../../corrent-plugins/builtin/example-events.wasm"),
+    )
+    .await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let (_, v, _) = get(app, "/api/v1/items?kind=photo", &admin).await;
+        if v["total"] == 1 {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    crate::notify::send(&h.st, "download_done", "forest".into(), "done".into());
+    let read = || {
+        let db = h.st.identity.db().clone();
+        async move {
+            db.read(|c| {
+                use corrent_db::rusqlite::OptionalExtension;
+                c.query_row("SELECT value FROM plugin_kv WHERE plugin = 'example-events' AND key = 'last'", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()
+            })
+            .await
+            .unwrap()
+        }
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let last = loop {
+        if let Some(v) = read().await {
+            break v;
+        }
+        assert!(std::time::Instant::now() < deadline, "the plugin heard the event");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert_eq!(last, "download_done | forest | photo:forest");
+    h.stop().await;
+}
+
 /// Subtitle providers, name parsers and task plugins at work in the server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn subtitle_parser_and_task_plugins() {

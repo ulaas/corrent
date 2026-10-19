@@ -177,6 +177,43 @@ interface task {
     run: func() -> result<string, string>;
 }
 
+/// Read access to the server's libraries (needs `library = true` in the manifest's
+/// permissions; plugins never write to the library).
+interface library {
+    record library-item {
+        id: s64,
+        /// movie | show | season | episode | artist | album | track | book | video | photo | folder
+        kind: string,
+        title: string,
+        year: option<s32>,
+        parent-id: option<s64>,
+        library-id: s64,
+    }
+
+    /// Items whose title or people match `query` (at most `limit`, up to 100).
+    search: func(query: string, limit: u32) -> result<list<library-item>, string>;
+    /// One item.
+    item: func(id: s64) -> result<option<library-item>, string>;
+}
+
+/// Server events, as notifications see them.
+interface events {
+    record event {
+        /// download_done | torrent_added | release_grabbed | device_paired | task_failed | …
+        kind: string,
+        title: string,
+        body: string,
+    }
+
+    on-event: func(e: event);
+}
+
+world event-handler {
+    import host;
+    import library;
+    export events;
+}
+
 world metadata-provider {
     import host;
     export metadata;

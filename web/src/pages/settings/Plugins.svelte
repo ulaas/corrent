@@ -18,7 +18,15 @@
   let fileInput = $state<HTMLInputElement | null>(null);
   const manage = $derived(can(Perm.PLUGINS_MANAGE));
 
-  const KIND: Record<string, string> = { metadata: tk('Metadata'), indexer: tk('Indexer'), notifier: tk('Notifications') };
+  const KIND: Record<string, string> = {
+    metadata: tk('Metadata'),
+    indexer: tk('Indexer'),
+    notifier: tk('Notifications'),
+    subtitles: tk('Subtitles'),
+    parser: tk('Names'),
+    task: tk('Task'),
+    events: tk('Events'),
+  };
 
   interface CatalogItem {
     id: string;

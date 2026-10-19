@@ -17,6 +17,7 @@ plugin imports `host`:
 | `log(level, message)` | the server log |
 | `setting(key)` | a value from the manifest's `settings` as the admin entered it (secrets included; never shown back) |
 | `kv-get` / `kv-set` | the plugin's own key-value store (10,000 keys) |
+| `library.search(query, limit)`, `library.item(id)` | read the libraries (`event-handler` world; needs `library = true` under `[permissions]`; never writes) |
 
 and exports one interface, chosen by its world:
 
@@ -28,6 +29,7 @@ and exports one interface, chosen by its world:
 | `subtitle-provider` | `search`, `download` | subtitles for an item (file hash, ids, title) |
 | `name-parser` | `parse` | reading file names before the built-in parser (after `.nfo` files) |
 | `scheduled-task` | `run` | a task in Settings → Tasks (`task_every_min`) |
+| `event-handler` | `on-event` | everything notifications hear (download done, torrent added, release grabbed, device paired, task failed) |
 
 Each call runs in a fresh instance with a 64 MiB memory limit and a 30 s deadline; three crashes
 or timeouts in a row disable the plugin.
@@ -81,7 +83,7 @@ version = "1.0.0"
 description = "One sentence."
 author = "You"
 host_api = "1"
-kinds = ["metadata"]          # metadata | indexer | notifier | subtitles | parser | task
+kinds = ["metadata"]          # metadata | indexer | notifier | subtitles | parser | task | events
 supplements = false           # metadata: only adds artwork/ids to another provider's match
 task_every_min = 60           # task: default interval
 runtime = "wasm"              # or "process"
@@ -91,6 +93,7 @@ command = ["my-plugin"]       # process: the program in the plugin's folder, and
 hosts = ["api.example.org", "*.cdn.example.org"]
 allow_local_network = false
 rate_per_sec = 4
+library = false               # events: may read the libraries
 
 [[settings]]
 key = "api_key"
@@ -105,7 +108,7 @@ required = true
 Put the folder (with `plugin.toml` and the program) into `<server data>/plugins/<id>/` and
 restart the server. The program reads one JSON-RPC 2.0 request per line on stdin and answers on
 stdout (log to stderr). Methods: `configure` (settings), `metadata.kinds|search|details|episodes`,
-`indexer.search`, `notifier.notify`, `subtitles.search|download`, `parser.parse`, `task.run` —
+`indexer.search`, `notifier.notify`, `subtitles.search|download`, `parser.parse`, `task.run`, `events.on_event` —
 parameters and results have the WIT records' shapes, field names in snake_case. The process is
 started on first use, restarted after it exits or times out, and told about new settings by a
 restart. See `crates/corrent-plugins/src/process.rs` and its Python test plugin.
