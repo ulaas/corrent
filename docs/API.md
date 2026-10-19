@@ -5,7 +5,7 @@ path `/api/v1`, JSON in and out (UTF-8), served over HTTPS (or plain HTTP on loo
 are the Rust structs in `crates/corrent-proto` (field names as written, snake_case); the
 TypeScript mirror is `web/src/lib/types.ts`. Separately: the qBittorrent-compatible API at
 `/api/v2` (for Sonarr/Radarr, see `src/webapi/`), Prometheus `/metrics` (opt-in), DLNA under
-`/dlna/` on its own port, and the Jellyfin-compatible subset (planned, `docs/JELLYFIN-PLAN.md`).
+`/dlna/` on its own port, and the Jellyfin-compatible subset at `/jellyfin` (docs/SERVER.md "Jellyfin apps").
 
 ## Signing in
 

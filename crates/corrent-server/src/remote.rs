@@ -17,6 +17,8 @@ pub struct Running {
     #[cfg(feature = "p2p")]
     mapper: Option<(portmapper::Client, tokio::task::JoinHandle<()>)>,
     dlna: Option<crate::dlna::Running>,
+    jellyfin: Option<crate::Listener>,
+    jellyfin_discovery: Option<tokio::task::JoinHandle<()>>,
     /// The settings the parts were started with.
     applied: Option<Applied>,
 }
@@ -30,6 +32,7 @@ struct Applied {
     name: String,
     relay_url: String,
     dlna: (bool, u16, String),
+    jellyfin: (bool, u16, bool),
 }
 
 pub fn config_of(c: &ServerConfig) -> RemoteConfig {
@@ -42,6 +45,9 @@ pub fn config_of(c: &ServerConfig) -> RemoteConfig {
         port_mapping: c.port_mapping,
         dlna: c.dlna,
         dlna_user: c.dlna_user.clone(),
+        jellyfin_api: c.jellyfin_api,
+        jellyfin_port: c.jellyfin_port,
+        jellyfin_discovery: c.jellyfin_discovery,
         allowed_networks: c.allowed_networks.clone(),
         trusted_proxies: c.trusted_proxies.clone(),
         hostnames: c.hostnames.clone(),
@@ -57,6 +63,9 @@ pub fn with_config(mut c: ServerConfig, r: RemoteConfig) -> ServerConfig {
     c.port_mapping = r.port_mapping;
     c.dlna = r.dlna;
     c.dlna_user = r.dlna_user.trim().to_string();
+    c.jellyfin_api = r.jellyfin_api;
+    c.jellyfin_port = r.jellyfin_port;
+    c.jellyfin_discovery = r.jellyfin_discovery;
     c.allowed_networks = r.allowed_networks;
     c.trusted_proxies = r.trusted_proxies;
     c.hostnames = r.hostnames;
@@ -88,6 +97,7 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
         port_mapping: cfg.port_mapping,
         name: name.clone(),
         relay_url: cfg.connect_relay_url.clone(),
+        jellyfin: (cfg.jellyfin_api, cfg.jellyfin_port, cfg.jellyfin_discovery),
         dlna: (cfg.dlna, cfg.dlna_port, cfg.dlna_user.clone()),
     };
     let mut run = st.remote.lock().await;
@@ -278,6 +288,47 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
             }
         }
     }
+    // The Jellyfin listener (plain HTTP, this network only) and discovery.
+    let jf_changed =
+        previous.as_ref().is_some_and(|p| p.jellyfin != (cfg.jellyfin_api, cfg.jellyfin_port, cfg.jellyfin_discovery));
+    let want_jf = cfg.jellyfin_api && cfg.jellyfin_port != 0 && !loopback_only(&cfg.bind);
+    if !want_jf || jf_changed {
+        run.jellyfin = None;
+        update(st, |s| {
+            s.jellyfin_port = None;
+            s.jellyfin_error = None;
+        });
+    }
+    if want_jf && run.jellyfin.is_none() {
+        match crate::jellyfin::listen(st.clone()).await {
+            Ok(l) => {
+                let port = l.addr.port();
+                run.jellyfin = Some(l);
+                update(st, |s| s.jellyfin_port = Some(port));
+            }
+            Err(e) => {
+                failed = true;
+                tracing::warn!("Jellyfin listener: {e:#}");
+                update(st, |s| s.jellyfin_error = Some(format!("port {}: {e:#}", cfg.jellyfin_port)));
+            }
+        }
+    }
+    let want_disc = cfg.jellyfin_api && cfg.jellyfin_discovery && !loopback_only(&cfg.bind);
+    if (!want_disc || jf_changed)
+        && let Some(t) = run.jellyfin_discovery.take()
+    {
+        t.abort();
+        update(st, |s| s.jellyfin_discovery = false);
+    }
+    if want_disc && run.jellyfin_discovery.is_none() {
+        match crate::jellyfin::discovery::serve(st.clone(), crate::jellyfin::discovery::PORT).await {
+            Ok(t) => {
+                run.jellyfin_discovery = Some(t);
+                update(st, |s| s.jellyfin_discovery = true);
+            }
+            Err(e) => tracing::warn!("Jellyfin discovery: {e:#}"),
+        }
+    }
     if failed {
         run.applied = None;
     }
@@ -310,6 +361,9 @@ pub async fn stop(st: &AppState) {
     if let Some((c, task)) = run.mapper.take() {
         c.deactivate();
         task.abort();
+    }
+    if let Some(t) = run.jellyfin_discovery.take() {
+        t.abort();
     }
     *run = Running::default();
 }

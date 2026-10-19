@@ -235,6 +235,9 @@ export interface RemoteConfig {
   port_mapping: boolean;
   dlna: boolean;
   dlna_user: string;
+  jellyfin_api: boolean;
+  jellyfin_port: number;
+  jellyfin_discovery: boolean;
   allowed_networks: string[];
   trusted_proxies: string[];
   hostnames: string[];
@@ -251,6 +254,9 @@ export interface RemoteStatus {
   port_mapping_error?: string;
   dlna_port?: number;
   dlna_error?: string;
+  jellyfin_port?: number;
+  jellyfin_discovery: boolean;
+  jellyfin_error?: string;
 }
 
 export interface RemoteAccess {

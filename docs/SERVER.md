@@ -214,6 +214,35 @@ position. API: `GET /api/v1/cast/devices[?refresh=true]`, `POST /cast/{device}/p
 `{item_id, position_ms}`, `GET /cast/{device}`, `POST /cast/{device}/command`
 `{action: play|pause|seek|volume|stop}`. AirPlay isn't supported.
 
+## Jellyfin apps
+
+With Remote access → **Let Jellyfin apps connect** (`jellyfin_api = true`), Jellyfin's own apps
+work with Corrent: Jellyfin Web / Media Player, Android TV, Findroid, Swiftfin, Infuse and the
+Kodi add-on sign in with a Corrent account, browse the libraries (movies, shows, music,
+audiobooks, home videos, photos — podcast libraries aren't shown) and play them.
+
+- **Address:** in the app type `http://<this computer's IP>:8096` (`jellyfin_port`; plain HTTP,
+  local network only, because the apps don't accept Corrent's private certificate authority).
+  Browsers that trust the server's certificate can also use `https://<server>:8443/jellyfin`.
+  With **Let Jellyfin apps find this server** the apps' network search (UDP 7359) lists it.
+- **What it says it is:** the apps only talk to a "Jellyfin Server" of a current version, so
+  Corrent answers as one (`jellyfin_version`, default 12.2.0); its own name is in the server name
+  ("Corrent (…)").
+- **Accounts:** the apps' sign-in creates a device (Settings → Devices) per app installation;
+  signing out or revoking it ends the session. Administrators aren't administrators in the apps
+  (no Jellyfin dashboard); Corrent's own clients manage the server. Accepted credentials:
+  `Authorization: MediaBrowser … Token=…`, `X-Emby-Token`, `X-MediaBrowser-Token`, `api_key` /
+  `ApiKey` query (broader than Jellyfin 12's defaults); never the browser cookie.
+- **Playback:** the app's device profile decides; files it plays are served as they are (Range),
+  others become an HLS transcode when the app starts playing (transcode permission needed).
+  External text subtitles are offered as WebVTT; embedded ones are burned in. Progress, played
+  and favorite marks are the same as in Corrent's clients.
+- **Artwork** loads without a token when the app asks for it by its tag (the image hash);
+  `jellyfin_public_images = true` serves it by item id too, as Jellyfin does.
+- **Not supported:** the admin dashboard, playlists and collections, live TV, SyncPlay through
+  the apps, trickplay thumbnails, lyrics, remote control of other sessions, and progressive
+  (non-HLS) transcodes. `jellyfin_cors = true` adds CORS for a Jellyfin Web hosted elsewhere.
+
 ## Installing as a service
 
 Packages: `Corrent-Server-<v>-linux-x86_64.tar.gz` / `-darwin-*.tar.gz` (`scripts/package-server.sh`),

@@ -9,11 +9,13 @@
 //! reports itself as "Jellyfin Server" with a current version because the apps accept nothing
 //! else; its real name is in `ServerName`.
 
+pub mod discovery;
 mod dto;
 pub mod ids;
 mod items;
 mod playback;
 mod playstate;
+mod socket;
 mod system;
 mod users;
 
@@ -281,6 +283,7 @@ pub fn service(st: Arc<AppState>) -> Router {
         .merge(items::routes())
         .merge(playback::routes())
         .merge(playstate::routes())
+        .route("/socket", axum::routing::get(socket::socket))
         .fallback(|| async { not_found() })
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .with_state(st.clone());

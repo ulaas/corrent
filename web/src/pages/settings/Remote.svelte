@@ -92,6 +92,20 @@
       {#if st.dlna_port}<div class="srow col"><span class="small muted">{t('DLNA is on (port {port}).', { port: st.dlna_port })}</span></div>{/if}
     {/if}
     {#if st.dlna_error}<div class="srow"><p class="form-error small">{st.dlna_error}</p></div>{/if}
+    <div class="srow toggle-row">
+      <Toggle bind:checked={draft.jellyfin_api} label={t('Let Jellyfin apps connect')} hint={t('Jellyfin Web, Android TV, Swiftfin, Findroid, Infuse and the Kodi add-on sign in with a Corrent account and play the libraries. On this network they use plain HTTP on the port below; browsers that trust this server’s certificate can also use its address with /jellyfin.')} />
+    </div>
+    {#if draft.jellyfin_api}
+      <div class="srow">
+        <div class="stext"><span class="slabel">{t('Port for Jellyfin apps')}</span><span class="shint">{t('Type this computer’s IP address and the port in the app (a name works once it’s listed under Host names). 0 turns the plain-HTTP port off.')}</span></div>
+        <div class="sctl"><input class="input num-input" type="number" min="0" max="65535" bind:value={draft.jellyfin_port} aria-label={t('Port for Jellyfin apps')} /></div>
+      </div>
+      <div class="srow toggle-row">
+        <Toggle bind:checked={draft.jellyfin_discovery} label={t('Let Jellyfin apps find this server')} hint={t('Answers the apps’ search on this network (UDP 7359).')} />
+      </div>
+      {#if st.jellyfin_port}<div class="srow col"><span class="small muted">{t('Jellyfin apps: http://<this computer>:{port}', { port: st.jellyfin_port })}</span></div>{/if}
+    {/if}
+    {#if st.jellyfin_error}<div class="srow"><p class="form-error small">{st.jellyfin_error}</p></div>{/if}
   </div>
 
   <div class="sgroup">

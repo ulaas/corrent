@@ -44,6 +44,12 @@ pub struct RemoteConfig {
     pub dlna: bool,
     /// The account whose libraries DLNA shows (empty: the first administrator).
     pub dlna_user: String,
+    /// The Jellyfin-compatible API for Jellyfin apps.
+    pub jellyfin_api: bool,
+    /// Its plain-HTTP listener on this network (0: off).
+    pub jellyfin_port: u16,
+    /// Answer Jellyfin apps looking for servers (UDP 7359).
+    pub jellyfin_discovery: bool,
     /// Extra networks treated as local (CIDR).
     pub allowed_networks: Vec<String>,
     pub trusted_proxies: Vec<String>,
@@ -76,6 +82,12 @@ pub struct RemoteStatus {
     pub dlna_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dlna_error: Option<String>,
+    /// The Jellyfin listener's port while it runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jellyfin_port: Option<u16>,
+    pub jellyfin_discovery: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jellyfin_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

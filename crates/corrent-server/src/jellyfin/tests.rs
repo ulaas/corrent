@@ -415,3 +415,104 @@ async fn shows_next_up_and_playback() {
     assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
     h.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plain_http_listener_and_discovery() {
+    let h =
+        harness("jf-listen", ServerConfig { tls: false, jellyfin_api: true, jellyfin_port: 0, ..Default::default() })
+            .await;
+    let _ = admin_token(&h.app).await;
+    let l = super::listen(h.st.clone()).await.unwrap();
+    let base = format!("http://127.0.0.1:{}", l.addr.port());
+    for path in ["/System/Info/Public", "/jellyfin/system/info/public"] {
+        let v: Value = reqwest::get(format!("{base}{path}")).await.unwrap().json().await.unwrap();
+        assert_eq!(v["ProductName"], "Jellyfin Server");
+        assert!(v["LocalAddress"].as_str().unwrap().starts_with("http://127.0.0.1:"), "{v}");
+    }
+    // Discovery answers the apps' question with the address to use.
+    let port = 20000 + (std::process::id() % 20000) as u16;
+    let task = super::discovery::serve(h.st.clone(), port).await.unwrap();
+    let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    sock.send_to(b"Who is JellyfinServer?", ("127.0.0.1", port)).await.unwrap();
+    let mut buf = [0u8; 2048];
+    let (n, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), sock.recv_from(&mut buf)).await.unwrap().unwrap();
+    let v: Value = serde_json::from_slice(&buf[..n]).unwrap();
+    assert!(v["Address"].as_str().unwrap().starts_with("http://127.0.0.1:"), "{v}");
+    assert_eq!(v["Id"].as_str().unwrap().len(), 32);
+    task.abort();
+    drop(l);
+    h.stop().await;
+}
+
+/// Garbage in (ids, numbers, headers, bodies) never gets a server error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inputs_never_break_it() {
+    let h = harness("jf-fuzz", ServerConfig { tls: false, jellyfin_api: true, ..Default::default() }).await;
+    let app = &h.app;
+    let _ = admin_token(app).await;
+    let (token, _) = login(app).await;
+    let a = with_token(&token);
+    let mut rng = corrent_fuzz::Rng::new(11);
+    let paths = [
+        "/jellyfin/Items?ParentId={x}&Limit={n}&StartIndex={n}&IncludeItemTypes={x}&SortBy={x}",
+        "/jellyfin/Items/{x}",
+        "/jellyfin/Users/{x}/Items/{x}",
+        "/jellyfin/Shows/{x}/Episodes?Season={n}&SeasonId={x}",
+        "/jellyfin/Items/{x}/Images/{x}?tag={x}&maxWidth={n}",
+        "/jellyfin/Videos/{x}/{x}?PlaySessionId={x}&api_key=",
+        "/jellyfin/Videos/{x}/{x}/Subtitles/{n}/0/Stream.{x}",
+        "/jellyfin/Shows/NextUp?SeriesId={x}&Limit={n}",
+        "/jellyfin/DisplayPreferences/{x}?client={x}",
+        "/jellyfin/UserItems/{x}/UserData",
+    ];
+    for i in 0..400 {
+        let x: String = url::form_urlencoded::byte_serialize(rng.text(40).as_bytes()).collect();
+        let n = match i % 4 {
+            0 => "-1".to_string(),
+            1 => "999999999999".into(),
+            2 => "1e9".into(),
+            _ => (rng.next_u64() % 100).to_string(),
+        };
+        let p = paths[i % paths.len()].replace("{x}", &x).replace("{n}", &n);
+        let p = format!("{p}{}", if p.ends_with('=') { token.clone() } else { String::new() });
+        let (s, v, _) = jf(app, Method::GET, &p, Some(&a), None).await;
+        assert!(!s.is_server_error(), "{p} → {s} {v}");
+    }
+    for body in [
+        json!(null),
+        json!({ "DeviceProfile": "x" }),
+        json!({ "DeviceProfile": { "DirectPlayProfiles": "x" } }),
+        json!([1, 2]),
+    ] {
+        let (s, _, _) = jf(
+            app,
+            Method::POST,
+            &format!("/jellyfin/Items/{}/PlaybackInfo", ids::enc(ids::ITEM, 1)),
+            Some(&a),
+            Some(body),
+        )
+        .await;
+        assert!(!s.is_server_error());
+        let (s, _, _) = jf(
+            app,
+            Method::POST,
+            "/jellyfin/Sessions/Playing/Progress",
+            Some(&a),
+            Some(json!({ "ItemId": 5, "PositionTicks": "x" })),
+        )
+        .await;
+        assert!(!s.is_server_error());
+    }
+    for auth in [
+        "MediaBrowser",
+        "MediaBrowser Token",
+        r#"MediaBrowser Token=""""#,
+        "Emby ,,,,=",
+        "MediaBrowser Token=\"ct_\u{1F600}\"",
+    ] {
+        let (s, _, _) = jf(app, Method::GET, "/jellyfin/Users/Me", Some(auth), None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{auth}");
+    }
+    h.stop().await;
+}
