@@ -248,7 +248,11 @@ impl Identity {
     }
 
     pub async fn user_count(&self) -> Result<i64, ApiError> {
-        self.db.read(|c| c.query_row("SELECT count(*) FROM users", [], |r| r.get(0))).await.map_err(db_err)
+        // The desktop app's own passwordless principal doesn't count: setup can still claim it.
+        self.db
+            .read(|c| c.query_row("SELECT count(*) FROM users WHERE pw_hash != ''", [], |r| r.get(0)))
+            .await
+            .map_err(db_err)
     }
 
     pub async fn create_user(&self, u: NewUser) -> Result<User, ApiError> {
@@ -309,8 +313,24 @@ impl Identity {
         let id = self
             .db
             .write(move |t| {
+                // The desktop app's passwordless "owner" (see `local_device_token`) is claimed:
+                // its id, and so the app's token, stay valid.
+                let claimed: Option<i64> = t
+                    .query_row(
+                        "SELECT id FROM users WHERE pw_hash = '' AND role = 'admin'                          AND NOT EXISTS (SELECT 1 FROM users WHERE pw_hash != '') ORDER BY id LIMIT 1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if let Some(id) = claimed {
+                    t.execute(
+                        "UPDATE users SET name = ?1, display_name = ?2, pw_hash = ?3 WHERE id = ?4",
+                        params![name, display, hash, id],
+                    )?;
+                    return Ok(Some(id));
+                }
                 let n = t.execute(
-                    "INSERT INTO users(name, display_name, pw_hash, role, created_at)                      SELECT ?1, ?2, ?3, 'admin', ?4 WHERE NOT EXISTS (SELECT 1 FROM users)",
+                    "INSERT INTO users(name, display_name, pw_hash, role, created_at)                      SELECT ?1, ?2, ?3, 'admin', ?4 WHERE NOT EXISTS (SELECT 1 FROM users WHERE pw_hash != '')",
                     params![name, display, hash, now],
                 )?;
                 Ok((n == 1).then(|| t.last_insert_rowid()))
@@ -328,17 +348,8 @@ impl Identity {
         let admin = self.users().await?.into_iter().find(|u| u.role == Role::Admin && !u.disabled);
         let admin = match admin {
             Some(a) => a,
-            None => {
-                let pw = hex(&random_bytes::<24>());
-                self.create_first_admin(NewUser {
-                    name: "owner".into(),
-                    display_name: String::new(),
-                    password: pw,
-                    role: Role::Admin,
-                    perms: None,
-                })
-                .await?
-            }
+            // No password: nobody can sign in as it, and first-run setup claims it.
+            None => self.insert_user("owner".into(), String::new(), String::new(), Role::Admin, None).await?,
         };
         let uid = admin.id;
         self.db
@@ -806,6 +817,7 @@ impl Identity {
         host: &str,
         server_id: &str,
         fingerprint: Option<&str>,
+        connect_id: Option<&str>,
     ) -> PairingCode {
         let mut link = format!(
             "corrent://pair?host={}&id={server_id}&code={code}",
@@ -813,6 +825,9 @@ impl Identity {
         );
         if let Some(fp) = fingerprint {
             link.push_str(&format!("&fp={fp}"));
+        }
+        if let Some(c) = connect_id {
+            link.push_str(&format!("&connect={c}"));
         }
         PairingCode { code: code.to_string(), expires_at, link }
     }
@@ -909,5 +924,20 @@ mod tests {
         id.audit(Some("sonarr"), "127.0.0.1", "login", "", true, "").await;
         assert_eq!(id.audit_log(10, None).await.unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(id.db().path().parent().unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn setup_claims_the_desktop_owner() {
+        let id = scratch("claim");
+        let (owner, issued) = id.local_device_token().await.unwrap();
+        assert_eq!(id.user_count().await.unwrap(), 0, "setup is still offered");
+        assert!(id.authenticate("owner", "").await.is_err());
+        let admin = id.create_first_admin(new_admin("me", "correct horse battery")).await.unwrap();
+        assert_eq!(admin.id, owner.id, "same account: the app's token keeps working");
+        assert!(id.verify_token(&issued.token, "127.0.0.1").await.unwrap().is_some());
+        assert_eq!(id.user_count().await.unwrap(), 1);
+        assert!(id.create_first_admin(new_admin("other", "correct horse battery")).await.is_err());
+        let (again, _) = id.local_device_token().await.unwrap();
+        assert_eq!(again.id, admin.id);
     }
 }

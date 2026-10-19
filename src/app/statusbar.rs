@@ -19,7 +19,13 @@ impl CorrentApp {
                 EngineState::Restarting => (p.warn, t!("Reconnecting…").to_string()),
                 EngineState::Failed(e) => (p.error, t!("Engine error: {e}", e = e)),
                 EngineState::Running if let Some(srv) = &self.server => {
-                    (p.success, t!("Server: {name}", name = srv.entry.name))
+                    let via_connect = srv.status.route.load().as_ref().is_some_and(|r| r.via_connect);
+                    let text = if via_connect {
+                        t!("Server: {name} (Corrent Connect)", name = srv.entry.name)
+                    } else {
+                        t!("Server: {name}", name = srv.entry.name)
+                    };
+                    (p.success, text)
                 }
                 EngineState::Running => match s.dht_nodes {
                     Some(n) if n > 0 => (p.success, t!("DHT: {n} nodes", n = n)),

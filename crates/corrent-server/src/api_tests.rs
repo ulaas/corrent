@@ -596,6 +596,64 @@ async fn browser_websockets_need_our_origin() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_access_settings() {
+    let h = harness("remote", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let (s, v, _) = send(app, Method::GET, "/api/v1/server/remote", &admin, Value::Null).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["config"]["discovery"], true);
+    assert_eq!(v["config"]["connect"], false);
+    let (s, _, _) = send(
+        app,
+        Method::PUT,
+        "/api/v1/server/remote",
+        &admin,
+        json!({ "discovery": false, "allowed_networks": ["not a network"] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, v, _) = send(
+        app,
+        Method::PUT,
+        "/api/v1/server/remote",
+        &admin,
+        json!({ "discovery": false, "connect_relay": true, "allowed_networks": ["203.0.113.0/24"] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["config"]["allowed_networks"][0], "203.0.113.0/24");
+    let saved = ServerConfig::load(&h.st.paths.data_dir).unwrap();
+    assert!(!saved.discovery && saved.allowed_networks == vec!["203.0.113.0/24".to_string()]);
+    // The new network counts as local right away.
+    assert!(crate::net::is_local("203.0.113.9".parse().unwrap(), &h.st.nets.load().allowed));
+    // Not for regular users.
+    let (s, _, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        &admin,
+        json!({ "name": "viewer", "password": "viewer password", "role": "user" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, v, _) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call {
+            body: Some(json!({ "username": "viewer", "password": "viewer password", "device": device() })),
+            ..Default::default()
+        },
+    )
+    .await;
+    let user = v["token"].as_str().unwrap().to_string();
+    let (s, _, _) = send(app, Method::GET, "/api/v1/server/remote", &user, Value::Null).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_with_the_servers_own_ca() {
     let h = harness("https", ServerConfig::default()).await;
     let tls =

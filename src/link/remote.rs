@@ -38,6 +38,61 @@ pub struct RemoteStatus {
     /// Why the server can't be reached right now.
     pub problem: ArcSwapOption<String>,
     pub connected: std::sync::atomic::AtomicBool,
+    /// How the server is reached right now.
+    pub route: ArcSwapOption<Route>,
+}
+
+/// Use the public relays for Connect (tests turn them off to stay offline).
+pub static CONNECT_RELAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// One way to the server: its own address, or Corrent Connect through a loopback bridge.
+pub struct Route {
+    pub url: String,
+    pub ca: Option<String>,
+    pub api: MediaClient,
+    pub via_connect: bool,
+    #[cfg(feature = "p2p")]
+    _bridge: Option<corrent_server::p2p::Bridge>,
+}
+
+/// Finds a way to the server: its address first (the same server must answer), then Corrent
+/// Connect when the server has it.
+pub async fn resolve(server: &ServerEntry) -> Result<Route, String> {
+    let lan = MediaClient::new(&server.url, &server.token, server.ca())?;
+    let lan_err = match tokio::time::timeout(
+        Duration::from_secs(5),
+        lan.get::<corrent_proto::server::ServerInfo>("/api/v1/server/info"),
+    )
+    .await
+    {
+        Ok(Ok(info)) if server.id.is_empty() || info.id == server.id => {
+            return Ok(Route {
+                url: server.url.clone(),
+                ca: server.ca().map(str::to_string),
+                api: lan,
+                via_connect: false,
+                #[cfg(feature = "p2p")]
+                _bridge: None,
+            });
+        }
+        Ok(Ok(_)) => t!("A different server answers at this address.").to_string(),
+        Ok(Err(e)) => t!("Can't reach the server: {e}", e = e),
+        Err(_) => t!("The server didn't answer.").to_string(),
+    };
+    #[cfg(feature = "p2p")]
+    if !server.connect_id.is_empty() {
+        let id: corrent_server::p2p::EndpointId =
+            server.connect_id.parse().map_err(|_| t!("The Corrent Connect address isn't valid.").to_string())?;
+        let direct = server.connect_addrs.iter().filter_map(|a| a.parse().ok()).collect();
+        let relay = CONNECT_RELAY.load(std::sync::atomic::Ordering::Relaxed);
+        let b = corrent_server::p2p::bridge(id, relay, direct)
+            .await
+            .map_err(|e| t!("Corrent Connect: {e}", e = format!("{e:#}")))?;
+        let url = b.url();
+        let api = MediaClient::new(&url, &server.token, None)?;
+        return Ok(Route { url, ca: None, api, via_connect: true, _bridge: Some(b) });
+    }
+    Err(lan_err)
 }
 
 /// The backend for `server`, and the status the UI reads.
@@ -127,8 +182,9 @@ async fn run(server: ServerEntry, status: Arc<RemoteStatus>, mut io: BackendIo) 
         wake: io.wake.clone(),
         status: status.clone(),
     });
-    shared.publish();
-    let api = match MediaClient::new(&server.url, &server.token, server.ca()) {
+    // After a restart the status still describes the previous task.
+    shared.set_connected(false, None);
+    let fallback = match MediaClient::new(&server.url, &server.token, server.ca()) {
         Ok(c) => c,
         Err(e) => {
             shared.set_connected(false, Some(e));
@@ -142,16 +198,8 @@ async fn run(server: ServerEntry, status: Arc<RemoteStatus>, mut io: BackendIo) 
         }
     };
     let (target_tx, target_rx) = tokio::sync::watch::channel(None);
-    let ws = tokio::spawn(ws_loop(server.clone(), shared.clone(), api.clone(), io.events.clone(), target_rx));
-    {
-        let (api, status) = (api.clone(), status.clone());
-        tokio::spawn(async move {
-            if let Ok(s) = api.get::<Settings>("/api/v1/server/settings").await {
-                status.settings.store(Some(Arc::new(s)));
-            }
-        });
-    }
-    let ctx = Ctx { api, events: io.events.clone(), wake: io.wake.clone(), shared: shared.clone() };
+    let ws = tokio::spawn(ws_loop(server.clone(), shared.clone(), io.events.clone(), target_rx));
+    let ctx = Ctx { fallback, events: io.events.clone(), wake: io.wake.clone(), shared: shared.clone() };
     while let Some(cmd) = io.commands.recv().await {
         match cmd {
             EngineCommand::Shutdown(tx) => {
@@ -177,13 +225,21 @@ async fn run(server: ServerEntry, status: Arc<RemoteStatus>, mut io: BackendIo) 
 
 #[derive(Clone)]
 struct Ctx {
-    api: MediaClient,
+    /// Used while no route is known (calls then fail with a readable error).
+    fallback: MediaClient,
     events: std::sync::mpsc::Sender<EngineEvent>,
     wake: Wake,
     shared: Arc<Shared>,
 }
 
 impl Ctx {
+    fn api(&self) -> MediaClient {
+        match self.shared.status.route.load_full() {
+            Some(r) => r.api.clone(),
+            None => self.fallback.clone(),
+        }
+    }
+
     fn toast(&self, kind: ToastKind, text: String) {
         let _ = self.events.send(EngineEvent::Toast(kind, text));
         self.wake.wake();
@@ -203,12 +259,12 @@ impl Ctx {
     }
 
     fn post(&self, path: String, body: serde_json::Value) {
-        let api = self.api.clone();
+        let api = self.api();
         self.call(async move { api.send::<serde_json::Value, _>(reqwest::Method::POST, &path, &body).await.map(drop) });
     }
 
     fn patch(&self, hash: InfoHash, body: serde_json::Value) {
-        let api = self.api.clone();
+        let api = self.api();
         self.call(async move {
             api.send::<serde_json::Value, _>(
                 reqwest::Method::PATCH,
@@ -231,13 +287,13 @@ impl Ctx {
     fn command(&self, cmd: EngineCommand) {
         match cmd {
             EngineCommand::Add(r) => {
-                let api = self.api.clone();
+                let api = self.api();
                 self.call(add(api, *r));
             }
             EngineCommand::Preview { req, source } => {
                 let me = self.clone();
                 tokio::spawn(async move {
-                    let result = preview(&me.api, source).await.map(Box::new);
+                    let result = preview(&me.api(), source).await.map(Box::new);
                     let _ = me.events.send(EngineEvent::PreviewReady { req, result });
                     me.wake.wake();
                 });
@@ -254,7 +310,7 @@ impl Ctx {
             EngineCommand::RssRefresh(url) => {
                 let me = self.clone();
                 self.call(async move {
-                    me.api
+                    me.api()
                         .send::<serde_json::Value, _>(
                             reqwest::Method::POST,
                             "/api/v1/rss/refresh",
@@ -262,12 +318,12 @@ impl Ctx {
                         )
                         .await?;
                     tokio::time::sleep(Duration::from_secs(3)).await;
-                    refresh_rss(&me.api, &me.shared).await;
+                    refresh_rss(&me.api(), &me.shared).await;
                     Ok(())
                 });
             }
             EngineCommand::RssMarkDownloaded { .. } => {}
-            EngineCommand::UndoRemove(_) => self.action("undo_remove", &[]),
+            EngineCommand::UndoRemove(h) => self.action("undo_remove", &h),
             EngineCommand::CancelAdd(h) => self.action("remove", &[h]),
             EngineCommand::Pause(h) => self.action("pause", &h),
             EngineCommand::Resume(h) => self.action("resume", &h),
@@ -341,7 +397,7 @@ impl Ctx {
             }
             EngineCommand::SetCategories(cats) => {
                 let labels = wire::labels(&Snapshot { categories: cats, ..Default::default() });
-                let api = self.api.clone();
+                let api = self.api();
                 self.call(async move {
                     api.send::<serde_json::Value, _>(
                         reqwest::Method::PUT,
@@ -353,7 +409,7 @@ impl Ctx {
                 });
             }
             EngineCommand::SetTagList(tags) => {
-                let api = self.api.clone();
+                let api = self.api();
                 self.call(async move {
                     api.send::<serde_json::Value, _>(reqwest::Method::PUT, "/api/v1/torrents/tags", &tags)
                         .await
@@ -362,14 +418,14 @@ impl Ctx {
             }
             EngineCommand::SetAltSpeed(on) => self.post("/api/v1/server/alt-speed".into(), json!({ "on": on })),
             EngineCommand::Detail { hash, reply } => {
-                let api = self.api.clone();
+                let api = self.api();
                 tokio::spawn(async move {
                     let d = api.get::<p::TorrentDetail>(&format!("/api/v1/torrents/{}/detail", hash.to_hex())).await;
                     let _ = reply.send(d.ok().map(|d| wire::detail_view(&d)));
                 });
             }
             EngineCommand::FileList { hash, reply } => {
-                let api = self.api.clone();
+                let api = self.api();
                 tokio::spawn(async move {
                     let d = api.get::<p::TorrentDetail>(&format!("/api/v1/torrents/{}/detail", hash.to_hex())).await;
                     let _ = reply.send(d.ok().map(|d| wire::detail_view(&d).files));
@@ -483,8 +539,8 @@ fn tls_config(ca: Option<&str>) -> Result<rustls::ClientConfig, String> {
 }
 
 /// Opens the realtime channel (the error is shown to people).
-async fn connect_ws(server: &ServerEntry) -> Result<Ws, String> {
-    let u = url::Url::parse(&server.url).map_err(|e| e.to_string())?;
+async fn connect_ws(base: &str, ca: Option<&str>, token: &str) -> Result<Ws, String> {
+    let u = url::Url::parse(base).map_err(|e| e.to_string())?;
     let host = match u.host() {
         Some(url::Host::Domain(d)) => d.to_string(),
         Some(url::Host::Ipv4(a)) => a.to_string(),
@@ -498,7 +554,7 @@ async fn connect_ws(server: &ServerEntry) -> Result<Ws, String> {
         .map_err(|e| t!("Can't reach the server: {e}", e = e))?;
     let _ = tcp.set_nodelay(true);
     let stream: Box<dyn Io> = if u.scheme() == "https" {
-        let config = tls_config(server.ca())?;
+        let config = tls_config(ca)?;
         let name = rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
         let tls = tokio_rustls::TlsConnector::from(Arc::new(config))
             .connect(name, tcp)
@@ -508,11 +564,11 @@ async fn connect_ws(server: &ServerEntry) -> Result<Ws, String> {
     } else {
         Box::new(tcp)
     };
-    let ws_url = format!("{}/api/v1/events", server.url.replacen("http", "ws", 1));
+    let ws_url = format!("{}/api/v1/events", base.replacen("http", "ws", 1));
     let mut req = ws_url.into_client_request().map_err(|e| e.to_string())?;
     req.headers_mut().insert(
         reqwest::header::AUTHORIZATION,
-        format!("Bearer {}", server.token).parse().map_err(|_| "bad token".to_string())?,
+        format!("Bearer {token}").parse().map_err(|_| "bad token".to_string())?,
     );
     match tokio_tungstenite::client_async(req, stream).await {
         Ok((ws, _)) => Ok(ws),
@@ -545,13 +601,29 @@ async fn send(ws: &mut Ws, m: &ClientMessage) -> bool {
 async fn ws_loop(
     server: ServerEntry,
     shared: Arc<Shared>,
-    api: MediaClient,
     events: std::sync::mpsc::Sender<EngineEvent>,
     mut target: tokio::sync::watch::Receiver<Option<InfoHash>>,
 ) {
     let mut delay = Duration::from_secs(1);
     loop {
-        let problem = match connect_ws(&server).await {
+        // A fresh route after every failure (the LAN may be back, or gone).
+        let route = match resolve(&server).await {
+            Ok(r) => {
+                let r = Arc::new(r);
+                shared.status.route.store(Some(r.clone()));
+                r
+            }
+            Err(e) => {
+                shared.status.route.store(None);
+                tracing::info!("server {}: {e}", server.name);
+                shared.set_connected(false, Some(e));
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(30));
+                continue;
+            }
+        };
+        let api = route.api.clone();
+        let problem = match connect_ws(&route.url, route.ca.as_deref(), &server.token).await {
             Ok(mut ws) => {
                 delay = Duration::from_secs(1);
                 let mut subscribed = *target.borrow_and_update();
@@ -560,18 +632,30 @@ async fn ws_loop(
                 if send(&mut ws, &ClientMessage::Subscribe { topics }).await {
                     shared.set_connected(true, None);
                     refresh_rss(&api, &shared).await;
+                    if let Ok(s) = api.get::<Settings>("/api/v1/server/settings").await {
+                        shared.status.settings.store(Some(Arc::new(s)));
+                    }
                 }
                 let mut ping = tokio::time::interval(Duration::from_secs(30));
                 let mut rss = tokio::time::interval(Duration::from_secs(60));
+                // The server sends session stats every second and answers pings: silence means
+                // a dead connection (sleep, network change) that TCP hasn't noticed yet.
+                let mut last_heard = std::time::Instant::now();
                 loop {
+                    if last_heard.elapsed() > Duration::from_secs(75) {
+                        break t!("The connection to the server was lost.").to_string();
+                    }
                     tokio::select! {
                         m = ws.next() => match m {
-                            Some(Ok(m)) => match decode(m) {
-                                Some(Ok(Event::Bye)) => break t!("The server is restarting.").to_string(),
-                                Some(Ok(ev)) => on_event(&shared, &events, ev),
-                                Some(Err(())) => {}
-                                None => break t!("The server closed the connection.").to_string(),
-                            },
+                            Some(Ok(m)) => {
+                                last_heard = std::time::Instant::now();
+                                match decode(m) {
+                                    Some(Ok(Event::Bye)) => break t!("The server is restarting.").to_string(),
+                                    Some(Ok(ev)) => on_event(&shared, &events, ev),
+                                    Some(Err(())) => {}
+                                    None => break t!("The server closed the connection.").to_string(),
+                                }
+                            }
                             Some(Err(e)) => break e.to_string(),
                             None => break t!("The server closed the connection.").to_string(),
                         },
@@ -709,7 +793,7 @@ mod tests {
         corrent_server::forward_engine_events(server_engine.events, local.state.clone());
 
         let entry = ServerEntry {
-            id: "test".into(),
+            id: local.state.server_id.clone(),
             name: "Test".into(),
             url: local.base_url.clone(),
             token: local.token.clone(),
@@ -779,6 +863,55 @@ mod tests {
 
         let c2 = client.clone();
         tokio::task::spawn_blocking(move || c2.shutdown_blocking(Duration::from_secs(5))).await.unwrap();
+        let e2 = server_engine.engine.clone();
+        tokio::task::spawn_blocking(move || e2.shutdown_blocking(Duration::from_secs(10))).await.unwrap();
+        drop(local);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The server's address is unreachable: the link falls back to Corrent Connect.
+    #[cfg(feature = "p2p")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn falls_back_to_corrent_connect() {
+        CONNECT_RELAY.store(false, std::sync::atomic::Ordering::Relaxed);
+        let dir = testkit::temp_dir("remote-connect");
+        let server_engine = testkit::start(&dir);
+        let settings = Arc::new(ArcSwap::from_pointee(testkit::settings(&dir)));
+        let local = corrent_server::local::start(server_engine.engine.clone(), settings, server_engine.paths.clone())
+            .await
+            .unwrap();
+        let p2p = corrent_server::p2p::serve(
+            corrent_server::router(local.state.clone()),
+            corrent_server::p2p::load_or_create_key(&dir).unwrap(),
+            false,
+            Some("127.0.0.1:0".parse().unwrap()),
+        )
+        .await
+        .unwrap();
+        let entry = ServerEntry {
+            id: local.state.server_id.clone(),
+            name: "Far away".into(),
+            // Nothing listens here.
+            url: "http://127.0.0.1:9".into(),
+            token: local.token.clone(),
+            connect_id: p2p.id().to_string(),
+            connect_addrs: p2p.endpoint.bound_sockets().iter().map(|a| a.to_string()).collect(),
+            ..Default::default()
+        };
+        let (backend, status) = backend(entry);
+        let (tx, _events) = std::sync::mpsc::channel();
+        let paths = corrent_core::config::Paths { data_dir: dir.join("client"), portable: true };
+        let client = EngineHandle::with_backend(&tokio::runtime::Handle::current(), paths, Wake::noop(), tx, backend);
+        until("connection over Connect", || status.connected.load(std::sync::atomic::Ordering::Relaxed).then_some(()))
+            .await;
+        let route = status.route.load_full().unwrap();
+        assert!(route.via_connect && route.url.starts_with("http://127.0.0.1:"));
+        // Plain API calls go the same way.
+        let info: corrent_proto::server::ServerInfo = route.api.get("/api/v1/server/info").await.unwrap();
+        assert_eq!(info.id, local.state.server_id);
+        let c2 = client.clone();
+        tokio::task::spawn_blocking(move || c2.shutdown_blocking(Duration::from_secs(5))).await.unwrap();
+        drop(p2p);
         let e2 = server_engine.engine.clone();
         tokio::task::spawn_blocking(move || e2.shutdown_blocking(Duration::from_secs(10))).await.unwrap();
         drop(local);

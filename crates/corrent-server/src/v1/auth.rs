@@ -150,7 +150,14 @@ async fn pair_code(
     let (code, expires) = st.identity.pairing_code(uid).await?;
     let host = req.host.unwrap_or(host.0);
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "pairing_code", &uid.to_string(), true, "").await;
-    Ok(Json(Identity::pairing_link(&code, expires, &host, &st.server_id, st.tls_fingerprint.as_deref())))
+    Ok(Json(Identity::pairing_link(
+        &code,
+        expires,
+        &host,
+        &st.server_id,
+        st.tls_fingerprint.as_deref(),
+        st.remote_status.load().connect_id.as_deref(),
+    )))
 }
 
 async fn pair(

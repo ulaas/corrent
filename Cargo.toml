@@ -14,7 +14,9 @@ exclude = ["plugins"]
 resolver = "3"
 
 [features]
-default = []
+default = ["p2p"]
+# Corrent Connect: reaching servers through NATs (iroh).
+p2p = ["corrent-server/p2p"]
 
 [dependencies]
 corrent-i18n = { path = "crates/corrent-i18n" }

@@ -382,6 +382,10 @@ pub struct CorrentApp {
     /// The server used instead of the local engine (None: local).
     pub server: Option<connect::ServerLink>,
     pub connect: Option<connect::ConnectDialog>,
+    /// Saved servers (`servers.toml`).
+    pub servers: crate::link::Servers,
+    /// Switching back to the local engine once the previous local session has stopped.
+    pending_local: bool,
     /// A local engine stopping after a switch to a server (joined before starting a new one).
     local_stopping: Option<std::thread::JoinHandle<()>>,
 }
@@ -436,6 +440,9 @@ impl CorrentApp {
         prefs.tracker_filter = GroupFilter::All;
         let (tx, rx) = std::sync::mpsc::channel();
         let ui_events_tx = tx.clone();
+        // Read once at startup (a small file); later changes are kept in memory and saved off
+        // the UI thread.
+        let servers = crate::link::Servers::load(&paths);
         let (engine, server) = connect::start_engine(
             &rt,
             &paths,
@@ -445,6 +452,7 @@ impl CorrentApp {
                 crate::engine::Wake::new(move || ctx.request_repaint())
             },
             tx,
+            servers.active_entry().cloned(),
         );
         if first_run {
             let _ = settings.save(&paths);
@@ -519,6 +527,8 @@ impl CorrentApp {
             media_dev_started: None,
             media: Default::default(),
             server,
+            servers,
+            pending_local: false,
             connect: None,
             media_dev_pair: None,
             local_stopping: None,
@@ -791,6 +801,12 @@ impl CorrentApp {
             // The in-process media server acts on engine events too (imports, wanted list).
             if let Some(local) = self.media.local() {
                 corrent_server::integrate::on_engine_event(&local.state, &self.rt, ev.clone());
+            } else if self.server.is_none()
+                && self.media.error.is_none()
+                && self.media.early_events.len() < 1000
+                && matches!(ev, EngineEvent::Completed { .. } | EngineEvent::Added { .. })
+            {
+                self.media.early_events.push(ev.clone());
             }
             match ev {
                 EngineEvent::Toast(kind, text) => self.toasts.push(kind, text),
@@ -984,6 +1000,7 @@ impl eframe::App for CorrentApp {
         self.drain_pickers();
         self.drain_events(ctx);
         self.media_tick(ctx);
+        self.switch_tick();
         #[cfg(debug_assertions)]
         self.media_dev_hooks(ctx);
         self.window_logic(ctx);
@@ -1006,6 +1023,7 @@ impl eframe::App for CorrentApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.engine.shutdown_blocking(std::time::Duration::from_secs(8));
+        self.wait_for_old_engine();
     }
 }
 

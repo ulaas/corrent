@@ -11,9 +11,9 @@ use super::CorrentApp;
 use super::media::client::{Slot, fetch, ready};
 use crate::config::{Paths, Settings};
 use crate::engine::{EngineEvent, EngineHandle, Wake};
+use crate::link::ServerEntry;
 use crate::link::pair::{self, Credentials, Trusted};
 use crate::link::remote::RemoteStatus;
-use crate::link::{ServerEntry, Servers};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{primary_button, secondary_button};
 
@@ -29,15 +29,16 @@ impl ServerLink {
     }
 }
 
-/// Starts the engine the saved choice asks for: the active server, or a local session.
+/// Starts the engine for `server`, or a local session.
 pub fn start_engine(
     rt: &tokio::runtime::Handle,
     paths: &Paths,
     settings: &Settings,
     wake: Wake,
     events: std::sync::mpsc::Sender<EngineEvent>,
+    server: Option<ServerEntry>,
 ) -> (EngineHandle, Option<ServerLink>) {
-    match Servers::load(paths).active_entry().cloned() {
+    match server {
         Some(entry) => {
             let (backend, status) = crate::link::remote::backend(entry.clone());
             tracing::info!("using the server {} at {}", entry.name, entry.url);
@@ -56,12 +57,15 @@ enum Step {
 pub struct ConnectDialog {
     address: String,
     fingerprint: String,
+    connect_id: String,
     code: String,
     user: String,
     password: String,
     use_password: bool,
     /// The fingerprint came from a pairing link (or was typed) and matched.
     pinned: bool,
+    /// Unpinned: the person confirmed the shown fingerprint matches.
+    confirmed: bool,
     step: Step,
     trusting: Option<Slot<Trusted>>,
     pairing: Option<Slot<ServerEntry>>,
@@ -73,11 +77,13 @@ impl Default for ConnectDialog {
         ConnectDialog {
             address: String::new(),
             fingerprint: String::new(),
+            connect_id: String::new(),
             code: String::new(),
             user: String::new(),
             password: String::new(),
             use_password: false,
             pinned: false,
+            confirmed: false,
             step: Step::Address,
             trusting: None,
             pairing: None,
@@ -111,23 +117,54 @@ impl CorrentApp {
 
     /// Switches to a server (`Some`) or back to this computer's engine (`None`) and remembers it.
     pub fn use_server(&mut self, entry: Option<ServerEntry>) {
-        let mut servers = Servers::load(&self.paths);
-        servers.active = entry.as_ref().map(|e| e.id.clone());
+        self.servers.active = entry.as_ref().map(ServerEntry::key);
         if let Some(e) = &entry {
-            servers.upsert(e.clone());
+            self.servers.upsert(e.clone());
         }
-        if let Err(e) = servers.save(&self.paths) {
-            self.toasts.push(crate::engine::ToastKind::Error, t!("Couldn't save the server list: {e}", e = e));
+        let (servers, paths, tx) = (self.servers.clone(), self.paths.clone(), self.ui_events_tx.clone());
+        self.rt.spawn_blocking(move || {
+            if let Err(e) = servers.save(&paths) {
+                let _ = tx.send(EngineEvent::Toast(
+                    crate::engine::ToastKind::Error,
+                    t!("Couldn't save the server list: {e}", e = e),
+                ));
+            }
+        });
+        // Back to this computer's engine: the previous local session must have stopped first
+        // (it owns the profile). Checked every frame by `switch_tick`.
+        if entry.is_none() && self.local_stopping.as_ref().is_some_and(|h| !h.is_finished()) {
+            self.pending_local = true;
+            self.toasts.push(crate::engine::ToastKind::Info, t!("Waiting for the torrent engine to stop…").to_string());
             return;
         }
+        self.switch_engine(entry);
+    }
+
+    /// Finishes a switch that waited for the old local engine.
+    pub(super) fn switch_tick(&mut self) {
+        if !self.pending_local {
+            return;
+        }
+        if self.local_stopping.as_ref().is_none_or(|h| h.is_finished()) {
+            self.pending_local = false;
+            self.switch_engine(None);
+        } else {
+            self.ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+    }
+
+    fn switch_engine(&mut self, entry: Option<ServerEntry>) {
         // The old engine stops in the background (a local one flushes its state first).
         let old = self.engine.clone();
         let was_local = !old.is_remote();
         let stopping = std::thread::spawn(move || old.shutdown_blocking(std::time::Duration::from_secs(20)));
-        if entry.is_none()
-            && let Some(prev) = self.local_stopping.take()
-        {
-            let _ = prev.join();
+        if let Some(prev) = self.local_stopping.take() {
+            if prev.is_finished() {
+                let _ = prev.join();
+            } else {
+                // Still flushing (local → server → server): keep waiting for it at exit.
+                self.local_stopping = Some(prev);
+            }
         }
         if was_local {
             self.local_stopping = Some(stopping);
@@ -136,7 +173,8 @@ impl CorrentApp {
             let ctx = self.ctx.clone();
             Wake::new(move || ctx.request_repaint())
         };
-        let (engine, link) = start_engine(&self.rt, &self.paths, &self.settings, wake, self.ui_events_tx.clone());
+        let (engine, link) =
+            start_engine(&self.rt, &self.paths, &self.settings, wake, self.ui_events_tx.clone(), entry);
         self.engine = engine;
         self.server = link;
         self.snap = Arc::new(crate::engine::types::Snapshot::default());
@@ -153,6 +191,19 @@ impl CorrentApp {
         self.toasts.push(crate::engine::ToastKind::Info, text);
     }
 
+    /// At exit: a local engine stopped by a switch finishes flushing (bounded).
+    pub(super) fn wait_for_old_engine(&mut self) {
+        if let Some(h) = self.local_stopping.take() {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while !h.is_finished() && std::time::Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            if h.is_finished() {
+                let _ = h.join();
+            }
+        }
+    }
+
     /// The Connect dialog (when open).
     pub(super) fn connect_dialog(&mut self, ctx: &Context, p: &Palette) {
         let Some(mut d) = self.connect.take() else { return };
@@ -162,6 +213,7 @@ impl CorrentApp {
             match r {
                 Ok(t) => {
                     d.error = None;
+                    d.confirmed = false;
                     d.step = Step::SignIn(Box::new(t));
                 }
                 Err(e) => d.error = Some(e),
@@ -207,6 +259,7 @@ impl CorrentApp {
                         if !l.fingerprint.is_empty() {
                             d.fingerprint = l.fingerprint;
                         }
+                        d.connect_id = l.connect;
                     }
                     ui.add_space(4.0);
                     ui.label(t!("Certificate fingerprint (optional)"));
@@ -230,6 +283,7 @@ impl CorrentApp {
                         ui.label(
                             RichText::new(crate::link::pair::short(&t.fingerprint)).monospace().color(p.text),
                         );
+                        ui.checkbox(&mut d.confirmed, t!("It matches"));
                     } else if t.url.starts_with("http://") {
                         ui.label(
                             RichText::new(t!("This connection isn't encrypted. Use it only on this computer."))
@@ -267,15 +321,18 @@ impl CorrentApp {
                         Step::Address => t!("Continue"),
                         Step::SignIn(_) => t!("Connect"),
                     };
-                    if ui.add_enabled_ui(!busy, |ui| primary_button(ui, p, label)).inner.clicked() {
+                    // Sending a code or password to an unchecked server needs the person's word.
+                    let unchecked = matches!(&d.step, Step::SignIn(t) if !t.fingerprint.is_empty() && !d.pinned && !d.confirmed);
+                    if ui.add_enabled_ui(!busy && !unchecked, |ui| primary_button(ui, p, label)).inner.clicked() {
                         d.error = None;
                         match &d.step {
                             Step::Address => match pair::base_url(&d.address) {
                                 Some(url) => {
                                     let fp = d.fingerprint.trim().to_string();
-                                    d.pinned = pair::normalize_fingerprint(&fp).len() >= 32;
+                                    let connect = d.connect_id.trim().to_string();
+                                    d.pinned = pair::normalize_fingerprint(&fp).len() >= 32 || !connect.is_empty();
                                     d.trusting = Some(fetch(&self.rt, ctx, async move {
-                                        pair::trust(&url, Some(fp.as_str()).filter(|f| !f.is_empty())).await
+                                        pair::trust(&url, Some(fp.as_str()).filter(|f| !f.is_empty()), &connect).await
                                     }));
                                 }
                                 None => d.error = Some(t!("The server address isn't valid.").to_string()),
@@ -323,7 +380,7 @@ impl CorrentApp {
                 ui.label(RichText::new(t!("Connected to {name}", name = name)).small().weak());
             }
             None => {
-                let saved = Servers::load(&self.paths).list;
+                let saved = self.servers.list.clone();
                 if ui.button(format!("{}  {}", icons::HARD_DRIVES, t!("Connect to a server…"))).clicked() {
                     self.open_connect();
                 }

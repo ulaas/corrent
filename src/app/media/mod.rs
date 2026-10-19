@@ -41,6 +41,8 @@ struct Grid {
 #[derive(Default)]
 pub struct MediaState {
     local: Option<Arc<corrent_server::local::LocalServer>>,
+    /// Engine events from before the in-process server was up (imports must still happen).
+    pub early_events: Vec<crate::engine::EngineEvent>,
     starting: Option<Slot<Arc<corrent_server::local::LocalServer>>>,
     pub client: Option<MediaClient>,
     pub error: Option<String>,
@@ -58,6 +60,8 @@ pub struct MediaState {
     pub gl: Option<GlAccess>,
     selected_season: HashMap<i64, i64>,
     refreshed: Option<std::time::Instant>,
+    /// The server URL the client uses (remote mode; changes when the route does).
+    route: String,
 }
 
 impl MediaState {
@@ -150,7 +154,7 @@ impl CorrentApp {
                 && let Some(url) = crate::link::pair::base_url(&l.host)
             {
                 self.media_dev_pair = Some(fetch(&self.rt, ctx, async move {
-                    let t = crate::link::pair::trust(&url, Some(l.fingerprint.as_str())).await?;
+                    let t = crate::link::pair::trust(&url, Some(l.fingerprint.as_str()), &l.connect).await?;
                     crate::link::pair::pair(&t, crate::link::pair::Credentials::Code(l.code)).await
                 }));
             }
@@ -209,17 +213,17 @@ impl CorrentApp {
         }
         // Connected to a server: its media library, not this computer's.
         if let Some(s) = &self.server {
+            // Wait for the link to find a route (its address or Corrent Connect).
+            let Some(route) = s.status.route.load_full() else { return };
             // mpv reads the CA from a file (written off the UI thread, well before any playback).
-            let ca_file = s.entry.ca().map(|pem| {
+            let ca_file = route.ca.as_ref().filter(|_| crate::link::pair::valid_id(&s.entry.id)).map(|pem| {
                 let path = self.paths.data_dir.join(format!("server-{}-ca.pem", s.entry.id));
-                let (p2, pem) = (path.clone(), pem.to_string());
+                let (p2, pem) = (path.clone(), pem.clone());
                 self.rt.spawn_blocking(move || std::fs::write(p2, pem));
                 path
             });
-            match MediaClient::new(&s.entry.url, &s.entry.token, s.entry.ca()) {
-                Ok(c) => m.client = Some(c.with_ca_file(ca_file)),
-                Err(e) => m.error = Some(e),
-            }
+            m.route = route.url.clone();
+            m.client = Some(route.api.clone().with_ca_file(ca_file));
             return;
         }
         let (engine, settings, paths) = (self.engine.clone(), self.remote.shared.clone(), self.paths.clone());
@@ -230,6 +234,14 @@ impl CorrentApp {
 
     /// Per-frame media work: finishing server start, uploading images, player housekeeping.
     pub fn media_tick(&mut self, ctx: &egui::Context) {
+        // The server is now reached another way: start over with the new route.
+        if let Some(s) = &self.server
+            && let Some(r) = s.status.route.load_full()
+            && self.media.client.is_some()
+            && r.url != self.media.route
+        {
+            self.media.reset();
+        }
         // The server runs from the start: imports of completed downloads need it too.
         self.ensure_media_server();
         if let Some(s) = self.media.starting.as_ref().and_then(ready) {
@@ -237,6 +249,9 @@ impl CorrentApp {
             match s {
                 Ok(local) => match MediaClient::new(local.addr(), &local.token, None) {
                     Ok(c) => {
+                        for ev in std::mem::take(&mut self.media.early_events) {
+                            corrent_server::integrate::on_engine_event(&local.state, &self.rt, ev);
+                        }
                         self.media.client = Some(c);
                         self.media.local = Some(local);
                     }

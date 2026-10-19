@@ -53,6 +53,9 @@ pub struct AppState {
     pub plugins: Option<Arc<corrent_plugins::PluginHost>>,
     /// One metadata refresh at a time.
     pub metadata_slot: tokio::sync::Mutex<()>,
+    /// LAN discovery, Corrent Connect and port mapping (see `remote.rs`).
+    pub remote: tokio::sync::Mutex<crate::remote::Running>,
+    pub remote_status: ArcSwap<corrent_proto::server::RemoteStatus>,
     /// Set when a hosted server stops: its background tasks end (they hold the state).
     pub stopping: tokio::sync::watch::Sender<bool>,
 }

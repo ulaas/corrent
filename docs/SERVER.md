@@ -178,3 +178,18 @@ its data folder. The torrent list, details, add dialog, categories, tags, queue,
 pages then work against the server; creating torrents, importing from other clients, the
 streaming window and "open folder" are hidden (the files are on the server). **⋮ → Use this
 computer's engine** switches back.
+
+## Remote access
+
+`server.toml` (or `PUT /api/v1/server/remote`, admins) controls how the server is reached:
+
+| Key | Default | What |
+|---|---|---|
+| `discovery` | `true` | Announce `_corrent._tcp` on the LAN (mDNS) with the id, name, version and certificate fingerprint. The desktop app lists it in Connect; the fingerprint there is a hint, pairing links pin it. |
+| `connect` | `false` | **Corrent Connect** (iroh): reachable from anywhere by the server's key (`connect.key` in the data folder), through NATs, relayed when hole punching fails, end-to-end encrypted. Pairing links then carry `connect=<id>`, and the app uses Connect when the server's address can't be reached. |
+| `connect_relay` | `true` | Use n0's public relays and address lookup (the server's addresses are published to `iroh.link` while Connect is on). Off: direct connections only. |
+| `port_mapping` | `false` | Ask the router (UPnP / NAT-PMP / PCP) to forward the HTTPS port. Clients outside the LAN also need `remote_access = true`. |
+| `remote_access` | `false` | Accept clients outside the local network on the HTTPS port. Connect clients are always admitted (turning Connect on is the opt-in). |
+
+`GET /api/v1/server/remote` also reports what is running: the Connect id and home relay, the
+mapped public address, and errors.

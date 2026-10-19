@@ -317,6 +317,11 @@ async fn serve(
     if let Some(f) = &state.tls_fingerprint {
         println!("  certificate fingerprint: {}", tls::short_fingerprint(f));
     }
+    // LAN discovery, Corrent Connect and port mapping, as configured.
+    corrent_server::remote::apply(&state, listeners[0].addr.port()).await;
+    if let Some(id) = &state.remote_status.load().connect_id {
+        println!("  Corrent Connect: {id}");
+    }
     if state.identity.user_count().await.unwrap_or(1) == 0 {
         println!("  first run: open the address above on this computer to create the administrator,");
         println!("  or run `correntd --init-admin <name>`.");
@@ -336,6 +341,7 @@ async fn serve(
     sd_notify("READY=1");
     wait_for_shutdown().await;
     state.hub.publish(corrent_proto_bye());
+    corrent_server::remote::stop(&state).await;
     drop(listeners);
     Ok(())
 }

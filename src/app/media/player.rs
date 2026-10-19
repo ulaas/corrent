@@ -187,9 +187,11 @@ impl Player {
             ("audio-display", "no"),
         ]);
         opts.push(if audio_only { ("vid", "no") } else { ("vo", "libmpv") });
-        // A server with its own CA: mpv checks the certificate against it (the token is sent).
+        // mpv sends the token: always verify HTTPS (mpv doesn't by default), against the
+        // server's own CA when it has one.
+        opts.push(("tls-verify", "yes"));
         if let Some(ca) = &ca {
-            opts.extend([("tls-ca-file", ca.as_str()), ("tls-verify", "yes")]);
+            opts.push(("tls-ca-file", ca.as_str()));
         }
         let mpv = Arc::new(Mpv::new(lib, &opts).map_err(|e| e.to_string())?);
         let force_sw = std::env::var_os("CORRENT_SW_VIDEO").is_some();
@@ -844,9 +846,17 @@ impl Player {
 impl Drop for Player {
     fn drop(&mut self) {
         self.report(true);
-        let _ = self.mpv.command(&["stop"]);
+        // Nothing here may block the UI thread: a stalled network read can hold mpv up.
+        let _ = self.mpv.command_async(0, &["stop"]);
         self.stop_events.store(true, Ordering::Relaxed);
         self.mpv.wakeup();
+        // The last reference (and `mpv_terminate_destroy`) goes to a helper thread once the
+        // render context, dropped with `video`, has let go of its own.
+        let mpv = self.mpv.clone();
+        let _ = std::thread::Builder::new().name("corrent-mpv-close".into()).spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(mpv);
+        });
     }
 }
 

@@ -27,9 +27,19 @@ pub struct ServerEntry {
     pub fingerprint: String,
     /// The server's CA (PEM), trusted for this server only.
     pub ca_pem: String,
+    /// Corrent Connect address (iroh endpoint id), used when the address can't be reached.
+    pub connect_id: String,
+    /// Direct UDP addresses to try for Connect besides relays and address lookup.
+    pub connect_addrs: Vec<String>,
 }
 
 impl ServerEntry {
+    /// Entries are told apart by id *and* address: a server claiming another one's id (ids are
+    /// in pairing links) gets its own entry instead of taking over the other's token.
+    pub fn key(&self) -> String {
+        format!("{}@{}", self.id, self.url)
+    }
+
     pub fn ca(&self) -> Option<&str> {
         (!self.ca_pem.is_empty()).then_some(self.ca_pem.as_str())
     }
@@ -38,7 +48,7 @@ impl ServerEntry {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Servers {
-    /// Id of the server the app uses (None: the engine runs in this app).
+    /// [`ServerEntry::key`] of the server the app uses (None: the engine runs in this app).
     pub active: Option<String>,
     #[serde(rename = "server")]
     pub list: Vec<ServerEntry>,
@@ -82,13 +92,13 @@ impl Servers {
     }
 
     pub fn active_entry(&self) -> Option<&ServerEntry> {
-        let id = self.active.as_ref()?;
-        self.list.iter().find(|s| &s.id == id)
+        let key = self.active.as_ref()?;
+        self.list.iter().find(|s| &s.key() == key)
     }
 
-    /// Adds or replaces (same server id) an entry.
+    /// Adds or replaces (same id and address) an entry.
     pub fn upsert(&mut self, e: ServerEntry) {
-        match self.list.iter_mut().find(|s| s.id == e.id) {
+        match self.list.iter_mut().find(|s| s.key() == e.key()) {
             Some(s) => *s = e,
             None => self.list.push(e),
         }
@@ -109,7 +119,11 @@ mod tests {
         let mut s = Servers::default();
         s.upsert(ServerEntry { id: "a".into(), name: "Home".into(), token: "t".into(), ..Default::default() });
         s.upsert(ServerEntry { id: "a".into(), name: "Home 2".into(), ..Default::default() });
-        s.active = Some("a".into());
+        // Same id elsewhere: a separate entry, the first keeps its token.
+        s.upsert(ServerEntry { id: "a".into(), url: "https://evil".into(), ..Default::default() });
+        assert_eq!(s.list.len(), 2);
+        s.list.retain(|e| e.url.is_empty());
+        s.active = Some(s.list[0].key());
         s.save(&paths).unwrap();
         let back = Servers::load(&paths);
         assert_eq!(back.list.len(), 1);

@@ -7,7 +7,13 @@ description = "Corrent's HTTP server: qBittorrent-compatible API, API v1, web cl
 license = "MIT OR Apache-2.0"
 publish = false
 
+[features]
+default = []
+# Corrent Connect: reachable from anywhere through iroh (hole punching, relays).
+p2p = ["dep:iroh", "dep:hyper", "dep:hyper-util", "dep:portmapper"]
+
 [dependencies]
+mdns-sd = { version = "0.21.5", default-features = false }
 base64 = "0.22"
 corrent-core = { path = "../corrent-core" }
 corrent-proto = { path = "../corrent-proto" }
@@ -37,6 +43,10 @@ if-addrs = "0.15"
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 directories = "6"
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "form", "stream"] }
+iroh = { version = "1.3", default-features = false, features = ["tls-aws-lc-rs", "portmapper"], optional = true }
+hyper = { version = "1", features = ["server", "http1"], optional = true }
+portmapper = { version = "0.19", default-features = false, optional = true }
+hyper-util = { version = "0.1", features = ["tokio", "service"], optional = true }
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
 
 [target."cfg(windows)".dependencies]

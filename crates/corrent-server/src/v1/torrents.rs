@@ -371,9 +371,12 @@ async fn action(
         Action::QueueBottom => queue(QueueMove::Bottom),
         Action::PauseAll => EngineCommand::PauseAll,
         Action::ResumeAll => EngineCommand::ResumeAll,
+        // The given torrents, or every one that can still be restored.
         Action::UndoRemove => {
             let snap = st.engine.snapshot();
-            EngineCommand::UndoRemove(snap.undoable.iter().map(|(h, _)| *h).collect())
+            EngineCommand::UndoRemove(
+                snap.undoable.iter().map(|(h, _)| *h).filter(|h| hashes.is_empty() || hashes.contains(h)).collect(),
+            )
         }
     };
     st.engine.send(cmd);

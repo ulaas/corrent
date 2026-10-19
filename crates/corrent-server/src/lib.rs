@@ -7,6 +7,7 @@
 use corrent_core::{config, engine, rss, store, util};
 
 pub mod config_file;
+pub mod discovery;
 pub mod events;
 /// Wire event types, re-exported for hosts.
 pub use corrent_proto::event as events_api;
@@ -15,8 +16,11 @@ pub mod integrate;
 pub mod local;
 pub mod metadata;
 pub mod net;
+#[cfg(feature = "p2p")]
+pub mod p2p;
 pub mod paths;
 pub mod plugins;
+pub mod remote;
 pub mod state;
 pub mod tls;
 pub mod v1;
@@ -109,6 +113,8 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         plugins: plugin_host,
         metadata_slot: Default::default(),
         stopping: tokio::sync::watch::Sender::new(false),
+        remote: Default::default(),
+        remote_status: Default::default(),
     });
     metadata::start(state.clone());
     // Find a working H.264 encoder in the background (hardware first).

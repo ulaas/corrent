@@ -33,6 +33,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/server/fs", get(fs))
         .route("/server/fs/mkdir", post(mkdir))
         .route("/server/alt-speed", post(alt_speed))
+        .route("/server/remote", get(get_remote).put(put_remote))
 }
 
 /// Public: lets a client recognise the server (and whether it still needs setting up).
@@ -45,6 +46,7 @@ async fn info(State(st): State<Arc<AppState>>) -> ApiResult<ServerInfo> {
         tls_fingerprint: st.tls_fingerprint.clone(),
         setup_required: st.identity.user_count().await? == 0,
         features: vec!["torrents".into(), "rss".into(), "search".into(), "events".into()],
+        connect_id: st.remote_status.load().connect_id.clone(),
     }))
 }
 
@@ -311,6 +313,50 @@ async fn alt_speed(
     }
     st.engine.send(EngineCommand::SetAltSpeed(a.on));
     Ok(Json(serde_json::json!({})))
+}
+
+/// How the server can be reached, and what is running (admins).
+async fn get_remote(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<corrent_proto::server::RemoteAccess> {
+    auth.require(Perms::SETTINGS_WRITE)?;
+    Ok(Json(corrent_proto::server::RemoteAccess {
+        config: crate::remote::config_of(&st.cfg.load()),
+        status: (**st.remote_status.load()).clone(),
+    }))
+}
+
+async fn put_remote(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    ip: ClientIp,
+    Json(r): Json<corrent_proto::server::RemoteConfig>,
+) -> ApiResult<corrent_proto::server::RemoteAccess> {
+    auth.require(Perms::SETTINGS_WRITE)?;
+    for c in r.allowed_networks.iter().chain(&r.trusted_proxies) {
+        if crate::net::parse_cidrs(std::slice::from_ref(c)).is_empty() {
+            return Err(err(ErrorCode::BadRequest, "not a network in CIDR form").with_text("network", c));
+        }
+    }
+    {
+        let _w = st.settings_lock.lock().await;
+        let cfg = crate::remote::with_config((*st.cfg.load_full()).clone(), r);
+        cfg.save(&st.paths.data_dir).map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+        st.nets.store(Arc::new(crate::state::Nets::from(&cfg)));
+        st.cfg.store(Arc::new(cfg));
+    }
+    st.identity.audit(Some(auth.name()), &ip.0.to_string(), "remote_access", "", true, "").await;
+    let port = st.remote_status.load().https_port;
+    crate::remote::apply(&st, port).await;
+    get_remote(State(st), auth).await
+}
+
+trait WithText {
+    fn with_text(self, k: &str, v: &str) -> Self;
+}
+
+impl WithText for super::ApiErr {
+    fn with_text(self, k: &str, v: &str) -> Self {
+        super::ApiErr(self.0.with(k, v))
+    }
 }
 
 #[cfg(test)]

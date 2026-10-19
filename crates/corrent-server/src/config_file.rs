@@ -33,6 +33,14 @@ pub struct ServerConfig {
     /// Folders non-admin users may download to and browse, besides the download folder,
     /// category folders and library folders.
     pub download_roots: Vec<String>,
+    /// Announce the server on the local network (mDNS).
+    pub discovery: bool,
+    /// Corrent Connect (iroh): reachable through NATs by the server's key.
+    pub connect: bool,
+    /// Use the public relays for Connect.
+    pub connect_relay: bool,
+    /// Ask the router to forward the HTTPS port.
+    pub port_mapping: bool,
 }
 
 impl Default for ServerConfig {
@@ -51,6 +59,10 @@ impl Default for ServerConfig {
             hostnames: Vec::new(),
             qbt_api: true,
             download_roots: Vec::new(),
+            discovery: true,
+            connect: false,
+            connect_relay: true,
+            port_mapping: false,
         }
     }
 }

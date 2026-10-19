@@ -105,6 +105,11 @@ impl MediaClient {
         Self::decode(res).await
     }
 
+    pub async fn text(&self, path: &str) -> Result<String, String> {
+        let bytes = self.bytes(path).await?;
+        String::from_utf8(bytes).map_err(|e| e.to_string())
+    }
+
     pub async fn bytes(&self, path: &str) -> Result<Vec<u8>, String> {
         let res = self.http.get(self.url(path)).bearer_auth(&self.token).send().await.map_err(|e| e.to_string())?;
         if !res.status().is_success() {

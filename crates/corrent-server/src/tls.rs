@@ -47,7 +47,7 @@ pub fn short_fingerprint(hex: &str) -> String {
 
 /// Writes a private key: created owner-only from the start (no window where it is readable),
 /// then renamed into place.
-fn write_private(path: &Path, data: &str) -> anyhow::Result<()> {
+pub(crate) fn write_private(path: &Path, data: &str) -> anyhow::Result<()> {
     use std::io::Write;
     let tmp = path.with_extension("tmp");
     let _ = std::fs::remove_file(&tmp);

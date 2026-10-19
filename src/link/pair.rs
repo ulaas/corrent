@@ -14,6 +14,8 @@ pub struct PairLink {
     pub id: String,
     pub code: String,
     pub fingerprint: String,
+    /// Corrent Connect address (when the server has Connect on).
+    pub connect: String,
 }
 
 pub fn parse_link(s: &str) -> Option<PairLink> {
@@ -28,6 +30,7 @@ pub fn parse_link(s: &str) -> Option<PairLink> {
             "id" => l.id = v.into_owned(),
             "code" => l.code = v.into_owned(),
             "fp" => l.fingerprint = v.into_owned(),
+            "connect" => l.connect = v.into_owned(),
             _ => {}
         }
     }
@@ -81,22 +84,84 @@ pub fn fingerprint_matches(expected: &str, actual: &str) -> bool {
 }
 
 /// A server we are about to trust.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Trusted {
+    /// The server's own address (kept for later; may be unreachable from here).
     pub url: String,
     pub info: ServerInfo,
     /// Empty for a publicly trusted certificate (or plain HTTP).
     pub ca_pem: String,
     pub fingerprint: String,
+    pub connect_id: String,
+    /// Reached through Corrent Connect: the bridge to talk through while pairing.
+    #[cfg(feature = "p2p")]
+    pub bridge: Option<std::sync::Arc<corrent_server::p2p::Bridge>>,
+}
+
+impl Trusted {
+    /// The URL to talk to now, and the CA it needs.
+    fn current(&self) -> (String, Option<&str>) {
+        #[cfg(feature = "p2p")]
+        if let Some(b) = &self.bridge {
+            return (b.url(), None);
+        }
+        (self.url.clone(), (!self.ca_pem.is_empty()).then_some(self.ca_pem.as_str()))
+    }
 }
 
 /// Fetches the server's CA, checks it against `expected` (when given) and reads the server's
 /// info through it. Without `expected` the caller shows the fingerprint for the person to
 /// compare with the one the server displays.
-pub async fn trust(url: &str, expected: Option<&str>) -> Result<Trusted, String> {
-    if url.starts_with("http://") {
-        let info = MediaClient::new(url, "", None)?.get::<ServerInfo>("/api/v1/server/info").await?;
-        return Ok(Trusted { url: url.to_string(), info, ca_pem: String::new(), fingerprint: String::new() });
+pub async fn trust(url: &str, expected: Option<&str>, connect_id: &str) -> Result<Trusted, String> {
+    let direct = trust_at(url, url, expected).await;
+    #[cfg(feature = "p2p")]
+    if direct.is_err() && !connect_id.is_empty() {
+        let id: corrent_server::p2p::EndpointId =
+            connect_id.parse().map_err(|_| t!("The Corrent Connect address isn't valid.").to_string())?;
+        let b = corrent_server::p2p::bridge(id, true, Vec::new())
+            .await
+            .map_err(|e| t!("Corrent Connect: {e}", e = format!("{e:#}")))?;
+        let mut t = trust_at(url, &b.url(), expected).await?;
+        // Through Connect the key authenticates the server; its CA is kept for the LAN route.
+        t.connect_id = connect_id.to_string();
+        t.bridge = Some(std::sync::Arc::new(b));
+        return Ok(t);
+    }
+    let mut t = direct?;
+    t.connect_id = connect_id.to_string();
+    Ok(t)
+}
+
+/// Checks the server at `via` (its address, or a Connect bridge) and records it as `url`.
+async fn trust_at(url: &str, via: &str, expected: Option<&str>) -> Result<Trusted, String> {
+    let blank = |info, ca_pem: String, fingerprint: String| Trusted {
+        url: url.to_string(),
+        info,
+        ca_pem,
+        fingerprint,
+        connect_id: String::new(),
+        #[cfg(feature = "p2p")]
+        bridge: None,
+    };
+    if via.starts_with("http://") {
+        let client = MediaClient::new(via, "", None)?;
+        let info = client.get::<ServerInfo>("/api/v1/server/info").await?;
+        // Through a bridge the server still has its CA (for the direct route later).
+        let ca = match client.text("/api/v1/server/ca").await {
+            Ok(pem) if url != via => pem,
+            _ => String::new(),
+        };
+        let fp = if ca.is_empty() { String::new() } else { ca_fingerprint(&ca)? };
+        if let Some(e) = expected.filter(|e| !e.trim().is_empty())
+            && !fp.is_empty()
+            && !fingerprint_matches(e, &fp)
+        {
+            return Err(t!(
+                "The server's certificate doesn't match the fingerprint. Don't connect unless you know why it changed."
+            )
+            .to_string());
+        }
+        return Ok(blank(info, ca, fp));
     }
     // The CA is fetched without verification: it is trusted only after its fingerprint checks.
     let insecure = reqwest::Client::builder()
@@ -104,7 +169,7 @@ pub async fn trust(url: &str, expected: Option<&str>) -> Result<Trusted, String>
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
-    let res = insecure.get(format!("{url}/api/v1/server/ca")).send().await.map_err(|e| e.to_string())?;
+    let res = insecure.get(format!("{via}/api/v1/server/ca")).send().await.map_err(|e| e.to_string())?;
     let (ca_pem, fingerprint) = if res.status().is_success() {
         let pem = res.text().await.map_err(|e| e.to_string())?;
         let fp = ca_fingerprint(&pem)?;
@@ -117,6 +182,9 @@ pub async fn trust(url: &str, expected: Option<&str>) -> Result<Trusted, String>
             .to_string());
         }
         (pem, fp)
+    } else if expected.is_some_and(|e| !e.trim().is_empty()) {
+        // A pin we can't check is no pin: refuse rather than silently trusting the public roots.
+        return Err(t!("The server doesn't offer its certificate, so the fingerprint can't be checked.").to_string());
     } else {
         // A certificate from a public authority: ordinary verification.
         (String::new(), String::new())
@@ -129,7 +197,7 @@ pub async fn trust(url: &str, expected: Option<&str>) -> Result<Trusted, String>
         )
         .to_string());
     }
-    Ok(Trusted { url: url.to_string(), info, ca_pem, fingerprint })
+    Ok(blank(info, ca_pem, fingerprint))
 }
 
 pub fn this_device() -> DeviceInfo {
@@ -153,8 +221,17 @@ pub enum Credentials {
 }
 
 /// Gets a device token for this app.
+/// Server ids are random hex; anything else (a hostile server) is refused: ids name files.
+pub fn valid_id(id: &str) -> bool {
+    (8..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 pub async fn pair(t: &Trusted, creds: Credentials) -> Result<ServerEntry, String> {
-    let client = MediaClient::new(&t.url, "", (!t.ca_pem.is_empty()).then_some(t.ca_pem.as_str()))?;
+    if !valid_id(&t.info.id) {
+        return Err(t!("This isn't a Corrent server.").to_string());
+    }
+    let (via, ca) = t.current();
+    let client = MediaClient::new(&via, "", ca)?;
     let res: LoginResponse = match creds {
         Credentials::Code(code) => {
             let req = PairRequest { code: code.trim().to_string(), device: this_device() };
@@ -174,6 +251,14 @@ pub async fn pair(t: &Trusted, creds: Credentials) -> Result<ServerEntry, String
         token,
         fingerprint: t.fingerprint.clone(),
         ca_pem: t.ca_pem.clone(),
+        // From the pairing link, else what the server says (Connect turned on later is learned
+        // the next time pairing happens).
+        connect_addrs: Vec::new(),
+        connect_id: if t.connect_id.is_empty() {
+            t.info.connect_id.clone().unwrap_or_default()
+        } else {
+            t.connect_id.clone()
+        },
     })
 }
 
@@ -237,8 +322,8 @@ mod tests {
 
         assert_eq!(ca_fingerprint(&tls.ca_pem).unwrap(), tls.fingerprint);
         let wrong = "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF";
-        assert!(trust(&url, Some(wrong)).await.is_err(), "a wrong pin is refused");
-        let t = trust(&url, Some(&short(&tls.fingerprint))).await.unwrap();
+        assert!(trust(&url, Some(wrong), "").await.is_err(), "a wrong pin is refused");
+        let t = trust(&url, Some(&short(&tls.fingerprint)), "").await.unwrap();
         assert_eq!(t.fingerprint, tls.fingerprint);
         assert_eq!(t.info.id, state.server_id);
         assert!(pair(&t, Credentials::Code("000-000".into())).await.is_err());

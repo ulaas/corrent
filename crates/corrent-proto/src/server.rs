@@ -18,6 +18,59 @@ pub struct ServerInfo {
     pub setup_required: bool,
     #[serde(default)]
     pub features: Vec<String>,
+    /// The Corrent Connect address (iroh endpoint id), when Connect is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_id: Option<String>,
+}
+
+/// How the server can be reached (`GET/PUT /api/v1/server/remote`, admins).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RemoteConfig {
+    /// Accept clients from outside the local network (needs a reachable address: port mapping,
+    /// a reverse proxy or a VPN).
+    pub remote_access: bool,
+    /// Announce the server on the local network (mDNS).
+    pub discovery: bool,
+    /// Corrent Connect: reachable from anywhere by its key, through NATs (relayed when needed).
+    pub connect: bool,
+    /// Use the public relays for Connect (off: direct connections only).
+    pub connect_relay: bool,
+    /// Ask the router to forward the HTTPS port (UPnP / NAT-PMP / PCP).
+    pub port_mapping: bool,
+    /// Extra networks treated as local (CIDR).
+    pub allowed_networks: Vec<String>,
+    pub trusted_proxies: Vec<String>,
+    pub hostnames: Vec<String>,
+}
+
+/// What is running right now.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RemoteStatus {
+    pub https_port: u16,
+    pub discovery: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovery_error: Option<String>,
+    /// The Connect address (endpoint id) when listening.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect_id: Option<String>,
+    /// The relay Connect is reachable through.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect_relay: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect_error: Option<String>,
+    /// The public address the router forwards to us ("ip:port").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mapped_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port_mapping_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RemoteAccess {
+    pub config: RemoteConfig,
+    pub status: RemoteStatus,
 }
 
 /// One entry of the server's folder browser (`GET /api/v1/server/fs`).
