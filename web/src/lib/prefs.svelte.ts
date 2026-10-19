@@ -1,6 +1,8 @@
-// Appearance and layout preferences of this browser (localStorage for now; per-user storage on
-// the server comes with GET /api/v1/theme, docs/MEDIASERVER.md U1).
+// Appearance and layout preferences: kept per user on the server (/me/prefs, shared by their
+// devices) and cached in localStorage; volume and the sidebar stay per device. A user with no
+// saved preferences starts from the server's theme (/theme).
 import { accents, fixedAccentPresets } from 'virtual:tokens';
+import { api } from './api';
 import { onColor } from './color';
 
 export type ThemeMode = 'system' | 'dark' | 'light';
@@ -42,9 +44,38 @@ const DEFAULTS: Prefs = {
 
 const KEY = 'corrent.prefs';
 
+let hadLocal = false;
+/** Saving to the server starts once the user's stored preferences were read. */
+let synced = false;
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Per-device settings never go to the server. */
+function shared(p: Prefs): Partial<Prefs> {
+  const { volume: _v, sidebarCollapsed: _s, ...rest } = p;
+  return rest;
+}
+
+/** After signing in: the user's preferences from the server (or the server's theme). */
+export async function syncPrefs(): Promise<void> {
+  synced = false;
+  try {
+    const remote = await api.get<Partial<Prefs>>('/me/prefs');
+    if (remote && Object.keys(remote).length) {
+      Object.assign(prefs, { ...DEFAULTS, ...remote, volume: prefs.volume, sidebarCollapsed: prefs.sidebarCollapsed });
+    } else if (!hadLocal) {
+      const t = await api.get<{ preset: string; accent: string; custom_accent: string }>('/theme');
+      Object.assign(prefs, { preset: t.preset, accent: t.accent, customAccent: t.custom_accent });
+    }
+  } catch {
+    /* offline or older server: keep this browser's */
+  }
+  synced = true;
+}
+
 function load(): Prefs {
   try {
     const raw = localStorage.getItem(KEY);
+    hadLocal = !!raw;
     if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
   } catch {
     /* ignore */
@@ -112,6 +143,11 @@ export function applyPrefs() {
         localStorage.setItem(KEY, snapshot);
       } catch {
         /* private mode */
+      }
+      if (synced) {
+        const body = shared(JSON.parse(snapshot) as Prefs);
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => void api.put('/me/prefs', body).catch(() => {}), 800);
       }
     });
   });

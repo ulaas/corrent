@@ -60,6 +60,8 @@ pub struct MediaState {
     children: HashMap<i64, Slot<ItemPage<Item>>>,
     person: Option<(i64, Slot<ItemPage<Item>>)>,
     pub profiles: profiles::Profiles,
+    /// The user's client preferences on the server (home row order and hidden rows).
+    user_prefs: Option<Slot<serde_json::Value>>,
     pub query: String,
     search: Option<(String, Slot<SearchResults>)>,
     images: ImageCache,
@@ -104,6 +106,7 @@ impl MediaState {
         self.home = None;
         self.libraries = None;
         self.person = None;
+        self.user_prefs = None;
         self.grids.clear();
         self.children.clear();
         self.detail = None;
@@ -789,6 +792,7 @@ impl CorrentApp {
                 }
             }
             Some(Ok(rows)) => {
+                let rows = self.arrange_home(client, rows);
                 if let Some(first) = rows
                     .iter()
                     .flat_map(|r| r.items.iter())
@@ -803,6 +807,27 @@ impl CorrentApp {
                 }
             }
         }
+    }
+
+    /// Orders and hides home rows as the user arranged them (in the web client; stored per
+    /// user on the server, so every device shows the same home).
+    fn arrange_home(&mut self, client: &MediaClient, mut rows: Vec<HomeRow>) -> Vec<HomeRow> {
+        let c = client.clone();
+        let prefs = self
+            .media
+            .user_prefs
+            .get_or_insert_with(|| fetch(&self.rt, &self.ctx, async move { c.get("/api/v1/me/prefs").await }));
+        let Some(Ok(prefs)) = ready(prefs) else { return rows };
+        let list = |k: &str| -> Vec<String> {
+            prefs[k]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default()
+        };
+        let (order, hidden) = (list("homeOrder"), list("homeHidden"));
+        rows.retain(|r| !hidden.contains(&r.id));
+        rows.sort_by_key(|r| order.iter().position(|o| *o == r.id).unwrap_or(usize::MAX));
+        rows
     }
 
     fn library_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, id: i64) {

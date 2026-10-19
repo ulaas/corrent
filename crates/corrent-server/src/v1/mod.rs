@@ -9,6 +9,7 @@ mod auth;
 mod devices;
 mod events;
 pub mod library;
+mod me;
 pub mod playback;
 mod plugins;
 mod rss;
@@ -216,6 +217,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(wanted::routes())
         .merge(plugins::routes())
         .merge(admin::routes())
+        .merge(me::routes())
         .route("/events", axum::routing::get(events::events))
         .fallback(|| async { err(ErrorCode::NotFound, "no such endpoint") })
 }

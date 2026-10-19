@@ -1,6 +1,7 @@
 // Who is signed in, the server's identity, and what the user may do.
 import { api, setCsrf, setUnauthorizedHandler } from './api';
 import { events } from './events.svelte';
+import { syncPrefs } from './prefs.svelte';
 import { Perm, type LoginResponse, type ServerInfo, type User } from './types';
 
 export const session = $state<{
@@ -22,6 +23,7 @@ function signedIn(r: LoginResponse) {
   session.user = r.user;
   session.expired = false;
   events.start();
+  void syncPrefs();
 }
 
 export async function boot(): Promise<void> {

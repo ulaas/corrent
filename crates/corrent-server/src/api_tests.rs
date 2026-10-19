@@ -831,6 +831,26 @@ async fn only_the_app_claims_its_owner_account() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn preferences_follow_the_user() {
+    let h = harness("prefs", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let (_, v, _) = get(app, "/api/v1/me/prefs", &admin).await;
+    assert_eq!(v, json!({}));
+    let p = json!({ "homeOrder": ["favorites", "continue"], "homeHidden": ["next_up"], "cardSize": "large" });
+    let (s, _, _) = send(app, Method::PUT, "/api/v1/me/prefs", &admin, p.clone()).await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, v, _) = get(app, "/api/v1/me/prefs", &admin).await;
+    assert_eq!(v, p);
+    let (s, _, _) = send(app, Method::PUT, "/api/v1/me/prefs", &admin, json!([1, 2])).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (_, t, _) = get(app, "/api/v1/theme", &admin).await;
+    assert_eq!(t["preset"], "corrent");
+    assert_eq!(t["accent"], "blue");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_with_the_servers_own_ca() {
     let h = harness("https", ServerConfig::default()).await;
     let tls =
