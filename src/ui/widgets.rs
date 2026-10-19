@@ -40,7 +40,7 @@ pub fn paint_progress(
     let r = (rect.height() / 2.0).min(255.0) as u8;
     painter.rect_filled(rect, CornerRadius::same(r), track);
     let frac = frac.clamp(0.0, 1.0);
-    let t = if animate { ui.ctx().animate_value_with_time(id.with("p"), frac, 0.35) } else { frac };
+    let t = if animate { super::motion::value(ui.ctx(), id.with("p"), frac, super::motion::SLOW) } else { frac };
     if t <= 0.0005 {
         return;
     }
@@ -162,7 +162,7 @@ pub fn icon_button_sized(
 ) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(size, size), if enabled { Sense::click() } else { Sense::hover() });
     let hovered = enabled && resp.hovered();
-    let t = ui.ctx().animate_bool_with_time(resp.id.with("h"), hovered || active, 0.12);
+    let t = super::motion::toggle(ui.ctx(), resp.id.with("h"), hovered || active, super::motion::MICRO);
     if t > 0.0 {
         let fill = if active { p.accent_soft() } else { p.bg3.gamma_multiply(t) };
         ui.painter().rect_filled(rect, CornerRadius::same(8), fill);

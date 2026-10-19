@@ -12,7 +12,7 @@ use crate::ui::widgets::dashed_rect;
 impl CorrentApp {
     pub(super) fn drag_and_drop(&mut self, ctx: &Context, p: &Palette) {
         let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
-        let t = ctx.animate_bool_with_time(Id::new("dnd_overlay"), hovering, 0.15);
+        let t = crate::ui::motion::toggle(ctx, Id::new("dnd_overlay"), hovering, crate::ui::motion::MICRO);
         if t > 0.0 {
             let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("dnd_layer")));
             let screen = ctx.content_rect();

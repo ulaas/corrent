@@ -181,7 +181,7 @@ pub fn toggle_switch(ui: &mut Ui, p: &Palette, on: &mut bool) -> egui::Response 
     }
     let value = *on;
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, value, ""));
-    let t = ui.ctx().animate_bool_with_time(resp.id, *on, 0.12);
+    let t = crate::ui::motion::toggle(ui.ctx(), resp.id, *on, crate::ui::motion::MICRO);
     let bg = p.bg3.lerp_to_gamma(p.accent, t);
     ui.painter().rect_filled(rect, egui::CornerRadius::same(10), bg);
     let x = egui::lerp((rect.left() + 10.0)..=(rect.right() - 10.0), t);

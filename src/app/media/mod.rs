@@ -528,7 +528,7 @@ impl CorrentApp {
         let focused = resp.has_focus();
         // TV mode: only the focus counts (a resting mouse pointer would light up a second card).
         let pointer = resp.hovered() && !self.tv.on;
-        let hover = ui.ctx().animate_bool_with_time(resp.id, pointer || focused, 0.15);
+        let hover = crate::ui::motion::toggle(ui.ctx(), resp.id, pointer || focused, crate::ui::motion::MICRO);
         let img_rect =
             Rect::from_min_size(rect.min, vec2(width, h)).shrink(-3.0 * hover).translate(vec2(0.0, -3.0 * hover));
         let painter = ui.painter().clone();
@@ -553,7 +553,7 @@ impl CorrentApp {
         let mut drawn = false;
         if let Some(im) = &image {
             if let Some(tex) = self.media.images.get(client, &self.rt, &self.ctx, &im.sha, (width * ppp) as u32) {
-                let t = ui.ctx().animate_bool_with_time(resp.id.with("in"), true, 0.25);
+                let t = crate::ui::motion::toggle(ui.ctx(), resp.id.with("in"), true, crate::ui::motion::PAGE);
                 painter.add(egui::Shape::Rect(
                     egui::epaint::RectShape::filled(img_rect, radius, Color32::WHITE.gamma_multiply(t))
                         .with_texture(tex.id(), cover_uv(tex.size_vec2(), img_rect.size())),

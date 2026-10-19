@@ -65,8 +65,10 @@ impl CorrentApp {
             if let Some(rect) = underline {
                 // Slide the indicator to the selected tab.
                 let id = egui::Id::new("details_tab_underline");
-                let left = ui.ctx().animate_value_with_time(id.with("l"), rect.left() + 4.0, 0.18);
-                let right = ui.ctx().animate_value_with_time(id.with("r"), rect.right() - 4.0, 0.18);
+                let left =
+                    crate::ui::motion::value(ui.ctx(), id.with("l"), rect.left() + 4.0, crate::ui::motion::PANEL);
+                let right =
+                    crate::ui::motion::value(ui.ctx(), id.with("r"), rect.right() - 4.0, crate::ui::motion::PANEL);
                 ui.painter().rect_filled(
                     egui::Rect::from_min_max(egui::pos2(left, rect.bottom() - 2.0), egui::pos2(right, rect.bottom())),
                     egui::CornerRadius::same(1),

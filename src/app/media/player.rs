@@ -573,7 +573,7 @@ impl Player {
         }
         let (pos, dur, paused) = self.position();
         let show = paused || Instant::now() < self.controls_until;
-        let k = ctx.animate_bool_with_time(ui.id().with("controls"), show, 0.18);
+        let k = crate::ui::motion::toggle(&ctx, ui.id().with("controls"), show, crate::ui::motion::PANEL);
         if !show {
             ctx.request_repaint_after(Duration::from_millis(500));
         } else {

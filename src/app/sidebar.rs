@@ -83,7 +83,8 @@ pub(super) fn row(
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label));
     crate::ui::widgets::focus_ring(ui, &resp, p, 7);
-    let hover = ui.ctx().animate_bool_with_time(resp.id.with("hov"), resp.hovered() || selected, 0.12);
+    let hover =
+        crate::ui::motion::toggle(ui.ctx(), resp.id.with("hov"), resp.hovered() || selected, crate::ui::motion::MICRO);
     if selected {
         ui.painter().rect_filled(rect, CornerRadius::same(7), p.accent_soft());
         let bar = egui::Rect::from_min_size(rect.min + vec2(0.0, 6.0), vec2(3.0, h - 12.0));

@@ -126,7 +126,7 @@ impl CorrentApp {
 fn control(ui: &mut Ui, p: &Palette, icon: &str, tip: &str, danger: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(46.0, TITLEBAR_HEIGHT), Sense::click());
     let hovered = resp.hovered();
-    let t = ui.ctx().animate_bool_with_time(resp.id, hovered, 0.1);
+    let t = crate::ui::motion::toggle(ui.ctx(), resp.id, hovered, crate::ui::motion::MICRO);
     if t > 0.0 {
         let fill = if danger { Color32::from_rgb(0xE8, 0x11, 0x23) } else { p.bg3 };
         ui.painter().rect_filled(Rect::from_min_max(rect.min, rect.max), CornerRadius::ZERO, fill.gamma_multiply(t));
