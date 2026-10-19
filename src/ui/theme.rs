@@ -659,6 +659,67 @@ fn style(s: &mut egui::Style, p: &Palette, a: &Appearance) {
 mod tests {
     use super::*;
 
+    /// `design/tokens.json` is the source of truth for both clients: every palette here must
+    /// match it (the web client builds its CSS from the same file).
+    #[test]
+    fn palettes_match_the_design_tokens() {
+        let tokens: serde_json::Value = serde_json::from_str(include_str!("../../design/tokens.json")).unwrap();
+        let hexc = |v: &serde_json::Value| -> Color32 {
+            let s = v.as_str().unwrap().trim_start_matches('#');
+            hex(u32::from_str_radix(s, 16).unwrap())
+        };
+        let blue = |dark| accent_color(Accent::Blue, [0; 3], dark);
+        let palettes: Vec<(&str, bool, Palette)> = vec![
+            ("corrent", true, Palette::dark(blue(true))),
+            ("corrent", false, Palette::light(blue(false))),
+            ("nord", true, Palette::nord(true, blue(true))),
+            ("nord", false, Palette::nord(false, blue(false))),
+            ("solarized", true, Palette::solarized(true, blue(true))),
+            ("solarized", false, Palette::solarized(false, blue(false))),
+            ("high_contrast", true, Palette::high_contrast(true)),
+            ("high_contrast", false, Palette::high_contrast(false)),
+        ];
+        for (name, dark, p) in palettes {
+            let t = &tokens["palettes"][name][if dark { "dark" } else { "light" }];
+            let fields = [
+                ("bg0", p.bg0),
+                ("bg1", p.bg1),
+                ("bg2", p.bg2),
+                ("bg3", p.bg3),
+                ("border", p.border),
+                ("border_hi", p.border_hi),
+                ("text", p.text),
+                ("text_dim", p.text_dim),
+                ("text_mute", p.text_mute),
+                ("success", p.success),
+                ("warn", p.warn),
+                ("error", p.error),
+                ("queued", p.queued),
+                ("paused", p.paused),
+                ("completed", p.completed),
+                ("accent", p.accent),
+            ];
+            for (k, c) in fields {
+                if t[k].is_null() {
+                    assert_ne!(k, "bg0", "{name}/{dark}: missing in tokens");
+                    continue;
+                }
+                assert_eq!(c, hexc(&t[k]), "{name} {} {k}", if dark { "dark" } else { "light" });
+            }
+        }
+        for (k, a) in [
+            ("blue", Accent::Blue),
+            ("violet", Accent::Violet),
+            ("teal", Accent::Teal),
+            ("green", Accent::Green),
+            ("orange", Accent::Orange),
+            ("pink", Accent::Pink),
+        ] {
+            assert_eq!(accent_color(a, [0; 3], true), hexc(&tokens["accents"][k]["dark"]), "{k}");
+            assert_eq!(accent_color(a, [0; 3], false), hexc(&tokens["accents"][k]["light"]), "{k}");
+        }
+    }
+
     #[test]
     fn state_colors_are_distinct_where_it_matters() {
         for p in [
