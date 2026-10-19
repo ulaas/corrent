@@ -45,6 +45,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "corrent-plugin-fanart"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "corrent-plugin-musicbrainz"
 version = "1.0.0"
 dependencies = [
@@ -54,7 +63,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "corrent-plugin-opensubtitles"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "corrent-plugin-tmdb"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "corrent-plugin-tvdb"
 version = "1.0.0"
 dependencies = [
  "serde",

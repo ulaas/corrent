@@ -320,6 +320,9 @@ pub fn builtins() -> Vec<(Manifest, &'static [u8])> {
     [
         (include_str!("../builtin/tmdb.toml"), &include_bytes!("../builtin/tmdb.wasm")[..]),
         (include_str!("../builtin/musicbrainz.toml"), &include_bytes!("../builtin/musicbrainz.wasm")[..]),
+        (include_str!("../builtin/tvdb.toml"), &include_bytes!("../builtin/tvdb.wasm")[..]),
+        (include_str!("../builtin/fanart.toml"), &include_bytes!("../builtin/fanart.wasm")[..]),
+        (include_str!("../builtin/opensubtitles.toml"), &include_bytes!("../builtin/opensubtitles.wasm")[..]),
     ]
     .into_iter()
     .filter_map(|(m, w)| {
@@ -810,7 +813,11 @@ mod tests {
     #[test]
     fn builtins_load() {
         let b = builtins();
-        assert_eq!(b.iter().map(|(m, _)| m.id.as_str()).collect::<Vec<_>>(), vec!["tmdb", "musicbrainz"]);
+        assert_eq!(
+            b.iter().map(|(m, _)| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["tmdb", "musicbrainz", "tvdb", "fanart", "opensubtitles"]
+        );
+        assert!(b.iter().find(|(m, _)| m.id == "fanart").is_some_and(|(m, _)| m.supplements));
         let rt = tokio::runtime::Runtime::new().unwrap();
         let h = PluginHost::new(Arc::new(MemoryKv::default()), rt.handle().clone()).unwrap();
         for (m, w) in b {
@@ -818,7 +825,8 @@ mod tests {
         }
         let tmdb = h.list().into_iter().find(|p| p.manifest.id == "tmdb").unwrap();
         assert_eq!(tmdb.missing, vec!["api_key".to_string()], "needs a key before it is used");
-        assert_eq!(h.ready(Kind::Metadata), vec!["musicbrainz".to_string()]);
+        assert_eq!(h.ready(Kind::Metadata), vec!["musicbrainz".to_string()], "the others need keys");
+        assert!(h.ready(Kind::Subtitles).is_empty());
     }
 
     /// Talks to musicbrainz.org (run by hand: `cargo test -p corrent-plugins -- --ignored`).

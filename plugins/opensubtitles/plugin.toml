@@ -1,0 +1,28 @@
+id = "opensubtitles"
+name = "OpenSubtitles"
+version = "1.0.0"
+description = "Subtitles from opensubtitles.com, matched by the video file's hash when possible."
+author = "Corrent"
+host_api = "1"
+kinds = ["subtitles"]
+
+[permissions]
+hosts = ["api.opensubtitles.com", "*.opensubtitles.com", "*.opensubtitles.org"]
+rate_per_sec = 4
+
+[[settings]]
+key = "api_key"
+label = "API key"
+help = "Create a consumer at opensubtitles.com (Profile → API consumers)."
+secret = true
+required = true
+
+[[settings]]
+key = "username"
+label = "User name (optional)"
+help = "Signed-in accounts may download more subtitles a day."
+
+[[settings]]
+key = "password"
+label = "Password (optional)"
+secret = true

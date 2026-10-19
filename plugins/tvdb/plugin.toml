@@ -1,0 +1,24 @@
+id = "tvdb"
+name = "TheTVDB"
+version = "1.0.0"
+description = "Shows, seasons and episode lists from thetvdb.com."
+author = "Corrent"
+host_api = "1"
+kinds = ["metadata"]
+
+[permissions]
+hosts = ["api4.thetvdb.com", "artworks.thetvdb.com"]
+rate_per_sec = 4
+
+[[settings]]
+key = "api_key"
+label = "API key"
+help = "Get one at thetvdb.com (Dashboard → API keys)."
+secret = true
+required = true
+
+[[settings]]
+key = "pin"
+label = "Subscriber PIN (optional)"
+help = "Only for user-supported keys."
+secret = true

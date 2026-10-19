@@ -41,10 +41,13 @@ pub fn confident<'a>(p: &Pending, found: &'a [Candidate]) -> Option<&'a Candidat
     }
 }
 
-/// Providers ready for a kind, in their configured order.
+/// Providers ready for a kind, in their configured order (supplements excluded: they don't
+/// identify items).
 pub(crate) async fn providers_for(host: &Arc<PluginHost>, kind: MediaKind) -> Vec<String> {
+    let supplements: Vec<String> =
+        host.list().into_iter().filter(|p| p.manifest.supplements).map(|p| p.manifest.id).collect();
     let mut out = Vec::new();
-    for id in host.ready(Kind::Metadata) {
+    for id in host.ready(Kind::Metadata).into_iter().filter(|id| !supplements.contains(id)) {
         if host.metadata_kinds(&id).await.is_ok_and(|k| k.contains(&kind)) {
             out.push(id);
         }
@@ -99,6 +102,31 @@ pub async fn apply(
     for a in &d.artwork {
         if let Some(bytes) = fetch_image(st, &a.url).await {
             let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, true).await;
+        }
+    }
+    // Supplementing providers (fanart.tv) add the kinds of artwork the main one lacks.
+    let have: Vec<String> = d.artwork.iter().map(|a| a.kind.clone()).collect();
+    let mut ids: Vec<(String, String)> = d.ids.clone();
+    ids.push((provider.to_string(), id.to_string()));
+    for sp in host.list().into_iter().filter(|p| p.manifest.supplements && p.enabled && p.missing.is_empty()) {
+        let sid = &sp.manifest.id;
+        if !host.metadata_kinds(sid).await.is_ok_and(|k| k.contains(&mk)) {
+            continue;
+        }
+        let q = SearchQuery {
+            kind: mk,
+            title: d.title.clone().unwrap_or_default(),
+            year: d.year,
+            language: language.to_string(),
+            ids: ids.clone(),
+            artist: None,
+        };
+        let Some(c) = host.metadata_search(sid, q).await.ok().and_then(|c| c.into_iter().next()) else { continue };
+        let Ok(extra) = host.metadata_details(sid, mk, c.id, language.to_string()).await else { continue };
+        for a in extra.artwork.iter().filter(|a| !have.contains(&a.kind)) {
+            if let Some(bytes) = fetch_image(st, &a.url).await {
+                let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, true).await;
+            }
         }
     }
     if kind == ItemKind::Show {

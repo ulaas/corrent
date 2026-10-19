@@ -72,6 +72,10 @@ pub struct Manifest {
     /// Task plugins: minutes between runs (the admin can change it in the task list).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_every_min: Option<u32>,
+    /// Metadata plugins that only add to what another provider found (artwork, ids): never
+    /// used to identify items.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supplements: bool,
 }
 
 impl Manifest {

@@ -1,0 +1,25 @@
+id = "fanart"
+name = "fanart.tv"
+version = "1.0.0"
+description = "Logos, clear art, banners and extra backdrops for movies and shows, added to what the main provider found."
+author = "Corrent"
+host_api = "1"
+kinds = ["metadata"]
+supplements = true
+
+[permissions]
+hosts = ["webservice.fanart.tv", "assets.fanart.tv"]
+rate_per_sec = 4
+
+[[settings]]
+key = "api_key"
+label = "Project API key"
+help = "Get one at fanart.tv (Profile → API keys)."
+secret = true
+required = true
+
+[[settings]]
+key = "client_key"
+label = "Personal API key (optional)"
+help = "Gets newer images sooner."
+secret = true
