@@ -24,6 +24,8 @@ pub struct QueueEntry {
     pub subtitle: String,
     pub resume_ms: i64,
     pub poster: Option<String>,
+    /// An offline copy to play instead of asking the server.
+    pub local: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -141,6 +143,8 @@ pub struct Player {
     pub room: Option<super::syncplay::Room>,
     room_code: String,
     cast: super::cast::CastCtl,
+    /// Where progress goes while the server can't be reached (remote servers).
+    pub offline: Option<(Arc<super::offline::Store>, String)>,
     /// Casting to a device: the controls drive it and mpv waits, paused.
     casting: Option<super::cast::Casting>,
 }
@@ -394,6 +398,7 @@ impl Player {
             room_code: String::new(),
             cast,
             casting: None,
+            offline: None,
         };
         p.load_current();
         Ok(p)
@@ -405,6 +410,22 @@ impl Player {
 
     fn load_current(&mut self) {
         let Some(e) = self.current().cloned() else { return };
+        if let Some(path) = &e.local {
+            if let Ok(mut t) = self.trick.lock() {
+                t.clear();
+            }
+            self.sheets.clear();
+            let start = format!("start={}", e.resume_ms as f64 / 1000.0);
+            let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
+            let _ = self
+                .mpv
+                .command_async(0, &["loadfile", &path.to_string_lossy(), "replace", "-1", &format!("{start},{title}")]);
+            if let Ok(mut s) = self.status.lock() {
+                s.pos = e.resume_ms as f64 / 1000.0;
+                s.ended = false;
+            }
+            return;
+        }
         // The server decides; the native client plays everything directly.
         let client = self.client.clone();
         let mpv = self.mpv.clone();
@@ -535,10 +556,15 @@ impl Player {
         } else {
             serde_json::json!({ "position_ms": (pos * 1000.0) as i64 })
         };
-        let (client, id) = (self.client.clone(), e.item_id);
+        let (client, id, offline) = (self.client.clone(), e.item_id, self.offline.clone());
         self.rt.spawn(async move {
-            let _: Result<serde_json::Value, String> =
+            let r: Result<serde_json::Value, String> =
                 client.send(reqwest::Method::PUT, &format!("/api/v1/items/{id}/state"), &body).await;
+            if r.is_err()
+                && let Some((store, server)) = offline
+            {
+                store.queue_state(&server, id, body);
+            }
         });
         self.last_report = Instant::now();
     }

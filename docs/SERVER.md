@@ -228,6 +228,16 @@ pages then work against the server; creating torrents, importing from other clie
 streaming window and "open folder" are hidden (the files are on the server). **⋮ → Use this
 computer's engine** switches back.
 
+### Offline copies
+
+Connected to a remote server, the app's item pages have **Download**: the original file
+(resumable) or a smaller 720p copy the server converts while it downloads (its HLS segments
+joined into one file, resumable by segment); seasons and albums download every episode or track.
+The Downloads page (arrow in the top bar) lists them, plays them without the server and pauses,
+resumes or removes them. Copies live in `<app data>/offline/`. Items with an offline copy play
+from it even while connected. Watch progress made while the server can't be reached is kept and
+sent once it is back — unless the server saw that item played later.
+
 ## Remote access
 
 `server.toml` (or `PUT /api/v1/server/remote`, admins) controls how the server is reached:

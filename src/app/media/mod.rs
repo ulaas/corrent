@@ -5,8 +5,10 @@
 
 pub mod cast;
 pub mod client;
+pub mod downloads;
 pub mod images;
 pub mod libraries;
+pub mod offline;
 pub mod player;
 pub mod profiles;
 pub mod subtitles;
@@ -35,6 +37,8 @@ pub enum Page {
     Person(i64, String),
     /// Adding, scanning and removing libraries.
     Libraries,
+    /// Offline copies on this computer.
+    Downloads,
 }
 
 const PAGE: i64 = 120;
@@ -82,6 +86,9 @@ pub struct MediaState {
     route: String,
     /// A focused card outside the view: the page scrolls to it.
     focus_rect: Option<Rect>,
+    offline: Option<Arc<offline::Store>>,
+    /// When queued offline progress was last sent.
+    flushed: Option<std::time::Instant>,
 }
 
 impl MediaState {
@@ -219,8 +226,14 @@ impl CorrentApp {
         {
             self.media_dev_played = true;
             self.main_view = super::feeds::MainView::Media;
-            let e =
-                QueueEntry { item_id: id, title: String::new(), subtitle: String::new(), resume_ms: 0, poster: None };
+            let e = QueueEntry {
+                item_id: id,
+                title: String::new(),
+                subtitle: String::new(),
+                resume_ms: 0,
+                poster: None,
+                local: None,
+            };
             self.play_queue(vec![e], false);
         }
         if std::env::var("CORRENT_DEV_SERVER_FS").is_ok()
@@ -377,14 +390,26 @@ impl CorrentApp {
         self.media.page = Some(page);
     }
 
-    fn play_queue(&mut self, queue: Vec<QueueEntry>, audio_only: bool) {
+    fn play_queue(&mut self, mut queue: Vec<QueueEntry>, audio_only: bool) {
         let Some(client) = self.media.client.clone() else { return };
         if queue.is_empty() {
             return;
         }
+        // Offline copies play from disk (remote servers).
+        let offline = self.offline_store();
+        if let Some(store) = &offline {
+            for e in &mut queue {
+                if let Some(d) = store.find(client.base(), e.item_id).filter(|d| d.state == offline::State::Done) {
+                    e.local = Some(store.path(&d)).filter(|p| p.is_file());
+                }
+            }
+        }
         self.media.player = None;
-        match Player::new(client, self.rt.clone(), &self.ctx, self.media.gl.as_ref(), queue, audio_only) {
-            Ok(p) => self.media.player = Some(p),
+        match Player::new(client.clone(), self.rt.clone(), &self.ctx, self.media.gl.as_ref(), queue, audio_only) {
+            Ok(mut p) => {
+                p.offline = offline.map(|s| (s, client.base().to_string()));
+                self.media.player = Some(p)
+            }
             Err(e) => self.toasts.push(crate::engine::ToastKind::Error, t!("Can't play: {why}", why = e)),
         }
     }
@@ -396,6 +421,7 @@ impl CorrentApp {
             subtitle: subtitle_of(i),
             resume_ms: if i.state.played { 0 } else { i.state.position_ms },
             poster: i.images.first().map(|im| im.sha.clone()),
+            local: None,
         }
     }
 
@@ -452,6 +478,7 @@ impl CorrentApp {
             let c = client.clone();
             self.media.libraries = Some(fetch(&self.rt, &self.ctx, async move { c.get("/api/v1/libraries").await }));
         }
+        self.flush_offline(&client);
         let page = self.media.page.clone().unwrap_or(Page::Home);
         self.media_top_bar(ui, p, &page);
         let ctx = self.ctx.clone();
@@ -468,6 +495,7 @@ impl CorrentApp {
                     Page::Search => self.search_page(ui, p, &client),
                     Page::Person(id, _) => self.person_page(ui, p, &client, id),
                     Page::Libraries => self.libraries_page(ui, p, &client),
+                    Page::Downloads => self.downloads_page(ui, p, &client),
                 }
                 ui.add_space(24.0);
                 if let Some(r) = self.media.focus_rect.take() {
@@ -495,6 +523,14 @@ impl CorrentApp {
             {
                 self.open(Page::Home);
             }
+            if self.server.is_some()
+                && ui
+                    .add(egui::Button::new(RichText::new(icons::DOWNLOAD_SIMPLE).size(18.0)).frame(false))
+                    .on_hover_text(t!("Downloads"))
+                    .clicked()
+            {
+                self.open(Page::Downloads);
+            }
             let title = match page {
                 Page::Home => t!("Home").to_string(),
                 Page::Library(id) => {
@@ -504,6 +540,7 @@ impl CorrentApp {
                 Page::Search => t!("Search").to_string(),
                 Page::Person(_, name) => name.clone(),
                 Page::Libraries => t!("Libraries").to_string(),
+                Page::Downloads => t!("Downloads").to_string(),
             };
             ui.label(RichText::new(title).size(20.0).strong().color(p.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1063,6 +1100,7 @@ impl CorrentApp {
             {
                 self.open_subtitle_finder(it.id);
             }
+            self.download_button(ui, client, &it, &siblings);
         });
         ui.add_space(12.0);
         if !d.genres.is_empty() {

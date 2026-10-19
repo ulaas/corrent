@@ -8,6 +8,8 @@ use serde::de::DeserializeOwned;
 #[derive(Clone)]
 pub struct MediaClient {
     http: reqwest::Client,
+    /// For long downloads: no overall deadline, only a stall timeout.
+    dl: reqwest::Client,
     base: String,
     token: String,
     /// The server's CA as a file, for mpv (`tls-ca-file`).
@@ -18,12 +20,17 @@ impl MediaClient {
     /// `ca_pem`: the server's own CA (remote servers with a self-signed certificate).
     pub fn new(base: &str, token: &str, ca_pem: Option<&str>) -> Result<MediaClient, String> {
         let mut b = reqwest::Client::builder().timeout(std::time::Duration::from_secs(60));
+        let mut d = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(20))
+            .read_timeout(std::time::Duration::from_secs(120));
         if let Some(pem) = ca_pem {
             let ca = reqwest::Certificate::from_pem(pem.as_bytes()).map_err(|e| e.to_string())?;
-            b = b.tls_certs_only([ca]);
+            b = b.tls_certs_only([ca.clone()]);
+            d = d.tls_certs_only([ca]);
         }
         Ok(MediaClient {
             http: b.build().map_err(|e| e.to_string())?,
+            dl: d.build().map_err(|e| e.to_string())?,
             base: base.trim_end_matches('/').to_string(),
             token: token.to_string(),
             ca_file: None,
@@ -108,6 +115,24 @@ impl MediaClient {
             .await
             .map_err(|e| e.to_string())?;
         Self::decode(res).await
+    }
+
+    /// A download from byte `from` on (resuming); the caller reads the body as it arrives.
+    pub async fn download(&self, path: &str, from: u64) -> Result<reqwest::Response, String> {
+        let mut r = self.dl.get(self.url(path)).bearer_auth(&self.token);
+        if from > 0 {
+            r = r.header(reqwest::header::RANGE, format!("bytes={from}-"));
+        }
+        let res = r.send().await.map_err(|e| e.to_string())?;
+        if !res.status().is_success() {
+            return Err(res.status().to_string());
+        }
+        Ok(res)
+    }
+
+    /// The server's address (what offline copies are filed under).
+    pub fn base(&self) -> &str {
+        &self.base
     }
 
     pub async fn text(&self, path: &str) -> Result<String, String> {
