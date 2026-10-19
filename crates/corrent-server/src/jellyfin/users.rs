@@ -178,12 +178,20 @@ async fn logout(State(st): State<Arc<AppState>>, a: JfAuth) -> Response {
 
 async fn capabilities(State(st): State<Arc<AppState>>, a: JfAuth, body: Bytes) -> Response {
     let b = body_json(&body);
-    if let Some(profile) = field(&b, "DeviceProfile").filter(|p| p.is_object()) {
+    if let Some(profile) = field(&b, "DeviceProfile").filter(|p| p.is_object())
+        && body.len() <= 64 * 1024
+    {
         let mut m = st.jellyfin.profiles.lock().unwrap_or_else(|e| e.into_inner());
-        if m.len() > 500 {
-            m.clear();
+        // A few devices per user, a bounded total.
+        let mine: Vec<(i64, String)> = m.keys().filter(|(u, _)| *u == a.user()).cloned().collect();
+        if mine.len() >= 10
+            && let Some(k) = mine.into_iter().next()
+        {
+            m.remove(&k);
         }
-        m.insert((a.user(), a.dev.device_id.clone()), profile.clone());
+        if m.len() < 2000 {
+            m.insert((a.user(), a.dev.device_id.clone()), profile.clone());
+        }
     }
     no_content()
 }
@@ -196,6 +204,11 @@ async fn sessions(State(st): State<Arc<AppState>>, a: JfAuth, ip: ClientIp, q: Q
     }
     let sid = a.p.device_id.unwrap_or(a.p.session_id);
     json(json!([dto::session_dto(&ctx(&st), &a.p.user, sid, &a.dev, &ip.0.to_string())]))
+}
+
+/// Display preference ids: `usersettings` or an item/view id (anything else isn't stored).
+fn display_id_ok(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 fn display_key(id: &str, q: &Q) -> String {
@@ -228,8 +241,16 @@ async fn display_set(
         Ok(u) => u,
         Err(r) => return r,
     };
-    if body.len() > 64 * 1024 || serde_json::from_slice::<Value>(&body).map(|v| !v.is_object()).unwrap_or(true) {
+    if !display_id_ok(&id)
+        || body.len() > 64 * 1024
+        || serde_json::from_slice::<Value>(&body).map(|v| !v.is_object()).unwrap_or(true)
+    {
         return fail(StatusCode::BAD_REQUEST, "Bad preferences");
+    }
+    if st.identity.jf_pref_count(uid).await.unwrap_or(0) >= 300
+        && stored(&st, uid, &display_key(&id, &q)).await.is_none()
+    {
+        return fail(StatusCode::BAD_REQUEST, "Too many stored preferences");
     }
     match st.identity.set_jf_pref(uid, &display_key(&id, &q), String::from_utf8_lossy(&body).into_owned()).await {
         Ok(()) => no_content(),

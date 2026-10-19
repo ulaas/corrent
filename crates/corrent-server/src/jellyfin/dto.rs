@@ -51,7 +51,8 @@ pub(crate) fn user_dto(c: &Ctx, u: &User, config: Option<Value>) -> Value {
         }
     }
     clean(json!({
-        "Name": if u.display_name.trim().is_empty() { u.name.clone() } else { u.display_name.clone() },
+        // Apps sign in with this name (Jellyfin has no separate display name).
+        "Name": u.name,
         "ServerId": c.server_id,
         "ServerName": c.server_name,
         "Id": ids::enc(ids::USER, u.id),
@@ -229,10 +230,10 @@ pub(crate) fn item_dto(c: &Ctx, it: &Item, lib: Option<LibraryKind>, detail: Opt
     let mut v = json!({
         "Name": it.title, "ServerId": c.server_id, "Id": id, "Etag": it.added_at.to_string(),
         "DateCreated": ids::date(it.added_at), "SortName": it.title.to_lowercase(), "Type": item_type(it.kind, lib),
-        "MediaType": media_type(it.kind), "IsFolder": !it.kind.playable(), "ParentId": parent,
+        "MediaType": media_type(it.kind), "IsFolder": !(it.kind.playable() || it.kind == ItemKind::Photo), "ParentId": parent,
         "ProductionYear": it.year, "RunTimeTicks": it.runtime_ms.map(ids::ticks), "IndexNumber": it.index,
         "ChildCount": it.child_count, "LocationType": "FileSystem", "PlayAccess": "Full", "CanDelete": false,
-        "CanDownload": it.kind.playable(), "LockData": false, "LockedFields": [], "Taglines": [], "Tags": [],
+        "CanDownload": it.kind.playable() || it.kind == ItemKind::Photo, "LockData": false, "LockedFields": [], "Taglines": [], "Tags": [],
         "Studios": [], "Genres": [], "GenreItems": [], "ProviderIds": {}, "ExternalUrls": [], "RemoteTrailers": [],
         "ImageTags": tags, "BackdropImageTags": backdrops, "ImageBlurHashes": hashes,
         "PrimaryImageAspectRatio": aspect, "UserData": user_data(it), "VideoType": (media_type(it.kind) == "Video").then_some("VideoFile"),
@@ -510,6 +511,7 @@ pub(crate) fn media_source(c: &Ctx, it: &Item, f: &MediaFile, play: Option<&supe
     });
     if let Some(p) = play {
         v["SupportsDirectPlay"] = json!(p.direct);
+        v["SupportsDirectStream"] = json!(p.direct);
         v["SupportsTranscoding"] = json!(p.can_transcode);
         if let Some(u) = &p.transcoding_url {
             v["TranscodingUrl"] = json!(u);

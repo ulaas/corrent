@@ -23,10 +23,10 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/users/{u}/items/{id}/userdata", get(data_of).post(set_data_of))
         .route("/useritems/{id}/rating", post(rating).delete(rating))
         .route("/users/{u}/items/{id}/rating", post(rating_of).delete(rating_of))
-        .route("/sessions/playing", post(progress))
+        .route("/sessions/playing", post(started))
         .route("/sessions/playing/progress", post(progress))
         .route("/sessions/playing/stopped", post(stopped))
-        .route("/sessions/playing/ping", post(|_a: JfAuth| async { no_content() }))
+        .route("/sessions/playing/ping", post(ping))
         .route("/playingitems/{id}", post(legacy_progress).delete(legacy_progress))
         .route("/playingitems/{id}/progress", post(legacy_progress))
         .route("/users/{u}/playingitems/{id}", post(legacy_progress_of).delete(legacy_progress_of))
@@ -177,11 +177,33 @@ async fn rating_of(State(st): State<Arc<AppState>>, a: JfAuth, Path((u, id)): Pa
     }
 }
 
-/// `Sessions/Playing` and `…/Progress`: the position (the played threshold applies as usual).
+/// `Sessions/Playing`: playback began (the resume point stays as it is, as in Jellyfin).
+async fn started(State(st): State<Arc<AppState>>, a: JfAuth, body: Bytes) -> Response {
+    let b: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    touch(&st, a.user(), &b);
+    no_content()
+}
+
+/// `Sessions/Playing/Progress`: the position (the played threshold applies as usual).
 async fn progress(State(st): State<Arc<AppState>>, a: JfAuth, body: Bytes) -> Response {
     let b: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    touch(&st, a.user(), &b);
     report(&st, a.user(), &b).await;
     no_content()
+}
+
+async fn ping(State(st): State<Arc<AppState>>, a: JfAuth, q: Q) -> Response {
+    if let Some(p) = q.get("playsessionid") {
+        super::playback::touch_play(&st, a.user(), p);
+    }
+    no_content()
+}
+
+/// A paused player still holds its transcode.
+fn touch(st: &AppState, user: i64, b: &Value) {
+    if let Some(p) = field(b, "PlaySessionId").and_then(Value::as_str) {
+        super::playback::touch_play(st, user, p);
+    }
 }
 
 async fn report(st: &AppState, user: i64, b: &Value) {

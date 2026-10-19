@@ -179,6 +179,9 @@ pub(crate) fn profile_from(p: &Value) -> ClientProfile {
 /// A field of the body, or the same name in the query (the query wins).
 fn param(b: &Value, q: &Q, name: &str) -> Option<Value> {
     if let Some(v) = q.get(&name.to_ascii_lowercase()) {
+        if v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("false") {
+            return Some(Value::Bool(v.eq_ignore_ascii_case("true")));
+        }
         return Some(v.parse::<i64>().map(Value::from).unwrap_or_else(|_| Value::from(v)));
     }
     let lower = format!("{}{}", name[..1].to_ascii_lowercase(), &name[1..]);
@@ -264,14 +267,15 @@ async fn info(State(st): State<Arc<AppState>>, a: JfAuth, Path(id): Path<String>
         },
     );
     let direct = matches!(decision, Decision::Direct { .. });
-    let can_transcode =
-        a.p.can(Perms::PLAYBACK_TRANSCODE) && st.hls_encoder.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    let can_transcode = a.p.can(Perms::PLAYBACK_TRANSCODE)
+        && (st.hls_encoder.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+            || !file.streams.iter().any(|s| s.kind == "video"));
     let play_id = new_play_id();
     let token = a.dev.token.clone().unwrap_or_default();
     let item_guid = ids::enc(ids::ITEM, item);
     let source_guid = ids::enc(ids::FILE, file.id);
     let audio_only = !file.streams.iter().any(|s| s.kind == "video");
-    let transcoding_url = (!direct && (can_transcode || audio_only)).then(|| {
+    let transcoding_url = (!direct && can_transcode).then(|| {
         let kind = if audio_only { "Audio" } else { "Videos" };
         let reasons = match &decision {
             Decision::Transcode { reasons, .. } => reasons.join(","),
@@ -324,73 +328,127 @@ async fn serve_file(st: &AppState, user: i64, item: i64, q: &Q, req: Request) ->
     }
 }
 
+/// A play session id an app chose itself (Jellyfin Web counts them): short and plain.
+fn valid_play_id(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Starts an HLS session for a play session's choices.
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
+async fn start_hls(
+    st: &Arc<AppState>,
+    a: &JfAuth,
+    item: i64,
+    file: i64,
+    profile: ClientProfile,
+    audio_track: Option<i64>,
+    burn: Option<i64>,
+    max_bitrate: Option<i64>,
+) -> Result<String, Response> {
+    let req = PlaybackRequest {
+        file_id: (file > 0).then_some(file),
+        audio_track,
+        burn_subtitle: burn,
+        max_bitrate,
+        force_transcode: true,
+        ..Default::default()
+    };
+    let info =
+        crate::v1::playback::prepare(st, &crate::v1::Auth(a.p.clone()), item, req, Some(profile)).await.map_err(
+            |e| fail(StatusCode::from_u16(e.0.code.http_status()).unwrap_or(StatusCode::BAD_REQUEST), &e.0.message),
+        )?;
+    info.session_id.ok_or_else(|| fail(StatusCode::BAD_REQUEST, "Nothing to transcode"))
+}
+
+/// The live HLS session of a play session: started again when the server reaped it (a long
+/// pause), so playback resumes instead of failing.
+async fn live_hls(st: &Arc<AppState>, a: &JfAuth, q: &Q) -> Option<String> {
+    let p = q.get("playsessionid")?.to_string();
+    let found = {
+        let m = st.jellyfin.plays.lock().unwrap_or_else(|e| e.into_inner());
+        m.get(&p)
+            .filter(|s| s.user == a.user())
+            .map(|s| (s.hls.clone(), s.item, s.file, s.profile.clone(), s.audio_track, s.burn_subtitle, s.max_bitrate))
+    };
+    let (hls, item, file, profile, audio, burn, maxb) = found?;
+    if let Some(h) = hls.filter(|h| st.hls.owner(h).is_some()) {
+        st.hls.keep_alive(&h);
+        return Some(h);
+    }
+    let h = start_hls(st, a, item, file, profile, audio, burn, maxb).await.ok()?;
+    if let Some(s) =
+        st.jellyfin.plays.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&p).filter(|s| s.user == a.user())
+    {
+        s.hls = Some(h.clone());
+    }
+    Some(h)
+}
+
+/// Keeps a play session's transcode alive (progress reports while paused).
+pub(crate) fn touch_play(st: &AppState, user: i64, id: &str) {
+    let m = st.jellyfin.plays.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(h) = m.get(id).filter(|s| s.user == user).and_then(|s| s.hls.as_deref()) {
+        st.hls.keep_alive(h);
+    }
+}
+
 /// Starts (or finds) the HLS session of a play session; the master playlist.
 async fn master(st: &Arc<AppState>, a: &JfAuth, item: i64, q: &Q, raw_query: &str) -> Response {
-    let play_id = q.get("playsessionid").map(str::to_string);
-    let existing = play_id.as_ref().and_then(|p| {
+    let client_id = q.get("playsessionid").filter(|p| valid_play_id(p)).map(str::to_string);
+    let existing = client_id.as_ref().and_then(|p| {
         let m = st.jellyfin.plays.lock().unwrap_or_else(|e| e.into_inner());
         m.get(p)
             .filter(|s| s.user == a.user() && s.item == item)
             .map(|s| (s.hls.clone(), s.file, s.profile.clone(), s.audio_track, s.burn_subtitle, s.max_bitrate))
     });
+    let known = existing.is_some();
     let (hls, file, profile, audio_track, burn, max_bitrate) = match existing {
         Some(e) => e,
         // An app that built the URL itself: the browser profile.
         None => {
-            let file = q.get("mediasourceid").and_then(|s| ids::dec_kind(s, ids::FILE));
-            (None, file.unwrap_or(0), ClientProfile::web_chromium(), None, None, q.i64("maxstreamingbitrate"))
+            let file = q.get("mediasourceid").and_then(|s| ids::dec_kind(s, ids::FILE)).unwrap_or(0);
+            (None, file, ClientProfile::web_chromium(), None, None, q.i64("maxstreamingbitrate"))
         }
     };
     let hls = match hls.filter(|h| st.hls.owner(h).is_some()) {
         Some(h) => h,
-        None => {
-            let req = PlaybackRequest {
-                file_id: (file > 0).then_some(file),
-                audio_track,
-                burn_subtitle: burn,
-                max_bitrate,
-                force_transcode: true,
-                ..Default::default()
-            };
-            let info =
-                match crate::v1::playback::prepare(st, &crate::v1::Auth(a.p.clone()), item, req, Some(profile)).await {
-                    Ok(i) => i,
-                    Err(e) => {
-                        return fail(
-                            StatusCode::from_u16(e.0.code.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
-                            &e.0.message,
-                        );
-                    }
-                };
-            let Some(h) = info.session_id else { return fail(StatusCode::BAD_REQUEST, "Nothing to transcode") };
-            if let Some(p) = &play_id
-                && let Some(s) = st.jellyfin.plays.lock().unwrap_or_else(|e| e.into_inner()).get_mut(p)
-            {
-                s.hls = Some(h.clone());
-            }
-            h
-        }
+        None => match start_hls(st, a, item, file, profile.clone(), audio_track, burn, max_bitrate).await {
+            Ok(h) => h,
+            Err(r) => return r,
+        },
     };
     let mut query = raw_query.to_string();
-    if play_id.is_none() {
-        // Remember the session so main.m3u8 and the segments find it.
-        let id = new_play_id();
+    let id = match client_id {
+        Some(id) => id,
+        None => {
+            let id = new_play_id();
+            query.push_str(&format!("&PlaySessionId={id}"));
+            id
+        }
+    };
+    if known {
+        if let Some(s) =
+            st.jellyfin.plays.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&id).filter(|s| s.user == a.user())
+        {
+            s.hls = Some(hls.clone());
+        }
+    } else {
+        // Remember it so main.m3u8 and the segments find it.
         remember(
             st,
-            id.clone(),
+            id,
             PlaySession {
                 user: a.user(),
                 item,
                 file,
-                profile: ClientProfile::web_chromium(),
-                audio_track: None,
-                burn_subtitle: None,
-                max_bitrate: None,
+                profile,
+                audio_track,
+                burn_subtitle: burn,
+                max_bitrate,
                 hls: Some(hls.clone()),
                 created: Instant::now(),
             },
         );
-        query.push_str(&format!("&PlaySessionId={id}"));
     }
     let bandwidth = 4_000_000;
     let body = format!(
@@ -410,16 +468,10 @@ fn playlist_response(body: String) -> Response {
         .into_response()
 }
 
-fn hls_of(st: &AppState, user: i64, q: &Q) -> Option<String> {
-    let p = q.get("playsessionid")?;
-    let m = st.jellyfin.plays.lock().unwrap_or_else(|e| e.into_inner());
-    m.get(p).filter(|s| s.user == user).and_then(|s| s.hls.clone())
-}
-
 /// The media playlist, segments pointing at `hls1/main/N.ts?<query>` (the token travels in the
 /// query: players fetch segments without headers).
-async fn main_playlist(st: &AppState, a: &JfAuth, q: &Q, raw_query: &str) -> Response {
-    let Some(hls) = hls_of(st, a.user(), q) else { return not_found() };
+async fn main_playlist(st: &Arc<AppState>, a: &JfAuth, q: &Q, raw_query: &str) -> Response {
+    let Some(hls) = live_hls(st, a, q).await else { return not_found() };
     let Ok(body) = st.hls.playlist(&hls) else { return not_found() };
     let out: String = body
         .lines()
@@ -441,7 +493,7 @@ async fn segment(
     q: Q,
     req: Request,
 ) -> Response {
-    let Some(hls) = hls_of(&st, a.user(), &q) else { return not_found() };
+    let Some(hls) = live_hls(&st, &a, &q).await else { return not_found() };
     let Some(n) = seg.strip_suffix(".ts").and_then(|n| n.parse::<u64>().ok()) else { return not_found() };
     let Ok(path) = st.hls.segment(&hls, n).await else { return not_found() };
     match tower::ServiceExt::oneshot(
@@ -529,7 +581,8 @@ async fn audio(
             if !q.get("transcodingprotocol").is_some_and(|p| p.eq_ignore_ascii_case("hls")) {
                 return fail(StatusCode::BAD_REQUEST, "Progressive transcoding isn't supported: use HLS");
             }
-            let play_id = new_play_id();
+            let given = q.get("playsessionid").filter(|p| valid_play_id(p)).map(str::to_string);
+            let play_id = given.clone().unwrap_or_else(new_play_id);
             remember(
                 &st,
                 play_id.clone(),
@@ -545,7 +598,7 @@ async fn audio(
                     created: Instant::now(),
                 },
             );
-            let raw = format!("{raw}&PlaySessionId={play_id}");
+            let raw = if given.is_some() { raw } else { format!("{raw}&PlaySessionId={play_id}") };
             let q2 = Q::parse(Some(&raw));
             master(&st, &a, item, &q2, &raw).await
         }

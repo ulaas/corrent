@@ -55,7 +55,9 @@ fn answer(st: &AppState, from: SocketAddr) -> Option<String> {
     let address = if cfg.jellyfin_port != 0 {
         format!("http://{host}:{}", cfg.jellyfin_port)
     } else {
-        format!("{}://{host}:{}/jellyfin", if cfg.tls { "https" } else { "http" }, cfg.https_port)
+        let port = st.remote_status.load().https_port;
+        let port = if port != 0 { port } else { cfg.https_port };
+        format!("{}://{host}:{port}/jellyfin", if cfg.tls { "https" } else { "http" })
     };
     let c = super::system::ctx(st);
     Some(json!({ "Address": address, "Id": c.server_id, "Name": c.server_name, "EndpointAddress": null }).to_string())

@@ -512,6 +512,13 @@ impl Identity {
             .map_err(db_err)
     }
 
+    pub async fn jf_pref_count(&self, user_id: i64) -> Result<i64, ApiError> {
+        self.db
+            .read(move |c| c.query_row("SELECT count(*) FROM jf_prefs WHERE user_id = ?1", [user_id], |r| r.get(0)))
+            .await
+            .map_err(db_err)
+    }
+
     pub async fn set_jf_pref(&self, user_id: i64, key: &str, json: String) -> Result<(), ApiError> {
         let key: String = key.chars().take(200).collect();
         let now = now_unix();

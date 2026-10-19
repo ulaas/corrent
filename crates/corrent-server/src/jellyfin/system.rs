@@ -56,17 +56,21 @@ pub(crate) fn ctx(st: &AppState) -> Ctx {
 }
 
 /// `http://<host>/…` as the client addressed us (the listener it came through).
-fn local_address(headers: &HeaderMap, host: Option<&RequestHost>) -> String {
+fn local_address(st: &AppState, headers: &HeaderMap, host: Option<&RequestHost>) -> String {
     let host = host
         .map(|h| h.0.clone())
         .or_else(|| headers.get(header::HOST).and_then(|h| h.to_str().ok()).map(str::to_string));
-    host.map(|h| format!("http://{h}")).unwrap_or_default()
+    let Some(h) = host else { return String::new() };
+    // Through the main listener (HTTPS, under /jellyfin) or the plain one.
+    let cfg = st.cfg.load();
+    let port: Option<u16> = h.rsplit_once(':').and_then(|(_, p)| p.parse().ok());
+    if cfg.tls && port == Some(cfg.https_port) { format!("https://{h}/jellyfin") } else { format!("http://{h}") }
 }
 
 pub(crate) fn public_info(st: &AppState, headers: &HeaderMap, host: Option<&RequestHost>) -> Value {
     let c = ctx(st);
     json!({
-        "LocalAddress": local_address(headers, host),
+        "LocalAddress": local_address(st, headers, host),
         "ServerName": c.server_name,
         "Version": st.cfg.load().jellyfin_version,
         "ProductName": "Jellyfin Server",

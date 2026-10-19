@@ -87,6 +87,10 @@ async fn handshake_and_login() {
         let parts: Vec<u32> = v["Version"].as_str().unwrap().split('.').map(|p| p.parse().unwrap()).collect();
         assert!(parts.len() == 3 && parts[0] >= 12, "{v}");
     }
+    // The sign-in name, even with a display name set.
+    let admin_id = h.st.identity.users().await.unwrap()[0].id;
+    let upd = corrent_proto::auth::UserUpdate { display_name: Some("The Admin".into()), ..Default::default() };
+    h.st.identity.update_user(admin_id, upd).await.unwrap();
     let (_, v, _) = jf(app, Method::GET, "/jellyfin/Users/Public", None, None).await;
     assert_eq!(v[0]["Name"], "admin");
     assert_eq!(jf(app, Method::GET, "/jellyfin/QuickConnect/Enabled", None, None).await.1, json!(false));
@@ -253,7 +257,7 @@ async fn browse_photos_and_user_data() {
             StatusCode::NOT_FOUND
         );
     }
-    // Another user may not read admin's data.
+    // Administrators may read other users' lists.
     assert_eq!(
         jf(app, Method::GET, &format!("/jellyfin/Users/{}/Items", ids::enc(ids::USER, 999)), Some(&a), None).await.0,
         StatusCode::OK
@@ -514,5 +518,67 @@ async fn inputs_never_break_it() {
         let (s, _, _) = jf(app, Method::GET, "/jellyfin/Users/Me", Some(auth), None).await;
         assert_eq!(s, StatusCode::UNAUTHORIZED, "{auth}");
     }
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn audio_universal_transcodes_with_the_apps_session_id() {
+    if !corrent_mpv::Library::available() {
+        eprintln!("libmpv not found; skipping");
+        return;
+    }
+    let h = harness("jf-audio", ServerConfig { tls: false, jellyfin_api: true, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let album = h.dir.join("Music/Artist/Album");
+    std::fs::create_dir_all(&album).unwrap();
+    let job = corrent_mpv::encode::EncodeJob {
+        input: "av://lavfi:sine=frequency=440:duration=8".into(),
+        audio_file: None,
+        output: album.join("01 Song.flac").display().to_string(),
+        options: vec![("of".into(), "flac".into()), ("oac".into(), "flac".into())],
+    };
+    corrent_mpv::encode::run(&job, std::time::Duration::from_secs(60), &mut |_| true).unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Music", "kind": "music", "folders": [h.dir.join("Music")] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let track = loop {
+        let (_, v, _) = crate::api_tests::get(app, &format!("/api/v1/items?library_id={lib}&kind=track"), &admin).await;
+        if let Some(id) = v["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let (token, _) = login(app).await;
+    let t = ids::enc(ids::ITEM, track);
+    // Jellyfin Web asks for MP3 only, with its own PlaySessionId: FLAC → HLS.
+    let uri = format!(
+        "/jellyfin/Audio/{t}/universal?UserId=x&DeviceId=dev-abc&MaxStreamingBitrate=140000000&Container=mp3&TranscodingContainer=ts&TranscodingProtocol=hls&AudioCodec=aac&api_key={token}&PlaySessionId=1729000000001&StartTimeTicks=0"
+    );
+    let (s, master, _) = jf(app, Method::GET, &uri, None, None).await;
+    assert_eq!(s, StatusCode::OK, "{master}");
+    let variant = master.as_str().unwrap().lines().find(|l| l.starts_with("main.m3u8?")).unwrap().to_string();
+    assert!(
+        variant.contains("PlaySessionId=1729000000001") && !variant.matches("PlaySessionId").nth(1).is_some(),
+        "{variant}"
+    );
+    let (s, media, _) = jf(app, Method::GET, &format!("/jellyfin/Audio/{t}/{variant}"), None, None).await;
+    assert_eq!(s, StatusCode::OK, "{media}");
+    let seg = media.as_str().unwrap().lines().find(|l| l.starts_with("hls1/main/0.ts?")).unwrap().to_string();
+    assert_eq!(jf(app, Method::GET, &format!("/jellyfin/Audio/{t}/{seg}"), None, None).await.0, StatusCode::OK);
+    // A FLAC-capable app gets the file.
+    let (s, _, hd) =
+        jf(app, Method::GET, &format!("/jellyfin/Audio/{t}/universal?Container=flac,mp3&api_key={token}"), None, None)
+            .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(hd[header::CONTENT_TYPE].to_str().unwrap().contains("flac"), "{hd:?}");
     h.stop().await;
 }
