@@ -110,7 +110,12 @@ pub struct Store {
     read_only: bool,
     last_error: Option<String>,
     pending_error: Option<String>,
+    /// UTC day of the newest daily generation (`store.json.daily-<ts>`), read on the first save.
+    daily_day: Option<i64>,
 }
+
+/// Daily generations of `store.json` kept besides `.bak`.
+const DAILY_GENERATIONS: usize = 3;
 
 impl Drop for Store {
     /// Flush pending changes, also when the engine task unwinds after a panic.
@@ -166,9 +171,15 @@ impl Store {
                     tracing::error!("store.json is corrupt ({e}); trying backup");
                     let bad = path.with_extension(format!("json.bad-{}", crate::util::now_unix()));
                     let kept = std::fs::copy(&path, &bad).is_ok();
-                    let bak = path.with_extension("json.bak");
-                    match std::fs::read(&bak).ok().and_then(|b| serde_json::from_slice::<StoreData>(&b).ok()) {
-                        Some(d) => {
+                    // The hourly `.bak` first, then the daily generations, newest first.
+                    let candidates = std::iter::once(path.with_extension("json.bak"))
+                        .chain(crate::util::generations(&path, "daily").into_iter().map(|g| g.1));
+                    let good = candidates.into_iter().find_map(|p| {
+                        let b = std::fs::read(&p).ok()?;
+                        serde_json::from_slice::<StoreData>(&b).ok().map(|d| (p, d))
+                    });
+                    match good {
+                        Some((bak, d)) => {
                             // Put the good copy back so the next save never rotates the corrupt
                             // file over the only good backup.
                             let _ = std::fs::copy(&bak, &path);
@@ -237,6 +248,7 @@ impl Store {
             read_only,
             last_error: None,
             pending_error: None,
+            daily_day: None,
         }
     }
 
@@ -353,7 +365,7 @@ impl Store {
             return;
         }
         match serde_json::to_vec_pretty(&self.data) {
-            Ok(bytes) => match crate::util::write_atomic(&self.path, &bytes) {
+            Ok(bytes) => match self.rotate_daily(&bytes).and_then(|()| crate::util::write_atomic(&self.path, &bytes)) {
                 Ok(()) => {
                     self.last_error = None;
                     self.dirty = false;
@@ -373,6 +385,22 @@ impl Store {
             },
             Err(e) => tracing::error!("failed to serialize store: {e:#}"),
         }
+    }
+}
+
+impl Store {
+    /// On the first save of a UTC day, keep the new contents as a dated generation too.
+    fn rotate_daily(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        let today = crate::util::now_unix().div_euclid(86400);
+        let path = &self.path;
+        let newest = *self.daily_day.get_or_insert_with(|| {
+            crate::util::generations(path, "daily").first().map_or(i64::MIN, |g| g.0.div_euclid(86400))
+        });
+        if newest != today {
+            crate::util::keep_generations(&self.path, "daily", bytes, DAILY_GENERATIONS)?;
+            self.daily_day = Some(today);
+        }
+        Ok(())
     }
 }
 
@@ -430,8 +458,11 @@ mod tests {
 mod more_tests {
     use super::*;
 
+    /// `store.json` in a fresh folder of its own (saves also write `.bak` and daily generations).
     fn tmp(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("corrent-store-{name}-{}.json", std::process::id()))
+        let dir = std::env::temp_dir().join(format!("corrent-store-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("store.json")
     }
 
     #[test]
@@ -469,8 +500,8 @@ mod more_tests {
         assert_eq!(back.get(&InfoHash([9; 20])).unwrap().category.as_deref(), Some("Movies"));
         assert!(back.warning.is_none());
         drop((s, back));
-        let _ = std::fs::remove_file(&p);
-        let _ = std::fs::remove_file(p.with_extension("json.bak"));
+        assert_eq!(crate::util::generations(&p, "daily").len(), 1, "the day's first save is kept");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
     #[test]
@@ -487,12 +518,23 @@ mod more_tests {
         assert!(back.get(&InfoHash([3; 20])).is_some());
         s.discard();
         back.discard();
-        for f in std::fs::read_dir(std::env::temp_dir()).unwrap().flatten() {
-            let n = f.file_name().to_string_lossy().into_owned();
-            if n.starts_with(&format!("corrent-store-c-{}", std::process::id())) {
-                let _ = std::fs::remove_file(f.path());
-            }
-        }
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn damaged_store_and_backup_fall_back_to_a_daily_generation() {
+        let p = tmp("d");
+        let mut s = Store::load(p.clone());
+        s.meta_mut(InfoHash([5; 20])).category = Some("Daily".into());
+        s.maybe_save(true);
+        s.discard();
+        std::fs::write(&p, b"{ broken").unwrap();
+        std::fs::write(p.with_extension("json.bak"), b"also broken").unwrap();
+        let back = Store::load(p.clone());
+        assert!(back.warning.as_deref().unwrap_or("").contains("restored from its backup"));
+        assert_eq!(back.get(&InfoHash([5; 20])).unwrap().category.as_deref(), Some("Daily"));
+        back.discard();
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
     #[test]

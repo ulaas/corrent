@@ -1,29 +1,135 @@
 //! Small helpers: atomic file writes, human-readable formatting, time.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::config::SpeedUnits;
 
+/// How long `<name>.bak` is kept before a save refreshes it. A backup that is only one save old
+/// would take on a logical corruption within seconds; dated generations (`keep_generations`) go
+/// further back.
+const BAK_MAX_AGE: Duration = Duration::from_secs(3600);
+
 /// Write a file atomically: write to a temp sibling, fsync, then rename over the target.
-/// The previous version is kept as `<name>.bak` so a crash mid-write never loses data.
+/// The previous version is kept as `<name>.bak` (refreshed at most once an hour) so a crash
+/// mid-write never loses data. A rename refused because another program (antivirus, indexer,
+/// sync client) holds the target is retried for about 1.5 s.
 pub fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension(format!("{}.tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("")));
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(data)?;
-        f.sync_all()?;
+    let tmp = sibling(path, "tmp");
+    if let Err(e) = write_synced(&tmp, data) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
     }
     if path.exists() {
-        let bak = path.with_extension(format!("{}.bak", path.extension().and_then(|e| e.to_str()).unwrap_or("")));
-        let _ = std::fs::copy(path, bak);
+        refresh_bak(path);
     }
-    std::fs::rename(&tmp, path)?;
+    if let Err(e) = rename_retrying(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    sync_parent(path);
     Ok(())
+}
+
+/// `<name>.<ext>.<suffix>` next to `path`.
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    path.with_extension(format!("{}.{suffix}", path.extension().and_then(|e| e.to_str()).unwrap_or("")))
+}
+
+fn write_synced(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(data)?;
+    f.sync_all()
+}
+
+/// Copy the current file to `.bak` when the backup is missing or older than `BAK_MAX_AGE`.
+/// Written fresh (not `fs::copy`, which keeps the source's mtime on Windows) so its mtime says
+/// when the backup was taken.
+fn refresh_bak(path: &Path) {
+    let bak = sibling(path, "bak");
+    let fresh = std::fs::metadata(&bak)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < BAK_MAX_AGE);
+    if !fresh && let Ok(current) = std::fs::read(path) {
+        let _ = write_synced(&bak, &current);
+    }
+}
+
+fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut delay = Duration::from_millis(50);
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e)
+                if delay <= Duration::from_millis(800)
+                    && matches!(classify_io(&e.to_string()), IoKind::Locked | IoKind::Permission) =>
+            {
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            r => return r,
+        }
+    }
+}
+
+/// Unix: a rename is durable only once its directory is synced.
+fn sync_parent(path: &Path) {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent()
+        && let Ok(d) = std::fs::File::open(if dir.as_os_str().is_empty() { Path::new(".") } else { dir })
+    {
+        let _ = d.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Write `data` as a dated generation of `path` (`<name>.<tag>-<unix time>`, fsynced) and delete
+/// all but the newest `keep` generations with that tag. Returns the new file.
+pub fn keep_generations(path: &Path, tag: &str, data: &[u8], keep: usize) -> anyhow::Result<PathBuf> {
+    keep_generation_at(path, tag, data, keep, now_unix())
+}
+
+fn keep_generation_at(path: &Path, tag: &str, data: &[u8], keep: usize, ts: i64) -> anyhow::Result<PathBuf> {
+    let name = path.file_name().ok_or_else(|| anyhow::anyhow!("no file name: {}", path.display()))?;
+    let file = path.with_file_name(format!("{}.{tag}-{ts}", name.to_string_lossy()));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = sibling(&file, "tmp");
+    if let Err(e) = write_synced(&tmp, data).and_then(|()| std::fs::rename(&tmp, &file)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    sync_parent(&file);
+    for (_, old) in generations(path, tag).into_iter().skip(keep) {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(file)
+}
+
+/// The generations of `path` with `tag`, newest first, with their timestamps.
+pub fn generations(path: &Path, tag: &str) -> Vec<(i64, PathBuf)> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return Vec::new() };
+    let prefix = format!("{}.{tag}-", name.to_string_lossy());
+    let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+    let mut found: Vec<(i64, PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let ts = n.strip_prefix(&prefix)?.parse().ok()?;
+            Some((ts, e.path()))
+        })
+        .collect();
+    found.sort_by_key(|g| std::cmp::Reverse(g.0));
+    found
 }
 
 /// What kind of I/O problem an error message describes (works across OSes and wrappers).
@@ -366,6 +472,76 @@ mod tests {
         write_atomic(&f, b"two").unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), b"two");
         assert_eq!(std::fs::read(dir.join("x.json.bak")).unwrap(), b"one");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("corrent-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn bak_is_refreshed_at_most_hourly() {
+        let dir = scratch("bak-age");
+        let f = dir.join("store.json");
+        let bak = dir.join("store.json.bak");
+        write_atomic(&f, b"0").unwrap();
+        for i in 1..=100 {
+            write_atomic(&f, format!("{i}").as_bytes()).unwrap();
+        }
+        assert_eq!(std::fs::read(&f).unwrap(), b"100");
+        assert_eq!(std::fs::read(&bak).unwrap(), b"0", "the backup survives 100 saves within the hour");
+        // An hour later the next save takes a new backup of the current file.
+        let old = std::time::SystemTime::now() - BAK_MAX_AGE - Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&bak).unwrap().set_modified(old).unwrap();
+        write_atomic(&f, b"101").unwrap();
+        assert_eq!(std::fs::read(&bak).unwrap(), b"100");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rename_waits_for_a_handle_that_blocks_it() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = scratch("held");
+        let f = dir.join("settings.toml");
+        write_atomic(&f, b"one").unwrap();
+        // Like an antivirus scan: the file is open without FILE_SHARE_DELETE, so it can't be
+        // replaced until the handle closes.
+        const FILE_SHARE_READ: u32 = 1;
+        let held = std::fs::File::options().read(true).share_mode(FILE_SHARE_READ).open(&f).unwrap();
+        std::fs::write(dir.join("probe"), b"").unwrap();
+        assert!(std::fs::rename(dir.join("probe"), &f).is_err(), "the handle blocks replacing the file");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(held);
+        });
+        write_atomic(&f, b"two").unwrap();
+        release.join().unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"two");
+        assert!(!dir.join("settings.toml.tmp").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn generations_keep_the_newest() {
+        let dir = scratch("gens");
+        let f = dir.join("store.json");
+        std::fs::write(dir.join("store.json.bak"), b"bak").unwrap();
+        std::fs::write(dir.join("store.json.daily-x"), b"not ours").unwrap();
+        std::fs::write(dir.join("other.json.daily-5"), b"other").unwrap();
+        for ts in [10, 30, 20, 40] {
+            keep_generation_at(&f, "daily", ts.to_string().as_bytes(), 3, ts).unwrap();
+        }
+        let kept = generations(&f, "daily");
+        assert_eq!(kept.iter().map(|g| g.0).collect::<Vec<_>>(), [40, 30, 20]);
+        assert_eq!(std::fs::read(&kept[0].1).unwrap(), b"40");
+        assert!(!dir.join("store.json.daily-10").exists());
+        for other in ["store.json.bak", "store.json.daily-x", "other.json.daily-5"] {
+            assert!(dir.join(other).exists(), "{other} is left alone");
+        }
+        assert!(generations(&f, "pre-prune").is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 }
