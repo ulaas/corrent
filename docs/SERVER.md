@@ -108,7 +108,7 @@ A library has a kind (`movies`, `shows`, `music`, `audiobooks`, `videos`, `photo
 Scans read file names and folders, `.nfo` files, audio tags, local artwork (`poster.jpg`,
 `fanart.jpg`, `cover.jpg`, `seasonNN-poster.jpg`, embedded covers) and external subtitles, and
 probe media with libmpv through the `corrent-mpvw` worker (install it next to `correntd`; without
-it libmpv is used in-process, and without libmpv files are added unprobed). Folders are watched
+it libmpv is used in-process; without libmpv `ffprobe` is used when installed — `CORRENT_FFPROBE` or the `PATH` — and without either files are added unprobed). Folders are watched
 for changes and every library is rescanned every six hours. Files that disappear are marked
 missing and removed after 30 days; a folder that can't be read at all (unplugged drive, offline
 share) leaves the library untouched. Admins can limit which libraries a user sees.
