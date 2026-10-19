@@ -21,18 +21,24 @@ pub fn forward_engine_events(rx: std::sync::mpsc::Receiver<EngineEvent>, st: Arc
     let rt = tokio::runtime::Handle::current();
     let _ = std::thread::Builder::new().name("corrent-events".into()).spawn(move || {
         while let Ok(ev) = rx.recv() {
-            match &ev {
-                EngineEvent::Completed { hash, category, content_path, .. } => {
-                    rt.spawn(on_completed(st.clone(), *hash, category.clone(), content_path.clone()));
-                }
-                EngineEvent::Added { hash, .. } => {
-                    rt.spawn(on_added(st.clone(), *hash));
-                }
-                _ => {}
-            }
-            st.hub.engine_event(ev);
+            on_engine_event(&st, &rt, ev);
         }
     });
+}
+
+/// Handles one engine event (for hosts that read the engine's events themselves, like the
+/// desktop app hosting the server in-process).
+pub fn on_engine_event(st: &Arc<AppState>, rt: &tokio::runtime::Handle, ev: EngineEvent) {
+    match &ev {
+        EngineEvent::Completed { hash, category, content_path, .. } => {
+            rt.spawn(on_completed(st.clone(), *hash, category.clone(), content_path.clone()));
+        }
+        EngineEvent::Added { hash, .. } => {
+            rt.spawn(on_added(st.clone(), *hash));
+        }
+        _ => {}
+    }
+    st.hub.engine_event(ev);
 }
 
 async fn on_completed(st: Arc<AppState>, hash: InfoHash, category: Option<String>, content: PathBuf) {

@@ -39,13 +39,21 @@ unsafe extern "C" fn update_trampoline(d: *mut c_void) {
 impl RenderContext {
     /// An OpenGL render context. Call with the host's GL context current; `get_proc_address`
     /// resolves GL function names (eframe: `CreationContext::get_proc_address`).
-    pub fn new_gl(mpv: Arc<Mpv>, get_proc_address: impl Fn(&CStr) -> *const c_void + Send + 'static) -> Result<Self> {
+    ///
+    /// `advanced` turns on `MPV_RENDER_PARAM_ADVANCED_CONTROL`: better frame timing, but mpv's
+    /// video thread then waits for the render thread, so the render thread must never make a
+    /// synchronous mpv call (that deadlocks) and must keep rendering while playing.
+    pub fn new_gl(
+        mpv: Arc<Mpv>,
+        get_proc_address: impl Fn(&CStr) -> *const c_void + Send + 'static,
+        advanced: bool,
+    ) -> Result<Self> {
         let proc: Box<ProcBox> = Box::new(Box::new(get_proc_address));
         let mut init = ffi::mpv_opengl_init_params {
             get_proc_address: Some(proc_trampoline),
             get_proc_address_ctx: &*proc as *const ProcBox as *mut c_void,
         };
-        let mut advanced: c_int = 1;
+        let mut advanced: c_int = advanced.into();
         let mut params = [
             param(ffi::MPV_RENDER_PARAM_API_TYPE, c"opengl".as_ptr() as *mut c_void),
             param(ffi::MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &mut init as *mut _ as *mut c_void),

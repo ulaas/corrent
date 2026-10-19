@@ -20,6 +20,9 @@ default = []
 corrent-i18n = { path = "crates/corrent-i18n" }
 corrent-core = { path = "crates/corrent-core" }
 corrent-server = { path = "crates/corrent-server" }
+corrent-proto = { path = "crates/corrent-proto" }
+corrent-mpv = { path = "crates/corrent-mpv" }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 librqbit = { version = "=9.0.1", default-features = false, features = ["rust-tls"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
 eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "x11", "wayland"] }

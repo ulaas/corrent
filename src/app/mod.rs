@@ -12,6 +12,7 @@ pub mod icon;
 mod import_dialog;
 mod integration_ui;
 pub mod log;
+pub mod media;
 mod onboarding;
 mod pickers;
 mod remote;
@@ -371,6 +372,11 @@ pub struct CorrentApp {
     icon_tex: Option<egui::TextureHandle>,
     #[cfg(debug_assertions)]
     dev_done: bool,
+    media_dev_done: bool,
+    media_dev_played: bool,
+    media_dev_shot_sent: bool,
+    media_dev_started: Option<std::time::Instant>,
+    pub media: media::MediaState,
 }
 
 impl CorrentApp {
@@ -397,6 +403,7 @@ impl CorrentApp {
             start_hidden,
             win_chrome::round_corners(cc),
         )
+        .with_media_gl(cc)
         .with_mica_spike(cc)
         .init_integration()
         .with_tray(&cc.egui_ctx)
@@ -499,6 +506,11 @@ impl CorrentApp {
             icon_tex: None,
             #[cfg(debug_assertions)]
             dev_done: false,
+            media_dev_done: false,
+            media_dev_played: false,
+            media_dev_shot_sent: false,
+            media_dev_started: None,
+            media: Default::default(),
         }
     }
 
@@ -764,6 +776,10 @@ impl CorrentApp {
     fn drain_events(&mut self, ctx: &Context) {
         let mut removed: Vec<(InfoHash, String)> = Vec::new();
         while let Ok(ev) = self.events.try_recv() {
+            // The in-process media server acts on engine events too (imports, wanted list).
+            if let Some(local) = self.media.local() {
+                corrent_server::integrate::on_engine_event(&local.state, &self.rt, ev.clone());
+            }
             match ev {
                 EngineEvent::Toast(kind, text) => self.toasts.push(kind, text),
                 EngineEvent::Added { name, hash } => {
@@ -953,6 +969,9 @@ impl eframe::App for CorrentApp {
         self.drain_ipc(ctx);
         self.drain_pickers();
         self.drain_events(ctx);
+        self.media_tick(ctx);
+        #[cfg(debug_assertions)]
+        self.media_dev_hooks(ctx);
         self.window_logic(ctx);
         ctx.request_repaint_after(std::time::Duration::from_secs(2));
         self.process_launch_queue();
@@ -960,7 +979,10 @@ impl eframe::App for CorrentApp {
         self.poll_updates();
     }
 
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+        if let Some(pl) = &mut self.media.player {
+            pl.register(frame);
+        }
         self.frame_ui(ui);
     }
 
@@ -1064,6 +1086,19 @@ impl CorrentApp {
         self.apply_appearance_if_changed(&ctx);
         let p = self.palette(&ctx);
 
+        // A playing video takes the whole window (Esc or the close button returns).
+        let immersive =
+            self.main_view == feeds::MainView::Media && self.media.player.as_ref().is_some_and(|pl| !pl.audio_only);
+        if immersive {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(egui::Color32::BLACK))
+                .show(ui, |ui| self.media_view(ui, &p));
+            self.dialogs(&ctx, &p);
+            let actions = self.toasts.show(&ctx, &p);
+            self.run_toast_actions(&ctx, actions);
+            return;
+        }
+
         egui::Panel::top("toolbar")
             .exact_size(titlebar::TITLEBAR_HEIGHT)
             .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin { left: 12, right: 0, top: 0, bottom: 0 }))
@@ -1073,6 +1108,12 @@ impl CorrentApp {
         egui::Panel::bottom("statusbar")
             .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin::symmetric(12, 4)))
             .show(ui, |ui| self.status_bar(ui, &p));
+
+        if self.media.player.as_ref().is_some_and(|pl| pl.audio_only) {
+            egui::Panel::bottom("mini-player")
+                .frame(egui::Frame::new().fill(p.bg2).inner_margin(egui::Margin::symmetric(14, 8)))
+                .show(ui, |ui| self.media_mini_player(ui, &p));
+        }
 
         let mut show_sidebar = self.prefs.show_sidebar;
         egui::Panel::left("sidebar")
@@ -1107,6 +1148,7 @@ impl CorrentApp {
                     feeds::MainView::Torrents => self.torrent_table(ui, &p),
                     feeds::MainView::Feeds => self.feeds_view(ui, &p),
                     feeds::MainView::Search => self.search_view(ui, &p),
+                    feeds::MainView::Media => self.media_view(ui, &p),
                 }
             },
         );

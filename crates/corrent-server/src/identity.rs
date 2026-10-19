@@ -321,6 +321,39 @@ impl Identity {
         self.user(id).await
     }
 
+    /// A device token for the desktop app hosting this server in-process: it signs in as the
+    /// first administrator (creating "owner" with a random password when there is none) and
+    /// replaces the token it issued at its previous start.
+    pub async fn local_device_token(&self) -> Result<(User, Issued), ApiError> {
+        let admin = self.users().await?.into_iter().find(|u| u.role == Role::Admin && !u.disabled);
+        let admin = match admin {
+            Some(a) => a,
+            None => {
+                let pw = hex(&random_bytes::<24>());
+                self.create_first_admin(NewUser {
+                    name: "owner".into(),
+                    display_name: String::new(),
+                    password: pw,
+                    role: Role::Admin,
+                    perms: None,
+                })
+                .await?
+            }
+        };
+        let uid = admin.id;
+        self.db
+            .write(move |t| t.execute("DELETE FROM devices WHERE user_id = ?1 AND client = 'corrent-local'", [uid]))
+            .await
+            .map_err(db_err)?;
+        let dev = DeviceInfo {
+            name: "This computer".into(),
+            platform: std::env::consts::OS.into(),
+            client: "corrent-local".into(),
+        };
+        let issued = self.issue(uid, Some(dev), "127.0.0.1".into(), "Corrent desktop".into()).await?;
+        Ok((admin, issued))
+    }
+
     /// Checks a user's current password (self-service password changes).
     pub async fn check_password(&self, id: i64, password: &str) -> Result<bool, ApiError> {
         let stored: Option<String> = self

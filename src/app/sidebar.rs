@@ -140,7 +140,7 @@ fn hint(ui: &mut Ui, p: &Palette, text: &str) {
 }
 
 /// Section header with a collapse toggle and an optional "+" button. Returns (add clicked).
-fn section(ui: &mut Ui, p: &Palette, title: &str, add: Option<&str>, collapsed: &mut bool) -> bool {
+pub(super) fn section(ui: &mut Ui, p: &Palette, title: &str, add: Option<&str>, collapsed: &mut bool) -> bool {
     let mut clicked = false;
     ui.horizontal(|ui| {
         let caret = if *collapsed { icons::CARET_RIGHT } else { icons::CARET_DOWN };
@@ -178,6 +178,7 @@ impl CorrentApp {
             ui.spacing_mut().item_spacing.y = 2.0;
             let total = self.snap.torrents.len();
             ui.add_space(4.0);
+            self.media_sidebar(ui, p);
             let mut c = self.prefs.collapsed.contains(&"status".to_string());
             section(ui, p, t!("Status"), None, &mut c);
             set_collapsed(&mut self.prefs.collapsed, "status", c);

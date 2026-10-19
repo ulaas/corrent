@@ -12,6 +12,7 @@ pub mod events;
 pub use corrent_proto::event as events_api;
 pub mod identity;
 pub mod integrate;
+pub mod local;
 pub mod metadata;
 pub mod net;
 pub mod paths;
@@ -150,7 +151,7 @@ pub use integrate::{forward_engine_events, start_wanted_scheduler};
 /// A running listener; stops when dropped.
 pub struct Listener {
     pub addr: SocketAddr,
-    stop: Option<Box<dyn FnOnce() + Send>>,
+    stop: Option<Box<dyn FnOnce() + Send + Sync>>,
 }
 
 impl Drop for Listener {

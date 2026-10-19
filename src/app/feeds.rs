@@ -21,6 +21,8 @@ pub enum MainView {
     Torrents,
     Feeds,
     Search,
+    /// Libraries, details and the player.
+    Media,
 }
 
 #[derive(Default)]

@@ -137,7 +137,7 @@ impl App {
         } else {
             let gl = cc.gl.clone().expect("glow backend");
             let gpa = cc.get_proc_address.clone().expect("get_proc_address");
-            let rc = RenderContext::new_gl(mpv.clone(), move |name| gpa(name)).expect("gl render");
+            let rc = RenderContext::new_gl(mpv.clone(), move |name| gpa(name), true).expect("gl render");
             let (fbo, tex) = create_target(&gl);
             Video::Gl {
                 state: Arc::new(Mutex::new(GlVideo { rc, gl, fbo, tex, size: [16, 16], renders: 0 })),
