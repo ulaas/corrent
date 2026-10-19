@@ -8,8 +8,14 @@
 #
 # Pass: the server answers throughout, RSS and open files level off, no task failures, no
 # panics in the log. Uses only generated media; deletes nothing outside the scratch dir.
+# Runs on Linux and in Git Bash on Windows (there the samples come from Get-Process, and the
+# fds column counts handles).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Windows: the Store stub answers to python3 without being Python; the server wants E:/ paths.
+py=python3; python3 -c '' 2>/dev/null || py=python
+here=$(pwd -W 2>/dev/null || pwd)
+exe=; [ -e /proc/self/winpid ] && exe=.exe
 minutes=${1:-10}
 dir=${2:-target/soak}
 port=18999
@@ -17,8 +23,8 @@ rm -rf "$dir" && mkdir -p "$dir/data" "$dir/media/Photos" "$dir/media/Movies"
 torrents=${SOAK_TORRENTS:-0}
 cargo build --release -p correntd -p corrent-mpv --bin correntd --bin corrent-mpvw >/dev/null
 # A copy, so builds during a long run don't touch the running binary.
-mkdir -p "$dir/bin" && cp target/release/correntd target/release/corrent-mpvw "$dir/bin/"
-bin=$dir/bin/correntd
+mkdir -p "$dir/bin" && cp target/release/correntd$exe target/release/corrent-mpvw$exe "$dir/bin/"
+bin=$dir/bin/correntd$exe
 cat > "$dir/data/settings.toml" <<TOML
 [connection]
 upnp = false
@@ -30,7 +36,7 @@ lsd = false
 TOML
 printf 'metrics = true\ndiscovery = false\n' > "$dir/data/server.toml"
 # Generated media: photos always, a short video when mpv is installed.
-python3 - "$dir/media/Photos" <<'PY'
+"$py" - "$dir/media/Photos" <<'PY'
 import sys, zlib, struct
 def png(path, rgb):
     w, h = 64, 48
@@ -51,15 +57,15 @@ trap 'kill $pid 2>/dev/null || true' EXIT
 B=http://127.0.0.1:$port/api/v1
 for _ in $(seq 50); do curl -sf "$B/server/info" >/dev/null && break; sleep 0.2; done
 TOK=$(curl -sf -X POST "$B/auth/login" -H 'content-type: application/json' \
-  -d '{"username":"admin","password":"soak-password-1","device":{"name":"soak","platform":"linux"}}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+  -d '{"username":"admin","password":"soak-password-1","device":{"name":"soak","platform":"linux"}}' | "$py" -c 'import sys,json;print(json.load(sys.stdin)["token"])')
 api() { curl -sf -H "authorization: Bearer $TOK" -H 'content-type: application/json' "$@"; }
-api -X POST "$B/libraries" -d "{\"name\":\"Photos\",\"kind\":\"photos\",\"folders\":[\"$PWD/$dir/media/Photos\"]}" >/dev/null
-api -X POST "$B/libraries" -d "{\"name\":\"Movies\",\"kind\":\"movies\",\"folders\":[\"$PWD/$dir/media/Movies\"]}" >/dev/null
+api -X POST "$B/libraries" -d "{\"name\":\"Photos\",\"kind\":\"photos\",\"folders\":[\"$here/$dir/media/Photos\"]}" >/dev/null
+api -X POST "$B/libraries" -d "{\"name\":\"Movies\",\"kind\":\"movies\",\"folders\":[\"$here/$dir/media/Movies\"]}" >/dev/null
 if [ "$torrents" -gt 0 ]; then
   # Synthetic single-file torrents (16 KiB, random piece hashes; no peers: DHT, LSD and UPnP are
   # off and there are no trackers), added 100 per request; every other batch paused.
   mkdir -p "$dir/torrents" "$dir/downloads"
-  python3 - "$dir/torrents" "$torrents" <<'PY'
+  "$py" - "$dir/torrents" "$torrents" <<'PY'
 import sys, os
 def b(x):
     if isinstance(x, int): return b'i%de' % x
@@ -74,7 +80,7 @@ PY
   n=0
   for f in "$dir"/batch-*; do
     n=$((n + 1)); paused=$([ $((n % 2)) -eq 0 ] && echo true || echo false)
-    args=(-F "options={\"paused\":$paused,\"save_path\":\"$PWD/$dir/downloads\"}")
+    args=(-F "options={\"paused\":$paused,\"save_path\":\"$here/$dir/downloads\"}")
     while read -r t; do args+=(-F "file=@$dir/torrents/$t;filename=$t"); done < "$f"
     curl -sf -H "authorization: Bearer $TOK" "${args[@]}" "$B/torrents" >/dev/null || { echo "adding torrents failed"; exit 1; }
   done
@@ -82,7 +88,7 @@ PY
   # Wait until the engine has them all (up to 2 h), reporting the rate.
   added_at=$(date +%s)
   for _ in $(seq 1440); do
-    have=$(api "$B/torrents" | python3 -c 'import sys,json;print(len(json.load(sys.stdin)["torrents"]))')
+    have=$(api "$B/torrents" | "$py" -c 'import sys,json;print(len(json.load(sys.stdin)["torrents"]))')
     [ "$have" -ge "$torrents" ] && break; sleep 5
   done
   echo "torrents: $have after $(( $(date +%s) - added_at )) s"
@@ -99,9 +105,9 @@ while [ "$(date +%s)" -lt "$end" ]; do
     api -X POST "$B/tasks/scan_libraries/run" >/dev/null || errors=$((errors + 1))
   fi
   if [ $((round % 15)) -eq 0 ]; then
-    movie=$(api "$B/items?kind=movie&limit=1" | python3 -c 'import sys,json;i=json.load(sys.stdin)["items"];print(i[0]["id"] if i else "")')
+    movie=$(api "$B/items?kind=movie&limit=1" | "$py" -c 'import sys,json;i=json.load(sys.stdin)["items"];print(i[0]["id"] if i else "")')
     if [ -n "$movie" ]; then
-      url=$(api -X POST "$B/playback/$movie" -d '{"profile":"web","max_height":480,"force_transcode":true}' | python3 -c 'import sys,json;print(json.load(sys.stdin).get("url",""))' || true)
+      url=$(api -X POST "$B/playback/$movie" -d '{"profile":"web","max_height":480,"force_transcode":true}' | "$py" -c 'import sys,json;print(json.load(sys.stdin).get("url",""))' || true)
       if [ -n "$url" ]; then
         # The playlist, then its first segment (that is what makes the encoder run).
         seg=$(curl -sf -H "authorization: Bearer $TOK" "http://127.0.0.1:$port$url" | grep -v '^#' | head -1 || true)
@@ -111,9 +117,13 @@ while [ "$(date +%s)" -lt "$end" ]; do
   fi
   if [ $((round % 10)) -eq 0 ]; then
     t=$(( $(date +%s) - start ))
-    rss=$(awk '/VmRSS/ {print $2}' /proc/$pid/status)
-    thr=$(awk '/Threads/ {print $2}' /proc/$pid/status)
-    fds=$(ls /proc/$pid/fd | wc -l)
+    if [ -e /proc/$pid/winpid ]; then
+      IFS=, read -r rss thr fds < <(powershell -NoProfile -Command "\$p = Get-Process -Id $(cat /proc/$pid/winpid); '{0},{1},{2}' -f [int](\$p.WorkingSet64 / 1KB), \$p.Threads.Count, \$p.HandleCount" | tr -d '\r')
+    else
+      rss=$(awk '/VmRSS/ {print $2}' /proc/$pid/status)
+      thr=$(awk '/Threads/ {print $2}' /proc/$pid/status)
+      fds=$(ls /proc/$pid/fd | wc -l)
+    fi
     m=$(curl -sf "http://127.0.0.1:$port/metrics" || true)
     ws=$(echo "$m" | awk '/^corrent_realtime_clients/ {print $2}')
     tc=$(echo "$m" | awk '/^corrent_transcode_sessions/ {print $2}')
@@ -121,7 +131,7 @@ while [ "$(date +%s)" -lt "$end" ]; do
   fi
   sleep 0.5
 done
-failed=$(api "$B/tasks" | python3 -c 'import sys,json;print(sum(1 for t in json.load(sys.stdin) if t.get("last") and t["last"].get("ok") is False))')
+failed=$(api "$B/tasks" | "$py" -c 'import sys,json;print(sum(1 for t in json.load(sys.stdin) if t.get("last") and t["last"].get("ok") is False))')
 panics=$(grep -c 'panicked' "$dir/server.log" || true)
 echo "soak: $minutes min, $round rounds, $errors request errors, $failed failed tasks, $panics panics"
 echo "samples: $csv"; head -2 "$csv"; tail -1 "$csv"

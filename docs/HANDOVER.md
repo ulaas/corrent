@@ -45,8 +45,10 @@ Windows, and what is still open.
    change.
 5. **Plugins:** `scripts/build-plugins.sh` (Git Bash) rebuilds the built-in wasm plugins into
    `crates/corrent-plugins/builtin/`.
-6. **Soak:** `scripts/soak.sh` needs bash and `/proc` for its samples, so on Windows run it from WSL,
-   or rewrite the sampler in PowerShell (`Get-Process` for memory, handles and threads).
+6. **Soak:** run `bash scripts/soak.sh [minutes]` from Git Bash. On Windows it samples with
+   `Get-Process` (working set, threads, and handles in the `fds` column). A 2-minute check run on
+   2026-10-19 ended with no errors and stayed flat at about 36 MB. The video and transcode part runs
+   only when `mpv` is on Git Bash's `PATH`.
 7. **Test profiles:** the desktop app uses `--portable` (`target/debug/corrent-data`). The server takes
    `correntd --data-dir target/debug/correntd-data`.
 
