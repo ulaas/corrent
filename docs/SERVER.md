@@ -214,6 +214,17 @@ task compares the openings of a season's episodes and stores the stretch they sh
 "Skip intro" there (and Jellyfin apps get it from `MediaSegments`). Transcodes need the `playback.transcode`
 permission; at most three run at once and idle ones stop after 90 seconds.
 
+**Direct stream:** when only the container is in the way — typically H.264 or HEVC with AAC,
+AC-3, E-AC-3 or Opus in Matroska, for a browser — the server copies the streams into HLS with
+fragmented-MP4 segments instead (`method: "remux"`, `/api/v1/remux/{file}/{audio}/…`): no
+encoder, no worker, no session, almost no CPU, and any audio track can be chosen. Segments run
+from keyframe to keyframe (cluster starts, the Cues index, or a scan of at most 512 MB) and are
+cut on request. Files it can't copy (other codecs, live recordings, encrypted or compressed
+tracks, downloads still in progress) transcode as before, and the web player falls back to a
+transcode if the browser refuses the copied streams. MP3 audio isn't copied (Chromium's Media
+Source doesn't take MP3 in MP4). `cargo run -p corrent-transcode --example remux -- in.mkv out/`
+writes the HLS of a file for checking a player by hand.
+
 ## Watching together
 
 The player's **Watch together** button starts a room for what is playing and copies a link

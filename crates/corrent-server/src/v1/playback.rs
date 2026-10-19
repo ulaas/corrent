@@ -28,6 +28,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/playback/sessions/{id}", delete(stop))
         .route("/hls/{id}/index.m3u8", get(playlist))
         .route("/hls/{id}/{segment}", get(segment))
+        .route("/remux/{file}/{audio}/{name}", get(remux_file))
         .route("/files/{id}/subtitles/{name}", get(subtitle))
         .route("/files/{id}/trickplay/{name}", get(trickplay))
 }
@@ -114,16 +115,18 @@ async fn start(
     Path(item): Path<i64>,
     body: Option<Json<PlaybackRequest>>,
 ) -> ApiResult<PlaybackInfo> {
-    Ok(Json(prepare(&st, &auth, item, body.map(|b| b.0).unwrap_or_default(), None).await?))
+    Ok(Json(prepare(&st, &auth, item, body.map(|b| b.0).unwrap_or_default(), None, true).await?))
 }
 
-/// How `auth` plays `item` with `req` (starting an HLS session when it transcodes).
+/// How `auth` plays `item` with `req` (starting an HLS session when it transcodes). With
+/// `remux_ok`, Matroska files whose streams the client plays are copied into HLS instead.
 pub(crate) async fn prepare(
     st: &Arc<AppState>,
     auth: &Auth,
     item: i64,
     req: PlaybackRequest,
     profile: Option<ClientProfile>,
+    remux_ok: bool,
 ) -> Result<PlaybackInfo, ApiErr> {
     let st = st.clone();
     let user = auth.0.user.id;
@@ -138,17 +141,30 @@ pub(crate) async fn prepare(
     let downloading = crate::integrate::downloading_file(&st, std::path::Path::new(&file.path)).await;
     let profile = profile.unwrap_or_else(|| ClientProfile::named(req.profile.as_deref().unwrap_or("web")));
     let facts = facts(&file);
-    let decision = decide::decide(
-        &facts,
-        &profile,
-        &PlayRequest {
-            audio_track: req.audio_track,
-            burn_subtitle: req.burn_subtitle,
-            max_bitrate: req.max_bitrate,
-            max_height: req.max_height,
-            force_transcode: req.force_transcode,
-        },
-    );
+    let play = PlayRequest {
+        audio_track: req.audio_track,
+        burn_subtitle: req.burn_subtitle,
+        max_bitrate: req.max_bitrate,
+        max_height: req.max_height,
+        force_transcode: req.force_transcode,
+    };
+    let decision = decide::decide(&facts, &profile, &play);
+    // Direct stream: only the container is in the way (and the file is complete on disk).
+    let remux = match (&decision, remux_ok && downloading.is_none(), decide::remux(&facts, &profile, &play)) {
+        (Decision::Transcode { .. }, true, Some(audio)) => {
+            let (cache_st, path) = (st.clone(), PathBuf::from(&file.path));
+            let ready = tokio::task::spawn_blocking(move || cache_st.remux.get(&path, audio)).await;
+            match ready {
+                Ok(Ok(_)) => Some(audio),
+                Ok(Err(e)) => {
+                    tracing::debug!("direct stream of file {}: {e}; transcoding", file.id);
+                    None
+                }
+                Err(_) => None,
+            }
+        }
+        _ => None,
+    };
     let subtitles = file
         .streams
         .iter()
@@ -176,6 +192,12 @@ pub(crate) async fn prepare(
         None
     };
     let (method, url, session_id, reasons) = match decision {
+        Decision::Transcode { reasons, .. } if let Some(audio) = remux => (
+            "remux".to_string(),
+            format!("/api/v1/remux/{}/{}/index.m3u8", file.id, audio.unwrap_or(0)),
+            None,
+            [reasons, vec!["streams copied into HLS".to_string()]].concat(),
+        ),
         Decision::Direct { reasons } => {
             let url = match &downloading {
                 Some((hash, idx, _)) => format!("/api/v1/torrents/{}/files/{idx}/stream", hash.to_hex()),
@@ -268,6 +290,35 @@ async fn segment(
     .map(axum::body::Body::new);
     res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=3600"));
     Ok(res)
+}
+
+/// Direct stream files: `index.m3u8`, `init.mp4` and `<n>.m4s` of a file's copied streams
+/// (`audio` 0 = without audio). Built on request from the cached index; nothing is written.
+async fn remux_file(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Path((file, audio, name)): Path<(i64, i64, String)>,
+) -> Result<Response, ApiErr> {
+    // The user must be allowed to see the file.
+    let path = PathBuf::from(st.library.file_path(auth.0.user.id, file).await.map_err(lib_err)?);
+    let audio = (audio > 0).then_some(audio);
+    let st2 = st.clone();
+    let res = tokio::task::spawn_blocking(move || -> Result<(&'static str, Vec<u8>), String> {
+        let r = st2.remux.get(&path, audio).map_err(|e| e.to_string())?;
+        Ok(match name.as_str() {
+            "index.m3u8" => ("application/vnd.apple.mpegurl", r.playlist().into_bytes()),
+            "init.mp4" => ("video/mp4", r.init()),
+            n => {
+                let i: usize = n.strip_suffix(".m4s").and_then(|x| x.parse().ok()).ok_or("no such segment")?;
+                ("video/iso.segment", r.segment(i).map_err(|e| e.to_string())?)
+            }
+        })
+    })
+    .await
+    .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+    let (ctype, body) = res.map_err(|e| err(ErrorCode::NotFound, e))?;
+    let cache = if ctype.ends_with("mpegurl") { "no-store" } else { "private, max-age=3600" };
+    Ok(([(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, cache)], body).into_response())
 }
 
 async fn stop(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<String>) -> ApiResult<serde_json::Value> {

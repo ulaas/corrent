@@ -150,6 +150,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
             ..Default::default()
         }),
         hls_encoder: Default::default(),
+        remux: Default::default(),
         trickplay_busy: Default::default(),
         trickplay_slot: Default::default(),
         plugins: plugin_host,

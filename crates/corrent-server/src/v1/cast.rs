@@ -85,11 +85,11 @@ async fn play(
         audio_track: b.audio_track,
         ..Default::default()
     };
-    let mut info = super::playback::prepare(&st, &auth, b.item_id, req.clone(), None).await?;
+    let mut info = super::playback::prepare(&st, &auth, b.item_id, req.clone(), None, false).await?;
     // Unfinished downloads only play through the engine: transcode (which reads through it).
     if info.method == "direct" && info.downloading {
         req.force_transcode = true;
-        info = super::playback::prepare(&st, &auth, b.item_id, req, None).await?;
+        info = super::playback::prepare(&st, &auth, b.item_id, req, None, false).await?;
     }
     let (url, content_type) = match info.session_id.clone() {
         Some(session) => (links.hls(host, &session), "application/x-mpegurl".to_string()),

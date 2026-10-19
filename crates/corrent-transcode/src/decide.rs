@@ -250,6 +250,11 @@ pub fn decide(m: &MediaFacts, p: &ClientProfile, r: &PlayRequest) -> Decision {
             reasons.push("10-bit H.264 not supported".into());
             video_ok = false;
         }
+        // Browsers and TVs decode 4:2:0 only (High 4:2:2, High 4:4:4 Predictive).
+        if v.codec == "h264" && v.profile.as_deref().is_some_and(|x| x.contains("4:2:2") || x.contains("4:4:4")) {
+            reasons.push(format!("H.264 {} not supported", v.profile.as_deref().unwrap_or_default()));
+            video_ok = false;
+        }
     }
     let limit_h = [p.max_height, r.max_height].into_iter().flatten().min();
     if let (Some(lim), Some(h)) = (limit_h, m.video.as_ref().and_then(|v| v.height))
@@ -307,6 +312,49 @@ pub fn decide(m: &MediaFacts, p: &ClientProfile, r: &PlayRequest) -> Decision {
     Decision::Transcode { video, audio, burn_subtitle: r.burn_subtitle, reasons }
 }
 
+/// When a transcode is needed only because of the container (Matroska), the streams can be
+/// copied into HLS/fMP4 instead ([`crate::remux`]): `Some(audio track)` then (`None` inside: no
+/// audio). Everything else about the file must suit the client as it is.
+pub fn remux(m: &MediaFacts, p: &ClientProfile, r: &PlayRequest) -> Option<Option<i64>> {
+    let c = m.container.as_deref()?;
+    if p.everything || !p.hls || r.force_transcode || r.burn_subtitle.is_some() {
+        return None;
+    }
+    if !(c.contains("matroska") || c.split(',').any(|x| x.trim() == "mkv" || x.trim() == "webm")) {
+        return None;
+    }
+    let v = m.video.as_ref()?;
+    if !crate::remux::VIDEO_CODECS.contains(&v.codec.as_str()) {
+        return None;
+    }
+    let audio = r
+        .audio_track
+        .and_then(|t| m.audio.iter().find(|a| a.index == t))
+        .or_else(|| m.audio.iter().find(|a| a.default))
+        .or(m.audio.first());
+    if audio.is_some_and(|a| !crate::remux::AUDIO_CODECS.contains(&a.codec.as_str())) {
+        return None;
+    }
+    // The same file in a container the client takes: does it play as it is?
+    let mut as_mp4 = m.clone();
+    as_mp4.container = Some("mp4".into());
+    let mut client = p.clone();
+    client.containers.push("mp4".into());
+    // Any audio track can be copied, so choosing one isn't a reason to transcode.
+    let req = PlayRequest { audio_track: audio.map(|a| a.index), ..r.clone() };
+    let mut facts = as_mp4;
+    if let Some(a) = audio {
+        facts.audio = vec![AudioFacts { default: true, ..a.clone() }];
+    }
+    match decide(&facts, &client, &req) {
+        Decision::Direct { .. } => Some(audio.map(|a| {
+            // mpv's audio id → the n-th audio track (as the remuxer counts them).
+            m.audio.iter().position(|x| x.index == a.index).map_or(1, |i| i as i64 + 1)
+        })),
+        Decision::Transcode { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +368,39 @@ mod tests {
             subtitles: vec![],
             bitrate: Some(8_000_000),
         }
+    }
+
+    #[test]
+    fn remux_only_when_the_container_is_the_problem() {
+        let web = ClientProfile::web_chromium();
+        let none = PlayRequest::default();
+        let mkv = facts("matroska,webm", "h264", "aac", 2);
+        assert_eq!(remux(&mkv, &web, &none), Some(Some(1)));
+        // MP4 plays directly; HEVC isn't in Chromium's list; AC-3 isn't either (Safari takes both).
+        assert_eq!(remux(&facts("mov,mp4,m4a,3gp,3g2,mj2", "h264", "aac", 2), &web, &none), None);
+        assert_eq!(remux(&facts("matroska,webm", "hevc", "aac", 2), &web, &none), None);
+        assert_eq!(
+            remux(&facts("matroska,webm", "hevc", "ac3", 6), &ClientProfile::web_safari(), &none),
+            Some(Some(1))
+        );
+        // 5.1 to a stereo client, DTS, MPEG-2, burned subtitles, a height limit: transcode.
+        assert_eq!(remux(&facts("matroska,webm", "h264", "aac", 6), &web, &none), None);
+        assert_eq!(remux(&facts("matroska,webm", "h264", "dts", 2), &web, &none), None);
+        assert_eq!(remux(&facts("matroska,webm", "mpeg2video", "aac", 2), &web, &none), None);
+        let burn = PlayRequest { burn_subtitle: Some(3), ..Default::default() };
+        assert_eq!(remux(&mkv, &web, &burn), None);
+        let small = PlayRequest { max_height: Some(480), ..Default::default() };
+        assert_eq!(remux(&mkv, &web, &small), None);
+        let mut full_chroma = mkv.clone();
+        full_chroma.video.as_mut().unwrap().profile = Some("High 4:4:4 Predictive".into());
+        assert_eq!(remux(&full_chroma, &web, &none), None);
+        assert!(matches!(decide(&full_chroma, &ClientProfile::native(), &none), Decision::Direct { .. }));
+        // Another audio track is copied instead of transcoding.
+        let mut two = mkv.clone();
+        two.audio.push(AudioFacts { index: 2, codec: "aac".into(), channels: Some(2), default: false, lang: None });
+        let second = PlayRequest { audio_track: Some(2), ..Default::default() };
+        assert_eq!(remux(&two, &web, &second), Some(Some(2)));
+        assert_eq!(remux(&mkv, &ClientProfile::native(), &none), None);
     }
 
     #[test]

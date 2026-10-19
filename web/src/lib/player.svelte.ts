@@ -19,7 +19,8 @@ export interface SubtitleTrack {
 
 /** `POST /api/v1/playback/{item}`: how to play an item (corrent_proto::library::PlaybackInfo). */
 export interface PlaybackInfo {
-  method: 'direct' | 'hls';
+  /** `remux`: HLS of the original streams copied into fMP4 (direct stream). */
+  method: 'direct' | 'hls' | 'remux';
   url: string;
   session_id?: string;
   file_id: number;
@@ -69,7 +70,7 @@ export async function attachSource(
   src: Pick<PlaybackInfo, 'method' | 'url'>,
   onfatal?: (msg: string) => void,
 ): Promise<() => void> {
-  if (src.method === 'hls' && !el.canPlayType('application/vnd.apple.mpegurl')) {
+  if ((src.method === 'hls' || src.method === 'remux') && !el.canPlayType('application/vnd.apple.mpegurl')) {
     const { default: Hls } = await import('hls.js/dist/hls.light.mjs');
     if (!Hls.isSupported()) throw new Error('HLS is not supported by this browser');
     const hls = new Hls({ maxBufferLength: 30, backBufferLength: 60, xhrSetup: (x: XMLHttpRequest) => {

@@ -185,6 +185,7 @@ bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a sess
 | DELETE | `/api/v1/playback/sessions/{id}` |
 | GET | `/api/v1/hls/{id}/index.m3u8` |
 | GET | `/api/v1/hls/{id}/{segment}` |
+| GET | `/api/v1/remux/{file}/{audio}/{name}` |
 | GET | `/api/v1/files/{id}/subtitles/{name}` |
 | GET | `/api/v1/files/{id}/trickplay/{name}` |
 

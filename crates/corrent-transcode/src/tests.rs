@@ -101,3 +101,68 @@ async fn encoder_detection_and_trickplay() {
     assert_eq!(w, 160 * n as u32);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A real x264 (with B-frames) + AAC Matroska file remuxed to HLS/fMP4 plays and seeks in mpv.
+#[test]
+fn remuxed_hls_plays_and_seeks() {
+    if !corrent_mpv::Library::available() {
+        eprintln!("libmpv not found; skipping");
+        return;
+    }
+    let dir = scratch("remux");
+    let src = dir.join("src.mkv");
+    let job = corrent_mpv::encode::EncodeJob {
+        input: "av://lavfi:testsrc=duration=20:size=320x240:rate=25".into(),
+        audio_file: Some("av://lavfi:sine=duration=20".into()),
+        output: src.display().to_string(),
+        options: vec![
+            ("of".into(), "matroska".into()),
+            ("ovc".into(), "libx264".into()),
+            ("ovcopts".into(), "preset=fast,bf=3,g=50".into()),
+            ("oac".into(), "aac".into()),
+        ],
+    };
+    corrent_mpv::encode::run(&job, Duration::from_secs(60), &mut |_| true).unwrap();
+    let r = crate::remux::prepare(&src, Some(1)).unwrap();
+    assert!(r.segments.len() >= 4, "{} segments", r.segments.len());
+    assert!(r.codecs().starts_with("avc1.") && r.codecs().ends_with(",mp4a.40.2"), "{}", r.codecs());
+    let out = dir.join("hls");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("index.m3u8"), r.playlist()).unwrap();
+    std::fs::write(out.join("init.mp4"), r.init()).unwrap();
+    for i in 0..r.segments.len() {
+        std::fs::write(out.join(format!("{i}.m4s")), r.segment(i).unwrap()).unwrap();
+    }
+    let mpv = corrent_mpv::Mpv::headless(&[("vo", "null"), ("ao", "null"), ("untimed", "yes")]).unwrap();
+    mpv.request_log_messages("error").unwrap();
+    mpv.command(&["loadfile", &out.join("index.m3u8").display().to_string()]).unwrap();
+    let mut errors = Vec::new();
+    let mut loaded = false;
+    let mut seeked = false;
+    let end = loop {
+        match mpv.wait_event(10.0) {
+            Some(corrent_mpv::Event::Log { prefix, text, .. }) => errors.push(format!("{prefix}: {text}")),
+            Some(corrent_mpv::Event::FileLoaded) => {
+                loaded = true;
+                let d = mpv.get_f64("duration").unwrap().unwrap_or(0.0);
+                assert!((d - 20.0).abs() < 1.0, "duration {d}");
+                assert_eq!(mpv.get_string("current-tracks/video/codec").unwrap_or_default(), "h264");
+                assert_eq!(mpv.get_string("current-tracks/audio/codec").unwrap_or_default(), "aac");
+            }
+            Some(corrent_mpv::Event::PlaybackRestart) if loaded && !seeked => {
+                seeked = true;
+                mpv.command(&["seek", "13", "absolute"]).unwrap();
+            }
+            Some(corrent_mpv::Event::PlaybackRestart) if seeked => {
+                let pos = mpv.get_f64("time-pos").unwrap().unwrap_or(-1.0);
+                assert!((12.0..14.5).contains(&pos), "after seeking: {pos}");
+            }
+            Some(corrent_mpv::Event::EndFile(reason)) => break reason,
+            None => panic!("mpv stopped answering"),
+            _ => {}
+        }
+    };
+    assert!(matches!(end, corrent_mpv::EndReason::Eof), "ended with {end:?}");
+    assert!(errors.is_empty(), "mpv errors: {errors:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}

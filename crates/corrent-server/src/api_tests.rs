@@ -2261,9 +2261,46 @@ async fn playback_direct_and_hls() {
     let (s, v, _) =
         send(app, Method::POST, &format!("/api/v1/playback/{item}"), &admin, json!({ "profile": "native" })).await;
     assert_eq!((s, v["method"].as_str()), (StatusCode::OK, Some("direct")), "{v}");
-    // Web: H.264 in Matroska needs a transcode; the subtitle is offered as WebVTT.
+    // Web: H.264 + AAC in Matroska is copied into HLS/fMP4 (direct stream), no session.
     let (s, v, _) =
         send(app, Method::POST, &format!("/api/v1/playback/{item}"), &admin, json!({ "profile": "web" })).await;
+    assert_eq!((s, v["method"].as_str(), v["session_id"].as_str()), (StatusCode::OK, Some("remux"), None), "{v}");
+    let rurl = v["url"].as_str().unwrap().to_string();
+    let (s, pl, _) = get(app, &rurl, &admin).await;
+    assert_eq!(s, StatusCode::OK);
+    let pl = pl.as_str().unwrap().to_string();
+    assert!(pl.contains("#EXT-X-MAP:URI=\"init.mp4\"") && pl.contains("0.m4s"), "{pl}");
+    for name in ["init.mp4", "0.m4s"] {
+        let res = h
+            .app
+            .clone()
+            .oneshot({
+                let mut r = Request::builder()
+                    .uri(rurl.replace("index.m3u8", name))
+                    .header(header::HOST, "127.0.0.1:8443")
+                    .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                    .body(Body::empty())
+                    .unwrap();
+                r.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+                r
+            })
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{name}");
+        let b = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&b[4..8], if name == "init.mp4" { b"ftyp" } else { b"moof" }, "{name}");
+    }
+    let (s, _, _) = get(app, &rurl.replace("index.m3u8", "999.m4s"), &admin).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // Forced: a transcode; the subtitle is offered as WebVTT.
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        &format!("/api/v1/playback/{item}"),
+        &admin,
+        json!({ "profile": "web", "force_transcode": true }),
+    )
+    .await;
     assert_eq!((s, v["method"].as_str()), (StatusCode::OK, Some("hls")), "{v}");
     let sub_url = v["subtitles"][0]["url"].as_str().unwrap_or_else(|| panic!("{v}")).to_string();
     let (s, vtt, _) = get(app, &sub_url, &admin).await;

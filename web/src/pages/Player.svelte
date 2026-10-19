@@ -73,7 +73,15 @@
       info = await resolveSource(itemId, o);
       stopSession(old && old.session_id !== info.session_id ? old : null);
       detach?.();
-      detach = await attachSource(el, info, (msg) => (error = t('Playback failed ({reason}).', { reason: msg })));
+      detach = await attachSource(el, info, (msg) => {
+        // Copied streams the browser can't take after all: transcode instead.
+        if (info?.method === 'remux' && !retried) {
+          retried = true;
+          void start(itemId, { ...o, force_transcode: true }, el.currentTime || at);
+          return;
+        }
+        error = t('Playback failed ({reason}).', { reason: msg });
+      });
       duration = (info.duration_ms ?? item.runtime_ms ?? 0) / 1000;
       const from =
         at ??
@@ -181,7 +189,7 @@
   function onError() {
     const err = video?.error;
     if (!err || !item) return;
-    if (info?.method === 'direct' && !retried) {
+    if ((info?.method === 'direct' || info?.method === 'remux') && !retried) {
       // The browser can't decode this file: ask the server to transcode it.
       retried = true;
       opts = { ...opts, force_transcode: true };
@@ -530,6 +538,7 @@
       {/if}
     </div>
     {#if info?.method === 'hls'}<span class="badge" title={info.reasons.join(', ')}>{t('Transcoding')}</span>{/if}
+    {#if info?.method === 'remux'}<span class="badge" title={info.reasons.join(', ')}>{t('Direct stream')}</span>{/if}
   </div>
 
   {#if cast}
