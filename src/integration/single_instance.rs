@@ -6,6 +6,7 @@
 //! as not delivered (a hung primary), and `main` decides with the data-folder lock.
 
 use std::io::{BufRead, BufReader, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -149,46 +150,120 @@ pub fn serve(
     listener: interprocess::local_socket::Listener,
     tx: std::sync::mpsc::Sender<IpcMessage>,
     ctx: Arc<OnceLock<egui::Context>>,
-) {
+) -> Arc<AtomicUsize> {
+    let live = Arc::new(AtomicUsize::new(0));
+    let count = live.clone();
     std::thread::Builder::new()
         .name("corrent-ipc".into())
         .spawn(move || {
             for conn in listener.incoming() {
-                let Ok(conn) = conn else { continue };
-                let (tx, ctx) = (tx.clone(), ctx.clone());
+                let conn = match conn {
+                    Ok(c) => c,
+                    Err(e) => {
+                        // Never a busy loop on a listener that keeps failing.
+                        tracing::debug!("single-instance accept failed: {e}");
+                        std::thread::sleep(Duration::from_millis(250));
+                        continue;
+                    }
+                };
+                // A flood of connections can't pile up threads: the launch that is turned away
+                // gets no `OK` and says so.
+                if count.fetch_add(1, Ordering::SeqCst) >= MAX_CLIENTS {
+                    count.fetch_sub(1, Ordering::SeqCst);
+                    continue;
+                }
+                let (tx, ctx, slot) = (tx.clone(), ctx.clone(), count.clone());
                 // One thread per client so a stalled client cannot block later launches.
-                let _ = std::thread::Builder::new().name("corrent-ipc-client".into()).spawn(move || {
-                    #[cfg(debug_assertions)]
-                    if std::env::var("CORRENT_DEV_HANG").is_ok_and(|v| v == "ipc") {
-                        // Debug hook: a primary that takes connections but never queues them.
-                        std::thread::sleep(Duration::from_secs(3600));
-                        return;
-                    }
-                    // Bound the amount of data a client may send.
-                    let reader = BufReader::new(std::io::Read::take(&conn, 256 * 1024));
-                    for line in reader.lines().take(512) {
-                        let Ok(line) = line else { break };
-                        let msg = parse_line(&line);
-                        let focus = matches!(msg, Some(IpcMessage::Focus));
-                        // A closed queue means the UI is gone: then no `OK`.
-                        if let Some(msg) = msg
-                            && tx.send(msg).is_err()
-                        {
-                            break;
-                        }
-                        if focus {
-                            // Everything before FOCUS is queued.
-                            let _ = (&conn).write_all(b"OK\n").and_then(|()| (&conn).flush());
-                            break;
-                        }
-                    }
+                let spawned = std::thread::Builder::new().name("corrent-ipc-client".into()).spawn(move || {
+                    handle_client(&conn, &tx);
                     if let Some(c) = ctx.get() {
                         c.request_repaint();
                     }
+                    slot.fetch_sub(1, Ordering::SeqCst);
                 });
+                if spawned.is_err() {
+                    count.fetch_sub(1, Ordering::SeqCst);
+                }
             }
         })
         .expect("spawn ipc thread");
+    live
+}
+
+/// Clients served at once.
+const MAX_CLIENTS: usize = 8;
+/// A client has this long to send its lines (named pipes have no read timeout, so the reads
+/// don't block and are polled).
+const CLIENT_DEADLINE: Duration = Duration::from_secs(2);
+
+fn handle_client(conn: &Stream, tx: &std::sync::mpsc::Sender<IpcMessage>) {
+    #[cfg(debug_assertions)]
+    if std::env::var("CORRENT_DEV_HANG").is_ok_and(|v| v == "ipc") {
+        // Debug hook: a primary that takes connections but never queues them.
+        std::thread::sleep(Duration::from_secs(3600));
+        return;
+    }
+    let polled = conn.set_nonblocking(true).is_ok();
+    let deadline = std::time::Instant::now() + CLIENT_DEADLINE;
+    let (mut buf, mut total, mut lines) = (Vec::new(), 0usize, 0usize);
+    let mut chunk = [0u8; 4096];
+    // One line; true when the client is done with (FOCUS answered, the UI gone, too many lines).
+    let mut handle = |line: &[u8]| -> bool {
+        lines += 1;
+        let msg = parse_line(&String::from_utf8_lossy(line));
+        let focus = matches!(msg, Some(IpcMessage::Focus));
+        // A closed queue means the UI is gone: then no `OK`.
+        if let Some(msg) = msg
+            && tx.send(msg).is_err()
+        {
+            return true;
+        }
+        if focus {
+            // Everything before FOCUS is queued.
+            let _ = conn.set_nonblocking(false);
+            let _ = (&mut &*conn).write_all(b"OK\n").and_then(|()| (&mut &*conn).flush());
+            return true;
+        }
+        lines >= 512
+    };
+    loop {
+        match std::io::Read::read(&mut &*conn, &mut chunk) {
+            // A non-blocking named pipe reads 0 bytes both when nothing has arrived yet and at
+            // the end, so on Windows it means "nothing yet" until the deadline.
+            Ok(0) if cfg!(windows) && polled => {
+                if std::time::Instant::now() > deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(0) => break,
+            Ok(n) => {
+                total += n;
+                buf.extend_from_slice(&chunk[..n]);
+                while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
+                    let line: Vec<u8> = buf.drain(..=nl).collect();
+                    if handle(&line[..line.len() - 1]) {
+                        return;
+                    }
+                }
+                if total > 256 * 1024 {
+                    return;
+                }
+            }
+            Err(e) if polled && e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() > deadline {
+                    tracing::debug!("a forwarding launch sent nothing for {CLIENT_DEADLINE:?}");
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => break,
+        }
+    }
+    // The last line may have no newline (the stream ended after it).
+    if !buf.is_empty() {
+        handle(&buf);
+    }
 }
 
 fn parse_line(line: &str) -> Option<IpcMessage> {
@@ -247,6 +322,38 @@ mod tests {
         let r = try_forward(&name, &[], Duration::from_millis(500));
         assert!(matches!(r, Err(ForwardError::NoAck)), "{r:?}");
         assert!(started.elapsed() < Duration::from_secs(3));
+        let _ = std::fs::remove_dir_all(paths.data_dir);
+    }
+
+    #[test]
+    fn silent_clients_are_let_go_and_capped() {
+        let (paths, name) = test_name("silent-clients");
+        let listener = ListenerOptions::new().name(name.borrow()).create_sync().unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let live = serve(listener, tx, Arc::new(OnceLock::new()));
+        // Twelve launches that connect and then say nothing.
+        let silent: Vec<Stream> = (0..12).filter_map(|_| Stream::connect(name.borrow()).ok()).collect();
+        assert!(!silent.is_empty());
+        let mut most = 0;
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while std::time::Instant::now() < deadline {
+            most = most.max(live.load(Ordering::SeqCst));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(most <= MAX_CLIENTS, "{most} clients at once");
+        let deadline = std::time::Instant::now() + CLIENT_DEADLINE + Duration::from_secs(2);
+        while live.load(Ordering::SeqCst) > 0 {
+            assert!(std::time::Instant::now() < deadline, "silent clients still held");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(silent);
+        // And a real launch still gets through, also one that writes a moment after connecting.
+        try_forward(&name, &[], Duration::from_secs(5)).unwrap();
+        let mut late = Stream::connect(name.borrow()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        late.write_all(b"FOCUS\n").unwrap();
+        late.flush().unwrap();
+        assert!(await_ack(late, Duration::from_secs(5)), "a late writer still gets its OK");
         let _ = std::fs::remove_dir_all(paths.data_dir);
     }
 
