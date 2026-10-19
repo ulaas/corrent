@@ -442,6 +442,8 @@ export interface MediaFile {
   chapters: Chapter[];
   torrent?: string;
   missing?: boolean;
+  /** Skippable parts found by analysis. */
+  segments?: { kind: 'intro' | 'recap' | 'credits'; start_ms: number; end_ms: number }[];
 }
 
 export interface Credit {

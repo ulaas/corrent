@@ -1011,6 +1011,101 @@ async fn install_plugin(app: &Router, admin: &str, manifest: &str, wasm: &[u8]) 
     assert_eq!(res.status(), StatusCode::OK);
 }
 
+fn wav(path: &std::path::Path, samples: &[i16]) {
+    let rate = corrent_transcode::intro::RATE;
+    let mut b = b"RIFF".to_vec();
+    b.extend_from_slice(&(36 + samples.len() as u32 * 2).to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&[1, 0, 1, 0]);
+    b.extend_from_slice(&rate.to_le_bytes());
+    b.extend_from_slice(&(rate * 2).to_le_bytes());
+    b.extend_from_slice(&[2, 0, 16, 0]);
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&(samples.len() as u32 * 2).to_le_bytes());
+    for s in samples {
+        b.extend_from_slice(&s.to_le_bytes());
+    }
+    std::fs::write(path, b).unwrap();
+}
+
+fn noise(seed: u64, secs: f64) -> Vec<i16> {
+    let mut x = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    (0..(secs * corrent_transcode::intro::RATE as f64) as usize)
+        .map(|i| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let env = 0.5 + 0.5 * ((i as f64 / 8000.0) * 1.7 + seed as f64).sin();
+            (((x % 20000) as f64 - 10000.0) * env) as i16
+        })
+        .collect()
+}
+
+/// Two episodes sharing a theme at different times: the task finds it in both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn intros_are_found_by_their_sound() {
+    if !corrent_mpv::Library::available() {
+        eprintln!("libmpv not found; skipping");
+        return;
+    }
+    let h = harness("intros", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let season = h.dir.join("Shows/Theme Show/Season 1");
+    std::fs::create_dir_all(&season).unwrap();
+    let theme = noise(42, 30.0);
+    for (n, (before, after)) in [(1, (10.0, 50.0)), (2, (25.0, 35.0))] {
+        let audio = [noise(n * 10, before), theme.clone(), noise(n * 10 + 1, after)].concat();
+        let w = h.dir.join(format!("ep{n}.wav"));
+        wav(&w, &audio);
+        let secs = (before + 30.0 + after) as u32;
+        let job = corrent_mpv::encode::EncodeJob {
+            input: format!("av://lavfi:testsrc=duration={secs}:size=160x120:rate=5"),
+            audio_file: Some(w.display().to_string()),
+            output: season.join(format!("Theme Show - S01E0{n}.mkv")).display().to_string(),
+            options: vec![
+                ("of".into(), "matroska".into()),
+                ("ovc".into(), "libx264".into()),
+                ("ovcopts".into(), "preset=ultrafast".into()),
+                ("oac".into(), "aac".into()),
+            ],
+        };
+        corrent_mpv::encode::run(&job, std::time::Duration::from_secs(120), &mut |_| true).unwrap();
+    }
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Shows", "kind": "shows", "folders": [h.dir.join("Shows")] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+    let eps = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}&kind=episode&sort=index"), &admin).await;
+        if v["total"] == 2 {
+            break v["items"].as_array().unwrap().iter().map(|e| e["id"].as_i64().unwrap()).collect::<Vec<_>>();
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let r = run_task(app, &admin, "detect_intros").await;
+    assert_eq!(r["ok"], true, "{r}");
+    for (id, start) in eps.iter().zip([10_000, 25_000]) {
+        let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
+        let seg = &d["files"][0]["segments"][0];
+        assert_eq!(seg["kind"], "intro", "{d}");
+        let (s, e) = (seg["start_ms"].as_i64().unwrap(), seg["end_ms"].as_i64().unwrap());
+        assert!((s - start).abs() < 2500 && (e - (start + 30_000)).abs() < 2500, "{s}–{e}");
+        let (_, p, _) =
+            send(app, Method::POST, &format!("/api/v1/playback/{id}"), &admin, json!({ "profile": "native" })).await;
+        assert_eq!(p["segments"][0]["kind"], "intro");
+    }
+    h.stop().await;
+}
+
 /// Web plugins: listed for the web client, their files served, nothing outside `web/`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn web_plugins_serve_their_files() {

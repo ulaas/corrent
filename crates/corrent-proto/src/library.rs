@@ -295,6 +295,9 @@ pub struct MediaFile {
     /// The torrent this file comes from, when it was downloaded by the server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub torrent: Option<String>,
+    /// Skippable parts found by analysis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<MediaSegment>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub missing: bool,
 }
@@ -476,6 +479,9 @@ pub struct PlaybackInfo {
     /// The file is still downloading: playback reads pieces as they arrive.
     #[serde(default)]
     pub downloading: bool,
+    /// Skippable parts (besides chapters).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<MediaSegment>,
 }
 
 /// A running transcode (Sessions page).
@@ -625,6 +631,20 @@ pub enum SkipKind {
     Intro,
     Recap,
     Credits,
+}
+
+/// A skippable part of a file found by analysis (an intro shared by a season's episodes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaSegment {
+    pub kind: SkipKind,
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+/// The segment playing at `pos` (seconds) and where it ends (not in its last two seconds).
+pub fn segment_at(segments: &[MediaSegment], pos: f64) -> Option<(SkipKind, f64)> {
+    let ms = (pos * 1000.0) as i64;
+    segments.iter().find(|s| s.start_ms <= ms && ms < s.end_ms - 2000).map(|s| (s.kind, s.end_ms as f64 / 1000.0))
 }
 
 /// Classifies a chapter title ("Opening", "Intro", "Previously on…", "End Credits"…).

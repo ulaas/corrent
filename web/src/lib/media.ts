@@ -164,6 +164,13 @@ export function chapterKind(title: string | null | undefined): SkipKind | null {
 }
 
 /** The skippable chapter at `pos` seconds and where it ends. */
+/** The analysed segment playing at `pos` (seconds), when not in its last two seconds. */
+export function segmentAt(segments: { kind: SkipKind; start_ms: number; end_ms: number }[] | undefined, pos: number): { kind: SkipKind; end: number } | null {
+  const ms = pos * 1000;
+  const s = segments?.find((x) => x.start_ms <= ms && ms < x.end_ms - 2000);
+  return s ? { kind: s.kind, end: s.end_ms / 1000 } : null;
+}
+
 export function skipAt(chapters: { start_ms: number; title?: string | null }[], pos: number, duration: number): { kind: SkipKind; end: number } | null {
   let i = -1;
   for (let k = 0; k < chapters.length; k++) if (chapters[k].start_ms / 1000 <= pos) i = k;

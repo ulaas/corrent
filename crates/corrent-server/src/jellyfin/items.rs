@@ -49,6 +49,7 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
             }),
         )
         .route("/items/{id}/refresh", post(|_a: JfAuth| async { no_content() }))
+        .route("/mediasegments/{id}", get(segments))
         .route("/items/{id}/images", get(|_a: JfAuth| async { json(json!([])) }))
         .route("/items/{id}/images/{ty}", get(image))
         .route("/items/{id}/images/{ty}/{index}", get(image_indexed));
@@ -77,7 +78,6 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         "/musicgenres",
         "/years",
         "/playlists",
-        "/mediasegments/{id}",
         "/livetv/channels",
         "/livetv/programs/recommended",
         "/channels",
@@ -696,4 +696,39 @@ async fn send_image(st: &AppState, sha: &str, width: u32, req: Request, immutabl
         }
         Err(_) => not_found(),
     }
+}
+
+/// `MediaSegments/{id}`: intros found by sound, and intro/recap/credits chapters.
+async fn segments(State(st): State<Arc<AppState>>, a: JfAuth, Path(id): Path<String>) -> Response {
+    use corrent_proto::library::SkipKind;
+    let Some(i) = ids::dec_kind(&id, ids::ITEM) else { return not_found() };
+    let Ok(d) = st.library.item(a.user(), i).await else { return not_found() };
+    let Some(f) = d.files.iter().find(|f| f.role == "main" && !f.missing) else { return empty_result() };
+    let ty = |k: SkipKind| match k {
+        SkipKind::Intro => "Intro",
+        SkipKind::Recap => "Recap",
+        SkipKind::Credits => "Outro",
+    };
+    let mut out: Vec<(SkipKind, i64, i64)> = f.segments.iter().map(|s| (s.kind, s.start_ms, s.end_ms)).collect();
+    let dur = f.duration_ms.or(d.item.runtime_ms).unwrap_or(0);
+    for (n, ch) in f.chapters.iter().enumerate() {
+        if let Some(k) = ch.title.as_deref().and_then(corrent_proto::library::chapter_kind) {
+            let end = f.chapters.get(n + 1).map(|c| c.start_ms).unwrap_or(dur);
+            if end > ch.start_ms && !out.iter().any(|(ok, _, _)| *ok == k) {
+                out.push((k, ch.start_ms, end));
+            }
+        }
+    }
+    out.sort_by_key(|s| s.1);
+    let item = ids::enc(ids::ITEM, i);
+    let items: Vec<Value> = out
+        .iter()
+        .enumerate()
+        .map(|(n, (k, s, e))| {
+            json!({ "Id": format!("{:032x}", (i as u128) << 8 | n as u128), "ItemId": item, "Type": ty(*k),
+                    "StartTicks": ids::ticks(*s), "EndTicks": ids::ticks(*e) })
+        })
+        .collect();
+    let n = items.len() as i64;
+    qr(items, n, 0)
 }

@@ -19,6 +19,7 @@ pub use corrent_proto::event as events_api;
 pub mod backups;
 pub mod identity;
 pub mod integrate;
+pub mod intros;
 pub mod jellyfin;
 pub mod local;
 pub mod metadata;

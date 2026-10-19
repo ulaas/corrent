@@ -48,6 +48,8 @@ struct Status {
     tracks: Vec<Track>,
     /// (start in seconds, title)
     chapters: Vec<(f64, Option<String>)>,
+    /// Skippable parts found by analysis (from the playback info).
+    segments: Vec<corrent_proto::library::MediaSegment>,
     ended: bool,
     buffering: bool,
     error: Option<String>,
@@ -444,6 +446,10 @@ impl Player {
         if let Ok(mut t) = trick.lock() {
             t.clear();
         }
+        let status = self.status.clone();
+        if let Ok(mut s) = status.lock() {
+            s.segments.clear();
+        }
         self.sheets.clear();
         self.rt.spawn(async move {
             let info: Result<corrent_proto::library::PlaybackInfo, String> = client
@@ -455,6 +461,9 @@ impl Player {
                 .await;
             match info {
                 Ok(info) => {
+                    if let Ok(mut s) = status.lock() {
+                        s.segments = info.segments.clone();
+                    }
                     if let Some(tp) = info.trickplay.clone() {
                         let (client, trick) = (client.clone(), trick.clone());
                         tokio::spawn(async move {
@@ -1289,8 +1298,11 @@ impl Player {
     /// hidden; above them when they are up).
     fn skip_button(&mut self, ui: &mut Ui, p: &Palette, rect: Rect, pos: f64, dur: f64, k: f32) -> PlayerAction {
         use corrent_proto::library::SkipKind;
-        let chapters = self.status.lock().map(|s| s.chapters.clone()).unwrap_or_default();
-        let Some((kind, end)) = corrent_proto::library::skip_at(&chapters, pos, dur) else { return PlayerAction::None };
+        let (chapters, segments) =
+            self.status.lock().map(|s| (s.chapters.clone(), s.segments.clone())).unwrap_or_default();
+        let skip = corrent_proto::library::skip_at(&chapters, pos, dur)
+            .or_else(|| corrent_proto::library::segment_at(&segments, pos));
+        let Some((kind, end)) = skip else { return PlayerAction::None };
         let label = match kind {
             SkipKind::Intro => t!("Skip intro"),
             SkipKind::Recap => t!("Skip recap"),

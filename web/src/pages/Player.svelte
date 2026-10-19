@@ -11,7 +11,7 @@
   import { toast } from '../lib/toast.svelte';
   import { attachSource, reportProgress, resolveSource, resumeAt, stopSession, type PlaybackInfo, type PlaybackOptions } from '../lib/player.svelte';
   import { music } from '../lib/player.svelte';
-  import { backdrop, image, skipAt } from '../lib/media';
+  import { backdrop, image, segmentAt, skipAt } from '../lib/media';
   import { clock } from '../lib/format';
   import { cueAt, parseTrickplay, type TrickCue } from '../lib/trickplay';
   import { imageUrl } from '../lib/api';
@@ -52,7 +52,7 @@
 
   const file = $derived(item?.files.find((f) => f.role === 'main') ?? item?.files[0]);
   const chapters = $derived(file?.chapters ?? []);
-  const skippable = $derived(skipAt(chapters, time, duration));
+  const skippable = $derived(skipAt(chapters, time, duration) ?? segmentAt(file?.segments, time));
   const SKIP_LABEL = { intro: tk('Skip intro'), recap: tk('Skip recap'), credits: tk('Skip credits') };
   const audioTracks = $derived(file?.streams.filter((s) => s.kind === 'audio') ?? []);
   const subStreams = $derived(file?.streams.filter((s) => s.kind === 'subtitle') ?? []);

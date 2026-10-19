@@ -175,7 +175,9 @@ they are (Range requests); anything else becomes an HLS stream encoded by libmpv
 libx264). The playlist covers the whole file from the start; seeking far ahead restarts the
 encoder at that point. External text subtitles are served as WebVTT; image subtitles (and
 others on request) are burned into the picture. Seek-bar thumbnails (trickplay) are made in the
-background the first time a video is played. Transcodes need the `playback.transcode`
+background the first time a video is played. Intros are also found by sound: the daily `detect_intros`
+task compares the openings of a season's episodes and stores the stretch they share; players show
+"Skip intro" there (and Jellyfin apps get it from `MediaSegments`). Transcodes need the `playback.transcode`
 permission; at most three run at once and idle ones stop after 90 seconds.
 
 ## Watching together

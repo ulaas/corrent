@@ -229,6 +229,7 @@ pub(crate) async fn prepare(
         trickplay,
         reasons,
         downloading: downloading.is_some(),
+        segments: file.segments.clone(),
     })
 }
 

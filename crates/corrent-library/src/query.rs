@@ -338,6 +338,21 @@ fn detail(c: &Connection, user: i64, id: i64) -> rusqlite::Result<Option<ItemDet
         let chapters = st
             .query_map([fid], |r| Ok(Chapter { start_ms: r.get(0)?, title: r.get(1)? }))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        let segments = c
+            .prepare_cached("SELECT kind, start_ms, end_ms FROM media_segments WHERE file_id = ?1 ORDER BY start_ms")?
+            .query_map([fid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter_map(|(k, s, e)| {
+                let kind = match k.as_str() {
+                    "intro" => corrent_proto::library::SkipKind::Intro,
+                    "recap" => corrent_proto::library::SkipKind::Recap,
+                    "credits" => corrent_proto::library::SkipKind::Credits,
+                    _ => return None,
+                };
+                Some(corrent_proto::library::MediaSegment { kind, start_ms: s, end_ms: e })
+            })
+            .collect();
         files.push(MediaFile {
             id: fid,
             path,
@@ -348,6 +363,7 @@ fn detail(c: &Connection, user: i64, id: i64) -> rusqlite::Result<Option<ItemDet
             streams,
             chapters,
             torrent,
+            segments,
             missing: missing.is_some(),
         });
     }
@@ -901,6 +917,62 @@ impl Library {
                     params![file_id, next, codec, lang, path],
                 )
                 .map(drop)
+            })
+            .await?;
+        Ok(())
+    }
+}
+
+/// An episode for intro detection: (item, main file, path, duration ms).
+pub type IntroCandidate = (i64, i64, String, i64);
+
+impl Library {
+    /// Seasons with episodes the intro detection hasn't looked at: per season its episodes in
+    /// order (at most `seasons` seasons).
+    pub async fn intro_candidates(&self, seasons: i64) -> Result<Vec<Vec<IntroCandidate>>> {
+        Ok(self
+            .db()
+            .read(move |c| {
+                let mut st = c.prepare(
+                    "SELECT DISTINCT e.parent_id FROM items e JOIN item_files x ON x.item_id = e.id AND x.role = 'main' \
+                     JOIN files f ON f.id = x.file_id WHERE e.kind = 'episode' AND f.missing_since IS NULL \
+                     AND NOT EXISTS (SELECT 1 FROM intro_checked k WHERE k.file_id = f.id) LIMIT ?1",
+                )?;
+                let ids: Vec<i64> = st.query_map([seasons], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+                let mut out = Vec::new();
+                for s in ids {
+                    let mut st = c.prepare(
+                        "SELECT e.id, f.id, f.path, coalesce(e.runtime_ms, 0) FROM items e \
+                         JOIN item_files x ON x.item_id = e.id AND x.role = 'main' JOIN files f ON f.id = x.file_id \
+                         WHERE e.parent_id = ?1 AND e.kind = 'episode' AND f.missing_since IS NULL ORDER BY e.index_no, e.id",
+                    )?;
+                    let eps: Vec<IntroCandidate> = st
+                        .query_map([s], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<i64>>(3)?.unwrap_or(0))))?
+                        .collect::<rusqlite::Result<_>>()?;
+                    out.push(eps);
+                }
+                Ok(out)
+            })
+            .await?)
+    }
+
+    /// Stores what the intro detection found for a file (`None`: nothing) and marks it done.
+    pub async fn set_intro(&self, file: i64, range: Option<(i64, i64)>) -> Result<()> {
+        let now = now_unix();
+        self.db()
+            .write(move |t| {
+                t.execute("DELETE FROM media_segments WHERE file_id = ?1 AND kind = 'intro'", [file])?;
+                if let Some((s, e)) = range {
+                    t.execute(
+                        "INSERT INTO media_segments(file_id, kind, start_ms, end_ms) VALUES (?1, 'intro', ?2, ?3)",
+                        params![file, s, e],
+                    )?;
+                }
+                t.execute(
+                    "INSERT OR REPLACE INTO intro_checked(file_id, checked_at) VALUES (?1, ?2)",
+                    params![file, now],
+                )?;
+                Ok(())
             })
             .await?;
         Ok(())
