@@ -81,7 +81,10 @@ pub enum EngineEvent {
         name: String,
     },
     Completed {
+        hash: InfoHash,
         name: String,
+        /// The torrent's category (libraries import completed torrents by category).
+        category: Option<String>,
         content_path: PathBuf,
         save_path: PathBuf,
         size: u64,

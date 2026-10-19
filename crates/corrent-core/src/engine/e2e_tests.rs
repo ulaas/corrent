@@ -23,7 +23,9 @@ async fn download_completes_with_metadata_and_event() {
     assert_eq!(std::fs::read(&t.content_path).unwrap(), s.content, "downloaded bytes match");
     let mut completed = false;
     while let Ok(ev) = l.events.try_recv() {
-        if matches!(ev, EngineEvent::Completed { .. }) {
+        if let EngineEvent::Completed { hash, category, .. } = ev {
+            assert_eq!(hash, s.hash);
+            assert_eq!(category.as_deref(), Some("Tests"));
             completed = true;
         }
     }

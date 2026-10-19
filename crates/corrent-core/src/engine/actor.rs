@@ -1783,8 +1783,8 @@ impl Actor {
             if b.run_on_complete_enabled && !b.run_on_complete.trim().is_empty() {
                 super::automation::run_on_complete(&b.run_on_complete, &view);
             }
-            let save = view.save_path.clone();
-            self.emit(EngineEvent::Completed { name, content_path, save_path: save, size });
+            let (save, category) = (view.save_path.clone(), view.category.clone());
+            self.emit(EngineEvent::Completed { hash, name, category, content_path, save_path: save, size });
         }
         view
     }
