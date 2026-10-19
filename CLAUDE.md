@@ -63,7 +63,8 @@ src/engine/{creator,stream}.rs
 src/rss/                    Feeds (fetch/parse), download rules, persisted state (rss.json)
 src/search.rs               Torznab client (user-configured providers only)
 src/webapi/                 qBittorrent-compatible Web API (axum) for Sonarr/Radarr
-src/i18n.rs + assets/i18n/  Translations: t!("English text", name = x) / tk! in consts; tr.toml catalog
+crates/corrent-i18n + assets/i18n/
+                            Translations: t!("English text", name = x) / tk! in consts; tr.toml catalog
                             (the source of truth — edit it directly)
 src/import.rs, updates.rs   Import from other clients; opt-in GitHub release check
 src/backup.rs, crash.rs, migrate.rs
@@ -85,7 +86,7 @@ docs/                       research.md, PLAN.md, ROADMAP.md (with status), STAB
 ```
 
 Key invariants:
-- Every user-visible string goes through `t!` (gate: `i18n::tests::no_hard_coded_ui_strings`); new
+- Every user-visible string goes through `t!` (gate: `corrent-i18n` test `no_hard_coded_ui_strings`, scans the workspace); new
   strings need a Turkish entry in `assets/i18n/tr.toml` (`turkish_catalog_is_complete`). Use named
   placeholders and separate keys for singular/plural; never compare against translated text.
 - The UI thread never blocks on I/O: it sends `EngineCommand`s and reads snapshots.

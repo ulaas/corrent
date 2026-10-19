@@ -1,5 +1,5 @@
 //! Translations. The English text is the key (gettext style), so untranslated strings simply
-//! show in English. Catalogs live in `assets/i18n/<lang>.toml` as `"English" = "Translation"`.
+//! show in English. Catalogs live in the repository's `assets/i18n/<lang>.toml` as `"English" = "Translation"`.
 //!
 //! Placeholders are named: `t!("Created “{name}”", name = x)`. Translations must use the same
 //! names (checked by a test).
@@ -63,7 +63,7 @@ fn catalog(lang: Lang) -> Option<&'static HashMap<String, &'static str>> {
     static TR: OnceLock<HashMap<String, &'static str>> = OnceLock::new();
     match lang {
         Lang::English => None,
-        Lang::Turkish => Some(TR.get_or_init(|| parse(include_str!("../assets/i18n/tr.toml")))),
+        Lang::Turkish => Some(TR.get_or_init(|| parse(include_str!("../../../assets/i18n/tr.toml")))),
     }
 }
 
@@ -103,10 +103,10 @@ pub fn tr_args(s: &'static str, args: &[(&str, &dyn std::fmt::Display)]) -> Stri
 #[macro_export]
 macro_rules! t {
     ($s:literal) => {
-        $crate::i18n::tr($s)
+        $crate::tr($s)
     };
     ($s:literal, $($k:ident = $v:expr),+ $(,)?) => {
-        $crate::i18n::tr_args($s, &[$((stringify!($k), &$v as &dyn std::fmt::Display)),+])
+        $crate::tr_args($s, &[$((stringify!($k), &$v as &dyn std::fmt::Display)),+])
     };
 }
 
@@ -134,7 +134,7 @@ mod tests {
     /// Every `t!("…")` in the source has a Turkish translation with the same placeholders.
     #[test]
     fn turkish_catalog_is_complete() {
-        let cat = parse(include_str!("../assets/i18n/tr.toml"));
+        let cat = parse(include_str!("../../../assets/i18n/tr.toml"));
         let mut missing = Vec::new();
         let mut bad = Vec::new();
         for key in source_keys() {
@@ -164,12 +164,18 @@ mod tests {
         let open_paren = regex::Regex::new(r#"\(\s*\n\s*""#).unwrap();
         let continuation = regex::Regex::new(r"\\\n\s*").unwrap();
         let mut found = Vec::new();
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = workspace_root();
         let mut files: Vec<std::path::PathBuf> = Vec::new();
+        // GUI crate folders and files with user-visible text (paths that moved to crates/ are skipped).
         for dir in ["src/app", "src/ui", "src/engine", "src/rss"] {
-            files.extend(std::fs::read_dir(root.join(dir)).unwrap().flatten().map(|e| e.path()));
+            files.extend(std::fs::read_dir(root.join(dir)).into_iter().flatten().flatten().map(|e| e.path()));
         }
         files.extend(["src/util.rs", "src/config.rs", "src/store.rs", "src/backup.rs"].map(|f| root.join(f)));
+        files.retain(|p| p.exists());
+        // Library crates: everything but this one (and the libmpv bindings, which have no UI text).
+        for krate in crate_dirs(&root) {
+            files.extend(rust_files(&krate.join("src")));
+        }
         {
             for p in files {
                 if p.extension().is_none_or(|x| x != "rs") || p.ends_with("ui_tests.rs") || p.ends_with("e2e_tests.rs")
@@ -212,16 +218,50 @@ mod tests {
         v
     }
 
-    /// All `t!("…")` literals in src/.
-    pub(crate) fn source_keys() -> Vec<String> {
-        let mut out = std::collections::BTreeSet::new();
-        let mut stack = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
-        while let Some(dir) = stack.pop() {
-            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+    fn workspace_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+    }
+
+    /// `crates/*` except this crate and the libmpv bindings.
+    fn crate_dirs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut v: Vec<_> = std::fs::read_dir(root.join("crates"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join("src").is_dir() && !p.ends_with("corrent-i18n") && !p.ends_with("corrent-mpv"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// `.rs` files under `dir`, recursively.
+    fn rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
                 let p = e.path();
                 if p.is_dir() {
                     stack.push(p);
-                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("i18n.rs") {
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    }
+
+    /// All `t!("…")` literals in the GUI crate and the library crates.
+    pub(crate) fn source_keys() -> Vec<String> {
+        let mut out = std::collections::BTreeSet::new();
+        let root = workspace_root();
+        let mut files = rust_files(&root.join("src"));
+        for krate in crate_dirs(&root) {
+            files.extend(rust_files(&krate.join("src")));
+        }
+        {
+            for p in files {
+                {
                     let text = std::fs::read_to_string(&p).unwrap();
                     for marker in ["t!(", "tk!("] {
                         for (i, _) in text.match_indices(marker) {

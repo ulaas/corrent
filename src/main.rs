@@ -2,7 +2,8 @@
 #![recursion_limit = "256"]
 
 #[macro_use]
-mod i18n;
+extern crate corrent_i18n;
+use corrent_i18n as i18n;
 mod app;
 mod backup;
 mod config;

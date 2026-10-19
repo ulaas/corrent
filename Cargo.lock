@@ -986,6 +986,7 @@ dependencies = [
  "axum",
  "bytes",
  "chrono",
+ "corrent-i18n",
  "directories",
  "eframe",
  "egui",
@@ -1020,6 +1021,16 @@ dependencies = [
  "windows-registry",
  "winresource",
  "zip",
+]
+
+[[package]]
+name = "corrent-i18n"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "sys-locale",
+ "toml",
+ "tracing",
 ]
 
 [[package]]
