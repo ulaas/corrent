@@ -8,6 +8,7 @@ pub mod images;
 pub mod libraries;
 pub mod player;
 pub mod profiles;
+pub mod subtitles;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -64,6 +65,7 @@ pub struct MediaState {
     person: Option<(i64, Slot<ItemPage<Item>>)>,
     pub profiles: profiles::Profiles,
     pub library_form: Option<libraries::LibraryForm>,
+    sub_finder: Option<subtitles::SubFinder>,
     remove_library: Option<(i64, String)>,
     /// The user's client preferences on the server (home row order and hidden rows).
     user_prefs: Option<Slot<serde_json::Value>>,
@@ -452,6 +454,7 @@ impl CorrentApp {
         self.media_top_bar(ui, p, &page);
         let ctx = self.ctx.clone();
         self.profiles_window(&ctx, p);
+        self.subtitle_finder_window(&ctx, p);
         egui::ScrollArea::vertical().id_salt(("media", format!("{page:?}"))).auto_shrink([false, false]).show(
             ui,
             |ui| {
@@ -1052,6 +1055,11 @@ impl CorrentApp {
                 .clicked()
             {
                 self.set_state(client, it.id, serde_json::json!({ "favorite": !fav }));
+            }
+            if matches!(it.kind, ItemKind::Movie | ItemKind::Episode | ItemKind::Video)
+                && ui.button(format!("{}  {}", icons::CLOSED_CAPTIONING, t!("Find subtitles"))).clicked()
+            {
+                self.open_subtitle_finder(it.id);
             }
         });
         ui.add_space(12.0);

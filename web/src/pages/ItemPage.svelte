@@ -5,6 +5,7 @@
   import Card from '../components/Card.svelte';
   import Spinner from '../components/Spinner.svelte';
   import PhotoViewer from '../components/PhotoViewer.svelte';
+  import Modal from '../components/Modal.svelte';
   import { api, errorText } from '../lib/api';
   import { back, go, link } from '../lib/router.svelte';
   import { backdrop, image, isPlayable, KIND_LABEL, playHref, shapeFor, watched } from '../lib/media';
@@ -35,6 +36,49 @@
     following = null;
     if (it?.kind === 'show' && can(Perm.TORRENTS_ADD)) void loadFollowing(it.id);
   });
+
+  // Subtitles from subtitle-provider plugins.
+  interface FoundSub {
+    provider: string;
+    id: string;
+    language: string;
+    name: string;
+    format: string;
+    downloads?: number;
+    hearing_impaired: boolean;
+    exact: boolean;
+  }
+  let finder = $state<{ open: boolean; langs: string; list: FoundSub[] | null; error: string; saving: string }>({
+    open: false,
+    langs: (navigator.language || 'en').slice(0, 2) + (navigator.language?.startsWith('en') ? '' : ',en'),
+    list: null,
+    error: '',
+    saving: '',
+  });
+  async function findSubs(id: number) {
+    finder.open = true;
+    finder.list = null;
+    finder.error = '';
+    try {
+      finder.list = await api.get<FoundSub[]>(`/items/${id}/subtitles`, { languages: finder.langs });
+    } catch (e) {
+      finder.error = errorText(e);
+      finder.list = [];
+    }
+  }
+  async function saveSub(id: number, s: FoundSub) {
+    finder.saving = s.id;
+    try {
+      await api.post(`/items/${id}/subtitles`, { provider: s.provider, id: s.id, language: s.language });
+      toast(t('Subtitle saved next to the video.'), 'success');
+      finder.open = false;
+      if (item) void load(item.id);
+    } catch (e) {
+      toast(errorText(e), 'error');
+    } finally {
+      finder.saving = '';
+    }
+  }
 
   async function toggleFollow(id: number) {
     try {
@@ -219,6 +263,9 @@
               aria-label={item.state.played ? t('Mark as unplayed') : t('Mark as played')}
               title={item.state.played ? t('Mark as unplayed') : t('Mark as played')}
               onclick={() => togglePlayed(item!)}><Icon name={item.state.played ? 'check-circle-fill' : 'check-circle'} size={20} /></button>
+            {#if (item.kind === 'movie' || item.kind === 'episode' || item.kind === 'video') && can(Perm.LIBRARY_MANAGE)}
+              <button class="btn lg" onclick={() => findSubs(item!.id)}><Icon name="closed-captioning" />{t('Find subtitles')}</button>
+            {/if}
           </div>
 
           {#if item.overview}<p class="overview">{item.overview}</p>{/if}
@@ -326,7 +373,61 @@
   </article>
 {/if}
 
+{#if finder.open && item}
+  <Modal title={t('Find subtitles')} onclose={() => (finder.open = false)}>
+    <div class="row subs-langs">
+      <input class="input" bind:value={finder.langs} aria-label={t('Languages')} placeholder="tr,en" />
+      <button class="btn" onclick={() => findSubs(item!.id)}><Icon name="magnifying-glass" />{t('Search')}</button>
+    </div>
+    {#if finder.list === null}
+      <div class="subs-center"><Spinner /></div>
+    {:else if finder.error}
+      <p class="form-error">{finder.error}</p>
+    {:else if !finder.list.length}
+      <p class="muted">{t('No subtitles found. Subtitle providers (like OpenSubtitles) need their keys in Settings → Plugins.')}</p>
+    {:else}
+      <ul class="subs-list">
+        {#each finder.list as s (s.provider + s.id)}
+          <li>
+            <span class="badge">{s.language}</span>
+            <span class="grow ellipsis" title={s.name}>{s.name}</span>
+            {#if s.exact}<span class="badge accent">{t('Exact match')}</span>{/if}
+            {#if s.hearing_impaired}<span class="badge">SDH</span>{/if}
+            {#if s.downloads}<span class="muted small">{s.downloads}</span>{/if}
+            <button class="btn sm" disabled={!!finder.saving} onclick={() => saveSub(item!.id, s)}>
+              {#if finder.saving === s.id}<Spinner size={12} />{:else}<Icon name="download-simple" size={14} />{/if}{t('Save')}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </Modal>
+{/if}
+
 <style>
+  .subs-langs {
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .subs-center {
+    display: grid;
+    place-items: center;
+    padding: 24px;
+  }
+  .subs-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 6px;
+    max-height: 50vh;
+    overflow: auto;
+  }
+  .subs-list li {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
   .loading {
     display: grid;
     place-items: center;

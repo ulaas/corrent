@@ -1071,3 +1071,8 @@
 "{size} free" = "{size} boş"
 "The server can't be reached: changes are sent when it's back." = "Sunucuya ulaşılamıyor: değişiklikler geri geldiğinde gönderilecek."
 "The server can't be reached." = "Sunucuya ulaşılamıyor."
+"Exact match" = "Tam eşleşme"
+"Find subtitles" = "Altyazı bul"
+"Languages" = "Diller"
+"No subtitles found. Subtitle providers (like OpenSubtitles) need their keys in the server's plugin settings." = "Altyazı bulunamadı. Altyazı sağlayıcılarının (OpenSubtitles gibi) sunucunun eklenti ayarlarında anahtarları olmalıdır."
+"Subtitle saved next to the video." = "Altyazı videonun yanına kaydedildi."

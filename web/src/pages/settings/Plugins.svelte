@@ -20,6 +20,42 @@
 
   const KIND: Record<string, string> = { metadata: tk('Metadata'), indexer: tk('Indexer'), notifier: tk('Notifications') };
 
+  interface CatalogItem {
+    id: string;
+    name: string;
+    version: string;
+    description: string;
+    installed: string | null;
+  }
+  let catalog = $state<{ configured: boolean; entries: CatalogItem[] } | null>(null);
+  let catalogError = $state('');
+  let installing = $state('');
+
+  async function loadCatalog() {
+    if (!manage) return;
+    try {
+      catalog = await api.get('/plugins/catalog');
+      catalogError = '';
+    } catch (e) {
+      catalogError = errorText(e);
+    }
+  }
+  void loadCatalog();
+
+  async function installFromCatalog(id: string) {
+    installing = id;
+    try {
+      await api.post('/plugins/catalog/install', { id });
+      toast(t('Plugin installed'), 'success');
+      void load();
+      void loadCatalog();
+    } catch (e) {
+      toast(errorText(e), 'error');
+    } finally {
+      installing = '';
+    }
+  }
+
   async function load() {
     try {
       plugins = await api.get<PluginInfo[]>('/plugins');
@@ -167,6 +203,30 @@
           </div>
         </div>
       {/if}
+    {/each}
+  </div>
+{/if}
+
+{#if manage && catalog?.configured}
+  <div class="sgroup">
+    <h3>{t('Catalog')}</h3>
+    <p class="sdesc">{t('Plugins from the catalog this server trusts. Each download is checked against its signature.')}</p>
+    {#if catalogError}<div class="srow"><p class="form-error">{catalogError}</p></div>{/if}
+    {#each catalog.entries as e (e.id)}
+      <div class="srow plugin">
+        <div class="stext">
+          <span class="slabel">{e.name} <span class="badge">{e.version}</span>{#if e.installed}<span class="badge accent">{t('Installed {v}', { v: e.installed })}</span>{/if}</span>
+          {#if e.description}<span class="shint">{e.description}</span>{/if}
+        </div>
+        <div class="sctl">
+          {#if e.installed !== e.version}
+            <button class="btn sm" disabled={!!installing} onclick={() => installFromCatalog(e.id)}>
+              {#if installing === e.id}<Spinner size={12} />{:else}<Icon name="download-simple" size={14} />{/if}
+              {e.installed ? t('Update') : t('Install')}
+            </button>
+          {/if}
+        </div>
+      </div>
     {/each}
   </div>
 {/if}
