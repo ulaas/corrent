@@ -675,9 +675,12 @@ impl Settings {
                         .ok()
                         .and_then(|b| Settings::parse(&b).ok())
                         .filter(|b| b.schema_version <= crate::migrate::SETTINGS_VERSION);
-                    if kept && let Some(mut s) = good {
-                        // Put the good copy back first, so even a failed save below leaves a good file.
-                        let _ = std::fs::copy(&bak, &file);
+                    // Put the good copy back first, so even a failed save below leaves a good file;
+                    // if that fails (a locked file) a save could rotate the damage over `.bak`.
+                    if kept
+                        && let Some(mut s) = good
+                        && std::fs::copy(&bak, &file).is_ok()
+                    {
                         let from = s.schema_version;
                         crate::migrate::migrate_settings(&mut s, from);
                         let _ = s.save(paths);

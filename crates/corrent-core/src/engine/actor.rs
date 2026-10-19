@@ -1118,7 +1118,6 @@ impl Actor {
         let set: HashSet<InfoHash> = self.store.data.purge.drain(..).collect();
         super::restore::purge(&self.paths.session_dir(), &set);
         self.store.mark_dirty();
-        self.store.mark_dirty();
     }
 
     fn detect_failed_restores(&mut self) {
@@ -2572,7 +2571,7 @@ async fn readd(
         trackers: trackers.clone(),
         moved: Vec::new(),
     };
-    crate::util::write_atomic(&note, &serde_json::to_vec(&info)?).context("saving re-add details")?;
+    crate::util::write_replace(&note, &serde_json::to_vec(&info)?).context("saving re-add details")?;
     sess.delete(TorrentIdOrHash::Id(id), false).await?;
 
     let mut move_err = None;
@@ -2587,7 +2586,7 @@ async fn readd(
                 &mut |rel| {
                     // So a crash from here on knows which files are already in the new folder.
                     info.moved.push(rel.to_path_buf());
-                    crate::util::write_atomic(&note, &serde_json::to_vec(&info)?)
+                    crate::util::write_replace(&note, &serde_json::to_vec(&info)?)
                 },
                 false,
             )

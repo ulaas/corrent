@@ -112,7 +112,11 @@ pub struct Store {
     pending_error: Option<String>,
     /// UTC day of the newest daily generation (`store.json.daily-<ts>`), read on the first save.
     daily_day: Option<i64>,
+    /// After a failed save: how long to wait before the next try (doubles up to 5 minutes).
+    retry_after: std::time::Duration,
 }
+
+const FIRST_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Daily generations of `store.json` kept besides `.bak`.
 const DAILY_GENERATIONS: usize = 3;
@@ -183,10 +187,20 @@ impl Store {
                         serde_json::from_slice::<StoreData>(&b).ok().map(|d| (p, d))
                     });
                     match good {
-                        Some((bak, d)) => {
-                            // Put the good copy back so the next save never rotates the corrupt
-                            // file over the only good backup.
-                            let _ = std::fs::copy(&bak, &path);
+                        Some((bak, d)) if std::fs::copy(&bak, &path).is_err() => {
+                            // The good copy couldn't be put back (the file is locked): show it,
+                            // but never save, or the damaged file would be rotated over `.bak`.
+                            tracing::error!("could not put {} back in place", bak.display());
+                            unreadable = true;
+                            warning = Some(t!(
+                                "Corrent's data file was damaged. Its backup is shown, but it couldn't be put in place, \
+                                 so nothing is saved this session; restart Corrent to try again."
+                            ).into());
+                            Some(d)
+                        }
+                        Some((_, d)) => {
+                            // The good copy is back in place (above), so the next save never
+                            // rotates the corrupt file over the only good backup.
                             warning = Some(t!(
                                 "Corrent's data file was damaged and was restored from its backup; the most recent changes \
                                  (categories, tags, totals) may be missing. The damaged file was kept as {path}.",
@@ -253,6 +267,7 @@ impl Store {
             last_error: None,
             pending_error: None,
             daily_day: None,
+            retry_after: FIRST_RETRY,
         }
     }
 
@@ -366,7 +381,11 @@ impl Store {
         if !self.dirty && !self.soft_dirty || self.read_only {
             return;
         }
-        let wait = if self.dirty { std::time::Duration::from_secs(2) } else { std::time::Duration::from_secs(30) };
+        let mut wait = if self.dirty { std::time::Duration::from_secs(2) } else { std::time::Duration::from_secs(30) };
+        if self.last_error.is_some() {
+            // A disk that keeps refusing isn't hammered every 2 s.
+            wait = wait.max(self.retry_after);
+        }
         if self.last_save.elapsed() >= wait {
             self.submit();
         }
@@ -400,8 +419,16 @@ impl Store {
     /// Pick up the outcome of the last write: a failure is reported once and retried later.
     fn collect_result(&mut self) {
         match crate::writer::global().take_result(&self.path) {
-            Some(Ok(())) => self.last_error = None,
+            Some(Ok(())) => {
+                self.last_error = None;
+                self.retry_after = FIRST_RETRY;
+            }
             Some(Err(msg)) => {
+                if self.last_error.is_some() {
+                    self.retry_after = (self.retry_after * 2).min(std::time::Duration::from_secs(300));
+                }
+                // The day's dated copy may not have been taken: ask again with the next save.
+                self.daily_day = None;
                 if self.last_error.as_deref() != Some(msg.as_str()) {
                     self.pending_error = Some(msg.clone());
                 }

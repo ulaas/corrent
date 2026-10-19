@@ -30,6 +30,8 @@ struct State {
     /// Outcome of the last write per file, until someone takes it.
     results: HashMap<PathBuf, Result<(), String>>,
     writes: HashMap<PathBuf, u64>,
+    /// The last error logged per file (a failure that repeats is logged once).
+    logged: HashMap<PathBuf, String>,
     started: bool,
 }
 
@@ -63,8 +65,11 @@ impl Writer {
             st.started = true;
             let spawned = std::thread::Builder::new().name("corrent-writer".into()).spawn(move || self.run());
             if let Err(e) = spawned {
+                // Report it like a failed write instead of leaving the job queued forever.
                 st.started = false;
                 tracing::error!("could not start the writer thread: {e}");
+                st.pending.remove(path);
+                st.results.insert(path.to_path_buf(), Err(t!("could not start the writer thread: {e}", e = e)));
             }
         }
         self.changed.notify_all();
@@ -117,14 +122,27 @@ impl Writer {
             // since (a restore, another tool).
             let same = std::fs::read(&path).is_ok_and(|on_disk| on_disk == job.bytes);
             let result = if same {
+                // Unchanged, but a dated copy that was asked for is still owed.
+                if let Some(g) = &job.generation
+                    && let Err(e) = crate::util::keep_generations(&path, g.tag, &job.bytes, g.keep)
+                {
+                    tracing::warn!("could not keep a {} copy of {}: {e:#}", g.tag, path.display());
+                }
                 Ok(())
             } else {
                 std::panic::catch_unwind(|| write(&path, &job)).unwrap_or_else(|_| Err("the save panicked".to_string()))
             };
-            if let Err(e) = &result {
-                tracing::error!("failed to save {}: {e}", path.display());
-            }
             let mut st = self.lock();
+            match &result {
+                Err(e) if st.logged.get(&path) != Some(e) => {
+                    tracing::error!("failed to save {}: {e}", path.display());
+                    st.logged.insert(path.clone(), e.clone());
+                }
+                Err(_) => {}
+                Ok(()) => {
+                    st.logged.remove(&path);
+                }
+            }
             if result.is_ok() && !same {
                 *st.writes.entry(path.clone()).or_default() += 1;
             }
@@ -197,6 +215,13 @@ mod tests {
         let gens = crate::util::generations(&f, "daily");
         assert_eq!(gens.len(), 1, "the replaced job's generation is still taken");
         assert_eq!(std::fs::read(&f).unwrap(), b"two");
+        // Unchanged contents aren't written again, but an owed generation is still taken.
+        let g = dir.join("rss.json");
+        std::fs::write(&g, b"same").unwrap();
+        w.submit(&g, b"same".to_vec(), Some(Generation { tag: "daily", keep: 3 }));
+        assert!(w.flush(&g, Duration::from_secs(10)));
+        assert_eq!(w.writes(&g), 0);
+        assert_eq!(crate::util::generations(&g, "daily").len(), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

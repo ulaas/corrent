@@ -57,8 +57,27 @@ fn refresh_bak(path: &Path) {
         .and_then(|t| t.elapsed().ok())
         .is_some_and(|age| age < BAK_MAX_AGE);
     if !fresh && let Ok(current) = std::fs::read(path) {
-        let _ = write_synced(&bak, &current);
+        // Through a temp file too: a crash mid-refresh must not leave a cut-off backup.
+        let tmp = sibling(&bak, "tmp");
+        if write_synced(&tmp, &current).and_then(|()| std::fs::rename(&tmp, &bak)).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
     }
+}
+
+/// Like `write_atomic`, but without a `.bak` (for short-lived files rewritten often, such as a
+/// move's progress note).
+pub fn write_replace(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = sibling(path, "tmp");
+    if let Err(e) = write_synced(&tmp, data).and_then(|()| rename_retrying(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    sync_parent(path);
+    Ok(())
 }
 
 fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -521,6 +540,17 @@ mod tests {
         release.join().unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), b"two");
         assert!(!dir.join("settings.toml.tmp").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn replace_keeps_no_backup() {
+        let dir = scratch("replace");
+        let f = dir.join("note.json");
+        write_replace(&f, b"one").unwrap();
+        write_replace(&f, b"two").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"two");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no .bak or .tmp left");
         let _ = std::fs::remove_dir_all(dir);
     }
 

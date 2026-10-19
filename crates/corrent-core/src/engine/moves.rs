@@ -47,7 +47,12 @@ fn move_one(src: &Path, dst: &Path, copy: bool) -> anyhow::Result<()> {
         let _ = std::fs::remove_file(&part);
         return Err(e);
     }
-    std::fs::remove_file(src).with_context(|| t!("removing {path} after copying it", path = src.display()))
+    if let Err(e) = std::fs::remove_file(src) {
+        // As before the move: otherwise the complete copy would block every later move there.
+        let _ = std::fs::remove_file(dst);
+        return Err(anyhow::Error::from(e).context(t!("removing {path} after copying it", path = src.display())));
+    }
+    Ok(())
 }
 
 /// Move `files` (relative paths) from `from` to `to`. `on_moved` records each finished file; if
@@ -222,6 +227,22 @@ mod tests {
             assert!(matches!(r, Err(MoveError::Back(_))), "{bad:?}");
         }
         d.all_in(&d.old);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_source_that_cannot_be_removed_leaves_no_copy_behind() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = Dirs::new("held-src");
+        // Readable, but can't be deleted while this handle is open (no FILE_SHARE_DELETE).
+        let held = std::fs::File::options().read(true).share_mode(1).open(d.old.join("d.bin")).unwrap();
+        let r = move_files(&d.old, &d.new, &Dirs::files(), &mut |_| Ok(()), true);
+        assert!(matches!(r, Err(MoveError::Back(_))), "{r:?}");
+        drop(held);
+        d.all_in(&d.old);
+        // And the next try is not blocked by a leftover copy.
+        move_files(&d.old, &d.new, &Dirs::files(), &mut |_| Ok(()), true).unwrap();
+        d.all_in(&d.new);
     }
 
     #[test]

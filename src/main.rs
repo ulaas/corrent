@@ -57,7 +57,7 @@ fn main() -> eframe::Result {
     }
 
     let items: Vec<String> = args.iter().filter(|a| !a.starts_with("--")).cloned().collect();
-    let (listener, unresponsive) = match integration::single_instance::acquire(&paths, &items) {
+    let (mut listener, unresponsive) = match integration::single_instance::acquire(&paths, &items) {
         integration::single_instance::Acquire::Forwarded => return Ok(()),
         integration::single_instance::Acquire::Primary(l) => (l, false),
         integration::single_instance::Acquire::Unresponsive => (None, true),
@@ -65,11 +65,19 @@ fn main() -> eframe::Result {
     // One process per data folder, locked before anything in it is restored or read (correntd
     // takes the same lock). Never run without it.
     let _data_lock = match corrent_core::lock::lock_data_dir(&paths.data_dir) {
-        Ok(_) if unresponsive => {
-            // The other side took our items but doesn't hold the lock: a Corrent from before
-            // confirmations, which gets them anyway. Never start a second engine next to it.
-            eprintln!("forwarded to a running Corrent that did not confirm");
-            return Ok(());
+        Ok(lock) if unresponsive => {
+            // The other side didn't confirm but doesn't hold the lock: it was quitting, or it is a
+            // Corrent from before confirmations (which gets the items anyway). Ask once more.
+            match integration::single_instance::acquire(&paths, &items) {
+                integration::single_instance::Acquire::Primary(l) => {
+                    listener = l;
+                    lock
+                }
+                _ => {
+                    eprintln!("forwarded to a running Corrent that did not confirm");
+                    return Ok(());
+                }
+            }
         }
         Ok(lock) => lock,
         Err(e) => {
@@ -95,6 +103,16 @@ fn main() -> eframe::Result {
             std::process::exit(1);
         }
     };
+
+    // Serve forwarded launches right away: they are only queued, and a slow restore or settings
+    // load below must not look like a hung instance to them.
+    let (ipc_tx, ipc_rx) = std::sync::mpsc::channel();
+    let ctx_cell: Arc<std::sync::OnceLock<egui::Context>> = Arc::new(std::sync::OnceLock::new());
+    #[cfg(target_os = "macos")]
+    integration::macos_events::install(&ipc_tx, &ctx_cell);
+    if let Some(l) = listener {
+        integration::single_instance::serve(l, ipc_tx, ctx_cell.clone());
+    }
 
     let _log_guard = init_logging(&paths);
     crash::install_hook(paths.log_dir());
@@ -123,14 +141,6 @@ fn main() -> eframe::Result {
     let launch: Vec<AddSource> = items.iter().filter_map(|a| AddSource::parse(a)).collect();
     let start_minimized = flag("--minimized") || settings.behavior.start_minimized;
     let tv = flag("--tv");
-
-    let (ipc_tx, ipc_rx) = std::sync::mpsc::channel();
-    let ctx_cell: Arc<std::sync::OnceLock<egui::Context>> = Arc::new(std::sync::OnceLock::new());
-    #[cfg(target_os = "macos")]
-    integration::macos_events::install(&ipc_tx, &ctx_cell);
-    if let Some(l) = listener {
-        integration::single_instance::serve(l, ipc_tx, ctx_cell.clone());
-    }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
