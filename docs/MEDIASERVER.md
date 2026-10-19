@@ -161,7 +161,7 @@ Portable mode (`--portable`) keeps all of it under `target/debug/corrent-data` a
   the wire). Pagination by opaque cursors; list endpoints take `fields=` to trim payloads. ETags on
   items and artwork; `Cache-Control: immutable` on content-addressed images. OpenAPI generation via
   `utoipa` 6.0 behind a cargo feature (opt), so the build cost is zero by default; `docs/API.md`
-  describes auth, events and the delta rules by hand.
+  describes auth, events and the delta rules by hand. — `docs/API.md` written (auth, errors, events, every route; a test keeps the route list complete); utoipa not added.
 - **Accept:** `tower::ServiceExt::oneshot` tests for every endpoint family; a `proto` round-trip
   test per type; the qBittorrent API (`/api/v2`) still passes its Sonarr/Radarr smoke test.
 

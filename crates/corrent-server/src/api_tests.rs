@@ -2306,3 +2306,21 @@ async fn plugins_identify_library_items() {
     assert_eq!(s, StatusCode::OK);
     h.stop().await;
 }
+
+/// docs/API.md lists every route of `/api/v1` (fails when one is added without documenting it).
+#[test]
+fn api_doc_lists_every_route() {
+    let doc = include_str!("../../../docs/API.md");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/v1");
+    let mut missing = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let src = std::fs::read_to_string(e.path()).unwrap();
+        for part in src.split(".route(").skip(1) {
+            let Some(path) = part.trim_start().strip_prefix('"').and_then(|p| p.split('"').next()) else { continue };
+            if !doc.contains(&format!("`/api/v1{path}`")) {
+                missing.push(path.to_string());
+            }
+        }
+    }
+    assert!(missing.is_empty(), "add these to docs/API.md: {missing:?}");
+}
