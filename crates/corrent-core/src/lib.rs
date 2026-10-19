@@ -9,6 +9,7 @@ pub mod backup;
 pub mod config;
 pub mod crash;
 pub mod engine;
+pub mod faults;
 pub mod import;
 pub mod lock;
 pub mod logbuf;

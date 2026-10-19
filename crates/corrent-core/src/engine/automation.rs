@@ -10,8 +10,25 @@ use crate::config::{AfterAdd, WatchFolder};
 #[derive(Default)]
 pub struct WatchState {
     sizes: HashMap<PathBuf, (u64, u8)>,
-    /// Files handed out by `poll` whose add hasn't finished: left in place, never handed out twice.
+    /// Files handed out by a scan whose add (and the move out of the way after it) hasn't
+    /// finished: left in place, never handed out twice.
     in_flight: HashSet<PathBuf>,
+    /// A scan runs off the engine's thread (a folder on a sleeping disk or an offline share
+    /// can take long); one at a time.
+    scanning: bool,
+}
+
+/// What a scan needs, taken from the state so it can run on another thread.
+pub struct ScanInput {
+    sizes: HashMap<PathBuf, (u64, u8)>,
+    in_flight: HashSet<PathBuf>,
+    folders: Vec<WatchFolder>,
+}
+
+/// A finished scan, handed back to `WatchState::finish_scan`.
+pub struct Scan {
+    sizes: HashMap<PathBuf, (u64, u8)>,
+    hits: Vec<WatchHit>,
 }
 
 pub struct WatchHit {
@@ -21,29 +38,61 @@ pub struct WatchHit {
 }
 
 impl WatchState {
-    /// Scan all enabled folders once. Files are returned after two polls with an unchanged size.
-    /// They stay where they are until `finish` reports how their add went, so a failed add never
-    /// costs the user their only copy.
+    /// Start a scan of the enabled folders; None while one is still running.
+    pub fn begin_scan(&mut self, folders: &[WatchFolder]) -> Option<ScanInput> {
+        if self.scanning {
+            return None;
+        }
+        self.scanning = true;
+        Some(ScanInput {
+            sizes: std::mem::take(&mut self.sizes),
+            in_flight: self.in_flight.clone(),
+            folders: folders.to_vec(),
+        })
+    }
+
+    /// Take a scan's results: its hits are now in flight.
+    pub fn finish_scan(&mut self, scan: Scan) -> Vec<WatchHit> {
+        self.scanning = false;
+        self.sizes = scan.sizes;
+        let hits: Vec<WatchHit> = scan.hits.into_iter().filter(|h| !self.in_flight.contains(&h.path)).collect();
+        self.in_flight.extend(hits.iter().map(|h| h.path.clone()));
+        hits
+    }
+
+    /// Scan and take the results on this thread (tests).
+    #[cfg(test)]
     pub fn poll(&mut self, folders: &[WatchFolder]) -> Vec<WatchHit> {
-        let mut hits = Vec::new();
-        let mut seen = HashMap::new();
+        let input = self.begin_scan(folders).expect("no scan running");
+        self.finish_scan(scan(input))
+    }
+}
+
+/// Scan the folders once (blocking file system work). Files are returned after two scans with an
+/// unchanged size. They stay where they are until `finish` reports how their add went, so a
+/// failed add never costs the user their only copy.
+pub fn scan(input: ScanInput) -> Scan {
+    let ScanInput { sizes, in_flight, folders } = input;
+    let mut hits = Vec::new();
+    let mut seen = HashMap::new();
+    {
         for f in folders.iter().filter(|f| f.enabled && !f.path.as_os_str().is_empty()) {
+            crate::faults::fs_delay(&f.path);
             let Ok(entries) = std::fs::read_dir(&f.path) else { continue };
             for e in entries.flatten() {
                 let path = e.path();
                 let is_torrent = path.extension().is_some_and(|x| x.eq_ignore_ascii_case("torrent"));
-                if !is_torrent || !path.is_file() || self.in_flight.contains(&path) {
+                if !is_torrent || !path.is_file() || in_flight.contains(&path) {
                     continue;
                 }
                 let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-                let (prev, stable) = self.sizes.get(&path).copied().unwrap_or((u64::MAX, 0));
+                let (prev, stable) = sizes.get(&path).copied().unwrap_or((u64::MAX, 0));
                 let stable = if prev == size && size > 0 { stable.saturating_add(1) } else { 0 };
                 seen.insert(path.clone(), (size, stable));
                 if stable >= 1 {
                     match std::fs::read(&path) {
                         Ok(bytes) => {
                             seen.remove(&path);
-                            self.in_flight.insert(path.clone());
                             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                             hits.push(WatchHit { source: AddSource::Bytes { name, bytes }, folder: f.clone(), path });
                         }
@@ -52,32 +101,39 @@ impl WatchState {
                 }
             }
         }
-        self.sizes = seen;
-        hits
     }
+    Scan { sizes: seen, hits }
+}
 
-    /// The add of a file from `poll` has ended. Added (or already in the list): the folder's
-    /// after-add action runs. Otherwise the file is renamed to `<name>.failed` so it isn't tried
-    /// again; that new path is returned.
-    pub fn finish(&mut self, path: &Path, after: AfterAdd, added: bool) -> Option<PathBuf> {
-        self.in_flight.remove(path);
+/// The name a file whose add failed is given (`<name>.failed`), so it isn't tried again.
+pub fn failed_name(path: &Path) -> PathBuf {
+    let mut failed = path.as_os_str().to_owned();
+    failed.push(".failed");
+    PathBuf::from(failed)
+}
+
+impl WatchState {
+    /// The add of a file from a scan has ended. Added (or already in the list): the folder's
+    /// after-add action runs. Otherwise the file is renamed to `failed_name`. Blocking file work;
+    /// the file stays in flight until `release`.
+    pub fn finish_file(path: &Path, after: AfterAdd, added: bool) {
+        crate::faults::fs_delay(path);
         if added {
             finish_file(path, after);
-            return None;
-        }
-        let mut failed = path.as_os_str().to_owned();
-        failed.push(".failed");
-        let failed = PathBuf::from(failed);
-        match std::fs::rename(path, &failed) {
-            Ok(()) => Some(failed),
-            Err(e) => {
-                tracing::warn!("watch folder: could not rename {}: {e}", path.display());
-                None
-            }
+        } else if let Err(e) = std::fs::rename(path, failed_name(path)) {
+            tracing::warn!("watch folder: could not rename {}: {e}", path.display());
         }
     }
 
-    /// The add never started (no engine): the file stays and is picked up again later.
+    /// Tests: `finish_file` and `release` on this thread; the `.failed` path when renamed.
+    #[cfg(test)]
+    pub fn finish(&mut self, path: &Path, after: AfterAdd, added: bool) -> Option<PathBuf> {
+        WatchState::finish_file(path, after, added);
+        self.release(path);
+        (!added && failed_name(path).exists()).then(|| failed_name(path))
+    }
+
+    /// The file may be picked up again (its add never started, or it was moved out of the way).
     pub fn release(&mut self, path: &Path) {
         self.in_flight.remove(path);
     }

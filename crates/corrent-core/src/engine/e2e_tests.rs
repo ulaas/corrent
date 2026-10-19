@@ -1034,7 +1034,11 @@ async fn a_damaged_session_database_comes_back_from_its_last_good_copy() {
             None => std::fs::remove_file(&db).unwrap(),
         }
         let l = start(&dir);
-        let notices = notices_until(&l, 30, |sn| hashes.iter().all(|h| find(sn, *h).is_some_and(|t| !t.pending))).await;
+        // Until each is back and done checking its data.
+        let notices = notices_until(&l, 30, |sn| {
+            hashes.iter().all(|h| find(sn, *h).is_some_and(|t| !t.pending && t.state != TorrentState::Checking))
+        })
+        .await;
         assert!(notices.iter().any(|n| n.contains("restored from a copy")), "{what}: {notices:?}");
         let snap = l.engine.snapshot();
         for h in &hashes {
@@ -1198,6 +1202,41 @@ async fn a_player_that_stops_reading_frees_its_slot() {
     assert!(head(port, &range).await.starts_with("HTTP/1.1 206"));
     super::stream::TEST_WRITE_TIMEOUT_MS.store(0, std::sync::atomic::Ordering::Relaxed);
     drop(stalled);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_disk_does_not_stall_the_engine() {
+    let dir = temp_dir("slow-disk");
+    let s = seeder(&dir).await;
+    let watch = dir.join("watch");
+    std::fs::create_dir_all(&watch).unwrap();
+    std::fs::write(watch.join("slow.torrent"), &s.bytes).unwrap();
+    let mut cfg = settings(&dir);
+    cfg.watch.push(crate::config::WatchFolder { path: watch.clone(), start_paused: true, ..Default::default() });
+    let l = start(&dir);
+    wait_for(&l, "a running engine", 30, |sn| sn.engine_state == super::types::EngineState::Running).await;
+    // Every free-space check and watch scan under this folder now takes 2 s.
+    crate::faults::set_fs_delay(&dir, Duration::from_secs(2));
+    l.engine.send(EngineCommand::ApplySettings(Box::new(cfg)));
+    let (mut last, mut gap, start_at) = (l.engine.snapshot().generation, Duration::ZERO, Instant::now());
+    let mut seen_at = Instant::now();
+    while start_at.elapsed() < Duration::from_secs(5) {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let g = l.engine.snapshot().generation;
+        if g != last {
+            gap = gap.max(seen_at.elapsed());
+            (last, seen_at) = (g, Instant::now());
+        }
+    }
+    gap = gap.max(seen_at.elapsed());
+    let snap = l.engine.snapshot();
+    assert!(gap < Duration::from_secs(1), "snapshots stopped for {gap:?}");
+    assert!(snap.session.tick_max_ms < 50, "slowest tick {} ms", snap.session.tick_max_ms);
+    // The scan finishes late, but the torrent is still added.
+    wait_for(&l, "the watched torrent", 30, |sn| find(sn, s.hash).is_some_and(|t| !t.pending)).await;
+    crate::faults::clear(&dir);
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }

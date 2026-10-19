@@ -55,6 +55,11 @@ enum Internal {
         url: String,
         result: Result<crate::rss::ParsedFeed, String>,
     },
+    /// Free space of the save folder, measured off the actor.
+    FreeSpace(Option<u64>),
+    WatchScanned(super::automation::Scan),
+    /// A watch-folder file was moved out of the way after its add.
+    WatchFileSettled(PathBuf),
 }
 
 /// What is needed to re-add a torrent that was just removed (Undo).
@@ -154,6 +159,9 @@ pub struct Actor {
     prune_suspended: bool,
     /// The first session start of this process (D14 runs only then).
     first_start: bool,
+    free_space_running: bool,
+    /// Durations of the last 60 ticks (ms), for `SessionView::tick_max_ms`.
+    tick_ms: std::collections::VecDeque<u32>,
     last_heartbeat: Option<Instant>,
     low_space_warned: bool,
     stream: Option<Arc<super::stream::StreamServer>>,
@@ -239,6 +247,8 @@ impl Actor {
             prune_refused: None,
             prune_suspended: false,
             first_start: true,
+            free_space_running: false,
+            tick_ms: std::collections::VecDeque::with_capacity(60),
             last_heartbeat: None,
             low_space_warned: false,
             stream: None,
@@ -540,7 +550,7 @@ impl Actor {
                     }
                     // Cancelled by the user: keep the file, renamed so it isn't added again.
                     if let Some((path, after)) = self.watch_adds.remove(&id) {
-                        self.watch.finish(&path, after, false);
+                        self.settle_watch_file(path, after, false);
                     }
                 }
             }
@@ -1368,6 +1378,16 @@ impl Actor {
 
     fn handle_internal(&mut self, msg: Internal) {
         match msg {
+            Internal::FreeSpace(free) => {
+                self.free_space_running = false;
+                self.free_space = free;
+            }
+            Internal::WatchScanned(scan) => {
+                for hit in self.watch.finish_scan(scan) {
+                    self.add_watch_hit(hit);
+                }
+            }
+            Internal::WatchFileSettled(path) => self.watch.release(&path),
             Internal::RssFetched { url, result } => {
                 let settings = self.settings.clone();
                 for d in self.rss.fetched(&url, result, &settings.rss) {
@@ -1396,7 +1416,7 @@ impl Actor {
                         self.unrecorded.remove(&hash);
                         let top = req.add_to_top;
                         if let Some((path, after)) = self.watch_adds.remove(&pending) {
-                            self.watch.finish(&path, after, true);
+                            self.settle_watch_file(path, after, true);
                         }
                         let m = self.store.meta_mut(hash);
                         m.name = name.clone();
@@ -1431,14 +1451,16 @@ impl Actor {
                         tracing::warn!("could not add {}: {e}", req.source.describe());
                         let duplicate = is_duplicate_error(&e);
                         let mut msg = t!("Could not add {name}: {e}", name = req.source.describe(), e = e);
-                        if let Some((path, after)) = self.watch_adds.remove(&pending)
-                            && let Some(failed) = self.watch.finish(&path, after, duplicate)
-                        {
-                            let name = failed.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                            msg = format!(
-                                "{msg}\n{}",
-                                t!("The file was renamed to {name} so it isn't added again.", name = name)
-                            );
+                        if let Some((path, after)) = self.watch_adds.remove(&pending) {
+                            if !duplicate {
+                                let failed = super::automation::failed_name(&path);
+                                let name = failed.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                                msg = format!(
+                                    "{msg}\n{}",
+                                    t!("The file was renamed to {name} so it isn't added again.", name = name)
+                                );
+                            }
+                            self.settle_watch_file(path, after, duplicate);
                         }
                         self.toast(ToastKind::Error, msg);
                     }
@@ -1558,6 +1580,15 @@ impl Actor {
     // ---------------------------------------------------------------- periodic work
 
     fn tick(&mut self) {
+        let started = Instant::now();
+        self.tick_inner();
+        if self.tick_ms.len() == 60 {
+            self.tick_ms.pop_front();
+        }
+        self.tick_ms.push_back(started.elapsed().as_millis().min(u32::MAX as u128) as u32);
+    }
+
+    fn tick_inner(&mut self) {
         let elapsed = self.last_tick.elapsed();
         self.last_tick = Instant::now();
         self.tick_count += 1;
@@ -1575,11 +1606,42 @@ impl Actor {
             }
         }
 
-        if self.tick_count % 20 == 1 {
-            self.free_space = free_space(&self.settings.downloads.save_path);
+        // Disk work off the engine's thread: a sleeping disk or an offline share must not stall it.
+        if self.tick_count % 20 == 1 && !self.free_space_running {
+            self.free_space_running = true;
+            let (path, tx) = (self.settings.downloads.save_path.clone(), self.internal_tx.clone());
+            tokio::task::spawn_blocking(move || {
+                let _ = tx.send(Internal::FreeSpace(free_space(&path)));
+            });
         }
-        if self.tick_count % 6 == 3 && !self.settings.watch.is_empty() && self.session.is_some() {
-            for hit in self.watch.poll(&self.settings.watch) {
+        if self.tick_count % 6 == 3
+            && !self.settings.watch.is_empty()
+            && self.session.is_some()
+            && let Some(input) = self.watch.begin_scan(&self.settings.watch)
+        {
+            let tx = self.internal_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = tx.send(Internal::WatchScanned(super::automation::scan(input)));
+            });
+        }
+
+        let Some(sess) = self.session.clone() else {
+            self.publish();
+            return;
+        };
+        self.tick_session(sess, elapsed);
+    }
+
+    /// Add a torrent found in a watch folder.
+    fn add_watch_hit(&mut self, hit: super::automation::WatchHit) {
+        // The folder was turned off, or the engine stopped, while the scan ran: pick it up later.
+        let enabled = self.settings.watch.iter().any(|f| f.enabled && f.path == hit.folder.path);
+        if !enabled || self.session.is_none() {
+            self.watch.release(&hit.path);
+            return;
+        }
+        {
+            {
                 let category = hit.folder.category.clone();
                 let save_path = hit
                     .folder
@@ -1615,12 +1677,20 @@ impl Actor {
                 }
             }
         }
+    }
 
-        let Some(sess) = self.session.clone() else {
-            self.publish();
-            return;
-        };
+    /// Move a watch-folder file out of the way after its add, off the engine's thread; it stays
+    /// in flight (never scanned again) until that is done.
+    fn settle_watch_file(&self, path: PathBuf, after: crate::config::AfterAdd, added: bool) {
+        let tx = self.internal_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            super::automation::WatchState::finish_file(&path, after, added);
+            let _ = tx.send(Internal::WatchFileSettled(path));
+        });
+    }
 
+    /// The part of a tick that needs the engine session.
+    fn tick_session(&mut self, sess: Arc<Session>, elapsed: Duration) {
         let handles: Vec<(usize, Arc<ManagedTorrent>)> =
             sess.with_torrents(|it| it.map(|(id, h)| (id, h.clone())).collect());
 
@@ -1742,6 +1812,7 @@ impl Actor {
             stream: self.stream.as_ref().map(|s| (s.port, s.token.clone())),
             streams: self.stream_views(&handles),
             stream_slots: self.stream.as_ref().map(|s| s.slots()).unwrap_or_default(),
+            tick_max_ms: self.tick_ms.iter().copied().max().unwrap_or(0),
             blocked_ranges: sess.blocklist.len(),
             allowed_ranges: sess.allowlist.as_ref().map(|a| a.len()),
         };

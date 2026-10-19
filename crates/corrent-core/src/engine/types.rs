@@ -177,6 +177,8 @@ pub struct SessionView {
     pub streams: Vec<StreamView>,
     /// Streaming bodies being sent and the maximum at once.
     pub stream_slots: (usize, usize),
+    /// The slowest of the engine's last 60 ticks, in ms (budget: 20).
+    pub tick_max_ms: u32,
     /// Address ranges loaded from the IP filter (blocked, allowed).
     pub blocked_ranges: usize,
     pub allowed_ranges: Option<usize>,
