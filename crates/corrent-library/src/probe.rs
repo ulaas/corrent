@@ -23,13 +23,9 @@ impl Prober {
         }
     }
 
-    /// Finds `corrent-mpvw` next to the running executable (or one folder up, for test binaries
-    /// in `target/*/deps`).
+    /// Finds `corrent-mpvw` (see [`corrent_mpv::worker_path`]).
     pub fn find_worker() -> Option<PathBuf> {
-        let exe = std::env::current_exe().ok()?;
-        let name = if cfg!(windows) { "corrent-mpvw.exe" } else { "corrent-mpvw" };
-        let dir = exe.parent()?;
-        [dir.join(name), dir.parent()?.join(name)].into_iter().find(|p| p.is_file())
+        corrent_mpv::worker_path()
     }
 
     pub async fn probe(&self, path: &Path) -> Result<ProbeResult, String> {

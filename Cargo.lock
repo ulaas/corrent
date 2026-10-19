@@ -1290,6 +1290,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "corrent-transcode"
+version = "0.1.0"
+dependencies = [
+ "corrent-mpv",
+ "image",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "correntd"
 version = "0.1.0"
 dependencies = [

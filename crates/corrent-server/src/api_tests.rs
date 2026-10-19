@@ -685,7 +685,14 @@ async fn library_endpoints() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "unknown library");
     let other = h.dir.join("dl/videos");
     std::fs::create_dir_all(&other).unwrap();
-    let (_, v, _) = send(app, Method::POST, "/api/v1/libraries", &admin, json!({ "name": "Other", "kind": "videos", "folders": [other] })).await;
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Other", "kind": "videos", "folders": [other] }),
+    )
+    .await;
     let other_id = v["id"].as_i64().unwrap();
     let (s, _, _) = send(app, Method::PUT, &format!("/api/v1/users/{gid}/libraries"), &admin, json!([other_id])).await;
     assert_eq!(s, StatusCode::OK);

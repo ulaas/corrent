@@ -49,6 +49,15 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The `corrent-mpvw` worker next to the running executable (or one folder up, for test
+/// binaries in `target/*/deps`).
+pub fn worker_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let name = if cfg!(windows) { "corrent-mpvw.exe" } else { "corrent-mpvw" };
+    let dir = exe.parent()?;
+    [dir.join(name), dir.parent()?.join(name)].into_iter().find(|p| p.is_file())
+}
+
 /// A loaded libmpv: the library stays mapped for the life of the process.
 pub struct Library {
     api: ffi::Api,
