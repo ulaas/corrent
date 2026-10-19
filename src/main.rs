@@ -36,6 +36,7 @@ fn main() -> eframe::Result {
         println!("Options:");
         println!("  --portable     keep all data next to the executable");
         println!("  --minimized    start hidden in the tray");
+        println!("  --tv           start in TV mode (full screen, remote/gamepad friendly)");
         println!("  --register     register as handler for magnet links and .torrent files");
         println!("  --unregister   remove the handler registration");
         println!("  --status       print handler registration status");
@@ -75,6 +76,7 @@ fn main() -> eframe::Result {
     let data_notes: Vec<String> = restore_note.into_iter().chain(settings_warning).collect();
     let launch: Vec<AddSource> = items.iter().filter_map(|a| AddSource::parse(a)).collect();
     let start_minimized = flag("--minimized") || settings.behavior.start_minimized;
+    let tv = flag("--tv");
 
     let (ipc_tx, ipc_rx) = std::sync::mpsc::channel();
     let ctx_cell: Arc<std::sync::OnceLock<egui::Context>> = Arc::new(std::sync::OnceLock::new());
@@ -124,6 +126,7 @@ fn main() -> eframe::Result {
             Ok(Box::new(
                 app::CorrentApp::new(cc, handle, paths, settings, first_run, launch, ipc_rx, start_minimized)
                     .with_previous_run(previous_run)
+                    .with_tv(tv)
                     .with_data_notes(data_notes),
             ))
         }),

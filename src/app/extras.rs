@@ -89,6 +89,9 @@ impl CorrentApp {
             if ui.button(format!("{}  {}", icons::CHART_BAR, t!("Statistics"))).clicked() {
                 self.extras.stats = true;
             }
+            if ui.button(format!("{}  {}", icons::TELEVISION, t!("TV mode"))).clicked() {
+                self.set_tv(true);
+            }
             if local && ui.button(format!("{}  {}", icons::PLAY_CIRCLE, t!("Streaming"))).clicked() {
                 self.extras.streams = true;
             }

@@ -44,7 +44,8 @@ Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 Media/server hooks (run without torrents): `CORRENT_DEV_VIEW=media`, `CORRENT_DEV_ITEM=<id>`, `CORRENT_DEV_PLAY=<id>`,
 `CORRENT_DEV_SHOT=<png>` (+ `CORRENT_DEV_SHOT_DELAY=<s>`, `CORRENT_DEV_EXIT=1`; works on Linux too),
 `CORRENT_DEV_CONNECT=<pairing link>` (fills the Connect dialog), `CORRENT_DEV_PAIR=<pairing link>` (pairs and switches —
-writes `servers.toml` into the test profile; delete it afterwards). `CORRENT_DEV_OPEN` also takes `connect`.
+writes `servers.toml` into the test profile; delete it afterwards). `CORRENT_DEV_OPEN` also takes `connect`. TV mode: `--tv`, and `CORRENT_DEV_KEYS=ArrowDown,ArrowRight,Enter` presses keys
+(one per 300 ms from 3 s) like a remote.
 To pre-configure the test profile, write `target/debug/corrent-data/settings.toml`
 (e.g. `skip_add_dialog = true`, a scratch `save_path`). The hooks run once, on the first frame
 that has at least one torrent in the list.

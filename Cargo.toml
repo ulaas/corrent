@@ -14,9 +14,11 @@ exclude = ["plugins"]
 resolver = "3"
 
 [features]
-default = ["p2p"]
+default = ["p2p", "gamepad"]
 # Corrent Connect: reaching servers through NATs (iroh).
 p2p = ["corrent-server/p2p"]
+# Gamepads in TV mode.
+gamepad = ["dep:gilrs"]
 
 [dependencies]
 corrent-i18n = { path = "crates/corrent-i18n" }
@@ -54,6 +56,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs
 rustls-platform-verifier = "0.7"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 base64 = "0.22"
+gilrs = { version = "0.11.2", optional = true }
 x509-parser = "0.18"
 regex = "1.13"
 quick-xml = "=0.42.0"

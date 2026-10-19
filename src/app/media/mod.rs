@@ -62,6 +62,8 @@ pub struct MediaState {
     refreshed: Option<std::time::Instant>,
     /// The server URL the client uses (remote mode; changes when the route does).
     route: String,
+    /// A focused card outside the view: the page scrolls to it.
+    focus_rect: Option<Rect>,
 }
 
 impl MediaState {
@@ -71,6 +73,18 @@ impl MediaState {
 
     pub fn local(&self) -> Option<&Arc<corrent_server::local::LocalServer>> {
         self.local.as_ref()
+    }
+
+    /// An artwork texture (see [`ImageCache::get`]).
+    pub fn image(
+        &mut self,
+        client: &MediaClient,
+        rt: &tokio::runtime::Handle,
+        ctx: &egui::Context,
+        sha: &str,
+        width: u32,
+    ) -> Option<egui::TextureHandle> {
+        self.images.get(client, rt, ctx, sha, width)
     }
 
     /// Forgets the server and everything loaded from it (after switching servers).
@@ -281,6 +295,32 @@ impl CorrentApp {
         }
     }
 
+    /// Back one page (Home when there is no history).
+    pub(super) fn media_back(&mut self) {
+        self.media.page = Some(self.media.back.pop().unwrap_or(Page::Home));
+    }
+
+    /// The search page for the current query (on-screen keyboard).
+    pub(super) fn media_search_now(&mut self) {
+        if self.media.page != Some(Page::Search) {
+            self.open(Page::Search);
+        }
+    }
+
+    /// Backdrop images of the home rows (screensaver).
+    pub(super) fn media_backdrops(&self) -> Vec<String> {
+        let Some(Ok(rows)) = self.media.home.as_ref().and_then(ready) else { return Vec::new() };
+        let mut out: Vec<String> = Vec::new();
+        for it in rows.iter().flat_map(|r| &r.items) {
+            if let Some(im) = it.images.iter().find(|i| i.kind == "backdrop")
+                && !out.contains(&im.sha)
+            {
+                out.push(im.sha.clone());
+            }
+        }
+        out
+    }
+
     fn open(&mut self, page: Page) {
         if let Some(cur) = self.media.page.take()
             && cur != page
@@ -378,6 +418,9 @@ impl CorrentApp {
                     Page::Search => self.search_page(ui, p, &client),
                 }
                 ui.add_space(24.0);
+                if let Some(r) = self.media.focus_rect.take() {
+                    ui.scroll_to_rect(r, Some(egui::Align::Center));
+                }
             },
         );
     }
@@ -411,6 +454,21 @@ impl CorrentApp {
             ui.label(RichText::new(title).size(20.0).strong().color(p.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(16.0);
+                if self.tv.on {
+                    if ui.button(format!("{}  {}", icons::MONITOR, t!("Leave TV mode"))).clicked() {
+                        self.set_tv(false);
+                    }
+                    if ui.button(format!("{}  {}", icons::MAGNIFYING_GLASS, t!("Search"))).clicked() {
+                        self.tv.keyboard = true;
+                        self.open(Page::Search);
+                    }
+                    for l in self.media.libraries().into_iter().rev() {
+                        if ui.selectable_label(*page == Page::Library(l.id), &l.name).clicked() {
+                            self.open(Page::Library(l.id));
+                        }
+                    }
+                    return;
+                }
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut self.media.query)
                         .hint_text(t!("Search movies, shows, music…"))
@@ -428,10 +486,24 @@ impl CorrentApp {
         let aspect = kind_aspect(item.kind);
         let h = width / aspect;
         let (rect, resp) = ui.allocate_exact_size(vec2(width, h + 44.0), Sense::click());
+        // TV mode starts with the first card focused; a focused card is kept in view.
+        if self.tv.on && ui.ctx().memory(|m| m.focused()).is_none() {
+            resp.request_focus();
+        }
+        // Keep the focused card in view (every frame until it is: scroll areas settle late).
+        // (A row's horizontal scroll area swallows vertical requests, so the page scrolls in
+        // `media_view` from `focus_rect`.)
+        if resp.has_focus() && !ui.clip_rect().contains_rect(rect) {
+            resp.scroll_to_me(Some(egui::Align::Center));
+            self.media.focus_rect = Some(rect);
+        }
         if !ui.is_rect_visible(rect) {
             return resp;
         }
-        let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.15);
+        let focused = resp.has_focus();
+        // TV mode: only the focus counts (a resting mouse pointer would light up a second card).
+        let pointer = resp.hovered() && !self.tv.on;
+        let hover = ui.ctx().animate_bool_with_time(resp.id, pointer || focused, 0.15);
         let img_rect =
             Rect::from_min_size(rect.min, vec2(width, h)).shrink(-3.0 * hover).translate(vec2(0.0, -3.0 * hover));
         let painter = ui.painter().clone();
@@ -532,6 +604,15 @@ impl CorrentApp {
                 Color32::WHITE,
             );
         }
+        // Keyboard / remote focus: a ring that reads from across the room.
+        if focused {
+            painter.rect_stroke(
+                img_rect.expand(3.0),
+                CornerRadius::same(12),
+                egui::Stroke::new(3.0, p.accent),
+                egui::StrokeKind::Outside,
+            );
+        }
         let text_top = rect.top() + h + 6.0;
         let clip = Rect::from_min_size(pos2(rect.left(), text_top), vec2(width, 40.0));
         let p2 = painter.with_clip_rect(clip);
@@ -549,7 +630,7 @@ impl CorrentApp {
             egui::FontId::proportional(12.0),
             p.text_dim,
         );
-        resp.on_hover_text(&item.title)
+        if self.tv.on { resp } else { resp.on_hover_text(&item.title) }
     }
 
     fn row_of_cards(
@@ -1062,6 +1143,17 @@ impl CorrentApp {
     }
 
     fn search_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient) {
+        if self.tv.on {
+            ui.horizontal(|ui| {
+                ui.add_space(16.0);
+                if self.tv.keyboard {
+                    self.tv_keyboard(ui, p);
+                } else if ui.button(format!("{}  {}", icons::KEYBOARD, t!("On-screen keyboard"))).clicked() {
+                    self.tv.keyboard = true;
+                }
+            });
+            ui.add_space(8.0);
+        }
         let q = self.media.query.trim().to_string();
         if q.is_empty() {
             crate::ui::widgets::empty_state(
@@ -1170,7 +1262,7 @@ impl CorrentApp {
 }
 
 /// UV rect cropping a texture to fill `target` (CSS `object-fit: cover`).
-fn cover_uv(tex: egui::Vec2, target: egui::Vec2) -> Rect {
+pub(super) fn cover_uv(tex: egui::Vec2, target: egui::Vec2) -> Rect {
     let (ta, ra) = (tex.x / tex.y.max(1.0), target.x / target.y.max(1.0));
     if ta > ra {
         let w = ra / ta;

@@ -27,6 +27,7 @@ mod titlebar;
 mod toasts;
 mod toolbar;
 mod tray;
+mod tv;
 #[cfg(test)]
 mod ui_tests;
 mod when_done;
@@ -379,6 +380,7 @@ pub struct CorrentApp {
     media_dev_started: Option<std::time::Instant>,
     media_dev_pair: Option<media::client::Slot<crate::link::ServerEntry>>,
     pub media: media::MediaState,
+    pub tv: tv::TvState,
     /// The server used instead of the local engine (None: local).
     pub server: Option<connect::ServerLink>,
     pub connect: Option<connect::ConnectDialog>,
@@ -527,6 +529,7 @@ impl CorrentApp {
             media_dev_started: None,
             media: Default::default(),
             server,
+            tv: Default::default(),
             servers,
             pending_local: false,
             connect: None,
@@ -1000,6 +1003,7 @@ impl eframe::App for CorrentApp {
         self.drain_pickers();
         self.drain_events(ctx);
         self.media_tick(ctx);
+        self.tv_tick(ctx);
         self.switch_tick();
         #[cfg(debug_assertions)]
         self.media_dev_hooks(ctx);
@@ -1019,6 +1023,10 @@ impl eframe::App for CorrentApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, "ui_prefs", &self.prefs);
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.tv_raw_input(raw_input);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -1119,6 +1127,14 @@ impl CorrentApp {
         self.apply_appearance_if_changed(&ctx);
         let p = self.palette(&ctx);
 
+        // TV mode: the media pages fill the window.
+        if self.tv.on {
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg0)).show(ui, |ui| self.tv_view(ui, &p));
+            self.dialogs(&ctx, &p);
+            let actions = self.toasts.show(&ctx, &p);
+            self.run_toast_actions(&ctx, actions);
+            return;
+        }
         // A playing video takes the whole window (Esc or the close button returns).
         let immersive =
             self.main_view == feeds::MainView::Media && self.media.player.as_ref().is_some_and(|pl| !pl.audio_only);
