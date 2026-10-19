@@ -411,6 +411,14 @@ fn fts_query(q: &str) -> Option<String> {
     (!terms.is_empty()).then(|| terms.join(" "))
 }
 
+/// A path as the library stores it. On Windows, `/` and `\` both separate folders, and a path
+/// built from a folder written with `/` (in settings, the API or a category) mixes them; the
+/// scanner stores `\` only.
+fn db_path(p: &std::path::Path) -> String {
+    let s = p.display().to_string();
+    if cfg!(windows) { s.replace('/', "\\") } else { s }
+}
+
 impl Library {
     pub async fn items(&self, user: i64, q: ItemQuery) -> Result<Page<Item>> {
         Ok(self.db().read(move |c| query_items(c, user, &q)).await?)
@@ -461,7 +469,7 @@ impl Library {
 
     /// How many library files lie under `prefix` (the delete guard for torrents).
     pub async fn files_under(&self, prefix: &std::path::Path) -> Result<i64> {
-        let p = prefix.display().to_string();
+        let p = db_path(prefix);
         Ok(self
             .db()
             .read(move |c| {
@@ -477,7 +485,7 @@ impl Library {
     /// Whether every enabled account that can see `library` has played every item of it whose
     /// main file lies under `prefix` (`None`: no such items, or nobody can see the library).
     pub async fn watched_by_everyone(&self, library: i64, prefix: &std::path::Path) -> Result<Option<bool>> {
-        let p = prefix.display().to_string();
+        let p = db_path(prefix);
         Ok(self
             .db()
             .read(move |c| {
