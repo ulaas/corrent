@@ -196,9 +196,11 @@ mod tests {
                 for (n, line) in joined.lines().enumerate() {
                     // Sentences built with format! (the file header comment of exported themes is fine).
                     // Server-side crates answer with error codes that clients translate; their
-                    // English messages and SQL are for logs and developers.
-                    let codes_only =
-                        ["corrent-server", "corrent-db"].iter().any(|c| p.components().any(|x| x.as_os_str() == *c));
+                    // English messages and SQL are for logs and developers, and correntd's
+                    // console output is English like the GUI's --help.
+                    let codes_only = ["corrent-server", "corrent-db", "correntd"]
+                        .iter()
+                        .any(|c| p.components().any(|x| x.as_os_str() == *c));
                     let sentence = prose.is_match(line) && !line.contains("# Corrent theme") && !codes_only;
                     // URLs given as examples aren't text to translate.
                     let url_only = line.contains("(\"http://") || line.contains("(\"https://");
