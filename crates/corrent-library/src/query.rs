@@ -684,3 +684,97 @@ mod tests {
         assert_eq!(fts_query("!!"), None);
     }
 }
+
+/// What a subtitle search needs to know about an item and its main video file.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SubtitleTarget {
+    /// The movie's or the show's title.
+    pub title: String,
+    pub year: Option<i32>,
+    pub season: Option<i64>,
+    pub episode: Option<i64>,
+    /// Provider ids of the movie or show (`tmdb`, `imdb`, …).
+    pub ids: BTreeMap<String, String>,
+    pub file_id: i64,
+    pub path: String,
+    pub size: i64,
+}
+
+impl Library {
+    /// The movie or episode to find subtitles for (`user` must see it).
+    pub async fn subtitle_target(&self, user: i64, item: i64) -> Result<SubtitleTarget> {
+        let (file_id, path) = self.main_file(user, item).await?;
+        self.db()
+            .read(move |c| {
+                let row = c
+                    .query_row(
+                        "SELECT i.kind, i.title, i.year, i.index_no, i.provider_ids, s.index_no, sh.title, sh.year, sh.provider_ids, \
+                         (SELECT size FROM files WHERE id = ?2) \
+                         FROM items i LEFT JOIN items s ON s.id = i.parent_id LEFT JOIN items sh ON sh.id = s.parent_id WHERE i.id = ?1",
+                        params![item, file_id],
+                        |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, Option<i32>>(2)?,
+                                r.get::<_, Option<i64>>(3)?,
+                                r.get::<_, String>(4)?,
+                                r.get::<_, Option<i64>>(5)?,
+                                r.get::<_, Option<String>>(6)?,
+                                r.get::<_, Option<i32>>(7)?,
+                                r.get::<_, Option<String>>(8)?,
+                                r.get::<_, Option<i64>>(9)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                Ok(row.map(|(kind, title, year, idx, ids, season, show, show_year, show_ids, size)| {
+                    let parse = |j: &str| serde_json::from_str::<BTreeMap<String, String>>(j).unwrap_or_default();
+                    if kind == "episode" {
+                        SubtitleTarget {
+                            title: show.unwrap_or(title),
+                            year: show_year.or(year),
+                            season,
+                            episode: idx,
+                            ids: show_ids.as_deref().map(parse).unwrap_or_default(),
+                            file_id,
+                            path: path.clone(),
+                            size: size.unwrap_or(0),
+                        }
+                    } else {
+                        SubtitleTarget {
+                            title,
+                            year,
+                            ids: parse(&ids),
+                            file_id,
+                            path: path.clone(),
+                            size: size.unwrap_or(0),
+                            ..Default::default()
+                        }
+                    }
+                }))
+            })
+            .await?
+            .ok_or(LibError::NotFound)
+    }
+
+    /// Records a subtitle file that was just saved next to a video (a later scan finds it too).
+    pub async fn add_external_subtitle(&self, file_id: i64, path: String, lang: Option<String>) -> Result<()> {
+        let codec = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+        self.db()
+            .write(move |t| {
+                let next: i64 = t.query_row(
+                    "SELECT coalesce(max(idx), 999) + 1 FROM streams WHERE file_id = ?1 AND idx >= 1000",
+                    [file_id],
+                    |r| r.get(0),
+                )?;
+                t.execute(
+                    "INSERT INTO streams(file_id, idx, kind, codec, lang, forced, external_path) VALUES (?1, ?2, 'subtitle', ?3, ?4, 0, ?5)",
+                    params![file_id, next, codec, lang, path],
+                )
+                .map(drop)
+            })
+            .await?;
+        Ok(())
+    }
+}

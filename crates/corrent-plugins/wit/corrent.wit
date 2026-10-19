@@ -121,6 +121,62 @@ interface notifier {
     notify: func(title: string, body: string) -> result<_, string>;
 }
 
+interface subtitles {
+    record subtitle-query {
+        title: string,
+        year: option<u32>,
+        season: option<u32>,
+        episode: option<u32>,
+        /// Wanted languages, ISO 639-1 ("en", "tr"), most wanted first.
+        languages: list<string>,
+        /// Ids already known (`("imdb", "tt0133093")`, `("tmdb", "603")`).
+        ids: list<tuple<string, string>>,
+        /// The OpenSubtitles hash of the video file and its size, when known.
+        file-hash: option<string>,
+        file-size: option<u64>,
+    }
+
+    record subtitle {
+        /// The provider's id, given back to `download`.
+        id: string,
+        language: string,
+        /// What people see (release name, uploader…).
+        name: string,
+        /// "srt" | "ass" | "vtt" | …
+        format: string,
+        downloads: option<u32>,
+        hearing-impaired: bool,
+        /// Matched by file hash (exactly this release).
+        exact: bool,
+    }
+
+    record subtitle-file {
+        format: string,
+        data: list<u8>,
+    }
+
+    search: func(q: subtitle-query) -> result<list<subtitle>, string>;
+    download: func(id: string) -> result<subtitle-file, string>;
+}
+
+interface parser {
+    record parsed-name {
+        title: string,
+        year: option<u32>,
+        season: option<u32>,
+        episode: option<u32>,
+    }
+
+    /// A file or folder name → what it is; `none` leaves it to the built-in parser.
+    parse: func(name: string) -> option<parsed-name>;
+}
+
+interface task {
+    /// One run of a scheduled task (`task_every_min` in the manifest); the text goes to the
+    /// task history.
+    run: func() -> result<string, string>;
+}
+
 world metadata-provider {
     import host;
     export metadata;
@@ -134,4 +190,19 @@ world indexer-plugin {
 world notifier-plugin {
     import host;
     export notifier;
+}
+
+world subtitle-provider {
+    import host;
+    export subtitles;
+}
+
+world name-parser {
+    import host;
+    export parser;
+}
+
+world scheduled-task {
+    import host;
+    export task;
 }

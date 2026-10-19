@@ -1,0 +1,7 @@
+id = "example-task"
+name = "Example task"
+version = "1.0.0"
+description = "For tests."
+host_api = "1"
+kinds = ["task"]
+task_every_min = 60

@@ -1,0 +1,6 @@
+id = "example-subtitles"
+name = "Example subtitles"
+version = "1.0.0"
+description = "For tests."
+host_api = "1"
+kinds = ["subtitles"]

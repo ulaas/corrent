@@ -7,8 +7,8 @@ cd "$(dirname "$0")/../plugins"
 CARGO_TARGET_DIR=../target/plugins cargo build --release --target wasm32-wasip2
 out=../crates/corrent-plugins/builtin
 mkdir -p "$out"
-for p in example tmdb musicbrainz; do
-  cp "../target/plugins/wasm32-wasip2/release/corrent_plugin_$p.wasm" "$out/$p.wasm"
+for p in example example-subtitles example-parser example-task tmdb musicbrainz; do
+  cp "../target/plugins/wasm32-wasip2/release/corrent_plugin_$(echo $p | tr - _).wasm" "$out/$p.wasm"
   cp "$p/plugin.toml" "$out/$p.toml"
   echo "$p: $(wc -c < "$out/$p.wasm") bytes"
 done

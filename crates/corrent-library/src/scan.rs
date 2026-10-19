@@ -1044,6 +1044,25 @@ async fn analyze(lib: &Library, kind: LibraryKind, roots: &[PathBuf], f: Found, 
     })
     .await
     .unwrap_or_default();
+    // No .nfo: a name-parser plugin may know the naming scheme better than the built-in parser.
+    let nfo = match (nfo, lib.name_hook()) {
+        (None, Some(hook)) if matches!(kind, LibraryKind::Movies | LibraryKind::Shows | LibraryKind::Videos) => {
+            hook(stem(&f.path)).await.map(|h| {
+                let episodic = kind == LibraryKind::Shows;
+                Nfo {
+                    kind: "plugin".into(),
+                    // For episodes the title an .nfo carries is the episode's: the show comes
+                    // from the folders.
+                    title: (!episodic && !h.title.is_empty()).then_some(h.title),
+                    year: h.year,
+                    season: h.season,
+                    episode: h.episode,
+                    ..Default::default()
+                }
+            })
+        }
+        (nfo, _) => nfo,
+    };
     let placement = place(kind, roots, &f.path, tags.as_ref(), nfo.as_ref());
 
     // Artwork: local files, else the embedded cover of a track.

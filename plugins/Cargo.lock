@@ -24,6 +24,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "corrent-plugin-example-parser"
+version = "1.0.0"
+dependencies = [
+ "wit-bindgen",
+]
+
+[[package]]
+name = "corrent-plugin-example-subtitles"
+version = "1.0.0"
+dependencies = [
+ "wit-bindgen",
+]
+
+[[package]]
+name = "corrent-plugin-example-task"
+version = "1.0.0"
+dependencies = [
+ "wit-bindgen",
+]
+
+[[package]]
 name = "corrent-plugin-musicbrainz"
 version = "1.0.0"
 dependencies = [

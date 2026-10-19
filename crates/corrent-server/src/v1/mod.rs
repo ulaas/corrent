@@ -15,6 +15,7 @@ mod plugins;
 mod rss;
 pub mod search;
 mod server;
+mod subtitles;
 pub(crate) mod torrents;
 mod users;
 mod wanted;
@@ -217,6 +218,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(wanted::routes())
         .merge(plugins::routes())
         .merge(admin::routes())
+        .merge(subtitles::routes())
         .merge(me::routes())
         .route("/events", axum::routing::get(events::events))
         .fallback(|| async { err(ErrorCode::NotFound, "no such endpoint") })

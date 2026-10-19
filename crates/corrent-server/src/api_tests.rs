@@ -964,6 +964,108 @@ async fn added_torrents_claim_wanted_entries() {
     h.stop().await;
 }
 
+/// Installs a plugin through the API (multipart: manifest + wasm).
+async fn install_plugin(app: &Router, admin: &str, manifest: &str, wasm: &[u8]) {
+    let boundary = "corrent-plugin-boundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"manifest\"\r\n\r\n").as_bytes(),
+    );
+    body.extend_from_slice(manifest.as_bytes());
+    body.extend_from_slice(
+        format!("\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"wasm\"; filename=\"plugin.wasm\"\r\n\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(wasm);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/plugins")
+        .header(header::HOST, "127.0.0.1:8443")
+        .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+        .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+        .body(Body::from(body))
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+/// Subtitle providers, name parsers and task plugins at work in the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn subtitle_parser_and_task_plugins() {
+    let h = harness("plugin-kinds", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let b = |n: &str| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../corrent-plugins/builtin").join(n);
+    for n in ["example-subtitles", "example-parser", "example-task"] {
+        let toml = std::fs::read_to_string(b(&format!("{n}.toml"))).unwrap();
+        install_plugin(app, &admin, &toml, &std::fs::read(b(&format!("{n}.wasm"))).unwrap()).await;
+    }
+    // Metadata lookups would rename things: keep the built-in providers out of it.
+    for id in ["musicbrainz", "tmdb"] {
+        send(app, Method::PUT, &format!("/api/v1/plugins/{id}/enabled"), &admin, json!({ "enabled": false })).await;
+    }
+    // A name only the parser plugin understands.
+    let movies = h.dir.join("Films");
+    std::fs::create_dir_all(&movies).unwrap();
+    std::fs::write(movies.join("Home Movie {2019} #3.mkv"), vec![1u8; 200_000]).unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Films", "kind": "movies", "folders": [movies] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let item = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if v["total"] == 1 {
+            break v["items"][0].clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "scanned: {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert_eq!(
+        (item["title"].as_str(), item["year"].as_i64()),
+        (Some("Home Movie"), Some(2019)),
+        "the parser plugin named it"
+    );
+    let id = item["id"].as_i64().unwrap();
+
+    // Subtitles: found by the provider, saved next to the video, listed with the file.
+    let (s, found, _) = get(app, &format!("/api/v1/items/{id}/subtitles?languages=tr,en"), &admin).await;
+    assert_eq!(s, StatusCode::OK, "{found}");
+    assert_eq!(found.as_array().unwrap().len(), 2);
+    assert_eq!(found[0]["provider"], "example-subtitles");
+    assert_eq!(found[0]["exact"], true, "the file hash was sent");
+    let (s, saved, _) = send(
+        app,
+        Method::POST,
+        &format!("/api/v1/items/{id}/subtitles"),
+        &admin,
+        json!({ "provider": "example-subtitles", "id": found[0]["id"], "language": "tr" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{saved}");
+    let path = saved["path"].as_str().unwrap();
+    assert!(path.ends_with("Home Movie {2019} #3.tr.srt"), "{path}");
+    assert!(std::fs::read_to_string(path).unwrap().contains("[tr]"));
+    let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
+    let subs: Vec<&Value> =
+        d["files"][0]["streams"].as_array().unwrap().iter().filter(|s| s["kind"] == "subtitle").collect();
+    assert_eq!(subs.len(), 1, "{d}");
+
+    // The task plugin is a task like the others.
+    let (_, tasks, _) = get(app, "/api/v1/tasks", &admin).await;
+    assert!(tasks.as_array().unwrap().iter().any(|t| t["id"] == "plugin:example-task" && t["every_min"] == 60));
+    let r = run_task(app, &admin, "plugin:example-task").await;
+    assert_eq!((r["ok"].as_bool(), r["message"].as_str()), (Some(true), Some("run 1")));
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_with_the_servers_own_ca() {
     let h = harness("https", ServerConfig::default()).await;

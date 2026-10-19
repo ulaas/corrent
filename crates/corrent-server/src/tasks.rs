@@ -61,12 +61,21 @@ async fn settings(st: &AppState) -> Vec<(String, bool, u32)> {
         })
         .await
         .unwrap_or_default();
-    TASKS
-        .iter()
-        .map(|(id, every)| {
-            stored.iter().find(|s| s.0 == *id).cloned().unwrap_or_else(|| (id.to_string(), true, *every))
-        })
+    all_tasks(st)
+        .into_iter()
+        .map(|(id, every)| stored.iter().find(|s| s.0 == id).cloned().unwrap_or((id, true, every)))
         .collect()
+}
+
+/// The built-in tasks and those of task plugins (`plugin:<id>`), with default intervals.
+fn all_tasks(st: &AppState) -> Vec<(String, u32)> {
+    let mut v: Vec<(String, u32)> = TASKS.iter().map(|(id, e)| (id.to_string(), *e)).collect();
+    if let Some(host) = &st.plugins {
+        for p in host.list().into_iter().filter(|p| p.manifest.kinds.contains(&corrent_plugins::Kind::Task)) {
+            v.push((format!("plugin:{}", p.manifest.id), p.manifest.task_every_min.unwrap_or(0)));
+        }
+    }
+    v
 }
 
 async fn last_run(st: &AppState, id: &str) -> Option<TaskRun> {
@@ -149,6 +158,10 @@ async fn execute(st: &Arc<AppState>, id: &str) -> Result<String, String> {
             Ok(format!("{} libraries", libs.len()))
         }
         "monitor_shows" => crate::monitor::check_all(st).await,
+        plugin if plugin.starts_with("plugin:") => {
+            let host = st.plugins.clone().ok_or("plugins are unavailable")?;
+            host.run_task(&plugin["plugin:".len()..]).await.map_err(|e| e.to_string())
+        }
         "wanted_search" => {
             if !st.settings.load().search.providers.iter().any(|p| p.enabled) {
                 return Ok("no search providers".into());
@@ -195,7 +208,7 @@ fn cleanup(root: &std::path::Path, active: &HashSet<String>) -> usize {
 
 /// Starts a run: checks, marks the task running and records the row.
 async fn begin(st: &Arc<AppState>, id: &str, trigger: &str) -> Result<TaskRun, String> {
-    if !TASKS.iter().any(|(t, _)| *t == id) {
+    if !all_tasks(st).iter().any(|(t, _)| t == id) {
         return Err("no such task".into());
     }
     if !st.tasks.start(id) {

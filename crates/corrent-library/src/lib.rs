@@ -43,7 +43,22 @@ struct Inner {
     events: tokio::sync::broadcast::Sender<LibraryEvent>,
     /// Image work is CPU-bound: at most this many at once.
     images: tokio::sync::Semaphore,
+    /// Name-parser plugins (asked before the built-in parser).
+    name_hook: std::sync::RwLock<Option<NameHook>>,
 }
+
+/// What a name-parser plugin read from a file name.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NameHint {
+    pub title: String,
+    pub year: Option<i32>,
+    pub season: Option<i64>,
+    pub episode: Option<i64>,
+}
+
+/// Asks name-parser plugins about a file name (`None`: let the built-in parser decide).
+pub type NameHook =
+    Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<NameHint>> + Send>> + Send + Sync>;
 
 /// The media library. Cheap to clone.
 #[derive(Clone)]
@@ -83,6 +98,15 @@ impl From<corrent_db::DbError> for LibError {
 pub type Result<T> = std::result::Result<T, LibError>;
 
 impl Library {
+    /// Name-parser plugins to ask during scans.
+    pub fn set_name_hook(&self, hook: Option<NameHook>) {
+        *self.inner.name_hook.write().unwrap_or_else(|e| e.into_inner()) = hook;
+    }
+
+    pub(crate) fn name_hook(&self) -> Option<NameHook> {
+        self.inner.name_hook.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// `data_dir` holds `artwork/`. The prober uses the worker process when found.
     pub fn new(db: Db, data_dir: &Path, prober: probe::Prober) -> Library {
         let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
@@ -95,6 +119,7 @@ impl Library {
                 cancel: Mutex::new(HashMap::new()),
                 events: tokio::sync::broadcast::channel(256).0,
                 images: tokio::sync::Semaphore::new((cpus / 2).max(1)),
+                name_hook: std::sync::RwLock::new(None),
             }),
         }
     }

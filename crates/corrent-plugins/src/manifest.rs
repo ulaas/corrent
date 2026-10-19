@@ -8,6 +8,21 @@ pub enum Kind {
     Metadata,
     Indexer,
     Notifier,
+    Subtitles,
+    Parser,
+    Task,
+}
+
+/// How a plugin runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Runtime {
+    /// A sandboxed WebAssembly component (`plugin.wasm`).
+    #[default]
+    Wasm,
+    /// A program speaking JSON-RPC 2.0 over stdin/stdout (`command`); not sandboxed, so only an
+    /// administrator can install one.
+    Process,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -49,6 +64,14 @@ pub struct Manifest {
     pub permissions: Permissions,
     #[serde(default)]
     pub settings: Vec<SettingDef>,
+    #[serde(default)]
+    pub runtime: Runtime,
+    /// Process plugins: the program and its arguments, relative to the plugin's folder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command: Vec<String>,
+    /// Task plugins: minutes between runs (the admin can change it in the task list).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_every_min: Option<u32>,
 }
 
 impl Manifest {
@@ -65,6 +88,15 @@ impl Manifest {
         }
         if m.kinds.is_empty() {
             return Err("plugin declares no kind".into());
+        }
+        if m.runtime == Runtime::Process {
+            let Some(program) = m.command.first() else {
+                return Err("a process plugin needs a command".into());
+            };
+            // The program lives inside the plugin's folder.
+            if program.starts_with('/') || program.contains("..") || program.contains('\\') || program.contains(':') {
+                return Err("the command must be a file inside the plugin's folder".into());
+            }
         }
         Ok(m)
     }

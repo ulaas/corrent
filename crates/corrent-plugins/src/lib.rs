@@ -8,6 +8,7 @@
 //! fresh instance with a 64 MiB memory cap and a 30 s deadline; three traps disable a plugin.
 
 pub mod manifest;
+pub mod process;
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -19,31 +20,44 @@ use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-pub use manifest::{Kind, Manifest, SettingDef};
+pub use manifest::{Kind, Manifest, Runtime, SettingDef};
 
+// Records derive serde too: process plugins exchange the same shapes as JSON.
 mod bindings {
-    wasmtime::component::bindgen!({ path: "wit", world: "metadata-provider" });
-}
-mod indexer_bindings {
     wasmtime::component::bindgen!({
         path: "wit",
-        world: "indexer-plugin",
-        with: { "corrent:plugin/host": super::bindings::corrent::plugin::host, "corrent:plugin/types": super::bindings::corrent::plugin::types },
+        world: "metadata-provider",
+        additional_derives: [serde::Serialize, serde::Deserialize],
     });
 }
-mod notifier_bindings {
-    wasmtime::component::bindgen!({
-        path: "wit",
-        world: "notifier-plugin",
-        with: { "corrent:plugin/host": super::bindings::corrent::plugin::host, "corrent:plugin/types": super::bindings::corrent::plugin::types },
-    });
+macro_rules! world_bindings {
+    ($m:ident, $world:literal) => {
+        mod $m {
+            wasmtime::component::bindgen!({
+                path: "wit",
+                world: $world,
+                additional_derives: [serde::Serialize, serde::Deserialize],
+                with: {
+                    "corrent:plugin/host": super::bindings::corrent::plugin::host,
+                    "corrent:plugin/types": super::bindings::corrent::plugin::types,
+                },
+            });
+        }
+    };
 }
+world_bindings!(indexer_bindings, "indexer-plugin");
+world_bindings!(notifier_bindings, "notifier-plugin");
+world_bindings!(subtitle_bindings, "subtitle-provider");
+world_bindings!(parser_bindings, "name-parser");
+world_bindings!(task_bindings, "scheduled-task");
 
 pub use bindings::corrent::plugin::types::{HttpRequest, HttpResponse};
 pub use bindings::exports::corrent::plugin::metadata::{
     Artwork, Candidate, Credit, Episode, ItemDetails, MediaKind, SearchQuery,
 };
 pub use indexer_bindings::exports::corrent::plugin::indexer::Release;
+pub use parser_bindings::exports::corrent::plugin::parser::ParsedName;
+pub use subtitle_bindings::exports::corrent::plugin::subtitles::{Subtitle, SubtitleFile, SubtitleQuery};
 
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const TICK: Duration = Duration::from_millis(100);
@@ -251,9 +265,14 @@ impl bindings::corrent::plugin::host::Host for HostState {
     }
 }
 
+enum Code {
+    Wasm(Component),
+    Process(Arc<process::ProcessPlugin>),
+}
+
 struct Loaded {
     ctx: Arc<PluginCtx>,
-    component: Component,
+    code: Arc<Code>,
     enabled: bool,
     builtin: bool,
     failures: AtomicU32,
@@ -355,6 +374,31 @@ impl PluginHost {
         builtin: bool,
     ) -> Result<(), String> {
         let component = Component::new(&self.engine, wasm).map_err(|e| format!("not a valid plugin: {e}"))?;
+        self.insert(manifest, Code::Wasm(component), settings, enabled, builtin);
+        Ok(())
+    }
+
+    /// Registers a process plugin living in `dir` (its manifest names the program).
+    pub fn load_process(
+        &self,
+        manifest: Manifest,
+        dir: std::path::PathBuf,
+        settings: HashMap<String, String>,
+        enabled: bool,
+    ) -> Result<(), String> {
+        if manifest.runtime != Runtime::Process {
+            return Err("not a process plugin".into());
+        }
+        let program = dir.join(manifest.command.first().ok_or("no command")?);
+        if !program.is_file() {
+            return Err(format!("{} is missing", program.display()));
+        }
+        let p = process::ProcessPlugin::new(&manifest.id, dir, manifest.command.clone());
+        self.insert(manifest, Code::Process(Arc::new(p)), settings, enabled, false);
+        Ok(())
+    }
+
+    fn insert(&self, manifest: Manifest, code: Code, settings: HashMap<String, String>, enabled: bool, builtin: bool) {
         let ctx = Arc::new(PluginCtx {
             manifest: manifest.clone(),
             settings: RwLock::new(settings),
@@ -362,9 +406,8 @@ impl PluginHost {
             rt: self.rt.clone(),
             bucket: Mutex::new(Bucket { tokens: 10.0, last: Instant::now() }),
         });
-        let loaded = Arc::new(Loaded { ctx, component, enabled, builtin, failures: AtomicU32::new(0) });
+        let loaded = Arc::new(Loaded { ctx, code: Arc::new(code), enabled, builtin, failures: AtomicU32::new(0) });
         self.plugins.write().unwrap_or_else(|e| e.into_inner()).insert(manifest.id.clone(), loaded);
-        Ok(())
     }
 
     pub fn unload(&self, id: &str) -> bool {
@@ -429,6 +472,10 @@ impl PluginHost {
             }
         }
         *s = merged.clone();
+        if let Code::Process(p) = &*l.code {
+            let p = p.clone();
+            self.rt.spawn(async move { p.reconfigure().await });
+        }
         Ok(merged)
     }
 
@@ -436,7 +483,7 @@ impl PluginHost {
         let l = self.get(id)?;
         let new = Arc::new(Loaded {
             ctx: l.ctx.clone(),
-            component: l.component.clone(),
+            code: l.code.clone(),
             enabled,
             builtin: l.builtin,
             failures: AtomicU32::new(0),
@@ -479,11 +526,21 @@ impl PluginHost {
         Ok(linker)
     }
 
-    /// Runs `f` against a fresh instance on a blocking thread, counting traps.
+    fn count_failure(&self, id: &str, l: &Loaded, e: &str) {
+        let n = l.failures.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::warn!("plugin {id} failed ({n}/{BREAKER}): {e}");
+        if n >= BREAKER {
+            tracing::error!("plugin {id} is disabled after {n} failures");
+            let _ = self.set_enabled(id, false);
+        }
+    }
+
+    /// Runs `f` against a fresh instance of a WebAssembly plugin on a blocking thread,
+    /// counting traps.
     async fn call<R: Send + 'static>(
         self: &Arc<Self>,
         id: &str,
-        f: impl FnOnce(&PluginHost, &Loaded) -> Result<Result<R, String>, wasmtime::Error> + Send + 'static,
+        f: impl FnOnce(&PluginHost, &Loaded, &Component) -> Result<Result<R, String>, wasmtime::Error> + Send + 'static,
     ) -> Result<R, PluginError> {
         let l = self.get(id)?;
         if !l.enabled {
@@ -491,7 +548,12 @@ impl PluginHost {
         }
         let me = self.clone();
         let l2 = l.clone();
-        let r = tokio::task::spawn_blocking(move || f(&me, &l2)).await.map_err(|e| PluginError::Trap(e.to_string()))?;
+        let r = tokio::task::spawn_blocking(move || match &*l2.code {
+            Code::Wasm(c) => f(&me, &l2, c),
+            Code::Process(_) => Err(wasmtime::Error::msg("not a WebAssembly plugin")),
+        })
+        .await
+        .map_err(|e| PluginError::Trap(e.to_string()))?;
         match r {
             Ok(Ok(v)) => {
                 l.failures.store(0, Ordering::Relaxed);
@@ -499,25 +561,53 @@ impl PluginHost {
             }
             Ok(Err(e)) => Err(PluginError::Plugin(e)),
             Err(e) => {
-                let n = l.failures.fetch_add(1, Ordering::Relaxed) + 1;
-                tracing::warn!("plugin {id} failed ({n}/{BREAKER}): {e:#}");
-                if n >= BREAKER {
-                    tracing::error!("plugin {id} is disabled after {n} failures");
-                    let _ = self.set_enabled(id, false);
-                }
+                self.count_failure(id, &l, &format!("{e:#}"));
                 Err(PluginError::Trap(format!("{e:#}")))
             }
         }
     }
 
+    fn is_process(&self, id: &str) -> bool {
+        self.get(id).is_ok_and(|l| matches!(&*l.code, Code::Process(_)))
+    }
+
+    /// A JSON-RPC call to a process plugin.
+    async fn rpc<R: serde::de::DeserializeOwned>(
+        self: &Arc<Self>,
+        id: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<R, PluginError> {
+        let l = self.get(id)?;
+        if !l.enabled {
+            return Err(PluginError::Disabled);
+        }
+        let Code::Process(p) = &*l.code else { return Err(PluginError::NotFound) };
+        let mut settings: HashMap<String, String> =
+            l.ctx.manifest.settings.iter().filter_map(|d| d.default.clone().map(|v| (d.key.clone(), v))).collect();
+        settings.extend(l.ctx.settings.read().unwrap_or_else(|e| e.into_inner()).clone());
+        let deadline = TICK * self.deadline.load(Ordering::Relaxed) as u32;
+        match p.call(&settings, method, params, deadline).await {
+            Ok(v) => {
+                l.failures.store(0, Ordering::Relaxed);
+                serde_json::from_value(v)
+                    .map_err(|e| PluginError::Plugin(format!("unexpected answer to {method}: {e}")))
+            }
+            Err(process::CallError::Plugin(m)) => Err(PluginError::Plugin(m)),
+            Err(process::CallError::Broken(m)) => {
+                self.count_failure(id, &l, &m);
+                Err(PluginError::Trap(m))
+            }
+        }
+    }
+
     pub async fn metadata_search(self: &Arc<Self>, id: &str, q: SearchQuery) -> Result<Vec<Candidate>, PluginError> {
-        self.call(id, move |h, l| {
+        if self.is_process(id) {
+            return self.rpc(id, "metadata.search", serde_json::json!({ "query": q })).await;
+        }
+        self.call(id, move |h, l, c| {
             let mut store = h.store(l);
-            let p = bindings::MetadataProvider::instantiate(
-                &mut store,
-                &l.component,
-                &h.linker().map_err(|e| wasmtime::Error::msg(e.to_string()))?,
-            )?;
+            let p = bindings::MetadataProvider::instantiate(&mut store, c, &h.linker_or_err()?)?;
             p.corrent_plugin_metadata().call_search(&mut store, &q)
         })
         .await
@@ -530,13 +620,13 @@ impl PluginHost {
         item: String,
         language: String,
     ) -> Result<ItemDetails, PluginError> {
-        self.call(id, move |h, l| {
+        if self.is_process(id) {
+            let params = serde_json::json!({ "kind": kind, "id": item, "language": language });
+            return self.rpc(id, "metadata.details", params).await;
+        }
+        self.call(id, move |h, l, c| {
             let mut store = h.store(l);
-            let p = bindings::MetadataProvider::instantiate(
-                &mut store,
-                &l.component,
-                &h.linker().map_err(|e| wasmtime::Error::msg(e.to_string()))?,
-            )?;
+            let p = bindings::MetadataProvider::instantiate(&mut store, c, &h.linker_or_err()?)?;
             p.corrent_plugin_metadata().call_details(&mut store, kind, &item, &language)
         })
         .await
@@ -549,55 +639,108 @@ impl PluginHost {
         season: u32,
         language: String,
     ) -> Result<Vec<Episode>, PluginError> {
-        self.call(id, move |h, l| {
+        if self.is_process(id) {
+            let params = serde_json::json!({ "show": show, "season": season, "language": language });
+            return self.rpc(id, "metadata.episodes", params).await;
+        }
+        self.call(id, move |h, l, c| {
             let mut store = h.store(l);
-            let p = bindings::MetadataProvider::instantiate(
-                &mut store,
-                &l.component,
-                &h.linker().map_err(|e| wasmtime::Error::msg(e.to_string()))?,
-            )?;
+            let p = bindings::MetadataProvider::instantiate(&mut store, c, &h.linker_or_err()?)?;
             p.corrent_plugin_metadata().call_episodes(&mut store, &show, season, &language)
         })
         .await
     }
 
     pub async fn metadata_kinds(self: &Arc<Self>, id: &str) -> Result<Vec<MediaKind>, PluginError> {
-        self.call(id, move |h, l| {
+        if self.is_process(id) {
+            return self.rpc(id, "metadata.kinds", serde_json::json!({})).await;
+        }
+        self.call(id, move |h, l, c| {
             let mut store = h.store(l);
-            let p = bindings::MetadataProvider::instantiate(
-                &mut store,
-                &l.component,
-                &h.linker().map_err(|e| wasmtime::Error::msg(e.to_string()))?,
-            )?;
+            let p = bindings::MetadataProvider::instantiate(&mut store, c, &h.linker_or_err()?)?;
             p.corrent_plugin_metadata().call_kinds(&mut store).map(Ok)
         })
         .await
     }
 
     pub async fn indexer_search(self: &Arc<Self>, id: &str, query: String) -> Result<Vec<Release>, PluginError> {
-        self.call(id, move |h, l| {
+        if self.is_process(id) {
+            return self.rpc(id, "indexer.search", serde_json::json!({ "query": query })).await;
+        }
+        self.call(id, move |h, l, c| {
             let mut store = h.store(l);
-            let p = indexer_bindings::IndexerPlugin::instantiate(
-                &mut store,
-                &l.component,
-                &h.linker().map_err(|e| wasmtime::Error::msg(e.to_string()))?,
-            )?;
+            let p = indexer_bindings::IndexerPlugin::instantiate(&mut store, c, &h.linker_or_err()?)?;
             p.corrent_plugin_indexer().call_search(&mut store, &query)
         })
         .await
     }
 
     pub async fn notify(self: &Arc<Self>, id: &str, title: String, body: String) -> Result<(), PluginError> {
-        self.call(id, move |h, l| {
+        if self.is_process(id) {
+            let _: serde_json::Value =
+                self.rpc(id, "notifier.notify", serde_json::json!({ "title": title, "body": body })).await?;
+            return Ok(());
+        }
+        self.call(id, move |h, l, c| {
             let mut store = h.store(l);
-            let p = notifier_bindings::NotifierPlugin::instantiate(
-                &mut store,
-                &l.component,
-                &h.linker().map_err(|e| wasmtime::Error::msg(e.to_string()))?,
-            )?;
+            let p = notifier_bindings::NotifierPlugin::instantiate(&mut store, c, &h.linker_or_err()?)?;
             p.corrent_plugin_notifier().call_notify(&mut store, &title, &body)
         })
         .await
+    }
+
+    pub async fn subtitles_search(self: &Arc<Self>, id: &str, q: SubtitleQuery) -> Result<Vec<Subtitle>, PluginError> {
+        if self.is_process(id) {
+            return self.rpc(id, "subtitles.search", serde_json::json!({ "query": q })).await;
+        }
+        self.call(id, move |h, l, c| {
+            let mut store = h.store(l);
+            let p = subtitle_bindings::SubtitleProvider::instantiate(&mut store, c, &h.linker_or_err()?)?;
+            p.corrent_plugin_subtitles().call_search(&mut store, &q)
+        })
+        .await
+    }
+
+    pub async fn subtitles_download(self: &Arc<Self>, id: &str, sub: String) -> Result<SubtitleFile, PluginError> {
+        if self.is_process(id) {
+            return self.rpc(id, "subtitles.download", serde_json::json!({ "id": sub })).await;
+        }
+        self.call(id, move |h, l, c| {
+            let mut store = h.store(l);
+            let p = subtitle_bindings::SubtitleProvider::instantiate(&mut store, c, &h.linker_or_err()?)?;
+            p.corrent_plugin_subtitles().call_download(&mut store, &sub)
+        })
+        .await
+    }
+
+    /// A name parser's reading of `name` (`None`: no opinion).
+    pub async fn parse_name(self: &Arc<Self>, id: &str, name: String) -> Result<Option<ParsedName>, PluginError> {
+        if self.is_process(id) {
+            return self.rpc(id, "parser.parse", serde_json::json!({ "name": name })).await;
+        }
+        self.call(id, move |h, l, c| {
+            let mut store = h.store(l);
+            let p = parser_bindings::NameParser::instantiate(&mut store, c, &h.linker_or_err()?)?;
+            p.corrent_plugin_parser().call_parse(&mut store, &name).map(Ok)
+        })
+        .await
+    }
+
+    /// One run of a task plugin.
+    pub async fn run_task(self: &Arc<Self>, id: &str) -> Result<String, PluginError> {
+        if self.is_process(id) {
+            return self.rpc(id, "task.run", serde_json::json!({})).await;
+        }
+        self.call(id, move |h, l, c| {
+            let mut store = h.store(l);
+            let p = task_bindings::ScheduledTask::instantiate(&mut store, c, &h.linker_or_err()?)?;
+            p.corrent_plugin_task().call_run(&mut store)
+        })
+        .await
+    }
+
+    fn linker_or_err(&self) -> Result<Linker<HostState>, wasmtime::Error> {
+        self.linker().map_err(|e| wasmtime::Error::msg(e.to_string()))
     }
 }
 
@@ -698,5 +841,114 @@ mod tests {
         let d = h.metadata_details("musicbrainz", MediaKind::Album, found[0].id.clone(), "en".into()).await.unwrap();
         assert!(d.credits.iter().any(|c| c.name.contains("Beatles")), "{d:?}");
         assert!(d.artwork[0].url.contains("coverartarchive.org"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subtitle_parser_and_task_plugins() {
+        let h = host();
+        for (toml, wasm) in [
+            (
+                include_str!("../builtin/example-subtitles.toml"),
+                &include_bytes!("../builtin/example-subtitles.wasm")[..],
+            ),
+            (include_str!("../builtin/example-parser.toml"), &include_bytes!("../builtin/example-parser.wasm")[..]),
+            (include_str!("../builtin/example-task.toml"), &include_bytes!("../builtin/example-task.wasm")[..]),
+        ] {
+            h.load(Manifest::parse(toml).unwrap(), wasm, HashMap::new(), true, false).unwrap();
+        }
+        let q = SubtitleQuery {
+            title: "Sintel".into(),
+            year: Some(2010),
+            season: None,
+            episode: None,
+            languages: vec!["tr".into(), "en".into()],
+            ids: vec![],
+            file_hash: Some("8e245d9679d31e12".into()),
+            file_size: Some(1000),
+        };
+        let found = h.subtitles_search("example-subtitles", q).await.unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(found[0].exact);
+        let f = h.subtitles_download("example-subtitles", found[0].id.clone()).await.unwrap();
+        assert!(String::from_utf8(f.data).unwrap().contains("Sintel [tr]"));
+        let p = h.parse_name("example-parser", "Home Movie {2019} #3".into()).await.unwrap().unwrap();
+        assert_eq!((p.title.as_str(), p.year, p.episode), ("Home Movie", Some(2019), Some(3)));
+        assert!(h.parse_name("example-parser", "Some.Movie.2010".into()).await.unwrap().is_none());
+        assert_eq!(h.run_task("example-task").await.unwrap(), "run 1");
+        assert_eq!(h.run_task("example-task").await.unwrap(), "run 2");
+        assert_eq!(h.ready(Kind::Task), vec!["example-task".to_string()]);
+    }
+
+    /// A process plugin (a Python script) answers the same calls over JSON-RPC; a crash counts
+    /// toward the breaker and the process is restarted.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_plugins_speak_json_rpc() {
+        if std::process::Command::new("python3").arg("--version").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("corrent-process-plugin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("plugin.py");
+        std::fs::write(
+            &script,
+            r#"#!/usr/bin/env python3
+import json, sys
+settings = {}
+for line in sys.stdin:
+    req = json.loads(line)
+    m, p = req["method"], req.get("params", {})
+    if m == "configure":
+        settings = p["settings"]; res = None
+    elif m == "metadata.kinds":
+        res = ["Movie"]
+    elif m == "metadata.search":
+        if p["query"]["title"] == "crash":
+            sys.exit(3)
+        if p["query"]["title"] == "fail":
+            print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "error": {"code": 1, "message": "nope"}}), flush=True)
+            continue
+        res = [{"id": "py-1", "title": settings.get("greeting", "?") + " " + p["query"]["title"], "year": 2010, "overview": None, "poster_url": None}]
+    elif m == "task.run":
+        res = "ran"
+    else:
+        res = None
+    print("stray output", flush=True)
+    print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": res}), flush=True)
+"#,
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let m = Manifest::parse(
+            r#"id = "py"
+name = "Python"
+version = "1"
+host_api = "1"
+kinds = ["metadata", "task"]
+runtime = "process"
+command = ["plugin.py"]
+[[settings]]
+key = "greeting"
+default = "Hi"
+"#,
+        )
+        .unwrap();
+        assert!(Manifest::parse("command = [\"../evil\"]\nid = \"x\"\nname = \"x\"\nversion = \"1\"\nhost_api = \"1\"\nkinds = [\"task\"]\nruntime = \"process\"").is_err());
+        let h = PluginHost::new(Arc::new(MemoryKv::default()), tokio::runtime::Handle::current()).unwrap();
+        h.set_deadline(Duration::from_secs(5));
+        h.load_process(m, dir.clone(), HashMap::new(), true).unwrap();
+        assert_eq!(h.metadata_kinds("py").await.unwrap(), vec![MediaKind::Movie]);
+        let c = h.metadata_search("py", q("Sintel")).await.unwrap();
+        assert_eq!(c[0].title, "Hi Sintel", "the setting's default reached the process");
+        h.set_settings("py", HashMap::from([("greeting".to_string(), "Merhaba".to_string())])).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let c = h.metadata_search("py", q("Sintel")).await.unwrap();
+        assert_eq!(c[0].title, "Merhaba Sintel", "restarted with the new settings");
+        assert_eq!(h.metadata_search("py", q("fail")).await.unwrap_err(), PluginError::Plugin("nope".into()));
+        assert!(matches!(h.metadata_search("py", q("crash")).await.unwrap_err(), PluginError::Trap(_)));
+        assert_eq!(h.run_task("py").await.unwrap(), "ran", "restarted after the crash");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

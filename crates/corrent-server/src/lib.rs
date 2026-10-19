@@ -92,6 +92,26 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
     });
     let transcode_root = p.paths.data_dir.join("transcode");
     let plugin_host = plugins::start(p.identity.db(), &p.paths.data_dir).await;
+    // Name-parser plugins get a say when scans read file names.
+    if let Some(host) = &plugin_host {
+        let host = host.clone();
+        p.library.set_name_hook(Some(Arc::new(move |name: String| {
+            let host = host.clone();
+            Box::pin(async move {
+                for id in host.ready(corrent_plugins::Kind::Parser) {
+                    if let Ok(Some(n)) = host.parse_name(&id, name.clone()).await {
+                        return Some(corrent_library::NameHint {
+                            title: n.title,
+                            year: n.year.map(|y| y as i32),
+                            season: n.season.map(i64::from),
+                            episode: n.episode.map(i64::from),
+                        });
+                    }
+                }
+                None
+            })
+        })));
+    }
     let state = Arc::new(AppState {
         nets: ArcSwap::from_pointee(Nets::from(&p.cfg)),
         tls: p.cfg.tls,

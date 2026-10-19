@@ -1,0 +1,6 @@
+id = "example-parser"
+name = "Example parser"
+version = "1.0.0"
+description = "For tests."
+host_api = "1"
+kinds = ["parser"]
