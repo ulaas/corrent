@@ -62,7 +62,9 @@ jobs:
       - name: Plain tarball
         run: |
           version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          tar -C target/release -czf "dist/Corrent-$version-linux-x86_64.tar.gz" corrent
+          tar -C target/release -czf "dist/Corrent-$version-linux-x86_64.tar.gz" corrent corrent-mpvw
+      - name: Server tarball
+        run: scripts/package-server.sh
       - uses: actions/upload-artifact@v4
         with:
           name: linux
@@ -99,6 +101,8 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
         run: scripts/package-macos.sh
+      - name: Server tarball
+        run: scripts/package-server.sh
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -122,3 +126,4 @@ jobs:
             artifacts/linux/*.AppImage
             artifacts/linux/*.tar.gz
             artifacts/macos/*.dmg
+            artifacts/macos/*.tar.gz

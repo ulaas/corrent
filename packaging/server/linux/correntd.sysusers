@@ -1,0 +1,2 @@
+# systemd-sysusers: the account correntd runs as.
+u corrent - "Corrent Server" /var/lib/correntd

@@ -1,0 +1,16 @@
+# Corrent Server for one user (no root needed): ~/.config/systemd/user/correntd.service
+#   systemctl --user enable --now correntd
+#   loginctl enable-linger $USER     # keep it running while logged out
+[Unit]
+Description=Corrent Server (media and torrents)
+After=network-online.target
+
+[Service]
+Type=notify
+ExecStart=%h/.local/bin/correntd
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target

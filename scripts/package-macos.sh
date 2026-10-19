@@ -12,9 +12,15 @@ version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
 cargo bundle --release --target aarch64-apple-darwin
 cargo build --release --locked --target x86_64-apple-darwin
+for t in aarch64-apple-darwin x86_64-apple-darwin; do
+  cargo build --release --locked -p corrent-mpv --bin corrent-mpvw --target $t
+done
 app=$(ls -d target/aarch64-apple-darwin/release/bundle/osx/*.app | head -1)
 lipo -create -output "$app/Contents/MacOS/corrent" \
   target/aarch64-apple-darwin/release/corrent target/x86_64-apple-darwin/release/corrent
+# The libmpv worker for the media library (libmpv comes from Homebrew: brew install mpv).
+lipo -create -output "$app/Contents/MacOS/corrent-mpvw" \
+  target/aarch64-apple-darwin/release/corrent-mpvw target/x86_64-apple-darwin/release/corrent-mpvw
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
   codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$app"
 fi

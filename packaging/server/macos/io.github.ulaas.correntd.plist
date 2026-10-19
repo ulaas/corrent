@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Corrent Server as a launchd agent for the logged-in user (it can read the user's media):
+    cp io.github.ulaas.correntd.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.ulaas.correntd.plist
+  Stop / remove:
+    launchctl bootout gui/$(id -u)/io.github.ulaas.correntd
+  Data lives in ~/Library/Application Support/Corrent Server (the default for correntd).
+  Adjust the program path if correntd isn't in /usr/local/bin (corrent-mpvw goes next to it).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.ulaas.correntd</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/correntd</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ExitTimeOut</key>
+  <integer>45</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/correntd.err.log</string>
+</dict>
+</plist>

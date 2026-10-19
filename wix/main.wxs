@@ -56,6 +56,9 @@
                         <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="InstallDir" Type="string" Value="[APPLICATIONFOLDER]" KeyPath="yes" />
                         <RemoveFolder Id="RemoveAppFolder" On="uninstall" />
                     </Component>
+                    <Component Id="MpvWorker" Guid="*">
+                        <File Id="MpvWorkerExe" Name="corrent-mpvw.exe" DiskId="1" Source="$(var.CargoTargetBinDir)\corrent-mpvw.exe" />
+                    </Component>
                     <Component Id="License" Guid="*">
                         <File Id="LicenseMd" Name="LICENSE.txt" DiskId="1" Source="wix\License.txt" />
                         <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="License" Type="integer" Value="1" KeyPath="yes" />
@@ -80,6 +83,7 @@
 
         <Feature Id="Main" Title="Corrent" Level="1" Absent="disallow" ConfigurableDirectory="APPLICATIONFOLDER" AllowAdvertise="no">
             <ComponentRef Id="MainExecutable" />
+            <ComponentRef Id="MpvWorker" />
             <ComponentRef Id="License" />
             <ComponentRef Id="StartMenuShortcut" />
             <Feature Id="Associations" Title="Open magnet links and .torrent files with Corrent" Level="1" AllowAdvertise="no">

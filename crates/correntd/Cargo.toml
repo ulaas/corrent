@@ -13,8 +13,11 @@ corrent-db = { path = "../corrent-db" }
 corrent-i18n = { path = "../corrent-i18n" }
 corrent-server = { path = "../corrent-server", features = ["p2p"] }
 corrent-library = { path = "../corrent-library" }
-tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal", "time"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
 arc-swap = "1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target."cfg(windows)".dependencies]
+windows-service = "0.8.1"

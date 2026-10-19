@@ -1,0 +1,20 @@
+# docker compose -f packaging/server/docker/compose.yaml up -d
+services:
+  corrent:
+    build:
+      context: ../../..
+      dockerfile: packaging/server/docker/Dockerfile
+    container_name: corrent
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+      - "6881:6881"
+      - "6881:6881/udp"
+    volumes:
+      - corrent-data:/data
+      - /srv/media:/media
+    # Hardware encoding (Intel/AMD VAAPI):
+    # devices:
+    #   - /dev/dri:/dev/dri
+volumes:
+  corrent-data:

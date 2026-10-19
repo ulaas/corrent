@@ -1,0 +1,49 @@
+# Corrent Server (correntd) as a system service.
+# Install: correntd and corrent-mpvw to /usr/bin (or /usr/local/bin and adjust ExecStart),
+#   sudo cp correntd.service /etc/systemd/system/
+#   sudo cp correntd.sysusers /usr/lib/sysusers.d/correntd.conf && sudo systemd-sysusers
+#   sudo systemctl enable --now correntd
+#   sudo -u corrent correntd --data-dir /var/lib/correntd --init-admin admin
+# Media folders must be readable by the "corrent" user (and writable for downloads/imports):
+#   sudo setfacl -R -m u:corrent:rwX /srv/media   (or add corrent to a group that owns them)
+[Unit]
+Description=Corrent Server (media and torrents)
+Documentation=https://github.com/ulaas/corrent/blob/main/docs/SERVER.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=corrent
+Group=corrent
+ExecStart=/usr/bin/correntd --data-dir /var/lib/correntd
+StateDirectory=correntd
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+# The engine flushes its session on SIGTERM.
+KillSignal=SIGTERM
+Environment=CORRENT_LOG=info
+
+# Hardening: the server only needs its state directory, the media/download folders you grant
+# below, and the network.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=no
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# Folders the server may write besides its state (downloads, library imports):
+# ReadWritePaths=/srv/media /srv/downloads
+# Hardware video encoding (VAAPI/NVENC) needs the GPU device nodes:
+# SupplementaryGroups=render video
+
+[Install]
+WantedBy=multi-user.target

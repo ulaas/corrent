@@ -148,25 +148,39 @@ others on request) are burned into the picture. Seek-bar thumbnails (trickplay) 
 background the first time a video is played. Transcodes need the `playback.transcode`
 permission; at most three run at once and idle ones stop after 90 seconds.
 
-## systemd
+## Installing as a service
 
-```ini
-[Unit]
-Description=Corrent server
-After=network-online.target
-Wants=network-online.target
+Packages: `Corrent-Server-<v>-linux-x86_64.tar.gz` / `-darwin-*.tar.gz` (`scripts/package-server.sh`),
+`Corrent-Server-<v>-windows-x86_64.zip` (`scripts/package-windows.ps1`), or the Docker image. Each
+has `correntd` and `corrent-mpvw` (the libmpv worker; keep it next to `correntd`). libmpv comes
+from the system: Debian/Ubuntu `libmpv2`, Fedora `mpv-libs`, macOS `brew install mpv`, Windows
+`libmpv-2.dll` next to the exe.
 
-[Service]
-Type=notify
-ExecStart=/usr/bin/correntd --data-dir /var/lib/corrent
-User=corrent
-Restart=on-failure
+**Linux (systemd)** — `packaging/server/linux/`:
 
-[Install]
-WantedBy=multi-user.target
+```sh
+sudo install -m755 correntd corrent-mpvw /usr/bin/
+sudo cp correntd.sysusers /usr/lib/sysusers.d/correntd.conf && sudo systemd-sysusers
+sudo cp correntd.service /etc/systemd/system/ && sudo systemctl enable --now correntd
+sudo -u corrent correntd --data-dir /var/lib/correntd --init-admin admin
 ```
 
-`correntd` reports readiness and shutdown through `sd_notify`; SIGTERM shuts it down gracefully.
+The unit is `Type=notify` (readiness and shutdown via `sd_notify`), hardened
+(`ProtectSystem=strict`, `ProtectHome=read-only`, …) and stops gracefully on SIGTERM. Grant the
+media and download folders with `ReadWritePaths=` and file permissions for the `corrent` user;
+GPU encoding needs `SupplementaryGroups=render video`. `correntd.user.service` runs it as your own
+user instead (`systemctl --user`, `loginctl enable-linger`).
+
+**macOS (launchd)** — `packaging/server/macos/io.github.ulaas.correntd.plist` is a per-user agent
+(it can read your media); see the comments in the file for `launchctl bootstrap`.
+
+**Windows** — from an elevated prompt: `correntd service install` (data in
+`%ProgramData%\Corrent Server`, automatic start, restarted after failures; `--data-dir`,
+`--account`/`--password` to run as a user who can read the media), `correntd service uninstall`.
+The service handles Stop and Shutdown like Ctrl+C.
+
+**Docker** — `packaging/server/docker/Dockerfile` and `compose.yaml` (data in `/data`, media
+mounted at `/media`; `--network host` for LAN discovery; `/dev/dri` for VAAPI).
 
 ## The desktop app as a client
 

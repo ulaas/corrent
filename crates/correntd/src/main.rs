@@ -11,8 +11,13 @@ use corrent_core::engine::{EngineHandle, Wake};
 use corrent_server::identity::{HashCost, Identity};
 use corrent_server::{ServerConfig, ServerParts, tls};
 
+#[cfg(windows)]
+mod winservice;
+
 const HELP: &str = "\
 Usage: correntd [OPTIONS]
+       correntd service install [--data-dir <dir>] [--account <user> --password <pw>]
+       correntd service uninstall | run [OPTIONS]      (Windows)
 
 Options:
   --portable              keep all data in correntd-data next to the executable
@@ -41,6 +46,16 @@ struct Args {
     remote_access: bool,
     init_admin: Option<String>,
     print_fingerprint: bool,
+    service: Option<Service>,
+    account: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Service {
+    Install,
+    Uninstall,
+    Run,
 }
 
 fn parse_args() -> Result<Option<Args>, String> {
@@ -54,8 +69,20 @@ fn parse_args() -> Result<Option<Args>, String> {
         remote_access: false,
         init_admin: None,
         print_fingerprint: false,
+        service: None,
+        account: None,
+        password: None,
     };
-    let mut it = std::env::args().skip(1);
+    let mut it = std::env::args().skip(1).peekable();
+    if it.peek().map(String::as_str) == Some("service") {
+        it.next();
+        a.service = Some(match it.next().as_deref() {
+            Some("install") => Service::Install,
+            Some("uninstall") => Service::Uninstall,
+            Some("run") => Service::Run,
+            _ => return Err("service needs install, uninstall or run".into()),
+        });
+    }
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
@@ -76,6 +103,8 @@ fn parse_args() -> Result<Option<Args>, String> {
             "--remote-access" => a.remote_access = true,
             "--init-admin" => a.init_admin = Some(value("--init-admin")?),
             "--print-fingerprint" => a.print_fingerprint = true,
+            "--account" => a.account = Some(value("--account")?),
+            "--password" => a.password = Some(value("--password")?),
             other => return Err(format!("unknown option {other} (see --help)")),
         }
     }
@@ -144,10 +173,48 @@ fn main() {
             std::process::exit(2);
         }
     };
-    if let Err(e) = run(args) {
+    let result = match args.service {
+        None => run(args),
+        Some(s) => service(s, args),
+    };
+    if let Err(e) = result {
         eprintln!("correntd: {e:#}");
         std::process::exit(1);
     }
+}
+
+/// Asks a running server to shut down (the Windows service manager's Stop).
+static STOP: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+#[cfg(windows)]
+fn service(s: Service, args: Args) -> anyhow::Result<()> {
+    static ARGS: std::sync::OnceLock<std::sync::Mutex<Option<Args>>> = std::sync::OnceLock::new();
+    match s {
+        Service::Install => winservice::install(args.data_dir, args.account, args.password),
+        Service::Uninstall => winservice::uninstall(),
+        Service::Run => {
+            let mut args = args;
+            if args.data_dir.is_none() && !args.portable {
+                args.data_dir = Some(winservice::default_data_dir());
+            }
+            let _ = ARGS.set(std::sync::Mutex::new(Some(args)));
+            winservice::run(winservice::Hooks {
+                run: || {
+                    let args = ARGS.get().and_then(|a| a.lock().ok()?.take());
+                    run(args.ok_or_else(|| anyhow::anyhow!("started twice"))?)
+                },
+                stop: || STOP.notify_one(),
+            })
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn service(_: Service, _: Args) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "services are a Windows thing; on Linux use packaging/server/linux/correntd.service, on macOS \
+         packaging/server/macos/io.github.ulaas.correntd.plist"
+    )
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
@@ -358,8 +425,12 @@ async fn wait_for_shutdown() {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
             _ = term.recv() => {}
+            _ = STOP.notified() => {}
         }
     }
     #[cfg(not(unix))]
-    let _ = tokio::signal::ctrl_c().await;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = STOP.notified() => {}
+    }
 }

@@ -12,6 +12,14 @@ workflow uploads all artifacts to a **draft** GitHub release; nothing is publish
 | Linux | `Corrent-<v>-linux-x86_64.tar.gz` | release workflow |
 | Linux | Flatpak | `packaging/linux/flatpak/io.github.ulaas.Corrent.yml` (manual, see below) |
 | macOS | `Corrent-<v>-macos.dmg` | `scripts/package-macos.sh` (cargo-bundle + hdiutil) |
+| Server | `Corrent-Server-<v>-linux-x86_64.tar.gz`, `-darwin-arm64.tar.gz` | `scripts/package-server.sh` (correntd, corrent-mpvw, service files) |
+| Server | `Corrent-Server-<v>-windows-x86_64.zip` | `scripts/package-windows.ps1` |
+| Server | Docker image | `packaging/server/docker/Dockerfile` (not published by the workflow) |
+
+Every package also carries **`corrent-mpvw`**, the libmpv worker the media library uses for
+probing, thumbnails and transcoding (next to the main executable). libmpv itself is not bundled
+(licensing and size): the app plays and probes when the system has it and says so otherwise.
+Server installation (systemd, launchd, Windows service, Docker) is in `docs/SERVER.md`.
 
 ## Windows
 

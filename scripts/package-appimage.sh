@@ -5,10 +5,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-cargo build --release --locked
+# The app and the libmpv worker it runs for probing and transcoding (media library).
+cargo build --release --locked -p corrent -p corrent-mpv --bin corrent --bin corrent-mpvw
 appdir=target/appimage/AppDir
 rm -rf "$appdir"
 install -Dm755 target/release/corrent "$appdir/usr/bin/corrent"
+install -Dm755 target/release/corrent-mpvw "$appdir/usr/bin/corrent-mpvw"
 install -Dm644 packaging/linux/corrent.desktop "$appdir/usr/share/applications/corrent.desktop"
 install -d "$appdir/usr/share/metainfo"
 # Inside the AppImage the desktop file is corrent.desktop: point the AppStream data at it.
