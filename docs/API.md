@@ -150,6 +150,8 @@ bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a sess
 | DELETE | `/api/v1/plugins/{id}` |
 | GET | `/api/v1/plugins/catalog` |
 | POST | `/api/v1/plugins/catalog/install` |
+| GET | `/api/v1/plugins/web` |
+| GET | `/api/v1/plugins/{id}/web/{*path}` |
 | PUT | `/api/v1/plugins/{id}/settings` |
 | PUT | `/api/v1/plugins/{id}/enabled` |
 | GET POST | `/api/v1/items/{id}/identify` |
