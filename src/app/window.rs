@@ -92,22 +92,25 @@ impl CorrentApp {
     }
 
     pub(super) fn notify(&self, title: &str, body: &str) {
-        let (title, body) = (title.to_string(), body.to_string());
+        static NOTIFIER: std::sync::OnceLock<super::notify::Notifier> = std::sync::OnceLock::new();
         #[cfg(windows)]
         let paths = self.paths.clone();
-        std::thread::spawn(move || {
-            let mut n = notify_rust::Notification::new();
-            n.appname("Corrent").summary(&title).body(&body);
-            // Windows: show as "Corrent" with its icon rather than the PowerShell default.
-            #[cfg(windows)]
-            if let Some(id) = crate::integration::app_identity::ensure(&paths) {
-                n.app_id(id);
-            }
-            #[cfg(all(unix, not(target_os = "macos")))]
-            n.icon("corrent");
-            if let Err(e) = n.show() {
-                tracing::debug!("notification failed: {e}");
-            }
+        let notifier = NOTIFIER.get_or_init(move || {
+            super::notify::Notifier::new(move |title, body| {
+                let mut n = notify_rust::Notification::new();
+                n.appname("Corrent").summary(title).body(body);
+                // Windows: show as "Corrent" with its icon rather than the PowerShell default.
+                #[cfg(windows)]
+                if let Some(id) = crate::integration::app_identity::ensure(&paths) {
+                    n.app_id(id);
+                }
+                #[cfg(all(unix, not(target_os = "macos")))]
+                n.icon("corrent");
+                if let Err(e) = n.show() {
+                    tracing::debug!("notification failed: {e}");
+                }
+            })
         });
+        notifier.push(title, body);
     }
 }

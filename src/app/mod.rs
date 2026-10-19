@@ -14,6 +14,7 @@ mod import_dialog;
 mod integration_ui;
 pub mod log;
 pub mod media;
+mod notify;
 mod onboarding;
 mod pickers;
 mod remote;
