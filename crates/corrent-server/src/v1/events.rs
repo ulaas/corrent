@@ -37,8 +37,7 @@ pub struct EventsQuery {
 
 /// Cookie-authenticated sockets must come from our own pages: browsers send `Origin` on
 /// WebSocket handshakes and do not apply SameSite to them reliably.
-fn same_origin(headers: &HeaderMap) -> bool {
-    let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
+fn same_origin(headers: &HeaderMap, host: &str) -> bool {
     let Some(origin) = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok()) else { return false };
     url::Url::parse(origin).ok().is_some_and(|u| {
         let o = match u.port() {
@@ -53,11 +52,12 @@ pub async fn events(
     State(st): State<Arc<AppState>>,
     auth: Auth,
     headers: HeaderMap,
+    axum::Extension(host): axum::Extension<super::RequestHost>,
     Query(q): Query<EventsQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiErr> {
     let bearer = headers.get(header::AUTHORIZATION).is_some();
-    if !bearer && !same_origin(&headers) {
+    if !bearer && !same_origin(&headers, &host.0) {
         return Err(err(ErrorCode::Forbidden, "cross-origin WebSocket refused"));
     }
     let rate = Duration::from_millis(q.rate_ms.unwrap_or(1000).clamp(250, 10_000));
@@ -277,12 +277,12 @@ mod tests {
     #[test]
     fn origin_check() {
         let mut h = HeaderMap::new();
-        h.insert(header::HOST, "192.168.1.5:8443".parse().unwrap());
-        assert!(!same_origin(&h), "no Origin");
+        let host = "192.168.1.5:8443";
+        assert!(!same_origin(&h, host), "no Origin");
         h.insert(header::ORIGIN, "https://192.168.1.5:8443".parse().unwrap());
-        assert!(same_origin(&h));
+        assert!(same_origin(&h, host));
         h.insert(header::ORIGIN, "https://evil.example".parse().unwrap());
-        assert!(!same_origin(&h));
+        assert!(!same_origin(&h, host));
     }
 
     #[test]

@@ -503,3 +503,21 @@ async fn browser_websockets_need_our_origin() {
     drop(listener);
     h.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn https_with_the_servers_own_ca() {
+    let h = harness("https", ServerConfig::default()).await;
+    let tls =
+        crate::tls::ensure(&h.dir.join("tls"), &h.st.server_id, &["localhost".into()], &["127.0.0.1".parse().unwrap()])
+            .unwrap();
+    let listener = crate::serve_https(h.app.clone(), "127.0.0.1:0".parse().unwrap(), &tls).await.unwrap();
+    let ca = reqwest::Certificate::from_pem(tls.ca_pem.as_bytes()).unwrap();
+    let client = reqwest::Client::builder().tls_certs_only([ca]).build().unwrap();
+    let url = format!("https://localhost:{}/api/v1/server/info", listener.addr.port());
+    let v: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+    assert_eq!(v["api_version"], 1);
+    // Without the CA the connection is refused (self-signed).
+    assert!(reqwest::Client::new().get(&url).send().await.is_err());
+    drop(listener);
+    h.stop().await;
+}

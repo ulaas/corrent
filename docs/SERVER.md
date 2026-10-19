@@ -1,0 +1,99 @@
+# Corrent server (`correntd`)
+
+`correntd` is Corrent's headless server: the torrent engine, API v1 with realtime events, the
+qBittorrent-compatible API (Sonarr/Radarr) and the web interface, served over HTTPS with the
+server's own certificate. The media-server roadmap is `docs/MEDIASERVER.md`.
+
+## Running
+
+```sh
+correntd                         # profile in the OS data folder ("Corrent Server")
+correntd --portable              # profile in correntd-data/ next to the executable
+correntd --data-dir /srv/corrent # any folder
+correntd --help
+```
+
+The first start creates `server.toml`, `corrent.db` and `tls/` in the profile. The desktop app and
+the server never share a profile (two engines must not share one session); a second `correntd`
+on the same profile refuses to start.
+
+Create the administrator either on the server itself (open the HTTPS address shown at startup —
+setup only works from the server's own computer) or with
+`CORRENT_ADMIN_PASSWORD=… correntd --init-admin <name>` (without the variable the password is
+read from standard input). An existing qBittorrent-API account of the profile becomes the first
+administrator automatically.
+
+## Listening and access
+
+| Setting (`server.toml`) | Default | Meaning |
+|---|---|---|
+| `bind`, `https_port` | `0.0.0.0`, `8443` | HTTPS listener (`--bind`, `--https-port`) |
+| `http_port` | `8088` | plain HTTP on 127.0.0.1 only; `0` turns it off (`--http-port`) |
+| `tls` | `true` | `--no-tls` serves plain HTTP on the main port (testing only) |
+| `cert_path`, `key_path` | none | your own certificate (e.g. from ACME) instead of the built-in CA |
+| `remote_access` | `false` | off: only loopback, private, link-local, CGNAT/Tailscale (100.64.0.0/10) and `allowed_networks` clients get in |
+| `allowed_networks` | `[]` | extra CIDRs treated as local |
+| `trusted_proxies` | `[]` | reverse proxies whose `X-Forwarded-For` is believed |
+| `hostnames` | `[]` | host names browsers may use besides IP addresses, `localhost`, `<computer>` and `<computer>.local` |
+| `qbt_api` | `true` | serve the qBittorrent-compatible API at `/api/v2` and the classic web UI at `/` |
+
+### Certificates and fingerprints
+
+The server makes a private certificate authority once and signs a server certificate for the
+computer's names and addresses (re-issued when they change, and before it is 700 days old).
+Native clients pin the CA's public key: its SHA-256 is the **fingerprint** printed at startup,
+shown in the clients, embedded in pairing links, and printed by `correntd --print-fingerprint`.
+Browsers show a warning for the self-signed certificate; to avoid it, install `tls/ca.pem` as a
+trusted authority on your devices (compare the fingerprint first).
+
+## Accounts, devices and pairing
+
+Users have a role (`admin`, `user`, `guest`, `kids`) with default permissions that an admin can
+override. Passwords are argon2id. Browsers get a 12-hour sliding session cookie (HttpOnly,
+SameSite=Strict) and must echo a CSRF token on changes; apps get a 90-day sliding device token.
+Ten wrong passwords lock an account for 15 minutes; ten failures from one address block it for
+15 minutes; a global limit slows floods. Every sign-in, account change, settings change and
+removal with data is in the audit log (`GET /api/v1/server/audit`).
+
+A signed-in user creates a 6-digit pairing code (`POST /api/v1/auth/pair/code`, valid 10 minutes,
+single use, burned after five wrong guesses); a new device redeems it (`POST /api/v1/auth/pair`)
+and receives its own token. Devices are listed and revoked at `/api/v1/devices`.
+
+## API v1 in brief
+
+All JSON; errors are `{ "code": "...", "message": "...", "params": {...} }` with a stable code.
+
+| Area | Endpoints |
+|---|---|
+| Auth | `POST auth/login`, `auth/logout`, `GET auth/me`, `POST auth/setup`, `auth/pair`, `auth/pair/code` |
+| Users, devices | `GET/POST users`, `GET/PATCH/DELETE users/{id}`, `GET devices`, `DELETE devices/{id}` |
+| Server | `GET server/info` (public), `GET/PUT server/settings` (secrets masked), `GET server/audit`, `GET server/log`, `GET server/fs?path=`, `POST server/fs/mkdir`, `POST server/alt-speed` |
+| Torrents | `GET/POST torrents` (JSON or multipart), `GET/PATCH torrents/{hash}`, `GET torrents/{hash}/detail`, `POST torrents/{hash}/files`, `POST torrents/{hash}/trackers`, `POST torrents/actions`, `POST torrents/move`, `GET/PUT torrents/categories`, `PUT torrents/tags` |
+| RSS, search | `GET rss`, `GET/PUT rss/config`, `POST rss/refresh`, `POST rss/download`, `GET search?q=` |
+| Events | `GET events` (WebSocket; see below) |
+
+**Events:** send `{"t":"subscribe","topics":[{"topic":"torrents"},{"topic":"session"}]}`. The
+torrent list arrives whole once (`torrents_full`) and then as `torrents_delta` (`upserted`,
+`patched`, `removed`), at most every `?rate_ms=` (default 1000). `{"topic":"torrent","arg":"<hash>"}`
+streams one torrent's details every second; admins can subscribe to `log`. Messages over 32 KiB
+are zlib-compressed binary frames (`DecompressionStream("deflate")` in browsers).
+
+## systemd
+
+```ini
+[Unit]
+Description=Corrent server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/correntd --data-dir /var/lib/corrent
+User=corrent
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`correntd` reports readiness and shutdown through `sd_notify`; SIGTERM shuts it down gracefully.

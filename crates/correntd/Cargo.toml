@@ -1,0 +1,19 @@
+[package]
+name = "correntd"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Corrent's headless media and torrent server"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+corrent-core = { path = "../corrent-core" }
+corrent-db = { path = "../corrent-db" }
+corrent-i18n = { path = "../corrent-i18n" }
+corrent-server = { path = "../corrent-server" }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal", "time"] }
+arc-swap = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

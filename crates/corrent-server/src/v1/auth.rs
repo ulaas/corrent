@@ -138,7 +138,7 @@ async fn pair_code(
     State(st): State<Arc<AppState>>,
     auth: Auth,
     ip: ClientIp,
-    headers: HeaderMap,
+    axum::Extension(host): axum::Extension<super::RequestHost>,
     body: Option<Json<CodeRequest>>,
 ) -> ApiResult<PairingCode> {
     let req = body.map(|b| b.0).unwrap_or_default();
@@ -150,10 +150,7 @@ async fn pair_code(
         _ => auth.0.user.id,
     };
     let (code, expires) = st.identity.pairing_code(uid).await?;
-    let host = req
-        .host
-        .or_else(|| headers.get(header::HOST).and_then(|h| h.to_str().ok()).map(str::to_string))
-        .unwrap_or_default();
+    let host = req.host.unwrap_or(host.0);
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "pairing_code", &uid.to_string(), true, "").await;
     Ok(Json(Identity::pairing_link(&code, expires, &host, &st.server_id, st.tls_fingerprint.as_deref())))
 }

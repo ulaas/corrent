@@ -72,6 +72,10 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
+/// The host name the request was addressed to (from the guard).
+#[derive(Clone, Debug)]
+pub struct RequestHost(pub String);
+
 /// A signed-in caller.
 pub struct Auth(pub Principal);
 
@@ -127,6 +131,17 @@ impl WithParam for ApiErr {
     }
 }
 
+/// The host the client asked for: `Host` (HTTP/1.1) or the `:authority` that HTTP/2 puts in
+/// the URI.
+pub fn request_host<B>(req: &axum::http::Request<B>) -> String {
+    req.headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| req.uri().authority().map(|a| a.to_string()))
+        .unwrap_or_default()
+}
+
 /// Every request: work out the client address, refuse non-local clients unless remote access
 /// is on, refuse unknown Host names (DNS rebinding), and add protective headers.
 pub async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
@@ -139,11 +154,12 @@ pub async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next
         tracing::info!("refused {ip}: remote access is off");
         return err(ErrorCode::RemoteAccessDisabled, "remote access is off").into_response();
     }
-    let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
-    if !crate::net::host_allowed(host, &nets.hostnames) {
+    let host = request_host(&req);
+    if !crate::net::host_allowed(&host, &nets.hostnames) {
         return err(ErrorCode::Forbidden, "unknown host name").into_response();
     }
     req.extensions_mut().insert(ClientIp(ip));
+    req.extensions_mut().insert(RequestHost(host));
     let mut res = next.run(req).await;
     let h = res.headers_mut();
     h.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().expect("static"));
@@ -171,4 +187,17 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(search::routes())
         .route("/events", axum::routing::get(events::events))
         .fallback(|| async { err(ErrorCode::NotFound, "no such endpoint") })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_from_http2_authority() {
+        let r = axum::http::Request::builder().uri("https://localhost:8443/api/v1/server/info").body(()).unwrap();
+        assert_eq!(request_host(&r), "localhost:8443");
+        let r = axum::http::Request::builder().uri("/x").header(header::HOST, "10.0.0.1:8443").body(()).unwrap();
+        assert_eq!(request_host(&r), "10.0.0.1:8443");
+    }
 }

@@ -25,6 +25,23 @@ impl Paths {
         Paths { data_dir, portable: false }
     }
 
+    /// The headless server's profile: never the desktop app's (two engines must not share a
+    /// session). `--data-dir` wins; portable keeps it next to the executable.
+    pub fn resolve_server(force_portable: bool, data_dir: Option<PathBuf>) -> Paths {
+        if let Some(d) = data_dir {
+            return Paths { data_dir: d, portable: force_portable };
+        }
+        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
+        if force_portable {
+            let base = exe_dir.unwrap_or_else(|| PathBuf::from("."));
+            return Paths { data_dir: base.join("correntd-data"), portable: true };
+        }
+        let data_dir = directories::ProjectDirs::from("", "", "Corrent Server")
+            .map(|d| d.data_dir().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(".corrent-server"));
+        Paths { data_dir, portable: false }
+    }
+
     pub fn settings_file(&self) -> PathBuf {
         self.data_dir.join("settings.toml")
     }

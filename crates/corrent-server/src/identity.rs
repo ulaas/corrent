@@ -23,6 +23,17 @@ const AUDIT_KEEP: i64 = 20_000;
 /// Only refresh `last_seen`/expiry once a minute per token (reads stay reads).
 const TOUCH_EVERY: i64 = 60;
 
+/// The request for a new administrator (CLI setup).
+pub fn new_admin(name: &str, password: &str) -> NewUser {
+    NewUser {
+        name: name.to_string(),
+        display_name: String::new(),
+        password: password.to_string(),
+        role: Role::Admin,
+        perms: None,
+    }
+}
+
 /// argon2id cost. `STANDARD` for real use; tests use `FAST`.
 #[derive(Clone, Copy, Debug)]
 pub struct HashCost {

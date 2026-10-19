@@ -32,6 +32,7 @@ cargo build --release       # target/release/corrent.exe (owner runs this build)
 cargo test --workspace      # unit + loopback engine integration tests (crates/corrent-core/src/engine/e2e_tests.rs)
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo deny check   # CI gates
 ./target/debug/corrent.exe --portable [magnet|url|file]
+./target/debug/correntd --data-dir target/debug/correntd-data   # headless server (docs/SERVER.md)
 corrent --status | --register | --unregister | --write-icons <dir> | --help
 ```
 
@@ -74,7 +75,10 @@ crates/corrent-i18n + assets/i18n/
                             (the source of truth — edit it directly)
 crates/corrent-mpv/         Runtime-loaded libmpv (dlopen): probe, encode, GL/SW render; spike examples
 crates/corrent-proto/       API v1 wire types (serde): torrents + deltas, events, errors, auth DTOs
-crates/corrent-server/      HTTP server; webapi/ = qBittorrent-compatible Web API (axum) for Sonarr/Radarr
+crates/corrent-db/          SQLite (bundled): batching writer thread, read pool, migrations (corrent.db)
+crates/corrent-server/      Media server: v1/ (API v1 + WebSocket events), identity (users, tokens, pairing,
+                            audit), net (LAN guard), tls (own CA), webapi/ (qBittorrent API for Sonarr/Radarr)
+crates/correntd/            Headless server binary (docs/SERVER.md)
 assets/webui/               Web interface served by corrent-server's webapi at /
 src/integration/            single_instance (local socket IPC), os_handler(+_windows) magnet/.torrent
                             registration, macos_events (Apple Events), app_identity, power (when done)

@@ -8,9 +8,12 @@ use corrent_core::{config, engine, rss, store, util};
 
 pub mod config_file;
 pub mod events;
+/// Wire event types, re-exported for hosts.
+pub use corrent_proto::event as events_api;
 pub mod identity;
 pub mod net;
 pub mod state;
+pub mod tls;
 pub mod v1;
 pub mod webapi;
 
@@ -91,13 +94,13 @@ pub fn forward_engine_events(rx: std::sync::mpsc::Receiver<corrent_core::engine:
 /// A running listener; stops when dropped.
 pub struct Listener {
     pub addr: SocketAddr,
-    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    stop: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl Drop for Listener {
     fn drop(&mut self) {
         if let Some(s) = self.stop.take() {
-            let _ = s.send(());
+            s();
         }
     }
 }
@@ -106,7 +109,7 @@ impl Drop for Listener {
 pub async fn serve_http(app: Router, addr: SocketAddr) -> anyhow::Result<Listener> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let addr = listener.local_addr()?;
-    let (tx, rx) = tokio::sync::oneshot::channel();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
         let serve = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(async {
@@ -117,7 +120,36 @@ pub async fn serve_http(app: Router, addr: SocketAddr) -> anyhow::Result<Listene
         }
     });
     tracing::info!("listening on http://{addr}");
-    Ok(Listener { addr, stop: Some(tx) })
+    Ok(Listener {
+        addr,
+        stop: Some(Box::new(move || {
+            let _ = tx.send(());
+        })),
+    })
+}
+
+/// Serves `app` over HTTPS on `addr` with the given certificate chain and key.
+pub async fn serve_https(app: Router, addr: SocketAddr, tls: &tls::TlsMaterial) -> anyhow::Result<Listener> {
+    let config = axum_server::tls_rustls::RustlsConfig::from_pem(
+        tls.cert_chain_pem.as_bytes().to_vec(),
+        tls.key_pem.as_bytes().to_vec(),
+    )
+    .await?;
+    let std_listener = std::net::TcpListener::bind(addr)?;
+    std_listener.set_nonblocking(true)?;
+    let addr = std_listener.local_addr()?;
+    let handle = axum_server::Handle::new();
+    let server = axum_server::from_tcp_rustls(std_listener, config)?.handle(handle.clone());
+    tokio::spawn(async move {
+        if let Err(e) = server.serve(app.into_make_service_with_connect_info::<SocketAddr>()).await {
+            tracing::warn!("HTTPS listener stopped: {e}");
+        }
+    });
+    tracing::info!("listening on https://{addr}");
+    Ok(Listener {
+        addr,
+        stop: Some(Box::new(move || handle.graceful_shutdown(Some(std::time::Duration::from_secs(5))))),
+    })
 }
 
 #[cfg(test)]
