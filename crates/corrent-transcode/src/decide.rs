@@ -254,7 +254,7 @@ pub fn decide(m: &MediaFacts, p: &ClientProfile, r: &PlayRequest) -> Decision {
             audio_ok = false;
         }
         if a.channels.unwrap_or(2) > p.max_audio_channels {
-            reasons.push(format!("{} audio channels", a.channels.unwrap_or(2)));
+            reasons.push(format!("audio with {} channels", a.channels.unwrap_or(2)));
             audio_ok = false;
         }
     }
