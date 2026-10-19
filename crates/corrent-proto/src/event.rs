@@ -15,6 +15,8 @@ pub enum Topic {
     Log,
     /// Library changes and scan progress.
     Library,
+    /// A watch-together room (members only).
+    Room(String),
 }
 
 /// Client → server.
@@ -98,6 +100,10 @@ pub enum Event {
     },
     ScanStatus {
         status: crate::library::ScanStatus,
+    },
+    /// A watch-together room changed (play, pause, seek, people joining or leaving).
+    SyncPlay {
+        room: crate::library::RoomState,
     },
     /// The server is going away (restart or shutdown).
     Bye,

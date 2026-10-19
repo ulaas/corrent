@@ -148,6 +148,16 @@ others on request) are burned into the picture. Seek-bar thumbnails (trickplay) 
 background the first time a video is played. Transcodes need the `playback.transcode`
 permission; at most three run at once and idle ones stop after 90 seconds.
 
+## Watching together
+
+The player's **Watch together** button starts a room for what is playing and copies a link
+(`/play/<item>?room=<code>`); others open it in a browser, or type the code into the desktop
+player's Watch together menu. Play, pause and seek from anyone apply to everyone; positions are
+computed from the server's clock, so late joiners start at the right place. Everyone needs an
+account that may see the item. Rooms close when the last person leaves or after six idle hours
+(at most 200 rooms, 20 people each). API: `POST /api/v1/syncplay`, `GET /syncplay/{code}`,
+`POST /syncplay/{code}/join|leave|command`; WebSocket topic `room` with the code as argument.
+
 ## Installing as a service
 
 Packages: `Corrent-Server-<v>-linux-x86_64.tar.gz` / `-darwin-*.tar.gz` (`scripts/package-server.sh`),

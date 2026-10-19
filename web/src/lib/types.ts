@@ -149,7 +149,8 @@ export type Topic =
   | { topic: 'torrent'; arg: string }
   | { topic: 'session' }
   | { topic: 'log' }
-  | { topic: 'library' };
+  | { topic: 'library' }
+  | { topic: 'room'; arg: string };
 
 export type Severity = 'info' | 'success' | 'warning' | 'error';
 
@@ -168,6 +169,7 @@ export type ServerEvent =
   | { t: 'log'; level: string; target: string; message: string; time: number }
   | { t: 'library_changed'; library_id: number }
   | { t: 'scan_status'; status: ScanStatus }
+  | { t: 'sync_play'; room: RoomState }
   | { t: 'bye' };
 
 // ---- auth ----
@@ -658,4 +660,16 @@ export interface BackupFile {
   name: string;
   size: number;
   created: number;
+}
+
+/** A watch-together room. */
+export interface RoomState {
+  id: string;
+  item_id: number;
+  paused: boolean;
+  position_ms: number;
+  at_ms: number;
+  by: string;
+  members: string[];
+  server_now_ms: number;
 }

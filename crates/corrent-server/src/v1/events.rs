@@ -146,6 +146,14 @@ impl Client {
                             self.send(&mut ws, &e).await?;
                         }
                     }
+                    // Rooms: only to subscribed members.
+                    Ok(Event::SyncPlay { room }) => {
+                        if self.topics.contains(&Topic::Room(room.id.clone()))
+                            && room.members.iter().any(|m| m == self.auth.name())
+                        {
+                            self.send(&mut ws, &Event::SyncPlay { room }).await?;
+                        }
+                    }
                     Ok(e) => self.send(&mut ws, &e).await?,
                     // Fell behind on discrete events: they are notifications, skipping is fine.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => tracing::debug!("events client lagged {n}"),
@@ -173,6 +181,11 @@ impl Client {
             ClientMessage::Subscribe { topics } => {
                 for t in topics {
                     if t == Topic::Log && !self.auth.0.can(Perms::SETTINGS_WRITE) {
+                        continue;
+                    }
+                    if let Topic::Room(r) = &t
+                        && !self.st.rooms.is_member(r, self.auth.name())
+                    {
                         continue;
                     }
                     if t == Topic::Torrents {

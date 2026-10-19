@@ -627,3 +627,35 @@ mod skip_tests {
         assert_eq!(skip_at(&ch, 20.0, 1300.0), None);
     }
 }
+
+/// A watch-together room (`/api/v1/syncplay`): everyone in it plays the same item in step.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RoomState {
+    pub id: String,
+    pub item_id: i64,
+    pub paused: bool,
+    /// The position at `at_ms` (server clock); while playing, it advances from there.
+    pub position_ms: i64,
+    pub at_ms: i64,
+    /// Who did the last thing.
+    pub by: String,
+    pub members: Vec<String>,
+    /// The server's clock when this was sent (clients estimate their offset from it).
+    pub server_now_ms: i64,
+}
+
+impl RoomState {
+    /// Where playback should be at server time `now_ms`.
+    pub fn position_at(&self, now_ms: i64) -> i64 {
+        if self.paused { self.position_ms } else { self.position_ms + (now_ms - self.at_ms).max(0) }
+    }
+}
+
+/// `POST /api/v1/syncplay/{id}/command`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum RoomCommand {
+    Play { position_ms: i64 },
+    Pause { position_ms: i64 },
+    Seek { position_ms: i64 },
+}

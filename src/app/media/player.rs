@@ -11,6 +11,8 @@ use corrent_mpv::{EndReason, Event, Mpv, Node};
 use eframe::glow::{self, HasContext};
 use egui::{Color32, CornerRadius, Rect, Sense, Ui, pos2, vec2};
 
+use corrent_proto::library::RoomCommand;
+
 use super::client::MediaClient;
 use crate::ui::theme::Palette;
 
@@ -135,6 +137,9 @@ pub struct Player {
     /// Seek-bar thumbnails of the current item (empty until loaded, or when there are none).
     trick: Arc<Mutex<Vec<Cue>>>,
     sheets: std::collections::HashMap<String, Sheet>,
+    /// Watching together, and the code typed to join a room.
+    pub room: Option<super::syncplay::Room>,
+    room_code: String,
 }
 
 fn track_list(n: &Node) -> Vec<Track> {
@@ -381,6 +386,8 @@ impl Player {
             seek_drag: None,
             trick: Arc::default(),
             sheets: Default::default(),
+            room: None,
+            room_code: String::new(),
         };
         p.load_current();
         Ok(p)
@@ -448,12 +455,37 @@ impl Player {
         let _ = self.mpv.command_async(0, args);
     }
 
-    pub fn toggle_pause(&self) {
+    pub fn toggle_pause(&mut self) {
         self.cmd(&["cycle", "pause"]);
+        if let Some(room) = &mut self.room {
+            let (pos, _, paused) = self.status.lock().map(|s| (s.pos, s.duration, s.paused)).unwrap_or_default();
+            let position_ms = (pos * 1000.0) as i64;
+            room.send(if paused { RoomCommand::Play { position_ms } } else { RoomCommand::Pause { position_ms } });
+        }
     }
 
-    pub fn seek(&self, secs: f64, relative: bool) {
+    pub fn seek(&mut self, secs: f64, relative: bool) {
         self.cmd(&["seek", &format!("{secs}"), if relative { "relative" } else { "absolute" }]);
+        if let Some(room) = &mut self.room {
+            let pos = self.status.lock().map(|s| s.pos).unwrap_or_default();
+            let to = if relative { pos + secs } else { secs };
+            room.send(RoomCommand::Seek { position_ms: (to.max(0.0) * 1000.0) as i64 });
+        }
+    }
+
+    /// Follows the room (when watching together).
+    fn sync_room(&mut self, ctx: &egui::Context) {
+        let Some(item) = self.current().map(|e| e.item_id) else { return };
+        let Some(room) = &mut self.room else { return };
+        room.poll(ctx);
+        let (pos, paused, buffering) = self.status.lock().map(|s| (s.pos, s.paused, s.buffering)).unwrap_or_default();
+        let c = room.correction(item, pos, paused, buffering);
+        if let Some(to) = c.seek_to {
+            self.cmd(&["seek", &format!("{to}"), "absolute"]);
+        }
+        if let Some(p) = c.pause {
+            self.cmd(&["set", "pause", if p { "yes" } else { "no" }]);
+        }
     }
 
     pub fn next(&mut self) -> bool {
@@ -575,6 +607,7 @@ impl Player {
         } else if resp.clicked() {
             self.toggle_pause();
         }
+        self.sync_room(&ctx);
         let (pos, dur, paused) = self.position();
         let show = paused || Instant::now() < self.controls_until;
         let k = crate::ui::motion::toggle(&ctx, ui.id().with("controls"), show, crate::ui::motion::PANEL);
@@ -843,6 +876,7 @@ impl Player {
             egui::FontId::proportional(22.0),
             white,
         );
+        self.room_button(ui, pos2(rect.right() - 140.0, y), white, paused, pos);
         let tracks = self.status.lock().map(|s| s.tracks.clone()).unwrap_or_default();
         let mpv = self.mpv.clone();
         egui::Popup::from_toggle_button_response(&r).show(|ui| {
@@ -863,6 +897,81 @@ impl Player {
             }
         });
         action
+    }
+
+    /// "Watch together": start a room, join one by its code, copy its link, leave.
+    fn room_button(&mut self, ui: &mut Ui, at: egui::Pos2, white: Color32, paused: bool, pos: f64) {
+        let r = Rect::from_center_size(at, vec2(30.0, 30.0));
+        let resp = ui.interact(r, ui.id().with("room"), Sense::click()).on_hover_text(t!("Watch together"));
+        let icon =
+            if self.room.is_some() { egui_phosphor::regular::USERS_THREE } else { egui_phosphor::regular::USERS };
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(22.0), white);
+        let item = self.current().map(|e| e.item_id);
+        egui::Popup::from_toggle_button_response(&resp)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(280.0);
+                ui.label(egui::RichText::new(t!("Watch together")).strong());
+                if let Some(room) = &self.room {
+                    match room.state() {
+                        Some(s) => {
+                            ui.label(t!("Room {code}", code = s.id));
+                            let n = s.members.len();
+                            ui.label(if n == 1 { t!("Only you so far").to_string() } else { t!("{n} people", n = n) });
+                            if Some(s.item_id) != item {
+                                ui.label(t!("The room is watching something else."));
+                            }
+                            if ui.button(t!("Copy link")).clicked()
+                                && let Some(l) = room.link()
+                            {
+                                ui.ctx().copy_text(l);
+                            }
+                        }
+                        None => match room.error() {
+                            Some(e) => {
+                                ui.colored_label(Color32::LIGHT_RED, e);
+                            }
+                            None => {
+                                ui.spinner();
+                            }
+                        },
+                    }
+                    if ui.button(t!("Leave the room")).clicked() {
+                        self.room = None;
+                    }
+                } else {
+                    ui.label(t!("Play, pause and seek together with others, wherever they watch."));
+                    if let Some(item) = item
+                        && ui.button(t!("Start a room")).clicked()
+                    {
+                        self.room = Some(super::syncplay::Room::create(
+                            self.client.clone(),
+                            self.rt.clone(),
+                            ui.ctx().clone(),
+                            item,
+                            pos,
+                            paused,
+                        ));
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.room_code)
+                                .hint_text(t!("Room code"))
+                                .desired_width(120.0),
+                        );
+                        if ui.add_enabled(!self.room_code.trim().is_empty(), egui::Button::new(t!("Join"))).clicked() {
+                            self.room = Some(super::syncplay::Room::join(
+                                self.client.clone(),
+                                self.rt.clone(),
+                                ui.ctx().clone(),
+                                &self.room_code,
+                            ));
+                            self.room_code.clear();
+                        }
+                    });
+                }
+            });
     }
 
     /// The bottom bar while music plays and the UI is browsing.

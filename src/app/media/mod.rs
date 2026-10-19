@@ -9,6 +9,7 @@ pub mod libraries;
 pub mod player;
 pub mod profiles;
 pub mod subtitles;
+pub mod syncplay;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

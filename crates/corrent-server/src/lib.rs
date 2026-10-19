@@ -143,6 +143,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         stopping: tokio::sync::watch::Sender::new(false),
         remote: Default::default(),
         tasks: Default::default(),
+        rooms: Default::default(),
         remote_status: Default::default(),
     });
     metadata::start(state.clone());

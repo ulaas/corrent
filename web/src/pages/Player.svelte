@@ -5,7 +5,9 @@
   import Seek from '../components/Seek.svelte';
   import Spinner from '../components/Spinner.svelte';
   import { api, errorText } from '../lib/api';
-  import { back, go, route } from '../lib/router.svelte';
+  import { back, go, route, setQuery } from '../lib/router.svelte';
+  import { SyncRoom } from '../lib/syncplay.svelte';
+  import { toast } from '../lib/toast.svelte';
   import { attachSource, reportProgress, resolveSource, resumeAt, stopSession, type PlaybackInfo, type PlaybackOptions } from '../lib/player.svelte';
   import { music } from '../lib/player.svelte';
   import { backdrop, image, skipAt } from '../lib/media';
@@ -222,6 +224,37 @@
     if (nextUp) go(`/play/${nextUp.id}?from=0`, { replace: true });
   }
 
+  // Watching together (?room=<id>).
+  let room = $state<SyncRoom | null>(null);
+  $effect(() => {
+    const roomId = route.query.get('room');
+    if (!roomId || room?.id === roomId) return;
+    untrack(() => {
+      room?.leave();
+      SyncRoom.join(roomId, () => video)
+        .then((r) => {
+          room = r;
+          // The room plays something else: follow it.
+          if (r.state && r.state.item_id !== id) go(`/play/${r.state.item_id}?room=${encodeURIComponent(r.id)}`, { replace: true });
+        })
+        .catch((e) => toast(errorText(e), 'error'));
+    });
+  });
+  onDestroy(() => room?.leave());
+  async function watchTogether() {
+    if (room) {
+      void navigator.clipboard?.writeText(location.href).then(() => toast(t('Link copied: send it to whoever watches with you.'), 'success'));
+      return;
+    }
+    try {
+      room = await SyncRoom.create(id, time * 1000, () => video);
+      setQuery({ room: room.id });
+      void navigator.clipboard?.writeText(location.href).then(() => toast(t('Link copied: send it to whoever watches with you.'), 'success'));
+    } catch (e) {
+      toast(errorText(e), 'error');
+    }
+  }
+
   function toggle() {
     if (!video) return;
     if (video.paused) void video.play();
@@ -230,6 +263,7 @@
 
   function seek(s: number) {
     if (video) video.currentTime = Math.max(0, Math.min(s, duration || s));
+    room?.send('seek', s);
   }
   function skip(d: number) {
     seek(time + d);
@@ -371,8 +405,8 @@
     playsinline
     onclick={toggle}
     ondblclick={toggleFullscreen}
-    onplay={() => ((playing = true), poke())}
-    onpause={() => ((playing = false), (chrome = true))}
+    onplay={() => ((playing = true), poke(), room?.send('play', video?.currentTime ?? time))}
+    onpause={() => ((playing = false), (chrome = true), room?.send('pause', video?.currentTime ?? time))}
     onwaiting={() => (waiting = true)}
     onplaying={() => (waiting = false)}
     oncanplay={() => (waiting = false)}
@@ -381,7 +415,7 @@
     ondurationchange={onTime}
     onended={onEnded}
     onerror={onError}
-    onloadedmetadata={applyTracks}>
+    onloadedmetadata={() => (applyTracks(), room?.apply())}>
     {#each info?.subtitles.filter((s) => s.url) ?? [] as s (s.index)}
       <track id="sub-{s.index}" kind="subtitles" src={s.url} srclang={s.lang ?? undefined} label={subLabel(s)} />
     {/each}
@@ -498,6 +532,7 @@
         </div>
       {/if}
 
+      <button class="btn ghost icon" class:on={room != null} aria-label={t('Watch together')} title={room ? t('Watching together: {n} people', { n: room.state?.members.length ?? 1 }) : t('Watch together')} onclick={watchTogether}><Icon name="users" size={20} /></button>
       {#if 'pictureInPictureEnabled' in document}
         <button class="btn ghost icon" aria-label={t('Picture in picture')} title={t('Picture in picture')} onclick={togglePip}><Icon name="picture-in-picture" size={20} /></button>
       {/if}

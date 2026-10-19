@@ -1156,6 +1156,102 @@ async fn catalog_installs_signed_plugins_only() {
     h.stop().await;
 }
 
+/// Watching together: rooms share play/pause/seek among their members only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn syncplay_rooms() {
+    let h = harness("syncplay", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let photos = h.dir.join("Pics");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])).save(photos.join("a.png")).unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Pics", "kind": "photos", "folders": [photos] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let item = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if let Some(id) = v["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let mk = |name: &str| json!({ "name": name, "password": "long enough pw", "role": "user" });
+    send(app, Method::POST, "/api/v1/users", &admin, mk("friend")).await;
+    send(app, Method::POST, "/api/v1/users", &admin, mk("other")).await;
+    let login = |u: &'static str| async move {
+        let (_, v, _) = call(
+            app,
+            Method::POST,
+            "/api/v1/auth/login",
+            Call {
+                body: Some(json!({ "username": u, "password": "long enough pw", "device": device() })),
+                ..Default::default()
+            },
+        )
+        .await;
+        v["token"].as_str().unwrap().to_string()
+    };
+    let (friend, other) = (login("friend").await, login("other").await);
+
+    let (s, room, _) = send(app, Method::POST, "/api/v1/syncplay", &admin, json!({ "item_id": item })).await;
+    assert_eq!(s, StatusCode::OK, "{room}");
+    let id = room["id"].as_str().unwrap().to_string();
+    assert_eq!(room["paused"], true);
+    // Not a member yet: nothing to see or do.
+    let (s, _, _) = get(app, &format!("/api/v1/syncplay/{id}"), &friend).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _, _) = send(
+        app,
+        Method::POST,
+        &format!("/api/v1/syncplay/{id}/command"),
+        &other,
+        json!({ "action": "play", "position_ms": 0 }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, v, _) = send(app, Method::POST, &format!("/api/v1/syncplay/{id}/join"), &friend, Value::Null).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["members"], json!(["admin", "friend"]));
+    // The friend presses play at 10 s; the admin sees it running.
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        &format!("/api/v1/syncplay/{id}/command"),
+        &friend,
+        json!({ "action": "play", "position_ms": 10_000 }),
+    )
+    .await;
+    assert_eq!((v["paused"].as_bool(), v["by"].as_str()), (Some(false), Some("friend")));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let (_, v, _) = get(app, &format!("/api/v1/syncplay/{id}"), &admin).await;
+    let st: corrent_proto::library::RoomState = serde_json::from_value(v).unwrap();
+    let pos = st.position_at(st.server_now_ms);
+    assert!((10_250..12_000).contains(&pos), "advanced while playing: {pos}");
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        &format!("/api/v1/syncplay/{id}/command"),
+        &admin,
+        json!({ "action": "pause", "position_ms": 10_500 }),
+    )
+    .await;
+    assert_eq!(v["paused"], true);
+    // Leaving empties the room; the last one out removes it.
+    send(app, Method::POST, &format!("/api/v1/syncplay/{id}/leave"), &friend, Value::Null).await;
+    send(app, Method::POST, &format!("/api/v1/syncplay/{id}/leave"), &admin, Value::Null).await;
+    let (s, _, _) = send(app, Method::POST, &format!("/api/v1/syncplay/{id}/join"), &friend, Value::Null).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_with_the_servers_own_ca() {
     let h = harness("https", ServerConfig::default()).await;
