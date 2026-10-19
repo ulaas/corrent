@@ -512,4 +512,53 @@ mod tests {
         assert!(bytes * 20 < full, "delta {bytes} B vs full {full} B");
         assert!(took < std::time::Duration::from_millis(200), "diff took {took:?}");
     }
+
+    /// Property: whatever changed between two lists, the delta (also after a JSON round trip,
+    /// as it travels) turns the old list into the new one.
+    #[test]
+    fn deltas_reproduce_any_change() {
+        use corrent_fuzz::{Rng, iterations, run};
+        fn torrent(r: &mut Rng, n: u8) -> Torrent {
+            let mut t = Torrent { hash: InfoHash([n; 20]), name: r.text(12), ..Default::default() };
+            t.state =
+                *r.pick(&[TorrentState::Downloading, TorrentState::Seeding, TorrentState::Paused, TorrentState::Error]);
+            t.done = r.next_u64() % 1000;
+            t.progress = (r.below(1000) as f32) / 1000.0;
+            t.down_bps = r.next_u64() % 10_000;
+            t.peers_live = r.below(50) as u32;
+            t.category = r.chance(30).then(|| r.text(5));
+            t.tags = (0..r.below(3)).map(|_| r.text(4)).collect();
+            t.queue_pos = r.below(100) as u32;
+            t
+        }
+        run("delta", iterations(5_000), |r| {
+            let old: Vec<Torrent> = (0..r.below(12) as u8).map(|n| torrent(r, n)).collect();
+            let mut new: Vec<Torrent> = old.iter().filter(|_| !r.chance(20)).cloned().collect();
+            for t in new.iter_mut() {
+                if r.chance(50) {
+                    let fresh = torrent(r, t.hash.0[0]);
+                    match r.below(4) {
+                        0 => t.down_bps = fresh.down_bps,
+                        1 => t.state = fresh.state,
+                        2 => t.tags = fresh.tags,
+                        _ => *t = fresh,
+                    }
+                }
+            }
+            for n in 0..r.below(4) as u8 {
+                if !new.iter().any(|t| t.hash.0[0] == 100 + n) {
+                    new.push(torrent(r, 100 + n));
+                }
+            }
+            let d = diff(&old, &new);
+            let d: TorrentsDelta = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+            let mut got = old.clone();
+            apply(&mut got, &d);
+            let key = |l: &mut Vec<Torrent>| l.sort_by_key(|t| t.hash.0);
+            let (mut a, mut b) = (got, new.clone());
+            key(&mut a);
+            key(&mut b);
+            assert_eq!(a, b);
+        });
+    }
 }

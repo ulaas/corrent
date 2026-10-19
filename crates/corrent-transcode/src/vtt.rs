@@ -18,10 +18,14 @@ fn parse_time(s: &str) -> Option<u64> {
     let frac = frac.trim();
     let ms = match frac.len() {
         0 => 0,
-        1 => frac.parse::<u64>().ok()? * 100,
-        2 => frac.parse::<u64>().ok()? * 10,
+        1 => frac.parse::<u64>().ok()?.min(9) * 100,
+        2 => frac.parse::<u64>().ok()?.min(99) * 10,
         _ => frac.get(..3)?.parse::<u64>().ok()?,
     };
+    // Absurd values (broken files) are refused rather than overflowing.
+    if h > 1_000_000 || m > 1_000_000 || sec > 1_000_000 {
+        return None;
+    }
     Some(((h * 60 + m) * 60 + sec) * 1000 + ms)
 }
 

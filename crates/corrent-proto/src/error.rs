@@ -24,6 +24,8 @@ pub enum ErrorCode {
     EngineUnavailable,
     /// Waiting for something (magnet metadata, the engine) took too long.
     Timeout,
+    /// The server's disk is (nearly) full.
+    NoSpace,
     Internal,
 }
 
@@ -39,6 +41,7 @@ impl ErrorCode {
             ErrorCode::TooManyRequests | ErrorCode::AccountLocked => 429,
             ErrorCode::EngineUnavailable => 503,
             ErrorCode::Timeout => 504,
+            ErrorCode::NoSpace => 507,
             ErrorCode::Internal => 500,
         }
     }
@@ -59,6 +62,7 @@ impl ErrorCode {
             ErrorCode::PairingCodeInvalid => t!("The pairing code is wrong or has expired."),
             ErrorCode::EngineUnavailable => t!("The torrent engine isn't running."),
             ErrorCode::Timeout => t!("That took too long. Try again later."),
+            ErrorCode::NoSpace => t!("The server is running out of disk space."),
             ErrorCode::Internal => t!("Something went wrong on the server."),
         }
     }

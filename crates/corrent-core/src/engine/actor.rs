@@ -2279,6 +2279,8 @@ async fn list_only(sess: &Arc<Session>, bytes: Vec<u8>) -> anyhow::Result<librqb
 
 async fn preview(sess: &Arc<Session>, source: &AddSource) -> anyhow::Result<Preview> {
     let bytes = fetch_torrent_bytes(sess, source).await?;
+    // Not a .torrent file: say so now (handed to the session, broken bytes can stall instead).
+    librqbit::torrent_from_bytes(&bytes).map_err(|e| anyhow::anyhow!("not a valid .torrent file: {e}"))?;
     let l = list_only(sess, bytes).await?;
     let info_hash = InfoHash(l.info_hash.0);
     let name = l.info.name().map(|n| n.into_owned()).unwrap_or_else(|| info_hash.to_hex());

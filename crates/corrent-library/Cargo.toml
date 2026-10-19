@@ -26,4 +26,5 @@ aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"]
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 
 [dev-dependencies]
+corrent-fuzz = { path = "../corrent-fuzz" }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "process", "time"] }

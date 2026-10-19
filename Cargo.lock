@@ -1387,6 +1387,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "corrent-fuzz"
+version = "0.1.0"
+
+[[package]]
 name = "corrent-i18n"
 version = "0.1.0"
 dependencies = [
@@ -1402,6 +1406,7 @@ version = "0.1.0"
 dependencies = [
  "aws-lc-rs",
  "corrent-db",
+ "corrent-fuzz",
  "corrent-i18n",
  "corrent-mpv",
  "corrent-proto",
@@ -1447,6 +1452,7 @@ dependencies = [
 name = "corrent-proto"
 version = "0.1.0"
 dependencies = [
+ "corrent-fuzz",
  "corrent-i18n",
  "serde",
  "serde_json",
@@ -1465,6 +1471,7 @@ dependencies = [
  "base64 0.22.1",
  "corrent-core",
  "corrent-db",
+ "corrent-fuzz",
  "corrent-i18n",
  "corrent-library",
  "corrent-mpv",
@@ -1504,7 +1511,9 @@ dependencies = [
 name = "corrent-transcode"
 version = "0.1.0"
 dependencies = [
+ "corrent-fuzz",
  "corrent-mpv",
+ "fs4",
  "image",
  "serde",
  "serde_json",

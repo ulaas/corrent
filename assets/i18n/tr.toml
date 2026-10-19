@@ -1064,3 +1064,4 @@
 "Scan now" = "Şimdi tara"
 "Scanning… {pct}%" = "Taranıyor… %{pct}"
 "Shows" = "Diziler"
+"The server is running out of disk space." = "Sunucunun disk alanı azalıyor."

@@ -382,4 +382,6 @@ fn clean_folders(folders: &[String]) -> Result<Vec<String>> {
 }
 
 #[cfg(test)]
+mod fuzz_tests;
+#[cfg(test)]
 mod tests;

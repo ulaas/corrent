@@ -30,6 +30,7 @@ const CODE_TEXT: Record<string, string> = {
   pairing_code_invalid: tk('The pairing code is wrong or has expired.'),
   engine_unavailable: tk("The torrent engine isn't running."),
   timeout: tk('That took too long. Try again later.'),
+  no_space: tk('The server is running out of disk space.'),
   internal: tk('Something went wrong on the server.'),
 };
 

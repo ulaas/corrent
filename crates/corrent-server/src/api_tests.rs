@@ -850,6 +850,81 @@ async fn preferences_follow_the_user() {
     h.stop().await;
 }
 
+/// Robustness: mangled request bodies are refused cleanly (4xx), never with a 500 or a
+/// crashed handler, and the server keeps answering.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api_inputs_are_refused_cleanly() {
+    use corrent_fuzz::{Rng, iterations};
+    let mut h = harness("fuzz", ServerConfig { tls: false, ..Default::default() }).await;
+    // Previews are answered through the engine's events.
+    crate::forward_engine_events(h.l_events(), h.st.clone());
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let hash = "0101010101010101010101010101010101010101";
+    let targets: Vec<(Method, String, &str)> = vec![
+        (
+            Method::POST,
+            "/api/v1/torrents".into(),
+            r#"{"urls":["magnet:?xt=urn:btih:0101010101010101010101010101010101010101"],"paused":true}"#,
+        ),
+        (
+            Method::POST,
+            "/api/v1/torrents/actions".into(),
+            r#"{"action":"pause","hashes":["0101010101010101010101010101010101010101"]}"#,
+        ),
+        (Method::PATCH, format!("/api/v1/torrents/{hash}"), r#"{"name":"x","tags":["a"],"seed":{"ratio":1.5}}"#),
+        (Method::POST, "/api/v1/torrents/preview".into(), r#"{"torrent":"ZDQ6aW5mb2Rl"}"#),
+        (Method::POST, "/api/v1/torrents/queue".into(), r#"{"hashes":[],"before":null}"#),
+        (
+            Method::PUT,
+            "/api/v1/torrents/categories".into(),
+            r#"{"Movies":{"save_path":null,"down_limit_kib":0,"up_limit_kib":0}}"#,
+        ),
+        (Method::POST, "/api/v1/libraries".into(), r#"{"name":"L","kind":"photos","folders":["/nonexistent"]}"#),
+        (Method::POST, "/api/v1/wanted".into(), r#"{"title":"Sintel","year":2010}"#),
+        (Method::POST, "/api/v1/users".into(), r#"{"name":"u","password":"long enough pw","role":"user"}"#),
+        (Method::PUT, "/api/v1/me/prefs".into(), r#"{"homeOrder":["continue"]}"#),
+        (Method::POST, "/api/v1/notifications".into(), r#"{"name":"n","kind":"ntfy","url":"https://ntfy.sh/x"}"#),
+        (Method::PUT, "/api/v1/tasks/backup".into(), r#"{"every_min":60}"#),
+        (
+            Method::POST,
+            "/api/v1/auth/profile".into(),
+            r#"{"user_id":1,"pin":"1234","device":{"name":"d","platform":"linux"}}"#,
+        ),
+        (Method::PUT, "/api/v1/auth/pin".into(), r#"{"pin":"1234"}"#),
+        (Method::POST, "/api/v1/auth/pair/code".into(), r#"{"host":"x"}"#),
+    ];
+    let n = iterations(600);
+    for i in 0..n {
+        let mut r = Rng::new(i as u64 + 1);
+        let (method, uri, seed) = r.pick(&targets).clone();
+        let body = r.case(&[seed], 200);
+        let mut req = Request::builder()
+            .method(method.clone())
+            .uri(&uri)
+            .header(header::HOST, "127.0.0.1:8443")
+            .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.clone()))
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+        let t0 = std::time::Instant::now();
+        let res = app.clone().oneshot(req).await.expect("the handler answered");
+        assert_ne!(res.status(), StatusCode::INTERNAL_SERVER_ERROR, "case {i}: {method} {uri} with {body:?}");
+        // Garbage must be refused quickly too (nothing waits on it).
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(10),
+            "case {i} took {:?}: {method} {uri} with {body:?} → {}",
+            t0.elapsed(),
+            res.status()
+        );
+    }
+    // Still healthy.
+    let (s, _, _) = get(app, "/api/v1/auth/me", &admin).await;
+    assert_eq!(s, StatusCode::OK);
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_with_the_servers_own_ca() {
     let h = harness("https", ServerConfig::default()).await;

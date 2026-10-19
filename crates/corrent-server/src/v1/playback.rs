@@ -72,6 +72,7 @@ fn hls_err(e: HlsError) -> ApiErr {
     match e {
         HlsError::NotFound => err(ErrorCode::NotFound, "no such playback session"),
         HlsError::TooMany => err(ErrorCode::TooManyRequests, "too many transcodes at once"),
+        HlsError::NoSpace => err(ErrorCode::NoSpace, "not enough free disk space for transcoding"),
         HlsError::Failed(m) => err(ErrorCode::Internal, m),
     }
 }

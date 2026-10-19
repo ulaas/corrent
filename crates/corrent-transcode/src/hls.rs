@@ -23,6 +23,9 @@ use crate::decide::{AudioTarget, VideoTarget};
 const AHEAD_SEGMENTS: u64 = 8;
 const IDLE: Duration = Duration::from_secs(90);
 const SEGMENT_WAIT: Duration = Duration::from_secs(60);
+/// Below this much free space on the cache's disk no new transcode starts (a full disk would
+/// also break the library database and downloads).
+const MIN_FREE: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct HlsConfig {
@@ -147,6 +150,8 @@ fn segment_number(name: &str) -> Option<u64> {
 pub enum HlsError {
     NotFound,
     TooMany,
+    /// The transcode cache's disk is (nearly) full.
+    NoSpace,
     Failed(String),
 }
 
@@ -155,6 +160,7 @@ impl std::fmt::Display for HlsError {
         match self {
             HlsError::NotFound => write!(f, "no such session or segment"),
             HlsError::TooMany => write!(f, "too many transcodes at once"),
+            HlsError::NoSpace => write!(f, "not enough free disk space for transcoding"),
             HlsError::Failed(m) => write!(f, "transcode failed: {m}"),
         }
     }
@@ -234,6 +240,10 @@ impl HlsManager {
                 }
                 None => return Err(HlsError::TooMany),
             }
+        }
+        let _ = std::fs::create_dir_all(&cfg.root);
+        if fs4::available_space(&cfg.root).is_ok_and(|free| free < MIN_FREE) {
+            return Err(HlsError::NoSpace);
         }
         let id = random_id();
         let dir = cfg.root.join(&id);
