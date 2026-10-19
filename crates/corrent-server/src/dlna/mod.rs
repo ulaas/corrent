@@ -6,6 +6,9 @@
 //! local addresses, and serves media only through signed URLs it handed out while browsing
 //! (the key changes with every start). Plain HTTP on `dlna_port`: TVs don't trust our
 //! certificates. The service descriptions (`*.xml`) come from librqbit-upnp-serve (Apache-2.0).
+//!
+//! The same listener serves Chromecasts (`crate::cast`) their signed media and HLS links; when
+//! only casting needs it, it runs without announcing and without browsing.
 
 mod didl;
 mod ssdp;
@@ -33,19 +36,72 @@ const PAGE_MAX: usize = 500;
 /// The running server (dropping it stops announcing; the HTTP listener stops with it).
 pub struct Running {
     _http: crate::Listener,
-    ssdp: tokio::task::JoinHandle<()>,
+    ssdp: Option<tokio::task::JoinHandle<()>>,
+    d: Arc<Dlna>,
     pub port: u16,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
-        self.ssdp.abort();
+        if let Some(t) = &self.ssdp {
+            t.abort();
+        }
     }
+}
+
+impl Running {
+    /// Announced to TVs and browsable (not just serving casts).
+    pub fn announcing(&self) -> bool {
+        self.ssdp.is_some()
+    }
+
+    /// Links for other devices on the network (casting).
+    pub fn links(&self) -> Links {
+        Links { d: self.d.clone(), port: self.port }
+    }
+}
+
+/// Signed URLs on the media listener.
+#[derive(Clone)]
+pub struct Links {
+    d: Arc<Dlna>,
+    port: u16,
+}
+
+impl Links {
+    /// A library file as `user` may see it, at `host` (our address as the device sees it).
+    pub fn media(&self, host: std::net::IpAddr, user: i64, file: i64, ext: &str) -> String {
+        format!("http://{}{}", host_port(host, self.port), media_path(&self.d, user, file, ext))
+    }
+
+    /// Artwork by its hash.
+    pub fn art(&self, host: std::net::IpAddr, sha: &str) -> String {
+        let sig = sign(&self.d, &format!("art:{sha}"));
+        format!("http://{}/dlna/art/{sha}/{sig}", host_port(host, self.port))
+    }
+
+    /// An HLS session's playlist.
+    pub fn hls(&self, host: std::net::IpAddr, session: &str) -> String {
+        let sig = sign(&self.d, &format!("hls:{session}"));
+        format!("http://{}/dlna/hls/{session}/{sig}/index.m3u8", host_port(host, self.port))
+    }
+}
+
+fn host_port(ip: std::net::IpAddr, port: u16) -> String {
+    match ip {
+        std::net::IpAddr::V6(v) => format!("[{v}]:{port}"),
+        v4 => format!("{v4}:{port}"),
+    }
+}
+
+fn media_path(d: &Dlna, user: i64, file: i64, ext: &str) -> String {
+    format!("/dlna/media/{user}/{file}/{}.{ext}", sign(d, &format!("media:{user}:{file}")))
 }
 
 struct Dlna {
     st: Arc<AppState>,
-    user: i64,
+    /// The account DLNA browses as (None: only casting).
+    user: Option<i64>,
     key: aws_lc_rs::hmac::Key,
     udn: String,
     name: String,
@@ -53,41 +109,38 @@ struct Dlna {
     update_id: u32,
 }
 
-/// Starts the HTTP side and the SSDP announcer.
-pub async fn start(st: Arc<AppState>) -> anyhow::Result<Running> {
-    let d = prepare(st).await?;
+/// Starts the HTTP side, and with `announce` browsing and the SSDP announcer (DLNA).
+pub async fn start(st: Arc<AppState>, announce: bool) -> anyhow::Result<Running> {
+    let d = prepare(st, announce).await?;
     let cfg = d.st.cfg.load_full();
     let addr = SocketAddr::new(cfg.bind.parse().unwrap_or([0, 0, 0, 0].into()), cfg.dlna_port);
     let http = crate::serve_http(router(d.clone()), addr).await?;
     let port = http.addr.port();
-    let runner = ssdp::Ssdp::new(d.udn.clone(), port).await?;
-    let ssdp = tokio::spawn(async move { runner.run().await });
-    tracing::info!("DLNA: announcing “{}” as {} (port {port})", d.name, d.udn);
-    Ok(Running { _http: http, ssdp, port })
+    let ssdp = if announce {
+        let runner = ssdp::Ssdp::new(d.udn.clone(), port).await?;
+        tracing::info!("DLNA: announcing “{}” as {} (port {port})", d.name, d.udn);
+        Some(tokio::spawn(async move { runner.run().await }))
+    } else {
+        None
+    };
+    Ok(Running { _http: http, ssdp, d, port })
 }
 
 /// The HTTP side alone (tests).
 #[cfg(test)]
-pub(crate) async fn test_router(st: Arc<AppState>) -> anyhow::Result<Router> {
-    Ok(router(prepare(st).await?))
+pub(crate) async fn test_router(st: Arc<AppState>, announce: bool) -> anyhow::Result<(Router, Links)> {
+    let d = prepare(st, announce).await?;
+    Ok((router(d.clone()), Links { d, port: 8201 }))
 }
 
-async fn prepare(st: Arc<AppState>) -> anyhow::Result<Arc<Dlna>> {
+async fn prepare(st: Arc<AppState>, announce: bool) -> anyhow::Result<Arc<Dlna>> {
     let cfg = st.cfg.load_full();
-    let users = st.identity.users().await.map_err(|e| anyhow::anyhow!("{}", e.message))?;
-    let user = if cfg.dlna_user.trim().is_empty() {
-        users.iter().filter(|u| u.role == Role::Admin && !u.disabled).min_by_key(|u| u.id)
-    } else {
-        users.iter().find(|u| u.name.eq_ignore_ascii_case(cfg.dlna_user.trim()) && !u.disabled)
-    };
-    let Some(user) = user else {
-        anyhow::bail!("no account for DLNA (set dlna_user to an existing, enabled account)");
-    };
+    let user = if announce { Some(dlna_user(&st, &cfg).await?) } else { None };
     let rng = aws_lc_rs::rand::SystemRandom::new();
     let key = aws_lc_rs::hmac::Key::generate(aws_lc_rs::hmac::HMAC_SHA256, &rng)
         .map_err(|_| anyhow::anyhow!("no random numbers"))?;
     let d = Arc::new(Dlna {
-        user: user.id,
+        user,
         key,
         udn: udn(&st.server_id),
         name: cfg.display_name(),
@@ -101,6 +154,19 @@ async fn prepare(st: Arc<AppState>) -> anyhow::Result<Arc<Dlna>> {
     Ok(d)
 }
 
+async fn dlna_user(st: &AppState, cfg: &crate::ServerConfig) -> anyhow::Result<i64> {
+    let users = st.identity.users().await.map_err(|e| anyhow::anyhow!("{}", e.message))?;
+    let user = if cfg.dlna_user.trim().is_empty() {
+        users.iter().filter(|u| u.role == Role::Admin && !u.disabled).min_by_key(|u| u.id)
+    } else {
+        users.iter().find(|u| u.name.eq_ignore_ascii_case(cfg.dlna_user.trim()) && !u.disabled)
+    };
+    let Some(user) = user else {
+        anyhow::bail!("no account for DLNA (set dlna_user to an existing, enabled account)");
+    };
+    Ok(user.id)
+}
+
 /// A stable UPnP device id from the server id.
 fn udn(server_id: &str) -> String {
     let h = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, format!("corrent-dlna:{server_id}").as_bytes());
@@ -111,16 +177,26 @@ fn udn(server_id: &str) -> String {
 
 fn router(d: Arc<Dlna>) -> Router {
     let allowed = crate::net::parse_cidrs(&d.st.cfg.load().allowed_networks);
-    Router::new()
-        .route("/dlna/description.xml", get(description))
-        .route("/dlna/ContentDirectory.xml", get(|| async { xml(include_str!("ContentDirectory.xml").to_string()) }))
-        .route("/dlna/ConnectionManager.xml", get(|| async { xml(include_str!("ConnectionManager.xml").to_string()) }))
-        .route("/dlna/control/ContentDirectory", post(content_directory))
-        .route("/dlna/control/ConnectionManager", post(connection_manager))
-        .route("/dlna/events/{service}", any(subscribe))
-        .route("/dlna/media/{item}/{sig}", get(media))
-        .route("/dlna/art/{sha}/{sig}", get(art))
-        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
+    let mut r = Router::new()
+        .route("/dlna/media/{user}/{file}/{sig}", get(media))
+        .route("/dlna/hls/{session}/{sig}/{name}", get(hls))
+        .route("/dlna/art/{sha}/{sig}", get(art));
+    if d.user.is_some() {
+        r = r
+            .route("/dlna/description.xml", get(description))
+            .route(
+                "/dlna/ContentDirectory.xml",
+                get(|| async { xml(include_str!("ContentDirectory.xml").to_string()) }),
+            )
+            .route(
+                "/dlna/ConnectionManager.xml",
+                get(|| async { xml(include_str!("ConnectionManager.xml").to_string()) }),
+            )
+            .route("/dlna/control/ContentDirectory", post(content_directory))
+            .route("/dlna/control/ConnectionManager", post(connection_manager))
+            .route("/dlna/events/{service}", any(subscribe));
+    }
+    r.layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(axum::middleware::from_fn(
             move |ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request, next: Next| {
                 let ok = crate::net::is_local(peer.ip(), &allowed);
@@ -243,6 +319,7 @@ async fn subscribe(method: Method) -> Response {
 
 async fn content_directory(State(d): State<Arc<Dlna>>, headers: HeaderMap, body: String) -> Response {
     const S: &str = "ContentDirectory";
+    let Some(user) = d.user else { return soap_fault(401, "Invalid Action") };
     match action(&headers).as_str() {
         "Browse" => {
             let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
@@ -252,9 +329,9 @@ async fn content_directory(State(d): State<Arc<Dlna>>, headers: HeaderMap, body:
             let count: usize = didl::tag(&body, "RequestedCount").and_then(|s| s.trim().parse().ok()).unwrap_or(0);
             let count = if count == 0 { PAGE_MAX } else { count.min(PAGE_MAX) };
             let r = if flag == "BrowseMetadata" {
-                metadata(&d, &host, &object).await.map(|o| (o.into_iter().collect::<Vec<_>>(), 1))
+                metadata(&d, user, &host, &object).await.map(|o| (o.into_iter().collect::<Vec<_>>(), 1))
             } else {
-                children(&d, &host, &object, start, count).await
+                children(&d, user, &host, &object, start, count).await
             };
             match r {
                 Ok((objects, total)) => {
@@ -284,9 +361,9 @@ fn is_container(k: ItemKind) -> bool {
     matches!(k, ItemKind::Show | ItemKind::Season | ItemKind::Artist | ItemKind::Album | ItemKind::Folder)
 }
 
-async fn libraries(d: &Dlna) -> Result<Vec<corrent_proto::library::Library>, ()> {
+async fn libraries(d: &Dlna, user: i64) -> Result<Vec<corrent_proto::library::Library>, ()> {
     let all = d.st.library.list().await.map_err(|_| ())?;
-    let allowed = d.st.library.user_libraries(d.user).await.map_err(|_| ())?;
+    let allowed = d.st.library.user_libraries(user).await.map_err(|_| ())?;
     Ok(if allowed.is_empty() { all } else { all.into_iter().filter(|l| allowed.contains(&l.id)).collect() })
 }
 
@@ -305,7 +382,7 @@ fn library_object(l: &corrent_proto::library::Library) -> didl::Object {
 
 /// An item as a DIDL object: containers for shows, seasons, artists, albums and folders; files
 /// (with a signed URL) for the rest. `None`: nothing to play (the file is missing).
-async fn item_object(d: &Dlna, host: &str, it: &corrent_proto::library::Item) -> Option<didl::Object> {
+async fn item_object(d: &Dlna, user: i64, host: &str, it: &corrent_proto::library::Item) -> Option<didl::Object> {
     let parent = it.parent_id.map(|p| format!("i{p}")).unwrap_or_else(|| format!("l{}", it.library_id));
     let art = it
         .images
@@ -321,12 +398,12 @@ async fn item_object(d: &Dlna, host: &str, it: &corrent_proto::library::Item) ->
             children: it.child_count,
         });
     }
-    let (_, path) = d.st.library.main_file(d.user, it.id).await.ok()?;
+    let (file, path) = d.st.library.main_file(user, it.id).await.ok()?;
     let path = std::path::PathBuf::from(path);
     let size = tokio::fs::metadata(&path).await.ok()?.len();
     let mime = crate::v1::library::mime_for(&path).to_string();
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("bin").to_ascii_lowercase();
-    let url = format!("http://{host}/dlna/media/{}/{}.{ext}", it.id, sign(d, &format!("media:{}", it.id)));
+    let url = format!("http://{host}{}", media_path(d, user, file, &ext));
     let class = match it.kind {
         ItemKind::Movie => "object.item.videoItem.movie",
         ItemKind::Episode | ItemKind::Video => "object.item.videoItem",
@@ -356,49 +433,50 @@ async fn item_object(d: &Dlna, host: &str, it: &corrent_proto::library::Item) ->
     }))
 }
 
-async fn metadata(d: &Dlna, host: &str, object: &str) -> Result<Option<didl::Object>, ()> {
+async fn metadata(d: &Dlna, user: i64, host: &str, object: &str) -> Result<Option<didl::Object>, ()> {
     if object == "0" {
         return Ok(Some(root()));
     }
     if let Some(id) = object.strip_prefix('l').and_then(|s| s.parse::<i64>().ok()) {
-        return Ok(libraries(d).await?.iter().find(|l| l.id == id).map(library_object));
+        return Ok(libraries(d, user).await?.iter().find(|l| l.id == id).map(library_object));
     }
     let id = object.strip_prefix('i').and_then(|s| s.parse::<i64>().ok()).ok_or(())?;
-    let it = d.st.library.item(d.user, id).await.map_err(|_| ())?;
-    Ok(item_object(d, host, &it.item).await)
+    let it = d.st.library.item(user, id).await.map_err(|_| ())?;
+    Ok(item_object(d, user, host, &it.item).await)
 }
 
 async fn children(
     d: &Dlna,
+    user: i64,
     host: &str,
     object: &str,
     start: usize,
     count: usize,
 ) -> Result<(Vec<didl::Object>, i64), ()> {
     if object == "0" {
-        let libs = libraries(d).await?;
+        let libs = libraries(d, user).await?;
         let total = libs.len() as i64;
         return Ok((libs.iter().skip(start).take(count).map(library_object).collect(), total));
     }
     let mut q = ItemQuery { offset: start as i64, limit: Some(count as i64), ..Default::default() };
     if let Some(id) = object.strip_prefix('l').and_then(|s| s.parse::<i64>().ok()) {
-        if !libraries(d).await?.iter().any(|l| l.id == id) {
+        if !libraries(d, user).await?.iter().any(|l| l.id == id) {
             return Err(());
         }
         q.library_id = Some(id);
     } else {
         let id = object.strip_prefix('i').and_then(|s| s.parse::<i64>().ok()).ok_or(())?;
-        let parent = d.st.library.item(d.user, id).await.map_err(|_| ())?;
+        let parent = d.st.library.item(user, id).await.map_err(|_| ())?;
         // Seasons, episodes and tracks in their order; the rest by title.
         if matches!(parent.item.kind, ItemKind::Show | ItemKind::Season | ItemKind::Album) {
             q.sort = SortBy::Index;
         }
         q.parent_id = Some(id);
     }
-    let page = d.st.library.items(d.user, q).await.map_err(|_| ())?;
+    let page = d.st.library.items(user, q).await.map_err(|_| ())?;
     let mut out = Vec::with_capacity(page.items.len());
     for it in &page.items {
-        if let Some(o) = item_object(d, host, it).await {
+        if let Some(o) = item_object(d, user, host, it).await {
             out.push(o);
         }
     }
@@ -413,14 +491,20 @@ fn dlna_headers(res: &mut Response, image: bool) {
         "contentfeatures.dlna.org",
         HeaderValue::from_static("DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"),
     );
+    h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
 }
 
-async fn media(State(d): State<Arc<Dlna>>, Path((item, sig)): Path<(i64, String)>, req: Request) -> Response {
+async fn media(
+    State(d): State<Arc<Dlna>>,
+    Path((user, file, sig)): Path<(i64, i64, String)>,
+    req: Request,
+) -> Response {
     let sig = sig.split('.').next().unwrap_or("");
-    if !signed(&d, &format!("media:{item}"), sig) {
+    if !signed(&d, &format!("media:{user}:{file}"), sig) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let Ok((_, path)) = d.st.library.main_file(d.user, item).await else {
+    // Still checked: the account may have lost access since the link was made.
+    let Ok(path) = d.st.library.file_path(user, file).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
     match crate::v1::library::serve_path(path.into(), req).await {
@@ -435,6 +519,42 @@ async fn media(State(d): State<Arc<Dlna>>, Path((item, sig)): Path<(i64, String)
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// HLS for casting: the session's playlist and segments (the receiver fetches them with CORS).
+async fn hls(
+    State(d): State<Arc<Dlna>>,
+    Path((session, sig, name)): Path<(String, String, String)>,
+    req: Request,
+) -> Response {
+    if !signed(&d, &format!("hls:{session}"), &sig) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let mut res = if name == "index.m3u8" {
+        match d.st.hls.playlist(&session) {
+            Ok(body) => {
+                ([(header::CONTENT_TYPE, "application/vnd.apple.mpegurl"), (header::CACHE_CONTROL, "no-store")], body)
+                    .into_response()
+            }
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        }
+    } else {
+        let Some(n) = name.strip_suffix(".ts").and_then(|n| n.parse::<u64>().ok()) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let Ok(path) = d.st.hls.segment(&session, n).await else { return StatusCode::NOT_FOUND.into_response() };
+        match tower::ServiceExt::oneshot(
+            tower_http::services::ServeFile::new_with_mime(&path, &"video/mp2t".parse().expect("static")),
+            req,
+        )
+        .await
+        {
+            Ok(r) => r.map(Body::new),
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        }
+    };
+    res.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    res
 }
 
 async fn art(State(d): State<Arc<Dlna>>, Path((sha, sig)): Path<(String, String)>, req: Request) -> Response {

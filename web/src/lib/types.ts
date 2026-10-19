@@ -677,3 +677,21 @@ export interface RoomState {
   members: string[];
   server_now_ms: number;
 }
+
+/** A Chromecast the server found. */
+export interface CastDevice {
+  id: string;
+  name: string;
+  model: string;
+}
+
+export interface CastStatus {
+  device: CastDevice;
+  state: 'connecting' | 'loading' | 'buffering' | 'playing' | 'paused' | 'idle' | 'error';
+  position_ms: number;
+  duration_ms?: number;
+  item_id?: number;
+  title: string;
+  by: string;
+  error?: string;
+}

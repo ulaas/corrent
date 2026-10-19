@@ -170,6 +170,19 @@ private), answers local addresses only, and plays only the signed links it hande
 every start). It is plain HTTP on `dlna_port` (8201) because TVs don't trust self-signed
 certificates; it doesn't run when the server listens on loopback only.
 
+## Casting to Chromecasts
+
+The players' **Cast to a device** button lists the Google Cast receivers (Chromecast, Google TV,
+Nest Hub, Cast-enabled TVs) on the *server's* network, found by mDNS. The server talks to the
+device itself (Cast v2 over TLS, the Default Media Receiver) and gives it a signed link on the
+media listener (`dlna_port`, plain HTTP, local addresses only — started on demand even when DLNA
+is off): the file when the device plays it (MP4/WebM, H.264/VP8/VP9, AAC/MP3/Opus/FLAC up to
+1080p), otherwise an HLS transcode (needs the transcode permission). Unfinished downloads always
+go through a transcode. The players then drive the device (play, pause, seek, stop) and show its
+position. API: `GET /api/v1/cast/devices[?refresh=true]`, `POST /cast/{device}/play`
+`{item_id, position_ms}`, `GET /cast/{device}`, `POST /cast/{device}/command`
+`{action: play|pause|seek|volume|stop}`. AirPlay isn't supported.
+
 ## Installing as a service
 
 Packages: `Corrent-Server-<v>-linux-x86_64.tar.gz` / `-darwin-*.tar.gz` (`scripts/package-server.sh`),

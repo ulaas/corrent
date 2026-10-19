@@ -3,6 +3,7 @@
 //! The app hosts the media server in-process (loopback only) and talks to it through the same
 //! API as remote clients, so the pages work identically against a remote server.
 
+pub mod cast;
 pub mod client;
 pub mod images;
 pub mod libraries;

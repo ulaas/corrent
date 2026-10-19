@@ -11,7 +11,7 @@ use corrent_mpv::{EndReason, Event, Mpv, Node};
 use eframe::glow::{self, HasContext};
 use egui::{Color32, CornerRadius, Rect, Sense, Ui, pos2, vec2};
 
-use corrent_proto::library::RoomCommand;
+use corrent_proto::library::{CastCommand, RoomCommand};
 
 use super::client::MediaClient;
 use crate::ui::theme::Palette;
@@ -140,6 +140,9 @@ pub struct Player {
     /// Watching together, and the code typed to join a room.
     pub room: Option<super::syncplay::Room>,
     room_code: String,
+    cast: super::cast::CastCtl,
+    /// Casting to a device: the controls drive it and mpv waits, paused.
+    casting: Option<super::cast::Casting>,
 }
 
 fn track_list(n: &Node) -> Vec<Track> {
@@ -369,6 +372,7 @@ impl Player {
                 }
             })
             .map_err(|e| e.to_string())?;
+        let cast = super::cast::CastCtl::new(client.clone(), rt.clone());
         let mut p = Player {
             mpv,
             video,
@@ -388,6 +392,8 @@ impl Player {
             sheets: Default::default(),
             room: None,
             room_code: String::new(),
+            cast,
+            casting: None,
         };
         p.load_current();
         Ok(p)
@@ -456,6 +462,11 @@ impl Player {
     }
 
     pub fn toggle_pause(&mut self) {
+        if let Some(c) = &self.casting {
+            let playing = self.cast.status().is_some_and(|s| s.state == "playing" || s.state == "buffering");
+            self.cast.command(c, if playing { CastCommand::Pause } else { CastCommand::Play });
+            return;
+        }
         self.cmd(&["cycle", "pause"]);
         if let Some(room) = &mut self.room {
             let (pos, _, paused) = self.status.lock().map(|s| (s.pos, s.duration, s.paused)).unwrap_or_default();
@@ -465,6 +476,12 @@ impl Player {
     }
 
     pub fn seek(&mut self, secs: f64, relative: bool) {
+        if let Some(c) = &self.casting {
+            let pos = self.cast.status().map(|s| s.position_ms as f64 / 1000.0).unwrap_or(0.0);
+            let to = if relative { pos + secs } else { secs };
+            self.cast.command(c, CastCommand::Seek { position_ms: (to.max(0.0) * 1000.0) as i64 });
+            return;
+        }
         self.cmd(&["seek", &format!("{secs}"), if relative { "relative" } else { "absolute" }]);
         if let Some(room) = &mut self.room {
             let pos = self.status.lock().map(|s| s.pos).unwrap_or_default();
@@ -542,6 +559,17 @@ impl Player {
     }
 
     pub fn position(&self) -> (f64, f64, bool) {
+        if self.casting.is_some()
+            && let Some(s) = self.cast.status()
+        {
+            let dur = s.duration_ms.map(|d| d as f64 / 1000.0);
+            let local = self.status.lock().map(|s| s.duration).unwrap_or_default();
+            return (
+                s.position_ms as f64 / 1000.0,
+                dur.unwrap_or(local),
+                !(s.state == "playing" || s.state == "buffering"),
+            );
+        }
         self.status.lock().map(|s| (s.pos, s.duration, s.paused)).unwrap_or_default()
     }
 
@@ -608,6 +636,9 @@ impl Player {
             self.toggle_pause();
         }
         self.sync_room(&ctx);
+        if let Some(c) = &mut self.casting {
+            self.cast.poll(c, &ctx);
+        }
         let (pos, dur, paused) = self.position();
         let show = paused || Instant::now() < self.controls_until;
         let k = crate::ui::motion::toggle(&ctx, ui.id().with("controls"), show, crate::ui::motion::PANEL);
@@ -877,6 +908,33 @@ impl Player {
             white,
         );
         self.room_button(ui, pos2(rect.right() - 140.0, y), white, paused, pos);
+        self.cast_button(ui, pos2(rect.right() - 188.0, y), white, pos);
+        if let Some(c) = &self.casting {
+            let line = match self.cast.status() {
+                Some(s) if s.state == "error" => {
+                    s.error.unwrap_or_else(|| t!("The device couldn’t play this.").to_string())
+                }
+                Some(s) if s.state == "connecting" || s.state == "loading" => t!("Connecting…").to_string(),
+                _ => String::new(),
+            };
+            let center = rect.center();
+            ui.painter().text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                t!("Playing on {name}", name = c.device.name),
+                egui::FontId::proportional(22.0),
+                Color32::WHITE,
+            );
+            if !line.is_empty() {
+                ui.painter().text(
+                    center + vec2(0.0, 28.0),
+                    egui::Align2::CENTER_CENTER,
+                    line,
+                    egui::FontId::proportional(14.0),
+                    Color32::from_white_alpha(200),
+                );
+            }
+        }
         let tracks = self.status.lock().map(|s| s.tracks.clone()).unwrap_or_default();
         let mpv = self.mpv.clone();
         egui::Popup::from_toggle_button_response(&r).show(|ui| {
@@ -897,6 +955,67 @@ impl Player {
             }
         });
         action
+    }
+
+    /// "Cast to a device": the devices the server found; casting pauses the local player.
+    fn cast_button(&mut self, ui: &mut Ui, at: egui::Pos2, white: Color32, pos: f64) {
+        let r = Rect::from_center_size(at, vec2(30.0, 30.0));
+        let resp = ui.interact(r, ui.id().with("cast"), Sense::click()).on_hover_text(t!("Cast to a device"));
+        let c = if self.casting.is_some() { Color32::from_rgb(120, 190, 255) } else { white };
+        ui.painter().text(
+            r.center(),
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::regular::SCREENCAST,
+            egui::FontId::proportional(22.0),
+            c,
+        );
+        if resp.clicked() && self.casting.is_none() {
+            self.cast.find(ui.ctx(), false);
+        }
+        let item = self.current().map(|e| e.item_id);
+        egui::Popup::from_toggle_button_response(&resp).show(|ui| {
+            ui.set_min_width(260.0);
+            ui.label(egui::RichText::new(t!("Cast to")).strong());
+            if let Some(c) = &self.casting {
+                ui.label(t!("Playing on {name}", name = c.device.name));
+                if ui.button(t!("Stop casting")).clicked() {
+                    self.cast.command(c, CastCommand::Stop);
+                    let at = self.cast.status().map(|s| s.position_ms as f64 / 1000.0).unwrap_or(pos);
+                    self.casting = None;
+                    self.cmd(&["seek", &format!("{at}"), "absolute"]);
+                }
+                return;
+            }
+            match self.cast.devices() {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(t!("Looking for devices…"));
+                    });
+                }
+                Some(Err(e)) => {
+                    ui.colored_label(Color32::LIGHT_RED, e);
+                }
+                Some(Ok(list)) if list.is_empty() => {
+                    ui.label(t!("No Chromecasts found on the server’s network."));
+                }
+                Some(Ok(list)) => {
+                    for d in list {
+                        let label =
+                            if d.model.is_empty() { d.name.clone() } else { format!("{}  ·  {}", d.name, d.model) };
+                        if let Some(item) = item
+                            && ui.selectable_label(false, label).clicked()
+                        {
+                            self.cmd(&["set", "pause", "yes"]);
+                            self.casting = Some(self.cast.start(d, item, pos));
+                        }
+                    }
+                }
+            }
+            if ui.button(t!("Look again")).clicked() {
+                self.cast.find(ui.ctx(), true);
+            }
+        });
     }
 
     /// "Watch together": start a room, join one by its code, copy its link, leave.

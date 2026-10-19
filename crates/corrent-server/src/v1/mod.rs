@@ -6,6 +6,7 @@
 
 mod admin;
 mod auth;
+pub(crate) mod cast;
 mod devices;
 mod events;
 pub mod library;
@@ -223,6 +224,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(admin::routes())
         .merge(subtitles::routes())
         .merge(syncplay::routes())
+        .merge(cast::routes())
         .merge(me::routes())
         .route("/events", axum::routing::get(events::events))
         .fallback(|| async { err(ErrorCode::NotFound, "no such endpoint") })

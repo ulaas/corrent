@@ -59,6 +59,8 @@ pub struct AppState {
     pub tasks: crate::tasks::Running,
     /// Watch-together rooms.
     pub rooms: crate::v1::syncplay::Rooms,
+    /// Chromecasts found and the casts running on them.
+    pub casts: crate::cast::Casts,
     pub remote_status: ArcSwap<corrent_proto::server::RemoteStatus>,
     /// Set when a hosted server stops: its background tasks end (they hold the state).
     pub stopping: tokio::sync::watch::Sender<bool>,

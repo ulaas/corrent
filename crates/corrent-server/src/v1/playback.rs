@@ -114,7 +114,17 @@ async fn start(
     Path(item): Path<i64>,
     body: Option<Json<PlaybackRequest>>,
 ) -> ApiResult<PlaybackInfo> {
-    let req = body.map(|b| b.0).unwrap_or_default();
+    Ok(Json(prepare(&st, &auth, item, body.map(|b| b.0).unwrap_or_default()).await?))
+}
+
+/// How `auth` plays `item` with `req` (starting an HLS session when it transcodes).
+pub(crate) async fn prepare(
+    st: &Arc<AppState>,
+    auth: &Auth,
+    item: i64,
+    req: PlaybackRequest,
+) -> Result<PlaybackInfo, ApiErr> {
+    let st = st.clone();
     let user = auth.0.user.id;
     let detail = st.library.item(user, item).await.map_err(lib_err)?;
     let file = match req.file_id {
@@ -208,7 +218,7 @@ async fn start(
             ("hls".to_string(), format!("/api/v1/hls/{id}/index.m3u8"), Some(id), reasons)
         }
     };
-    Ok(Json(PlaybackInfo {
+    Ok(PlaybackInfo {
         method,
         url,
         session_id,
@@ -218,7 +228,7 @@ async fn start(
         trickplay,
         reasons,
         downloading: downloading.is_some(),
-    }))
+    })
 }
 
 fn owns(st: &AppState, auth: &Auth, id: &str) -> Result<(), ApiErr> {

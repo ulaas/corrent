@@ -659,3 +659,42 @@ pub enum RoomCommand {
     Pause { position_ms: i64 },
     Seek { position_ms: i64 },
 }
+
+/// A Chromecast (or other Google Cast receiver) the server found on its network.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CastDevice {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+/// What a cast device is doing (`GET /api/v1/cast/{device}`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CastStatus {
+    pub device: CastDevice,
+    /// connecting | loading | buffering | playing | paused | idle | error
+    pub state: String,
+    pub position_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<i64>,
+    pub title: String,
+    /// Who started it.
+    pub by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `POST /api/v1/cast/{device}/command`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum CastCommand {
+    Play,
+    Pause,
+    Seek { position_ms: i64 },
+    Volume { level: f64 },
+    Stop,
+}

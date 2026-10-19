@@ -1307,7 +1307,7 @@ async fn dlna_browses_and_streams() {
         assert!(std::time::Instant::now() < deadline);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     };
-    let dlna = crate::dlna::test_router(h.st.clone()).await.unwrap();
+    let (dlna, _) = crate::dlna::test_router(h.st.clone(), true).await.unwrap();
 
     // The description, from the local network only.
     let desc = || Request::builder().uri("/dlna/description.xml").body(Body::empty()).unwrap();
@@ -1343,6 +1343,157 @@ async fn dlna_browses_and_streams() {
     assert!(nope.contains("<errorCode>701</errorCode>"));
     assert!(soap(&dlna, "192.168.1.9", "GetSystemUpdateID", "").await.1.contains("<Id>"));
     assert_eq!(soap(&dlna, "192.168.1.9", "Explode", "").await.0, StatusCode::INTERNAL_SERVER_ERROR);
+    h.stop().await;
+}
+
+/// A pretend Chromecast: TLS on a random port, the Default Media Receiver's messages. Sends
+/// every LOAD's URL and every control message type to `seen`.
+async fn fake_receiver(seen: tokio::sync::mpsc::UnboundedSender<String>) -> SocketAddr {
+    use crate::cast::wire::CastMessage;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let key = rcgen::generate_simple_self_signed(vec!["chromecast".into()]).unwrap();
+    let cfg = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![key.cert.der().clone()],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(key.signing_key.serialize_der().into()),
+        )
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(cfg));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut s = acceptor.accept(tcp).await.unwrap();
+        let send = |ns: &str, src: &str, payload: Value| {
+            CastMessage {
+                source: src.into(),
+                destination: "sender-corrent".into(),
+                namespace: ns.into(),
+                payload: payload.to_string(),
+            }
+            .encode()
+        };
+        let mut state = "IDLE";
+        loop {
+            let mut len = [0u8; 4];
+            if s.read_exact(&mut len).await.is_err() {
+                return;
+            }
+            let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+            s.read_exact(&mut body).await.unwrap();
+            let m = CastMessage::decode(&body).unwrap();
+            let v: Value = serde_json::from_str(&m.payload).unwrap();
+            let ty = v["type"].as_str().unwrap_or("").to_string();
+            let out = match ty.as_str() {
+                "LAUNCH" => Some(send(
+                    "urn:x-cast:com.google.cast.receiver",
+                    "receiver-0",
+                    json!({ "type": "RECEIVER_STATUS", "status": { "applications": [{ "appId": "CC1AD845", "transportId": "t-1", "sessionId": "s-1" }] } }),
+                )),
+                "LOAD" => {
+                    let _ = seen.send(format!("LOAD {}", v["media"]["contentId"].as_str().unwrap()));
+                    state = "PLAYING";
+                    Some(send(
+                        "urn:x-cast:com.google.cast.media",
+                        "t-1",
+                        json!({ "type": "MEDIA_STATUS", "status": [{ "mediaSessionId": 9, "playerState": state, "currentTime": 0.0 }] }),
+                    ))
+                }
+                "PAUSE" | "PLAY" | "SEEK" | "STOP" => {
+                    let _ = seen.send(ty.clone());
+                    state = if ty == "PAUSE" { "PAUSED" } else { "PLAYING" };
+                    Some(send(
+                        "urn:x-cast:com.google.cast.media",
+                        "t-1",
+                        json!({ "type": "MEDIA_STATUS", "status": [{ "mediaSessionId": 9, "playerState": state, "currentTime": 3.0 }] }),
+                    ))
+                }
+                "GET_STATUS" => Some(send(
+                    "urn:x-cast:com.google.cast.media",
+                    "t-1",
+                    json!({ "type": "MEDIA_STATUS", "status": [{ "mediaSessionId": 9, "playerState": state, "currentTime": 3.0 }] }),
+                )),
+                _ => None,
+            };
+            if let Some(o) = out {
+                s.write_all(&o).await.unwrap();
+            }
+        }
+    });
+    addr
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn casts_to_a_receiver() {
+    let h = harness("cast", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let photos = h.dir.join("Pics");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])).save(photos.join("a.png")).unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Pics", "kind": "photos", "folders": [photos] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let item = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if let Some(id) = v["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let (tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
+    let addr = fake_receiver(tx).await;
+    h.st.casts.inject(crate::cast::Found {
+        device: corrent_proto::library::CastDevice {
+            id: "tv".into(),
+            name: "Living room".into(),
+            model: "Chromecast".into(),
+        },
+        addr,
+    });
+    let (_, v, _) = get(app, "/api/v1/cast/devices", &admin).await;
+    assert_eq!(v[0]["name"], "Living room");
+    let (s, v, _) = send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let next = async |seen: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
+        tokio::time::timeout(std::time::Duration::from_secs(10), seen.recv()).await.unwrap().unwrap()
+    };
+    let load = next(&mut seen).await;
+    let url = load.strip_prefix("LOAD ").unwrap();
+    assert!(url.starts_with("http://127.0.0.1:") && url.contains("/dlna/media/"), "{url}");
+    // The device fetches the file itself, over the network.
+    let bytes = reqwest::get(url).await.unwrap().bytes().await.unwrap();
+    assert!(bytes.starts_with(b"\x89PNG"));
+    let forged = url.replace("/dlna/media/1/", "/dlna/media/2/");
+    assert_eq!(reqwest::get(&forged).await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
+    // Status follows the device; commands reach it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let (_, v, _) = get(app, "/api/v1/cast/tv", &admin).await;
+        if v["state"] == "playing" {
+            assert_eq!(v["item_id"], item);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    send(app, Method::POST, "/api/v1/cast/tv/command", &admin, json!({ "action": "pause" })).await;
+    assert_eq!(next(&mut seen).await, "PAUSE");
+    send(app, Method::POST, "/api/v1/cast/tv/command", &admin, json!({ "action": "seek", "position_ms": 3000 })).await;
+    assert_eq!(next(&mut seen).await, "SEEK");
+    let (s, _, _) = send(app, Method::POST, "/api/v1/cast/nope/command", &admin, json!({ "action": "play" })).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
     h.stop().await;
 }
 

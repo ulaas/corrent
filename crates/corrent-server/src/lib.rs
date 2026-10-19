@@ -9,6 +9,7 @@ extern crate corrent_i18n;
 #[allow(unused_imports)]
 use corrent_core::{config, engine, rss, store, util};
 
+pub mod cast;
 pub mod config_file;
 pub mod discovery;
 pub mod dlna;
@@ -145,6 +146,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         remote: Default::default(),
         tasks: Default::default(),
         rooms: Default::default(),
+        casts: Default::default(),
         remote_status: Default::default(),
     });
     metadata::start(state.clone());

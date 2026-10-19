@@ -230,9 +230,11 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
             s.port_mapping_error = msg;
         });
     }
-    // DLNA (its own plain-HTTP listener; restarted when its settings or the name change).
+    // DLNA (its own plain-HTTP listener; restarted when its settings or the name change). A
+    // listener that only serves casts stays when DLNA is off.
     let dlna_changed = previous.as_ref().is_some_and(|p| p.dlna != key_dlna(&cfg) || p.name != name);
-    if !cfg.dlna || dlna_changed {
+    let announcing = run.dlna.as_ref().is_some_and(|d| d.announcing());
+    if (!cfg.dlna && announcing) || (cfg.dlna && !announcing) || dlna_changed {
         run.dlna = None;
         update(st, |s| {
             s.dlna_port = None;
@@ -243,7 +245,7 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
         let started = if loopback_only(&cfg.bind) {
             Err(anyhow::anyhow!("the server listens on this computer only (bind = {:?})", cfg.bind))
         } else {
-            crate::dlna::start(st.clone()).await
+            crate::dlna::start(st.clone(), true).await
         };
         match started {
             Ok(d) => {
@@ -264,6 +266,22 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
     if failed {
         run.applied = None;
     }
+}
+
+/// Links on the media listener (for casting), starting it without DLNA when needed.
+pub async fn lan_links(st: &Arc<AppState>) -> anyhow::Result<crate::dlna::Links> {
+    let mut run = st.remote.lock().await;
+    if let Some(d) = &run.dlna {
+        return Ok(d.links());
+    }
+    let cfg = st.cfg.load_full();
+    if loopback_only(&cfg.bind) {
+        anyhow::bail!("the server listens on this computer only (bind = {:?})", cfg.bind);
+    }
+    let d = crate::dlna::start(st.clone(), false).await?;
+    let links = d.links();
+    run.dlna = Some(d);
+    Ok(links)
 }
 
 fn key_dlna(c: &ServerConfig) -> (bool, u16, String) {

@@ -7,6 +7,7 @@
   import { api, errorText } from '../lib/api';
   import { back, go, route, setQuery } from '../lib/router.svelte';
   import { SyncRoom } from '../lib/syncplay.svelte';
+  import { Cast, castDevices } from '../lib/cast.svelte';
   import { toast } from '../lib/toast.svelte';
   import { attachSource, reportProgress, resolveSource, resumeAt, stopSession, type PlaybackInfo, type PlaybackOptions } from '../lib/player.svelte';
   import { music } from '../lib/player.svelte';
@@ -16,7 +17,7 @@
   import { imageUrl } from '../lib/api';
   import { ms, prefs } from '../lib/prefs.svelte';
   import { t, tk } from '../lib/i18n.svelte';
-  import type { Item, ItemDetail, Page } from '../lib/types';
+  import type { CastDevice, Item, ItemDetail, Page } from '../lib/types';
 
   let { params }: { params: Record<string, string> } = $props();
   const id = $derived(+params.id);
@@ -40,7 +41,7 @@
   let trick = $state<TrickCue[]>([]);
   let nextUp = $state<Item | null>(null);
   let countdown = $state(0);
-  let menu = $state<'' | 'speed' | 'subs' | 'audio'>('');
+  let menu = $state<'' | 'speed' | 'subs' | 'audio' | 'cast'>('');
   let showTitle = $state(true);
 
   let detach: (() => void) | null = null;
@@ -255,13 +256,70 @@
     }
   }
 
+  // Casting to a device the server found (the video here waits, paused).
+  let cast = $state<Cast | null>(null);
+  let castList = $state<CastDevice[] | null>(null);
+  let castLoading = $state(false);
+  async function openCast(refresh = false) {
+    menu = 'cast';
+    castLoading = true;
+    try {
+      castList = await castDevices(refresh);
+    } catch (e) {
+      castList = [];
+      toast(errorText(e), 'error');
+    } finally {
+      castLoading = false;
+    }
+  }
+  async function castTo(d: CastDevice) {
+    menu = '';
+    video?.pause();
+    cast?.close();
+    const c = new Cast(d);
+    cast = c;
+    try {
+      await c.start(id, time * 1000, opts.audio_track);
+    } catch (e) {
+      toast(errorText(e), 'error');
+      c.close();
+      cast = null;
+    }
+  }
+  function stopCast() {
+    const c = cast;
+    if (!c) return;
+    const at = c.position();
+    void c.send('stop').catch(() => {});
+    c.close();
+    cast = null;
+    if (video && at > 0) video.currentTime = at;
+  }
+  $effect(() => {
+    const s = cast?.status;
+    if (!s) return;
+    time = s.position_ms / 1000;
+    if (s.duration_ms) duration = s.duration_ms / 1000;
+    playing = s.state === 'playing' || s.state === 'buffering';
+  });
+  onDestroy(() => cast?.close());
+
   function toggle() {
+    if (cast) {
+      void cast.send(playing ? 'pause' : 'play').catch((e) => toast(errorText(e), 'error'));
+      return;
+    }
     if (!video) return;
     if (video.paused) void video.play();
     else video.pause();
   }
 
   function seek(s: number) {
+    if (cast) {
+      time = s;
+      void cast.send('seek', s).catch((e) => toast(errorText(e), 'error'));
+      return;
+    }
     if (video) video.currentTime = Math.max(0, Math.min(s, duration || s));
     room?.send('seek', s);
   }
@@ -458,7 +516,21 @@
     {#if info?.method === 'hls'}<span class="badge" title={info.reasons.join(', ')}>{t('Transcoding')}</span>{/if}
   </div>
 
-  {#if !playing && !waiting && !error && countdown === 0}
+  {#if cast}
+    <div class="castbox" transition:fade={{ duration: ms(150) }}>
+      <Icon name="screencast" size={36} />
+      <div class="stext">
+        <strong>{t('Playing on {name}', { name: cast.device.name })}</strong>
+        <span class="small muted">
+          {#if cast.status?.state === 'error'}{cast.status.error ?? t('The device couldn’t play this.')}
+          {:else if cast.status?.state === 'connecting' || cast.status?.state === 'loading'}{t('Connecting…')}
+          {:else if cast.status?.state === 'idle'}{t('Finished')}
+          {/if}
+        </span>
+      </div>
+      <button class="btn sm" onclick={stopCast}><Icon name="stop" size={14} />{t('Stop casting')}</button>
+    </div>
+  {:else if !playing && !waiting && !error && countdown === 0}
     <button class="bigplay" aria-label={t('Play')} onclick={toggle} transition:fade={{ duration: ms(150) }}><Icon name="play-fill" size={40} /></button>
   {/if}
 
@@ -532,6 +604,27 @@
         </div>
       {/if}
 
+      <div class="pop">
+        <button class="btn ghost icon" class:on={cast != null} aria-haspopup="menu" aria-expanded={menu === 'cast'} aria-label={t('Cast to a device')} title={t('Cast to a device')} onclick={() => (menu === 'cast' ? (menu = '') : void openCast())}><Icon name="screencast" size={20} /></button>
+        {#if menu === 'cast'}
+          <div class="menu" role="menu" transition:fly={{ y: 8, duration: ms(140) }}>
+            <div class="mh">{t('Cast to')}</div>
+            {#if castLoading}
+              <div class="mi"><Spinner size={14} />{t('Looking for devices…')}</div>
+            {:else if !castList?.length}
+              <div class="mi muted">{t('No Chromecasts found on the server’s network.')}</div>
+            {:else}
+              {#each castList as d (d.id)}
+                <button class="mi" role="menuitemradio" aria-checked={cast?.device.id === d.id} onclick={() => castTo(d)}>
+                  <span class="grow ellipsis">{d.name}</span>{#if d.model}<span class="small muted">{d.model}</span>{/if}
+                </button>
+              {/each}
+            {/if}
+            {#if cast}<button class="mi" onclick={() => ((menu = ''), stopCast())}>{t('Stop casting')}</button>{/if}
+            <button class="mi" onclick={() => openCast(true)}><Icon name="arrows-clockwise" size={14} />{t('Look again')}</button>
+          </div>
+        {/if}
+      </div>
       <button class="btn ghost icon" class:on={room != null} aria-label={t('Watch together')} title={room ? t('Watching together: {n} people', { n: room.state?.members.length ?? 1 }) : t('Watch together')} onclick={watchTogether}><Icon name="users" size={20} /></button>
       {#if 'pictureInPictureEnabled' in document}
         <button class="btn ghost icon" aria-label={t('Picture in picture')} title={t('Picture in picture')} onclick={togglePip}><Icon name="picture-in-picture" size={20} /></button>
@@ -542,6 +635,26 @@
 </div>
 
 <style>
+  .castbox {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 20px;
+    border-radius: 14px;
+    background: color-mix(in srgb, #000 70%, transparent);
+    color: #fff;
+    max-width: calc(100% - 32px);
+  }
+  .castbox .stext {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
   .skipbtn {
     position: absolute;
     right: 32px;

@@ -70,6 +70,25 @@ impl ClientProfile {
         }
     }
 
+    /// Google Cast's Default Media Receiver (Chromecast 3rd gen / Google TV class devices).
+    pub fn chromecast() -> ClientProfile {
+        ClientProfile {
+            name: "chromecast".into(),
+            containers: vec![
+                "mp4".into(),
+                "mov".into(),
+                "webm".into(),
+                "mp3".into(),
+                "flac".into(),
+                "wav".into(),
+                "ogg".into(),
+            ],
+            video_codecs: vec!["h264".into(), "vp8".into(), "vp9".into()],
+            max_height: Some(1080),
+            ..ClientProfile::web_chromium()
+        }
+    }
+
     pub fn web_safari() -> ClientProfile {
         let mut p = ClientProfile::web_chromium();
         p.name = "safari".into();
@@ -85,6 +104,7 @@ impl ClientProfile {
         match name {
             "native" => ClientProfile::native(),
             "safari" => ClientProfile::web_safari(),
+            "chromecast" => ClientProfile::chromecast(),
             _ => ClientProfile::web_chromium(),
         }
     }
