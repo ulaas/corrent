@@ -5,7 +5,7 @@
 //! (stored as a PBKDF2 hash). Cookie sessions as in qBittorrent, failed-login throttling, and
 //! Host/Origin checks against DNS rebinding and cross-site requests.
 
-mod auth;
+pub(crate) mod auth;
 mod qbt;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

@@ -32,7 +32,10 @@ pub enum DbError {
 
 pub type Result<T> = std::result::Result<T, DbError>;
 
-type Job = Box<dyn FnOnce(&Transaction) -> bool + Send>;
+/// Runs inside the batch transaction and returns whether it succeeded, plus a reply that is
+/// delivered after the commit (with the commit's error, if any).
+type Reply = Box<dyn FnOnce(Option<String>) + Send>;
+type Job = Box<dyn FnOnce(&Transaction) -> (bool, Reply) + Send>;
 
 struct Inner {
     path: PathBuf,
@@ -156,13 +159,19 @@ impl Db {
     fn submit<T: Send + 'static>(
         &self,
         f: impl FnOnce(&Transaction) -> rusqlite::Result<T> + Send + 'static,
-    ) -> Result<tokio::sync::oneshot::Receiver<rusqlite::Result<T>>> {
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<T>>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let job: Job = Box::new(move |t| {
             let r = f(t);
             let ok = r.is_ok();
-            let _ = tx.send(r);
-            ok
+            let reply: Reply = Box::new(move |commit_err| {
+                let _ = tx.send(match (r, commit_err) {
+                    (Err(e), _) => Err(e.into()),
+                    (Ok(_), Some(e)) => Err(DbError::Other(format!("commit failed: {e}"))),
+                    (Ok(v), None) => Ok(v),
+                });
+            });
+            (ok, reply)
         });
         self.inner.writer.send(job).map_err(|_| DbError::Closed)?;
         Ok(rx)
@@ -174,7 +183,7 @@ impl Db {
         &self,
         f: impl FnOnce(&Transaction) -> rusqlite::Result<T> + Send + 'static,
     ) -> Result<T> {
-        Ok(self.submit(f)?.await.map_err(|_| DbError::Closed)??)
+        self.submit(f)?.await.map_err(|_| DbError::Closed)?
     }
 
     /// Blocking variant of [`Db::write`] (never call it from an async task).
@@ -182,7 +191,7 @@ impl Db {
         &self,
         f: impl FnOnce(&Transaction) -> rusqlite::Result<T> + Send + 'static,
     ) -> Result<T> {
-        Ok(self.submit(f)?.blocking_recv().map_err(|_| DbError::Closed)??)
+        self.submit(f)?.blocking_recv().map_err(|_| DbError::Closed)?
     }
 
     /// A consistent copy of the whole database (backups).
@@ -208,6 +217,7 @@ fn writer_loop(mut c: Connection, rx: std::sync::mpsc::Receiver<Job>) {
                 continue;
             }
         };
+        let mut replies = Vec::with_capacity(batch.len());
         for (i, job) in batch.into_iter().enumerate() {
             let name = format!("j{i}");
             if let Err(e) = tx.execute_batch(&format!("SAVEPOINT {name}")) {
@@ -215,15 +225,28 @@ fn writer_loop(mut c: Connection, rx: std::sync::mpsc::Receiver<Job>) {
                 continue;
             }
             // A panicking job must not take the writer (and every later write) down with it.
-            let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&tx))).unwrap_or(false);
-            if ok {
-                let _ = tx.execute_batch(&format!("RELEASE {name}"));
-            } else {
-                let _ = tx.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&tx))) {
+                Ok((true, reply)) => {
+                    let _ = tx.execute_batch(&format!("RELEASE {name}"));
+                    replies.push(reply);
+                }
+                Ok((false, reply)) => {
+                    let _ = tx.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+                    replies.push(reply);
+                }
+                Err(_) => {
+                    tracing::error!("database: a write job panicked");
+                    let _ = tx.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+                }
             }
         }
-        if let Err(e) = tx.commit() {
+        let commit_err = tx.commit().err().map(|e| {
             tracing::error!("database: commit failed: {e}");
+            e.to_string()
+        });
+        // Callers hear back only once their data is durable (or the commit failed).
+        for reply in replies {
+            reply(commit_err.clone());
         }
     }
     let _ = c.execute_batch("PRAGMA optimize");
@@ -297,6 +320,35 @@ mod tests {
             c.pragma_update(None, "user_version", 999).unwrap();
         }
         assert!(matches!(Db::open(&p), Err(DbError::TooNew { found: 999, .. })));
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_write_is_visible_to_the_next_read() {
+        let p = scratch("visible");
+        let db = Db::open(&p).unwrap();
+        // Concurrent writers keep batches large while one caller checks read-after-write.
+        let noise: Vec<_> = (0..4)
+            .map(|w| {
+                let db = db.clone();
+                tokio::spawn(async move {
+                    for i in 0..100 {
+                        let _ = db
+                            .write(move |t| t.execute("INSERT INTO kv VALUES (?1, 'n')", [format!("n{w}-{i}")]))
+                            .await;
+                    }
+                })
+            })
+            .collect();
+        for i in 0..100 {
+            db.write(move |t| t.execute("INSERT INTO kv VALUES (?1, 'v')", [format!("v{i}")])).await.unwrap();
+            let n: i64 =
+                db.read(|c| c.query_row("SELECT count(*) FROM kv WHERE value = 'v'", [], |r| r.get(0))).await.unwrap();
+            assert_eq!(n, i + 1);
+        }
+        for n in noise {
+            n.await.unwrap();
+        }
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 }

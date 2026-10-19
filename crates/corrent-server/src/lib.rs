@@ -6,4 +6,5 @@
 #[allow(unused_imports)]
 use corrent_core::{config, engine, rss, store, util};
 
+pub mod identity;
 pub mod webapi;
