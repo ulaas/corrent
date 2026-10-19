@@ -361,3 +361,42 @@ pub fn loopback_stream_url(st: &AppState, hash: InfoHash, file: usize, name: &st
     let (port, token) = st.engine.snapshot().session.stream.clone()?;
     Some(corrent_core::engine::stream::stream_url(port, &token, hash, file, name))
 }
+
+/// Libraries that ask for it: finished torrents feeding them stop seeding once everyone who can
+/// see the library has watched what they brought (the `stop_watched_seeding` task).
+pub async fn stop_watched_seeding(st: &Arc<AppState>) -> Result<String, String> {
+    let libs = st.library.list().await.map_err(|e| e.to_string())?;
+    let snap = st.engine.snapshot();
+    let mut stopped = Vec::new();
+    for lib in libs.iter().filter(|l| l.settings.stop_seeding_when_watched) {
+        for t in snap.torrents.iter().filter(|t| {
+            matches!(t.state, corrent_proto::TorrentState::Seeding | corrent_proto::TorrentState::Completed)
+                && t.category.as_ref().is_some_and(|c| lib.settings.import_categories.contains(c))
+        }) {
+            // In place imports keep the download's path; copies/links were made under the library.
+            let content = t.save_path.join(&t.name);
+            let mut watched = st.library.watched_by_everyone(lib.id, &content).await.map_err(|e| e.to_string())?;
+            if watched.is_none() {
+                for f in &lib.folders {
+                    if let Some(w) = st
+                        .library
+                        .watched_by_everyone(lib.id, &Path::new(f).join(&t.name))
+                        .await
+                        .map_err(|e| e.to_string())?
+                    {
+                        watched = Some(w);
+                        break;
+                    }
+                }
+            }
+            if watched == Some(true) && !stopped.contains(&t.hash) {
+                tracing::info!("“{}” was watched by everyone in {}: seeding stops", t.name, lib.name);
+                stopped.push(t.hash);
+            }
+        }
+    }
+    if !stopped.is_empty() {
+        st.engine.send(EngineCommand::Pause(stopped.clone()));
+    }
+    Ok(format!("{} stopped", stopped.len()))
+}

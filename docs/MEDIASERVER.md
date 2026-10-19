@@ -437,7 +437,7 @@ Portable mode (`--portable`) keeps all of it under `target/debug/corrent-data` a
   Explicitly not: calendar/metadata features Sonarr has beyond this; users with a real Sonarr keep
   using the qBittorrent API.
 - **T5 Seeding policy aware of the library [S]:** per-library seeding goals override the global
-  ones for torrents that feed it; "stop seeding when watched by everyone" (opt).
+  ones for torrents that feed it; "stop seeding when watched by everyone" (opt) — done (library setting + hourly task).
 - **T6 Torrent management in both clients [M]:** the native client already has it; the web client's
   torrents page (Track U) reaches parity for the common 90 % (list with live rates, add magnet/file/
   URL with preview, pause/resume/delete/recheck, files + priorities, peers, trackers, limits, queue,

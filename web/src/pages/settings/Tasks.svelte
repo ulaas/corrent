@@ -18,6 +18,7 @@
     cleanup_cache: tk('Clean up the transcoding cache'),
     backup: tk('Back up the server'),
     podcasts: tk('Download new podcast episodes'),
+    stop_watched_seeding: tk('Stop seeding once everyone has watched what a torrent brought'),
   };
   const EVERY: [number, string][] = [
     [0, tk('Only by hand')],

@@ -132,6 +132,8 @@ pub struct LibrarySettings {
     /// Seeding goals for torrents that feed this library (override the global ones).
     pub seed_ratio: Option<f32>,
     pub seed_minutes: Option<u32>,
+    /// Stop seeding a torrent once everyone who can see this library has watched what it brought.
+    pub stop_seeding_when_watched: bool,
     /// Quality profile for releases found for this library.
     pub profile_id: Option<i64>,
 }

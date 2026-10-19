@@ -351,6 +351,7 @@ export interface LibrarySettings {
   fetch_metadata: boolean;
   language: string;
   played_threshold: number;
+  stop_seeding_when_watched?: boolean;
 }
 
 export interface Library {

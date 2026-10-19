@@ -589,3 +589,6 @@
 "Station name" = "İstasyon adı"
 "Stream address" = "Yayın adresi"
 "Add station" = "İstasyon ekle"
+"Stop seeding once everyone has watched" = "Herkes izleyince paylaşımı durdur"
+"Pauses a finished torrent of these categories when every account that sees this library has played what it brought." = "Bu kütüphaneyi gören her hesap, bu kategorilerdeki bitmiş bir torrentin getirdiklerini oynattığında torrenti duraklatır."
+"Stop seeding once everyone has watched what a torrent brought" = "Bir torrentin getirdiklerini herkes izleyince paylaşımı durdur"

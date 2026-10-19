@@ -1653,6 +1653,68 @@ async fn radio_stations_relay_their_stream() {
     h.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watched_by_everyone_counts_every_account() {
+    let h = harness("watched", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let pics = h.dir.join("Vids").join("Batch");
+    std::fs::create_dir_all(&pics).unwrap();
+    let made = std::process::Command::new("mpv")
+        .args([
+            "--really-quiet",
+            "av://lavfi:testsrc=duration=2:size=160x120:rate=10",
+            "--of=matroska",
+            "--ovc=libx264",
+            "--ovcopts=preset=ultrafast",
+        ])
+        .arg(format!("--o={}", pics.join("clip.mkv").display()))
+        .status()
+        .is_ok_and(|s| s.success());
+    if !made {
+        eprintln!("mpv not available; skipping");
+        h.stop().await;
+        return;
+    }
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Vids", "kind": "videos", "folders": [h.dir.join("Vids")] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let item = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}&kind=video"), &admin).await;
+        if let Some(id) = v["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let w = |p: std::path::PathBuf| {
+        let st = h.st.clone();
+        async move { st.library.watched_by_everyone(lib, &p).await.unwrap() }
+    };
+    assert_eq!(w(h.dir.join("elsewhere")).await, None);
+    assert_eq!(w(pics.clone()).await, Some(false));
+    send(app, Method::PUT, &format!("/api/v1/items/{item}/state"), &admin, json!({ "played": true })).await;
+    assert_eq!(w(pics.clone()).await, Some(true));
+    // A second account that hasn't watched it yet.
+    send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        &admin,
+        json!({ "name": "viewer", "password": "long enough pw", "role": "user" }),
+    )
+    .await;
+    assert_eq!(w(pics.clone()).await, Some(false));
+    h.stop().await;
+}
+
 async fn v_id(app: &Router, admin: &str) -> String {
     get(app, "/api/v1/podcasts", admin).await.1[0]["id"].as_str().unwrap().to_string()
 }

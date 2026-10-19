@@ -124,6 +124,11 @@ address) on the web client's Radio page; everyone can play them there (relayed b
 `/api/v1/radio/{id}/stream`, so HTTPS pages can play HTTP streams) or in the desktop app (Radio
 in the media top bar; mpv plays the address itself).
 
+**Stop seeding once everyone has watched** (library setting, for libraries fed by torrent
+categories): the hourly `stop_watched_seeding` task pauses a finished torrent of those categories
+once every enabled account that can see the library has played all playable items whose files
+came from it.
+
 Lyrics come from a `.lrc` (synced) or `.txt` file named like the track, else the track's lyrics
 tag (`GET /api/v1/items/{id}/lyrics`); the web player shows them in its queue panel (synced lines
 follow the music, click one to jump), the desktop player behind the microphone button.

@@ -66,7 +66,10 @@ mod tests {
             super::playlist_target("#EXTM3U\n#EXTINF:-1,X\nhttps://s.example/a.mp3\n"),
             Some("https://s.example/a.mp3".into())
         );
-        assert_eq!(super::playlist_target("https://s.example/live?sid=1\n"), Some("https://s.example/live?sid=1".into()));
+        assert_eq!(
+            super::playlist_target("https://s.example/live?sid=1\n"),
+            Some("https://s.example/live?sid=1".into())
+        );
         assert_eq!(super::playlist_target("nothing here"), None);
     }
 }

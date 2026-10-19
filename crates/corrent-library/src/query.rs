@@ -406,6 +406,46 @@ impl Library {
             .await?)
     }
 
+    /// Whether every enabled account that can see `library` has played every item of it whose
+    /// main file lies under `prefix` (`None`: no such items, or nobody can see the library).
+    pub async fn watched_by_everyone(&self, library: i64, prefix: &std::path::Path) -> Result<Option<bool>> {
+        let p = prefix.display().to_string();
+        Ok(self
+            .db()
+            .read(move |c| {
+                let sep = std::path::MAIN_SEPARATOR.to_string();
+                let items: Vec<i64> = c
+                    .prepare(
+                        "SELECT DISTINCT x.item_id FROM files f JOIN item_files x ON x.file_id = f.id JOIN items i ON i.id = x.item_id \
+                         WHERE x.role = 'main' AND i.library_id = ?1 AND f.missing_since IS NULL AND i.kind IN ('movie','episode','track','book','video') \
+                         AND (f.path = ?2 OR substr(f.path, 1, length(?2) + 1) = ?2 || ?3)",
+                    )?
+                    .query_map(params![library, p, sep], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                let users: Vec<i64> = c
+                    .prepare(
+                        "SELECT u.id FROM users u WHERE u.disabled = 0 AND (NOT EXISTS (SELECT 1 FROM user_libraries a WHERE a.user_id = u.id) \
+                         OR EXISTS (SELECT 1 FROM user_libraries a WHERE a.user_id = u.id AND a.library_id = ?1))",
+                    )?
+                    .query_map([library], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                if items.is_empty() || users.is_empty() {
+                    return Ok(None);
+                }
+                let mut q = c.prepare_cached("SELECT played FROM watch_state WHERE user_id = ?1 AND item_id = ?2")?;
+                for u in &users {
+                    for i in &items {
+                        let played: Option<bool> = q.query_row([u, i], |r| r.get(0)).optional()?;
+                        if played != Some(true) {
+                            return Ok(Some(false));
+                        }
+                    }
+                }
+                Ok(Some(true))
+            })
+            .await?)
+    }
+
     /// The file of an external subtitle stream, if the user may see the media file.
     pub async fn subtitle_path(&self, user: i64, file_id: i64, idx: i64) -> Result<String> {
         self.file_path(user, file_id).await?;

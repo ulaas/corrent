@@ -183,6 +183,9 @@
             </select></label>
         </div>
       {/if}
+      {#if edit.settings.import_categories.length}
+        <Toggle bind:checked={edit.settings.stop_seeding_when_watched} label={t('Stop seeding once everyone has watched')} hint={t('Pauses a finished torrent of these categories when every account that sees this library has played what it brought.')} />
+      {/if}
       {#if error}<p class="form-error" role="alert"><Icon name="warning-circle" size={16} />{error}</p>{/if}
     </form>
     {#snippet footer()}
