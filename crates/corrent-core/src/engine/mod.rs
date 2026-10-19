@@ -166,6 +166,12 @@ pub enum EngineCommand {
         down_kib: u32,
         up_kib: u32,
     },
+    /// Files, peers and pieces of one torrent for a remote client (the GUI's details target is
+    /// unaffected; several clients can watch different torrents).
+    Detail {
+        hash: InfoHash,
+        reply: tokio::sync::oneshot::Sender<Option<types::TorrentDetail>>,
+    },
     /// A torrent's files, answered directly (Web API), without changing the details target.
     FileList {
         hash: InfoHash,

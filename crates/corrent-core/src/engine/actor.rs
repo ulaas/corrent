@@ -90,6 +90,9 @@ struct StaticInfo {
     creation_date: Option<i64>,
 }
 
+/// Downloaded/uploaded byte counters per peer address (for rates).
+type PeerCounters = HashMap<String, (u64, u64)>;
+
 pub struct Actor {
     paths: Paths,
     settings: Settings,
@@ -113,6 +116,8 @@ pub struct Actor {
     torrent_history: HashMap<InfoHash, VecDeque<(u64, u64)>>,
     row_history: Arc<HashMap<InfoHash, Vec<(u32, u32)>>>,
     prev_peer: HashMap<String, (u64, u64)>,
+    /// Peer counters per torrent for on-demand details (remote clients), with the time taken.
+    remote_prev: HashMap<InfoHash, (Instant, PeerCounters)>,
     pieces_cache: Option<(Instant, InfoHash, (Vec<u8>, u32))>,
     static_info: HashMap<InfoHash, StaticInfo>,
     previews: HashMap<u64, JoinHandle<()>>,
@@ -190,6 +195,7 @@ impl Actor {
             torrent_history: HashMap::new(),
             row_history: Default::default(),
             prev_peer: HashMap::new(),
+            remote_prev: HashMap::new(),
             pieces_cache: None,
             static_info: HashMap::new(),
             previews: HashMap::new(),
@@ -585,6 +591,9 @@ impl Actor {
                 self.store.meta_mut(hash).display_name = name.filter(|n| !n.trim().is_empty());
             }
             EngineCommand::QueuePlace { hashes, before } => self.store.queue_place(&hashes, before),
+            EngineCommand::Detail { hash, reply } => {
+                let _ = reply.send(self.remote_detail(hash));
+            }
             EngineCommand::FileList { hash, reply } => {
                 let files = self.handle_for(&hash).map(|h| self.file_views(&h, hash));
                 let _ = reply.send(files);
@@ -1818,17 +1827,15 @@ impl Actor {
         .unwrap_or_default()
     }
 
-    fn build_detail(&mut self, id: usize, h: &Arc<ManagedTorrent>, hash: InfoHash) -> TorrentDetail {
-        let files = self.file_views(h, hash);
-
-        let interval = self.settings.advanced.refresh_interval_ms.max(200) as f64 / 1000.0;
+    /// Peers with rates from the counters seen `interval` seconds ago (`prev` is updated).
+    fn peer_views(h: &Arc<ManagedTorrent>, prev: &mut PeerCounters, interval: f64) -> Vec<PeerView> {
         let mut peers = Vec::new();
         if let Some(live) = h.live() {
             let snap = live.per_peer_stats_snapshot(Default::default());
             let mut next_prev = HashMap::with_capacity(snap.peers.len());
             for (addr, p) in snap.peers {
                 let (pf, pu) =
-                    self.prev_peer.get(&addr).copied().unwrap_or((p.counters.fetched_bytes, p.counters.uploaded_bytes));
+                    prev.get(&addr).copied().unwrap_or((p.counters.fetched_bytes, p.counters.uploaded_bytes));
                 let down_bps = (p.counters.fetched_bytes.saturating_sub(pf) as f64 / interval) as u64;
                 let up_bps = (p.counters.uploaded_bytes.saturating_sub(pu) as f64 / interval) as u64;
                 next_prev.insert(addr.clone(), (p.counters.fetched_bytes, p.counters.uploaded_bytes));
@@ -1843,8 +1850,41 @@ impl Actor {
                     up_bps,
                 });
             }
-            self.prev_peer = next_prev;
+            *prev = next_prev;
         }
+        peers
+    }
+
+    /// Files, peers and pieces of any torrent, for a remote client (the GUI's detail target is
+    /// left alone). Peer rates are measured since the previous request for the same torrent.
+    fn remote_detail(&mut self, hash: InfoHash) -> Option<TorrentDetail> {
+        let h = self.handle_for(&hash)?;
+        let files = self.file_views(&h, hash);
+        let now = Instant::now();
+        self.remote_prev.retain(|_, (t, _)| now.duration_since(*t) < Duration::from_secs(60));
+        let (then, mut prev) = self.remote_prev.remove(&hash).unwrap_or((now, HashMap::new()));
+        let interval = now.duration_since(then).as_secs_f64().max(0.2);
+        let peers = Self::peer_views(&h, &mut prev, interval);
+        self.remote_prev.insert(hash, (now, prev));
+        let pieces = self
+            .api
+            .as_ref()
+            .and_then(|api| api.api_dump_haves(TorrentIdOrHash::Hash(Id20::new(hash.0))).ok())
+            .map(|(bf, n)| (bf.as_raw_slice().to_vec(), n));
+        Some(TorrentDetail {
+            hash,
+            files,
+            peers,
+            pieces,
+            history: self.torrent_history.get(&hash).cloned().unwrap_or_default(),
+        })
+    }
+
+    fn build_detail(&mut self, id: usize, h: &Arc<ManagedTorrent>, hash: InfoHash) -> TorrentDetail {
+        let files = self.file_views(h, hash);
+
+        let interval = self.settings.advanced.refresh_interval_ms.max(200) as f64 / 1000.0;
+        let peers = Self::peer_views(h, &mut self.prev_peer, interval);
 
         let refresh_pieces = match &self.pieces_cache {
             Some((t, ph, _)) => *ph != hash || t.elapsed() > Duration::from_secs(2),

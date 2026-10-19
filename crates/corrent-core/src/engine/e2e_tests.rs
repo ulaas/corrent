@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use librqbit::{ManagedTorrent, Session, SessionOptions};
 
 use super::testkit::*;
-use super::types::{AddSource, StreamState, TorrentState};
+use super::types::{AddSource, InfoHash, StreamState, TorrentState};
 use super::{AddRequest, EngineCommand, EngineEvent, EngineHandle};
 use crate::config::Paths;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -30,6 +30,16 @@ async fn download_completes_with_metadata_and_event() {
         }
     }
     assert!(completed, "a Completed event was emitted");
+    // On-demand details for a remote client.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    l.engine.send(EngineCommand::Detail { hash: s.hash, reply: tx });
+    let d = rx.await.unwrap().expect("detail of a known torrent");
+    assert_eq!(d.files.len(), 1);
+    let (bits, n) = d.pieces.expect("piece bitfield");
+    assert!(n > 0 && bits.iter().any(|b| *b != 0));
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    l.engine.send(EngineCommand::Detail { hash: InfoHash([9; 20]), reply: tx });
+    assert!(rx.await.unwrap().is_none());
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
