@@ -8,6 +8,7 @@ pub mod creator;
 mod e2e_tests;
 pub mod ipfilter;
 pub mod logic;
+mod moves;
 pub mod paths;
 mod restore;
 mod session;

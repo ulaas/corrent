@@ -1049,11 +1049,45 @@ impl Actor {
             let tx = self.internal_tx.clone();
             let sess = sess.clone();
             tokio::spawn(async move {
-                // Where the data is now: the new folder if the move got that far, else the old one.
-                let output = if info.first_file.as_ref().is_some_and(|f| info.new_output.join(f).exists()) {
-                    info.new_output.clone()
-                } else {
-                    info.old_output.clone()
+                // Bring the files into one folder: finish the move, or undo it.
+                let (name, files) =
+                    match librqbit::torrent_from_bytes(&bytes).map_err(anyhow::Error::from).and_then(|t| {
+                        let name = t.info.data.name.as_ref().map(|n| String::from_utf8_lossy(n.as_ref()).into_owned());
+                        let v = t.info.data.validate()?;
+                        let files: Vec<PathBuf> = v.iter_file_details().map(|f| f.filename.to_pathbuf()).collect();
+                        Ok((name.unwrap_or_else(|| hash.to_hex()), files))
+                    }) {
+                        Ok(x) => x,
+                        Err(e) => {
+                            let result = Err(format!("{e:#}"));
+                            let _ = tx.send(Internal::OpFinished { hash, what: "recover", result });
+                            return;
+                        }
+                    };
+                let (old, new, moved) = (info.old_output.clone(), info.new_output.clone(), info.moved.clone());
+                let settled =
+                    tokio::task::spawn_blocking(move || super::moves::settle(&old, &new, &files, &moved, false)).await;
+                let output = match settled {
+                    Ok(Ok(dir)) => dir,
+                    Ok(Err(e)) => {
+                        // Leave the files, the backup and the note alone: nothing is re-added
+                        // until the files are in one folder again.
+                        tracing::error!("{} is split between two folders: {e:#}", hash.to_hex());
+                        let result = Err(t!(
+                            "The files of {name} are split between {old} and {new} ({e}). Put them in one folder \
+                             and restart Corrent; the torrent will be added back.",
+                            name = name,
+                            old = info.old_output.display(),
+                            new = info.new_output.display(),
+                            e = format!("{e:#}")
+                        ));
+                        let _ = tx.send(Internal::OpFinished { hash, what: "recover", result });
+                        return;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Internal::OpFinished { hash, what: "recover", result: Err(e.to_string()) });
+                        return;
+                    }
                 };
                 let opts = AddTorrentOptions {
                     paused: info.paused,
@@ -2536,16 +2570,42 @@ async fn readd(
         only_files: only_files.clone(),
         paused,
         trackers: trackers.clone(),
+        moved: Vec::new(),
     };
     crate::util::write_atomic(&note, &serde_json::to_vec(&info)?).context("saving re-add details")?;
     sess.delete(TorrentIdOrHash::Id(id), false).await?;
 
     let mut move_err = None;
     if move_to.is_some() {
-        let (from, to) = (old_output.clone(), new_output.clone());
-        let r = tokio::task::spawn_blocking(move || move_files(&from, &to, &file_list)).await?;
-        if let Err(e) = r {
-            move_err = Some(e);
+        let (from, to, note) = (old_output.clone(), new_output.clone(), note.clone());
+        let mut info = info.clone();
+        let r = tokio::task::spawn_blocking(move || {
+            super::moves::move_files(
+                &from,
+                &to,
+                &file_list,
+                &mut |rel| {
+                    // So a crash from here on knows which files are already in the new folder.
+                    info.moved.push(rel.to_path_buf());
+                    crate::util::write_atomic(&note, &serde_json::to_vec(&info)?)
+                },
+                false,
+            )
+        })
+        .await?;
+        match r {
+            Ok(()) => {}
+            Err(super::moves::MoveError::Back(e)) => move_err = Some(e),
+            Err(super::moves::MoveError::Split(e)) => {
+                // Don't add it back at either folder (that would download the missing files
+                // again): the backup and note stay, and the next start brings the files together.
+                return Err(e.context(t!(
+                    "the files are now split between {old} and {new}; Corrent will try to bring them together \
+                     the next time it starts",
+                    old = old_output.display(),
+                    new = new_output.display()
+                )));
+            }
         }
     }
     let target = if move_err.is_some() { old_output.clone() } else { new_output };
@@ -2586,57 +2646,6 @@ async fn readd(
     let _ = std::fs::remove_file(&note);
     if let Some(e) = move_err {
         return Err(e.context(t!("moving files failed; the torrent was kept at its old location")));
-    }
-    Ok(())
-}
-
-/// Move a torrent's files. On failure, files already moved are moved back so the data is never split.
-fn move_files(from: &Path, to: &Path, files: &[PathBuf]) -> anyhow::Result<()> {
-    fn move_one(src: &Path, dst: &Path) -> anyhow::Result<()> {
-        if let Some(p) = dst.parent() {
-            std::fs::create_dir_all(p)?;
-        }
-        if dst.exists() {
-            anyhow::bail!("{} already exists at the destination", dst.display());
-        }
-        if std::fs::rename(src, dst).is_err() {
-            // Different volume: copy then remove.
-            std::fs::copy(src, dst).with_context(|| format!("copying {}", src.display()))?;
-            std::fs::remove_file(src)?;
-        }
-        Ok(())
-    }
-    std::fs::create_dir_all(to)?;
-    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for rel in files {
-        let src = from.join(rel);
-        if !src.exists() {
-            continue;
-        }
-        let dst = to.join(rel);
-        if let Err(e) = move_one(&src, &dst) {
-            // A partial copy is discarded; the original is still in place.
-            if src.exists() {
-                let _ = std::fs::remove_file(&dst);
-            }
-            for (s, d) in moved.iter().rev() {
-                if let Err(e2) = move_one(d, s) {
-                    tracing::error!("could not move {} back: {e2:#}", d.display());
-                }
-            }
-            return Err(e);
-        }
-        moved.push((src, dst));
-    }
-    // Remove now-empty directories left behind (best effort).
-    let mut dirs: Vec<PathBuf> = files.iter().filter_map(|f| f.parent().map(|p| from.join(p))).collect();
-    dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
-    dirs.dedup();
-    for d in dirs {
-        let _ = std::fs::remove_dir(d);
-    }
-    if from != to {
-        let _ = std::fs::remove_dir(from);
     }
     Ok(())
 }
@@ -2704,7 +2713,7 @@ fn file_order(h: &ManagedTorrent, priority: &std::collections::BTreeMap<usize, i
 }
 
 /// Written next to a re-add backup so an interrupted move/recheck can be recovered.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct ReaddNote {
     old_output: PathBuf,
     new_output: PathBuf,
@@ -2712,4 +2721,7 @@ struct ReaddNote {
     only_files: Option<Vec<usize>>,
     paused: bool,
     trackers: Vec<String>,
+    /// Files already moved to `new_output`, recorded (and synced) as each one finishes.
+    #[serde(default)]
+    moved: Vec<PathBuf>,
 }
