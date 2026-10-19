@@ -52,7 +52,8 @@ fn session_response(st: &AppState, user: User, issued: Issued, device: bool) -> 
     let cookie = format!(
         "{COOKIE}={}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}{secure}",
         issued.token,
-        crate::identity::WEB_SESSION_SECS
+        // The server slides the session; the browser keeps the cookie well beyond it.
+        30 * 86_400
     );
     ([(header::SET_COOKIE, cookie)], Json(body)).into_response()
 }
@@ -114,12 +115,9 @@ async fn setup(
     if !ip.0.is_loopback() {
         return Err(err(ErrorCode::Forbidden, "setup is only possible on the server itself"));
     }
-    if st.identity.user_count().await? > 0 {
-        return Err(err(ErrorCode::Conflict, "already set up"));
-    }
     req.role = Role::Admin;
     req.perms = None;
-    let user = st.identity.create_user(req).await?;
+    let user = st.identity.create_first_admin(req).await?;
     st.identity.audit(Some(&user.name), &ip.0.to_string(), "setup", "", true, "").await;
     let issued = st.identity.issue(user.id, None, ip.0.to_string(), user_agent(&headers)).await?;
     Ok(session_response(&st, user, issued, false))
@@ -162,10 +160,17 @@ async fn pair(
     Json(req): Json<PairRequest>,
 ) -> Result<Response, ApiErr> {
     limited(&st, ip)?;
+    if !st.limiter.lock().unwrap_or_else(|e| e.into_inner()).may_pair(ip.0) {
+        return Err(err(ErrorCode::TooManyRequests, "too many wrong pairing codes"));
+    }
     let user = match st.identity.redeem_pairing(&req.code).await {
         Ok(u) => u,
         Err(e) => {
-            st.limiter.lock().unwrap_or_else(|e| e.into_inner()).failed(ip.0);
+            {
+                let mut l = st.limiter.lock().unwrap_or_else(|e| e.into_inner());
+                l.failed(ip.0);
+                l.pair_failed(ip.0);
+            }
             st.identity.audit(None, &ip.0.to_string(), "pair", "", false, "").await;
             return Err(e.into());
         }

@@ -34,6 +34,8 @@ pub(crate) struct ApiState {
     /// Inside the media server: sign-in checks server users, and the server's own guard has
     /// already checked the Host header.
     identity: Option<crate::identity::Identity>,
+    /// Served over HTTPS: cookies get `Secure`.
+    secure_cookie: bool,
 }
 
 /// A running server; stops when dropped.
@@ -79,6 +81,7 @@ impl WebApiServer {
             sessions: Default::default(),
             rid: Default::default(),
             identity: None,
+            secure_cookie: false,
         });
         let app = router(state);
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -102,6 +105,7 @@ pub fn media_server_router(
     engine: EngineHandle,
     settings: Arc<ArcSwap<Settings>>,
     identity: crate::identity::Identity,
+    tls: bool,
 ) -> Router {
     let cfg = WebApiSettings { enabled: true, allow_lan: true, ..Default::default() };
     router(Arc::new(ApiState {
@@ -111,6 +115,7 @@ pub fn media_server_router(
         sessions: Default::default(),
         rid: Default::default(),
         identity: Some(identity),
+        secure_cookie: tls,
     }))
 }
 
@@ -265,7 +270,8 @@ async fn login(State(st): State<Arc<ApiState>>, ConnectInfo(peer): ConnectInfo<S
         return (StatusCode::OK, "Fails.").into_response();
     }
     let sid = sessions.create(ip);
-    let cookie = format!("SID={sid}; HttpOnly; SameSite=Strict; Path=/");
+    let secure = if st.secure_cookie { "; Secure" } else { "" };
+    let cookie = format!("SID={sid}; HttpOnly; SameSite=Strict; Path=/{secure}");
     ([(header::SET_COOKIE, cookie)], "Ok.").into_response()
 }
 

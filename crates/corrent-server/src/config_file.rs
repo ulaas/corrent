@@ -30,6 +30,9 @@ pub struct ServerConfig {
     pub hostnames: Vec<String>,
     /// Serve the qBittorrent-compatible API at /api/v2 (Sonarr, Radarr).
     pub qbt_api: bool,
+    /// Folders non-admin users may download to and browse, besides the download folder,
+    /// category folders and library folders.
+    pub download_roots: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -47,6 +50,7 @@ impl Default for ServerConfig {
             trusted_proxies: Vec::new(),
             hostnames: Vec::new(),
             qbt_api: true,
+            download_roots: Vec::new(),
         }
     }
 }

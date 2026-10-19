@@ -45,14 +45,30 @@ pub fn short_fingerprint(hex: &str) -> String {
     hex.as_bytes().chunks(2).take(16).map(|c| String::from_utf8_lossy(c).to_uppercase()).collect::<Vec<_>>().join(":")
 }
 
+/// Writes a private key: created owner-only from the start (no window where it is readable),
+/// then renamed into place.
 fn write_private(path: &Path, data: &str) -> anyhow::Result<()> {
-    corrent_core::util::write_atomic(path, data.as_bytes())?;
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    let _ = std::fs::remove_file(&tmp);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
     }
+    let mut f = o.open(&tmp)?;
+    f.write_all(data.as_bytes())?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+/// The pinning fingerprint of an existing CA in `dir`, without creating or changing anything.
+pub fn existing_fingerprint(dir: &Path) -> Option<String> {
+    let pem = std::fs::read_to_string(dir.join("ca.key")).ok()?;
+    KeyPair::from_pem(&pem).ok().map(|k| fingerprint_of(&k))
 }
 
 /// Names and addresses the leaf certificate should cover.
@@ -155,6 +171,13 @@ mod tests {
         assert_ne!(a.cert_chain_pem, c.cert_chain_pem, "re-issued for a new name");
         assert_eq!(a.fingerprint, c.fingerprint, "same CA, same pin");
         assert_eq!(short_fingerprint(&a.fingerprint).len(), 16 * 3 - 1);
+        assert_eq!(existing_fingerprint(&d).as_deref(), Some(a.fingerprint.as_str()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(d.join("server.key")).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         let _ = std::fs::remove_dir_all(d);
     }
 }

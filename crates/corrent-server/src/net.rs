@@ -90,6 +90,40 @@ pub fn client_ip(peer: IpAddr, forwarded_for: Option<&str>, trusted: &[Cidr]) ->
     peer
 }
 
+/// Whether an address is on the public internet (not loopback, private, link-local, CGNAT,
+/// multicast, unspecified or documentation space).
+pub fn is_public(ip: IpAddr) -> bool {
+    let ip = normalize(ip);
+    if is_local(ip, &[]) || ip.is_unspecified() || ip.is_multicast() {
+        return false;
+    }
+    match ip {
+        IpAddr::V4(v4) => !(v4.is_broadcast() || v4.is_documentation() || v4.octets()[0] == 0),
+        IpAddr::V6(v6) => (v6.segments()[0] & 0xe000) == 0x2000,
+    }
+}
+
+/// Resolves the host of an http(s) URL and refuses it unless every address is public (users
+/// without admin rights must not make the server fetch from its own network).
+pub async fn check_public_url(url: &str) -> Result<(), String> {
+    let u = url::Url::parse(url).map_err(|e| e.to_string())?;
+    if !matches!(u.scheme(), "http" | "https") {
+        return Err("only http(s) URLs".into());
+    }
+    let host = u.host_str().ok_or("URL without host")?.trim_start_matches('[').trim_end_matches(']').to_string();
+    let port = u.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<IpAddr> = match host.parse::<IpAddr>() {
+        Ok(ip) => vec![ip],
+        Err(_) => {
+            tokio::net::lookup_host((host.as_str(), port)).await.map_err(|e| e.to_string())?.map(|a| a.ip()).collect()
+        }
+    };
+    if addrs.is_empty() || !addrs.iter().all(|a| is_public(*a)) {
+        return Err("that address is on the server's own network".into());
+    }
+    Ok(())
+}
+
 /// Host header check against DNS rebinding: IP literals, `localhost`, and known names.
 pub fn host_allowed(host_header: &str, names: &[String]) -> bool {
     let host = if let Some(rest) = host_header.strip_prefix('[') {
@@ -139,6 +173,34 @@ mod tests {
         assert_eq!(client_ip(ip("8.8.8.8"), Some("1.2.3.4"), &trusted), ip("8.8.8.8"), "spoofed header ignored");
         assert_eq!(client_ip(ip("10.0.0.2"), Some("1.2.3.4, 10.0.0.2"), &trusted), ip("1.2.3.4"));
         assert_eq!(client_ip(ip("10.0.0.2"), None, &trusted), ip("10.0.0.2"));
+    }
+
+    #[test]
+    fn public_addresses() {
+        assert!(is_public(ip("8.8.8.8")));
+        assert!(is_public(ip("2606:4700::1111")));
+        for a in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fe80::1",
+            "::ffff:192.168.1.1",
+            "224.0.0.1",
+        ] {
+            assert!(!is_public(ip(a)), "{a}");
+        }
+    }
+
+    #[tokio::test]
+    async fn urls_to_the_own_network_are_refused() {
+        assert!(check_public_url("http://127.0.0.1:8080/x.torrent").await.is_err());
+        assert!(check_public_url("http://169.254.169.254/latest").await.is_err());
+        assert!(check_public_url("http://localhost/x").await.is_err());
+        assert!(check_public_url("ftp://8.8.8.8/x").await.is_err());
+        assert!(check_public_url("https://8.8.8.8/x").await.is_ok());
     }
 
     #[test]

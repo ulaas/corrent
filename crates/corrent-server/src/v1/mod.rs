@@ -76,6 +76,13 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 #[derive(Clone, Debug)]
 pub struct RequestHost(pub String);
 
+/// How the caller authenticated (browsers: the cookie).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthSource {
+    Bearer,
+    Cookie,
+}
+
 /// A signed-in caller.
 pub struct Auth(pub Principal);
 
@@ -101,6 +108,7 @@ impl FromRequestParts<Arc<AppState>> for Auth {
             .verify_token(&token, &ip)
             .await?
             .ok_or_else(|| err(ErrorCode::Unauthorized, "session expired"))?;
+        parts.extensions.insert(if from_cookie { AuthSource::Cookie } else { AuthSource::Bearer });
         if from_cookie && !matches!(parts.method, Method::GET | Method::HEAD | Method::OPTIONS) {
             let sent = parts.headers.get(CSRF_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("");
             if sent.is_empty() || sent != p.csrf {
@@ -119,6 +127,19 @@ impl Auth {
     pub fn name(&self) -> &str {
         &self.0.user.name
     }
+}
+
+/// Another user's torrent without what is private to its owner: tracker URLs (private
+/// trackers put the account's passkey in them), folders and the comment.
+pub fn redact_torrent(p: &Principal, mut t: corrent_proto::Torrent) -> corrent_proto::Torrent {
+    let own = t.added_by.as_deref() == Some(p.user.name.as_str());
+    if !own && !p.can(Perms::TORRENTS_MANAGE_ALL) {
+        t.trackers.clear();
+        t.save_path.clear();
+        t.content_path.clear();
+        t.comment = None;
+    }
+    t
 }
 
 trait WithParam {

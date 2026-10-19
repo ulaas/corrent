@@ -53,11 +53,12 @@ pub async fn events(
     auth: Auth,
     headers: HeaderMap,
     axum::Extension(host): axum::Extension<super::RequestHost>,
+    axum::Extension(source): axum::Extension<super::AuthSource>,
     Query(q): Query<EventsQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiErr> {
-    let bearer = headers.get(header::AUTHORIZATION).is_some();
-    if !bearer && !same_origin(&headers, &host.0) {
+    // Browsers (cookie sessions) must come from our own pages.
+    if source == super::AuthSource::Cookie && !same_origin(&headers, &host.0) {
         return Err(err(ErrorCode::Forbidden, "cross-origin WebSocket refused"));
     }
     let rate = Duration::from_millis(q.rate_ms.unwrap_or(1000).clamp(250, 10_000));
@@ -90,7 +91,7 @@ struct Client {
     labels: Option<Labels>,
     generation: u64,
     last_tick: Instant,
-    log_seen: i64,
+    log_seen: u64,
 }
 
 impl Client {
@@ -207,7 +208,8 @@ impl Client {
         self.last_tick = Instant::now();
         self.generation = snap.generation;
         if self.topics.contains(&Topic::Torrents) {
-            let now = wire::torrents(&snap);
+            let now: Vec<Torrent> =
+                wire::torrents(&snap).into_iter().map(|t| super::redact_torrent(&self.auth.0, t)).collect();
             let labels = wire::labels(&snap);
             match &self.sent {
                 None => self.send(ws, &Event::TorrentsFull { torrents: now.clone(), labels: labels.clone() }).await?,
@@ -230,8 +232,11 @@ impl Client {
         if self.topics.contains(&Topic::Log) {
             let lines: Vec<Event> = {
                 let buf = corrent_core::logbuf::LINES.lock().unwrap_or_else(|e| e.into_inner());
-                buf.iter()
-                    .filter(|l| l.time > self.log_seen)
+                let new: Vec<&corrent_core::logbuf::LogLine> = buf.iter().filter(|l| l.seq > self.log_seen).collect();
+                if let Some(last) = new.last() {
+                    self.log_seen = last.seq;
+                }
+                new.into_iter()
                     .map(|l| Event::Log {
                         level: l.level.to_string(),
                         target: l.target.clone(),
@@ -240,9 +245,6 @@ impl Client {
                     })
                     .collect()
             };
-            if let Some(Event::Log { time, .. }) = lines.last() {
-                self.log_seen = *time;
-            }
             for l in lines.iter().rev().take(200).rev() {
                 self.send(ws, l).await?;
             }

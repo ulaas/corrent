@@ -178,6 +178,8 @@ pub struct NewUser {
 pub struct UserUpdate {
     pub display_name: Option<String>,
     pub password: Option<String>,
+    /// Required when people change their own password (not when an admin resets it).
+    pub current_password: Option<String>,
     pub role: Option<Role>,
     pub perms: Option<Perms>,
     pub disabled: Option<bool>,

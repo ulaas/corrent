@@ -218,6 +218,35 @@ async fn setup_login_and_permissions() {
     let (s, v, _) =
         send(app, Method::PATCH, &format!("/api/v1/users/{me}"), &guest, json!({ "display_name": "Kiddo" })).await;
     assert_eq!((s, v["display_name"].as_str()), (StatusCode::OK, Some("Kiddo")));
+    // A plain user is confined to the download folders and public URLs.
+    let (s, v, _) = send(app, Method::POST, "/api/v1/users", &admin, json!({ "name": "bob", "password": "bob password", "role": "user" })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, v, _) = call(app, Method::POST, "/api/v1/auth/login", Call {
+        body: Some(json!({ "username": "bob", "password": "bob password", "device": device() })),
+        ..Default::default()
+    })
+    .await;
+    let bob = v["token"].as_str().unwrap().to_string();
+    let magnet = "magnet:?xt=urn:btih:0202020202020202020202020202020202020202";
+    let (s, v, _) = send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": [magnet], "save_path": "/etc" })).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let inside = h.dir.join("dl").join("bob");
+    let (s, v, _) = send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": [magnet], "save_path": inside, "paused": true })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, _) = send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": ["http://127.0.0.1:9/x.torrent"] })).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "no fetching from the server's own network");
+    let (s, _, _) = get(app, "/api/v1/server/fs?path=/etc", &bob).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v, _) = get(app, "/api/v1/server/fs", &bob).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(v["entries"].as_array().unwrap().iter().all(|e| !e["path"].as_str().unwrap().starts_with("/etc")));
+    // Changing one's own password needs the current one.
+    let bob_id = get(app, "/api/v1/auth/me", &bob).await.1["user"]["id"].as_i64().unwrap();
+    let (s, _, _) = send(app, Method::PATCH, &format!("/api/v1/users/{bob_id}"), &bob, json!({ "password": "new password 1" })).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _, _) = send(app, Method::PATCH, &format!("/api/v1/users/{bob_id}"), &bob, json!({ "password": "new password 1", "current_password": "bob password" })).await;
+    assert_eq!(s, StatusCode::OK);
+
     // The audit log saw the sign-ins.
     let (_, v, _) = get(app, "/api/v1/server/audit", &admin).await;
     assert!(v.as_array().unwrap().iter().any(|e| e["action"] == "login" && e["ok"] == false));
@@ -335,6 +364,17 @@ async fn torrents_settings_pairing_and_qbittorrent_login() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
     assert_eq!(get(app, &format!("/api/v1/torrents/{hash}"), &admin).await.0, StatusCode::OK);
+    // Other users don't see the admin's trackers or folders.
+    let (_, v, _) = send(app, Method::POST, "/api/v1/users", &admin, json!({ "name": "viewer", "password": "viewer password", "role": "guest" })).await;
+    assert!(v["id"].is_i64());
+    let (_, v, _) = call(app, Method::POST, "/api/v1/auth/login", Call {
+        body: Some(json!({ "username": "viewer", "password": "viewer password", "device": device() })),
+        ..Default::default()
+    })
+    .await;
+    let viewer = v["token"].as_str().unwrap().to_string();
+    let (_, v, _) = get(app, &format!("/api/v1/torrents/{hash}"), &viewer).await;
+    assert_eq!(v["save_path"], "", "{v}");
     assert_eq!(get(app, "/api/v1/torrents/zz", &admin).await.0, StatusCode::BAD_REQUEST);
     let (s, _, _) =
         send(app, Method::POST, "/api/v1/torrents", &admin, json!({ "urls": ["file:///etc/passwd"] })).await;

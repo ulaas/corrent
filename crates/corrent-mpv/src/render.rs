@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::{Error, Mpv, Result, WakeBox, ffi};
 
-type ProcBox = Box<dyn Fn(&CStr) -> *const c_void>;
+type ProcBox = Box<dyn Fn(&CStr) -> *const c_void + Send>;
 
 pub struct RenderContext {
     mpv: Arc<Mpv>,
@@ -39,7 +39,7 @@ unsafe extern "C" fn update_trampoline(d: *mut c_void) {
 impl RenderContext {
     /// An OpenGL render context. Call with the host's GL context current; `get_proc_address`
     /// resolves GL function names (eframe: `CreationContext::get_proc_address`).
-    pub fn new_gl(mpv: Arc<Mpv>, get_proc_address: impl Fn(&CStr) -> *const c_void + 'static) -> Result<Self> {
+    pub fn new_gl(mpv: Arc<Mpv>, get_proc_address: impl Fn(&CStr) -> *const c_void + Send + 'static) -> Result<Self> {
         let proc: Box<ProcBox> = Box::new(Box::new(get_proc_address));
         let mut init = ffi::mpv_opengl_init_params {
             get_proc_address: Some(proc_trampoline),

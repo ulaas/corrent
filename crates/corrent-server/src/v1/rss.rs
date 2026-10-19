@@ -18,7 +18,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/rss", get(view))
-        .route("/rss/config", get(config).put(set_config))
+        .route("/rss/config", get(config).put(set_config).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)))
         .route("/rss/refresh", post(refresh))
         .route("/rss/download", post(download))
 }
@@ -42,10 +42,12 @@ async fn set_config(
     for r in &rss.rules {
         corrent_core::rss::rules::Matcher::new(r).map_err(|e| err(ErrorCode::BadRequest, e))?;
     }
-    let mut s = (**st.settings.load()).clone();
-    s.rss = rss;
-    // Secrets are unchanged here; apply_settings un-masks nothing in this path.
-    let saved = super::server::apply_settings(&st, s).await?;
+    let saved = super::server::update_settings(&st, |old| {
+        let mut s = old.clone();
+        s.rss = rss;
+        s
+    })
+    .await?;
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "rss_config", "", true, "").await;
     Ok(Json(saved.rss))
 }

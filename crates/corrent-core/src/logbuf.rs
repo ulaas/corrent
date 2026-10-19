@@ -9,6 +9,8 @@ use tracing_subscriber::Layer;
 
 #[derive(Clone, Debug)]
 pub struct LogLine {
+    /// Increases by one per captured line (lets readers continue exactly where they stopped).
+    pub seq: u64,
     pub time: i64,
     pub level: Level,
     pub target: String,
@@ -48,7 +50,9 @@ impl<S: tracing::Subscriber> Layer<S> for LogCapture {
         }
         let mut v = MsgVisitor(String::new());
         event.record(&mut v);
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let line = LogLine {
+            seq: SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             time: crate::util::now_unix(),
             level: *meta.level(),
             target: meta.target().to_string(),

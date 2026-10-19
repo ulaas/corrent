@@ -36,6 +36,18 @@ administrator automatically.
 | `trusted_proxies` | `[]` | reverse proxies whose `X-Forwarded-For` is believed |
 | `hostnames` | `[]` | host names browsers may use besides IP addresses, `localhost`, `<computer>` and `<computer>.local` |
 | `qbt_api` | `true` | serve the qBittorrent-compatible API at `/api/v2` and the classic web UI at `/` |
+| `download_roots` | `[]` | extra folders non-admin users may download to and browse |
+
+### What non-admin users can reach
+
+Users without the `settings.write` permission are confined to the download folder, the category
+folders, the library folders and `download_roots`: save paths, moves, the folder browser and
+"new folder" all resolve the path (symlinks and `..` can't escape) and refuse anything outside.
+Adding a torrent by URL only fetches from public addresses for them (no loopback, LAN,
+link-local or cloud-metadata addresses). Other users' torrents are listed without their tracker
+URLs (private trackers embed the account's passkey), folders and comments. Accounts with the
+`downloader` permission (for Sonarr/Radarr through the qBittorrent API) are trusted with any
+save path, as in qBittorrent.
 
 ### Certificates and fingerprints
 
@@ -49,14 +61,15 @@ trusted authority on your devices (compare the fingerprint first).
 ## Accounts, devices and pairing
 
 Users have a role (`admin`, `user`, `guest`, `kids`) with default permissions that an admin can
-override. Passwords are argon2id. Browsers get a 12-hour sliding session cookie (HttpOnly,
+override. Passwords are argon2id; changing your own password needs the current one. Browsers get a 12-hour sliding session cookie (HttpOnly,
 SameSite=Strict) and must echo a CSRF token on changes; apps get a 90-day sliding device token.
 Ten wrong passwords lock an account for 15 minutes; ten failures from one address block it for
 15 minutes; a global limit slows floods. Every sign-in, account change, settings change and
 removal with data is in the audit log (`GET /api/v1/server/audit`).
 
 A signed-in user creates a 6-digit pairing code (`POST /api/v1/auth/pair/code`, valid 10 minutes,
-single use, burned after five wrong guesses); a new device redeems it (`POST /api/v1/auth/pair`)
+single use; an address that guesses wrong five times can't pair for 15 minutes, and fifty wrong
+guesses in total burn every outstanding code); a new device redeems it (`POST /api/v1/auth/pair`)
 and receives its own token. Devices are listed and revoked at `/api/v1/devices`.
 
 ## API v1 in brief

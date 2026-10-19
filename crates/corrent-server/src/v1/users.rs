@@ -47,6 +47,14 @@ async fn update(
     if !admin && (id != auth.0.user.id || u.role.is_some() || u.perms.is_some() || u.disabled.is_some()) {
         return Err(err(ErrorCode::Forbidden, "permission denied"));
     }
+    // Changing one's own password needs the current one (a stolen session can't lock the
+    // owner out); admins resetting someone else's don't.
+    if u.password.is_some() && (id == auth.0.user.id || !admin) {
+        let current = u.current_password.clone().unwrap_or_default();
+        if !st.identity.check_password(id, &current).await? {
+            return Err(err(ErrorCode::InvalidCredentials, "current password is wrong"));
+        }
+    }
     let what = [
         u.display_name.as_ref().map(|_| "display_name"),
         u.password.as_ref().map(|_| "password"),

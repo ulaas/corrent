@@ -158,6 +158,28 @@ fn run(args: Args) -> anyhow::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&paths.data_dir, std::fs::Permissions::from_mode(0o700));
     }
+    if args.print_fingerprint {
+        // Read-only: works next to a running server and never creates certificates.
+        match tls::existing_fingerprint(&paths.data_dir.join("tls")) {
+            Some(f) => println!("{f}\n{}", tls::short_fingerprint(&f)),
+            None => println!("no certificate yet (the server makes one at its first start)"),
+        }
+        return Ok(());
+    }
+    init_logging(&paths);
+
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("correntd-rt").build()?;
+    let db = corrent_db::Db::open(&paths.data_dir.join("corrent.db"))?;
+    let identity = Identity::new(db, HashCost::STANDARD);
+
+    if let Some(name) = &args.init_admin {
+        // Works while the server runs (SQLite serializes the write).
+        let password = read_password()?;
+        let u = rt.block_on(identity.create_user(corrent_server::identity::new_admin(name, &password)))?;
+        println!("created administrator {:?}", u.name);
+        return Ok(());
+    }
+
     // One server per profile: two engines on one session would corrupt it.
     let lock = std::fs::OpenOptions::new()
         .create(true)
@@ -170,17 +192,6 @@ fn run(args: Args) -> anyhow::Result<()> {
             anyhow::bail!("another correntd is already using {}", paths.data_dir.display())
         }
         Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
-    }
-
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("correntd-rt").build()?;
-    let db = corrent_db::Db::open(&paths.data_dir.join("corrent.db"))?;
-    let identity = Identity::new(db, HashCost::STANDARD);
-
-    if let Some(name) = &args.init_admin {
-        let password = read_password()?;
-        let u = rt.block_on(identity.create_user(corrent_server::identity::new_admin(name, &password)))?;
-        println!("created administrator {:?}", u.name);
-        return Ok(());
     }
 
     let mut cfg = ServerConfig::load(&paths.data_dir)?;
@@ -213,15 +224,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         Some(tls::ensure(&paths.data_dir.join("tls"), &server_id, &names, &ips)?)
     };
     let fingerprint = tls_material.as_ref().map(|t| t.fingerprint.clone()).filter(|f| !f.is_empty());
-    if args.print_fingerprint {
-        match &fingerprint {
-            Some(f) => println!("{f}\n{}", tls::short_fingerprint(f)),
-            None => println!("no fingerprint (TLS is off or uses your own certificate)"),
-        }
-        return Ok(());
-    }
 
-    init_logging(&paths);
     corrent_core::crash::install_hook(paths.log_dir());
     let previous = corrent_core::crash::start(&paths.log_dir());
     if previous.unclean {

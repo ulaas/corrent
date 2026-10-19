@@ -12,6 +12,7 @@ pub mod events;
 pub use corrent_proto::event as events_api;
 pub mod identity;
 pub mod net;
+pub mod paths;
 pub mod state;
 pub mod tls;
 pub mod v1;
@@ -68,6 +69,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         limiter: Default::default(),
         settings_lock: Default::default(),
         hub: p.hub,
+        library_roots: Default::default(),
     }))
 }
 
@@ -75,10 +77,12 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
 pub fn router(st: Arc<AppState>) -> Router {
     let mut app = Router::new().nest("/api/v1", v1::router().with_state(st.clone()));
     if st.cfg.load().qbt_api {
-        app = app.merge(webapi::media_server_router(st.engine.clone(), st.settings.clone(), st.identity.clone()));
+        app =
+            app.merge(webapi::media_server_router(st.engine.clone(), st.settings.clone(), st.identity.clone(), st.tls));
     }
     app.layer(axum::middleware::from_fn_with_state(st.clone(), v1::guard))
-        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
+        // Small by default; the routes that take uploads raise it for themselves.
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
 }
 
 /// Forwards the engine's events to connected clients (for hosts that own the engine's event

@@ -24,7 +24,7 @@ use crate::state::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/torrents", get(list).post(add))
+        .route("/torrents", get(list).post(add).layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)))
         .route("/torrents/actions", post(action))
         .route("/torrents/move", post(move_storage))
         .route("/torrents/categories", get(labels).put(set_categories))
@@ -78,20 +78,21 @@ impl WithHash for ApiErr {
     }
 }
 
-async fn list(State(st): State<Arc<AppState>>, _auth: Auth) -> ApiResult<TorrentList> {
+async fn list(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<TorrentList> {
     let snap = st.engine.snapshot();
-    Ok(Json(TorrentList { torrents: wire::torrents(&snap), labels: wire::labels(&snap) }))
+    let torrents = wire::torrents(&snap).into_iter().map(|t| super::redact_torrent(&auth.0, t)).collect();
+    Ok(Json(TorrentList { torrents, labels: wire::labels(&snap) }))
 }
 
 async fn labels(State(st): State<Arc<AppState>>, _auth: Auth) -> ApiResult<Labels> {
     Ok(Json(wire::labels(&st.engine.snapshot())))
 }
 
-async fn one(State(st): State<Arc<AppState>>, _auth: Auth, Path(hash): Path<String>) -> ApiResult<Torrent> {
+async fn one(State(st): State<Arc<AppState>>, auth: Auth, Path(hash): Path<String>) -> ApiResult<Torrent> {
     let h = parse_hash(&hash)?;
     let snap = st.engine.snapshot();
     let t = snap.torrents.iter().find(|t| t.hash == h).ok_or_else(|| err(ErrorCode::NotFound, "no such torrent"))?;
-    Ok(Json(wire::torrent(t)))
+    Ok(Json(super::redact_torrent(&auth.0, wire::torrent(t))))
 }
 
 async fn detail(State(st): State<Arc<AppState>>, _auth: Auth, Path(hash): Path<String>) -> ApiResult<TorrentDetail> {
@@ -170,17 +171,18 @@ async fn add(State(st): State<Arc<AppState>>, auth: Auth, ip: ClientIp, req: Req
     if sources.is_empty() {
         return Err(err(ErrorCode::BadRequest, "nothing to add"));
     }
+    if !crate::paths::unconfined(&auth) {
+        for s in &sources {
+            if let AddSource::Url(u) = s {
+                crate::net::check_public_url(u).await.map_err(|e| err(ErrorCode::Forbidden, e).with_text("url", u))?;
+            }
+        }
+    }
     let settings = st.settings.load_full();
     let snap = st.engine.snapshot();
     let category = opts.category.filter(|c| !c.trim().is_empty());
     let save_path = match opts.save_path.filter(|p| !p.trim().is_empty()) {
-        Some(p) => {
-            let p = PathBuf::from(p);
-            if !p.is_absolute() {
-                return Err(err(ErrorCode::BadRequest, "absolute save path required"));
-            }
-            p
-        }
+        Some(p) => crate::paths::check(&st, &auth, &PathBuf::from(p))?,
         None => category
             .as_ref()
             .and_then(|c| snap.categories.get(c))
@@ -404,10 +406,7 @@ async fn move_storage(
     Json(r): Json<MoveRequest>,
 ) -> ApiResult<serde_json::Value> {
     may_manage(&st, &auth, &r.hashes)?;
-    let to = PathBuf::from(&r.to);
-    if !to.is_absolute() {
-        return Err(err(ErrorCode::BadRequest, "absolute path required"));
-    }
+    let to = crate::paths::check(&st, &auth, &PathBuf::from(&r.to))?;
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "torrent_move", &r.to, true, "").await;
     st.engine.send(EngineCommand::MoveStorage { hashes: r.hashes, to });
     ok()
@@ -419,6 +418,12 @@ async fn set_categories(
     Json(cats): Json<BTreeMap<String, corrent_proto::torrent::Category>>,
 ) -> ApiResult<serde_json::Value> {
     auth.require(Perms::TORRENTS_MANAGE_ALL)?;
+    // A category's folder is a download destination: same confinement as save paths.
+    for c in cats.values() {
+        if let Some(p) = c.save_path.as_ref().filter(|p| !p.trim().is_empty()) {
+            crate::paths::check(&st, &auth, &PathBuf::from(p))?;
+        }
+    }
     let map = cats
         .into_iter()
         .filter(|(k, _)| !k.trim().is_empty())

@@ -31,6 +31,8 @@ pub struct AppState {
     /// Serializes settings writes (read-modify-write from several clients).
     pub settings_lock: tokio::sync::Mutex<()>,
     pub hub: Arc<Hub>,
+    /// Library folders (confined users may save and browse there).
+    pub library_roots: ArcSwap<Vec<std::path::PathBuf>>,
 }
 
 #[derive(Default)]
@@ -58,18 +60,21 @@ impl Nets {
 /// unauthenticated endpoints (sign-in, pairing, setup), so a flood can't keep argon2 busy.
 pub struct Limiter {
     fails: HashMap<IpAddr, (u32, Instant)>,
+    /// Wrong pairing codes per address: five lock that address out of pairing for a while.
+    pair_fails: HashMap<IpAddr, (u32, Instant)>,
     tokens: f64,
     last: Instant,
 }
 
 const IP_FAILS: u32 = 10;
+const PAIR_FAILS: u32 = 5;
 const IP_WINDOW: Duration = Duration::from_secs(15 * 60);
 const BUCKET: f64 = 30.0;
 const REFILL_PER_SEC: f64 = 1.0;
 
 impl Default for Limiter {
     fn default() -> Self {
-        Limiter { fails: HashMap::new(), tokens: BUCKET, last: Instant::now() }
+        Limiter { fails: HashMap::new(), pair_fails: HashMap::new(), tokens: BUCKET, last: Instant::now() }
     }
 }
 
@@ -89,6 +94,18 @@ impl Limiter {
 
     pub fn failed(&mut self, ip: IpAddr) {
         let e = self.fails.entry(ip).or_insert((0, Instant::now()));
+        e.0 += 1;
+        e.1 = Instant::now();
+    }
+
+    pub fn may_pair(&mut self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        self.pair_fails.retain(|_, (_, t)| now.duration_since(*t) < IP_WINDOW);
+        self.pair_fails.get(&ip).is_none_or(|(n, _)| *n < PAIR_FAILS)
+    }
+
+    pub fn pair_failed(&mut self, ip: IpAddr) {
+        let e = self.pair_fails.entry(ip).or_insert((0, Instant::now()));
         e.0 += 1;
         e.1 = Instant::now();
     }

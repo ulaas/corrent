@@ -38,7 +38,8 @@ pub type Result<T> = std::result::Result<T, DbError>;
 /// Runs inside the batch transaction and returns whether it succeeded, plus a reply that is
 /// delivered after the commit (with the commit's error, if any).
 type Reply = Box<dyn FnOnce(Option<String>) + Send>;
-type Job = Box<dyn FnOnce(&Transaction) -> (bool, Reply) + Send>;
+/// Gets the batch transaction, or the reason none could be started.
+type Job = Box<dyn FnOnce(std::result::Result<&Transaction, &str>) -> (bool, Reply) + Send>;
 
 struct Inner {
     path: PathBuf,
@@ -165,6 +166,16 @@ impl Db {
     ) -> Result<tokio::sync::oneshot::Receiver<Result<T>>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let job: Job = Box::new(move |t| {
+            let t = match t {
+                Ok(t) => t,
+                Err(why) => {
+                    let why = why.to_string();
+                    let reply: Reply = Box::new(move |_| {
+                        let _ = tx.send(Err(DbError::Other(why)));
+                    });
+                    return (false, reply);
+                }
+            };
             let r = f(t);
             let ok = r.is_ok();
             let reply: Reply = Box::new(move |commit_err| {
@@ -216,7 +227,12 @@ fn writer_loop(mut c: Connection, rx: std::sync::mpsc::Receiver<Job>) {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!("database: can't start a write transaction: {e}");
-                // Dropping the jobs answers each caller with "writer stopped".
+                // Each caller hears the real reason (their job never ran).
+                let msg = format!("couldn't start a transaction: {e}");
+                for job in batch {
+                    let (_, reply) = job(Err(&msg));
+                    reply(None);
+                }
                 continue;
             }
         };
@@ -228,7 +244,7 @@ fn writer_loop(mut c: Connection, rx: std::sync::mpsc::Receiver<Job>) {
                 continue;
             }
             // A panicking job must not take the writer (and every later write) down with it.
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&tx))) {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(Ok(&tx)))) {
                 Ok((true, reply)) => {
                     let _ = tx.execute_batch(&format!("RELEASE {name}"));
                     replies.push(reply);
@@ -247,7 +263,9 @@ fn writer_loop(mut c: Connection, rx: std::sync::mpsc::Receiver<Job>) {
             tracing::error!("database: commit failed: {e}");
             e.to_string()
         });
-        // Callers hear back only once their data is durable (or the commit failed).
+        // Callers hear back only after the commit (or its failure). With synchronous=NORMAL in
+        // WAL mode a committed write survives a crash of Corrent, but the very last
+        // transactions can be lost on power failure — acceptable for this data.
         for reply in replies {
             reply(commit_err.clone());
         }

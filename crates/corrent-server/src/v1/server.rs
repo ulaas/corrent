@@ -23,7 +23,10 @@ pub const SECRET_MASK: &str = "••••••••";
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/server/info", get(info))
-        .route("/server/settings", get(get_settings).put(put_settings))
+        .route(
+            "/server/settings",
+            get(get_settings).put(put_settings).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
+        )
         .route("/server/audit", get(audit))
         .route("/server/log", get(log))
         .route("/server/fs", get(fs))
@@ -62,7 +65,12 @@ pub fn redact(mut s: Settings) -> Settings {
 /// Puts stored secrets back where a client sent the mask.
 pub fn unredact(mut new: Settings, old: &Settings) -> Settings {
     if new.connection.proxy_password == SECRET_MASK {
-        new.connection.proxy_password = old.connection.proxy_password.clone();
+        // The stored password only goes back to the proxy it belongs to (a changed host must
+        // not receive it).
+        let same = new.connection.proxy_host == old.connection.proxy_host
+            && new.connection.proxy_port == old.connection.proxy_port
+            && new.connection.proxy_username == old.connection.proxy_username;
+        new.connection.proxy_password = if same { old.connection.proxy_password.clone() } else { String::new() };
     }
     if new.web_api.password_hash == SECRET_MASK {
         new.web_api.password_hash = old.web_api.password_hash.clone();
@@ -82,10 +90,14 @@ async fn get_settings(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<
 }
 
 /// Replaces the settings (whole document, as returned by GET with any changes).
-pub async fn apply_settings(st: &AppState, new: Settings) -> Result<Settings, super::ApiErr> {
+/// Read-modify-write of the settings under one lock (several clients may write at once).
+pub async fn update_settings(
+    st: &AppState,
+    change: impl FnOnce(&Settings) -> Settings,
+) -> Result<Settings, super::ApiErr> {
     let _g = st.settings_lock.lock().await;
     let old = (**st.settings.load()).clone();
-    let new = unredact(new, &old);
+    let new = change(&old);
     if new == old {
         return Ok(new);
     }
@@ -112,7 +124,7 @@ async fn put_settings(
     Json(new): Json<Settings>,
 ) -> ApiResult<Settings> {
     auth.require(Perms::SETTINGS_WRITE)?;
-    let r = apply_settings(&st, new).await;
+    let r = update_settings(&st, |old| unredact(new, old)).await;
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "settings", "", r.is_ok(), "").await;
     Ok(Json(redact(r?)))
 }
@@ -221,15 +233,22 @@ fn list_dir(path: PathBuf, files: bool) -> Result<FsListing, super::ApiErr> {
     })
 }
 
-async fn fs(auth: Auth, Query(q): Query<FsQuery>) -> ApiResult<FsListing> {
+async fn fs(State(st): State<Arc<AppState>>, auth: Auth, Query(q): Query<FsQuery>) -> ApiResult<FsListing> {
     may_browse(&auth, q.files)?;
     match q.path.filter(|p| !p.trim().is_empty()) {
-        None => Ok(Json(FsListing { path: String::new(), parent: None, entries: roots(), free_space: None })),
+        None => {
+            let entries = if crate::paths::unconfined(&auth) {
+                roots()
+            } else {
+                crate::paths::roots(&st)
+                    .into_iter()
+                    .map(|p| FsEntry { name: p.display().to_string(), path: p.display().to_string(), dir: true })
+                    .collect()
+            };
+            Ok(Json(FsListing { path: String::new(), parent: None, entries, free_space: None }))
+        }
         Some(p) => {
-            let path = PathBuf::from(p);
-            if !path.is_absolute() {
-                return Err(err(ErrorCode::BadRequest, "absolute path required"));
-            }
+            let path = crate::paths::check(&st, &auth, &PathBuf::from(p))?;
             let files = q.files;
             Ok(Json(
                 tokio::task::spawn_blocking(move || list_dir(path, files))
@@ -252,10 +271,7 @@ async fn mkdir(
     Json(r): Json<MkdirRequest>,
 ) -> ApiResult<FsEntry> {
     may_browse(&auth, false)?;
-    let path = PathBuf::from(&r.path);
-    if !path.is_absolute() {
-        return Err(err(ErrorCode::BadRequest, "absolute path required"));
-    }
+    let path = crate::paths::check(&st, &auth, &PathBuf::from(&r.path))?;
     let p2 = path.clone();
     let res = tokio::task::spawn_blocking(move || std::fs::create_dir_all(&p2))
         .await
@@ -303,6 +319,9 @@ mod tests {
         assert_eq!(r.connection.proxy_password, SECRET_MASK);
         assert_eq!(r.search.providers[0].api_key, SECRET_MASK);
         assert_eq!(r.web_api.password_hash, "", "empty stays empty");
-        assert_eq!(unredact(r, &s), s);
+        assert_eq!(unredact(r.clone(), &s), s);
+        let mut moved = r;
+        moved.connection.proxy_host = "evil.example".into();
+        assert_eq!(unredact(moved, &s).connection.proxy_password, "", "not sent to another proxy");
     }
 }

@@ -15,7 +15,9 @@ use corrent_proto::{ApiError, ErrorCode};
 pub const WEB_SESSION_SECS: i64 = 12 * 3600;
 pub const DEVICE_TOKEN_SECS: i64 = 90 * 24 * 3600;
 const PAIRING_SECS: i64 = 10 * 60;
-const PAIRING_MAX_ATTEMPTS: i64 = 5;
+/// Wrong guesses (from anyone) before every outstanding code is burned. Each address also gets
+/// only five (see `Limiter::may_pair`), so one client can't burn other people's codes.
+const PAIRING_MAX_ATTEMPTS: i64 = 50;
 const PAIRING_MAX_OUTSTANDING: i64 = 3;
 const LOCKOUT_AFTER: i64 = 10;
 const LOCKOUT_SECS: i64 = 15 * 60;
@@ -207,21 +209,25 @@ pub struct Identity {
     cost: HashCost,
     /// argon2 at 64 MiB per hash: at most two at once.
     hashing: Arc<tokio::sync::Semaphore>,
+    /// A hash at the real cost, checked for unknown user names so their timing matches.
+    dummy: Arc<tokio::sync::OnceCell<String>>,
 }
 
 impl Identity {
     pub fn new(db: Db, cost: HashCost) -> Identity {
-        Identity { db, cost, hashing: Arc::new(tokio::sync::Semaphore::new(2)) }
+        Identity { db, cost, hashing: Arc::new(tokio::sync::Semaphore::new(2)), dummy: Default::default() }
     }
 
     pub fn db(&self) -> &Db {
         &self.db
     }
 
-    async fn hash(&self, password: String) -> String {
+    async fn hash(&self, password: String) -> Result<String, ApiError> {
         let _permit = self.hashing.acquire().await;
         let cost = self.cost;
-        tokio::task::spawn_blocking(move || hash_password(&password, cost)).await.unwrap_or_default()
+        tokio::task::spawn_blocking(move || hash_password(&password, cost))
+            .await
+            .map_err(|e| ApiError::new(ErrorCode::Internal, format!("hashing failed: {e}")))
     }
 
     async fn verify(&self, stored: String, password: String) -> bool {
@@ -252,7 +258,7 @@ impl Identity {
         if u.password.len() < 8 {
             return Err(ApiError::new(ErrorCode::BadRequest, "password too short").with("min", 8));
         }
-        let hash = self.hash(u.password).await;
+        let hash = self.hash(u.password).await?;
         self.insert_user(u.name, u.display_name, hash, u.role, u.perms).await
     }
 
@@ -285,6 +291,46 @@ impl Identity {
                 Err(ApiError::new(ErrorCode::Conflict, "user exists"))
             }
             Err(e) => Err(db_err(e)),
+        }
+    }
+
+    /// First-run setup: creates the administrator only while no user exists (atomically, so
+    /// two simultaneous setups can't make two admins).
+    pub async fn create_first_admin(&self, mut u: NewUser) -> Result<User, ApiError> {
+        if !valid_name(&u.name) {
+            return Err(ApiError::new(ErrorCode::BadRequest, "invalid user name"));
+        }
+        if u.password.len() < 8 {
+            return Err(ApiError::new(ErrorCode::BadRequest, "password too short").with("min", 8));
+        }
+        u.role = Role::Admin;
+        let hash = self.hash(u.password.clone()).await?;
+        let (name, display, now) = (u.name.trim().to_string(), u.display_name.clone(), now_unix());
+        let id = self
+            .db
+            .write(move |t| {
+                let n = t.execute(
+                    "INSERT INTO users(name, display_name, pw_hash, role, created_at)                      SELECT ?1, ?2, ?3, 'admin', ?4 WHERE NOT EXISTS (SELECT 1 FROM users)",
+                    params![name, display, hash, now],
+                )?;
+                Ok((n == 1).then(|| t.last_insert_rowid()))
+            })
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| ApiError::new(ErrorCode::Conflict, "already set up"))?;
+        self.user(id).await
+    }
+
+    /// Checks a user's current password (self-service password changes).
+    pub async fn check_password(&self, id: i64, password: &str) -> Result<bool, ApiError> {
+        let stored: Option<String> = self
+            .db
+            .read(move |c| c.query_row("SELECT pw_hash FROM users WHERE id = ?1", [id], |r| r.get(0)).optional())
+            .await
+            .map_err(db_err)?;
+        match stored {
+            Some(s) => Ok(self.verify(s, password.to_string()).await),
+            None => Ok(false),
         }
     }
 
@@ -323,7 +369,7 @@ impl Identity {
             Some(p) if p.len() < 8 => {
                 return Err(ApiError::new(ErrorCode::BadRequest, "password too short").with("min", 8));
             }
-            Some(p) => Some(self.hash(p).await),
+            Some(p) => Some(self.hash(p).await?),
             None => None,
         };
         let demotes_or_disables = u.role.is_some_and(|r| r != Role::Admin) || u.disabled == Some(true);
@@ -409,7 +455,15 @@ impl Identity {
             .map_err(db_err)?;
         let Some((user, stored, locked_until)) = row else {
             // Same work as a real check, so timing doesn't reveal which names exist.
-            let _ = self.verify(hash_password("x", HashCost::FAST), password.to_string()).await;
+            let cost = self.cost;
+            let dummy = self
+                .dummy
+                .get_or_init(|| async move {
+                    tokio::task::spawn_blocking(move || hash_password("not a password", cost)).await.unwrap_or_default()
+                })
+                .await
+                .clone();
+            let _ = self.verify(dummy, password.to_string()).await;
             return Err(ApiError::new(ErrorCode::InvalidCredentials, "invalid credentials"));
         };
         if locked_until > now {
@@ -430,7 +484,7 @@ impl Identity {
                 .map_err(db_err)?;
             return Err(ApiError::new(ErrorCode::InvalidCredentials, "invalid credentials"));
         }
-        let upgrade = if stored.starts_with("argon2id$") { None } else { Some(self.hash(password.to_string()).await) };
+        let upgrade = if stored.starts_with("argon2id$") { None } else { Some(self.hash(password.to_string()).await?) };
         self.db
             .write(move |t| {
                 t.execute("UPDATE users SET failed_logins = 0, locked_until = 0 WHERE id = ?1", [id])?;
@@ -627,7 +681,7 @@ impl Identity {
     }
 
     /// Redeems a pairing code. A wrong guess counts against every outstanding code, so after
-    /// five wrong guesses all codes are burned (10⁶ combinations can't be walked).
+    /// fifty wrong guesses all codes are burned (10⁶ combinations can't be walked).
     pub async fn redeem_pairing(&self, code: &str) -> Result<User, ApiError> {
         let code = code.trim().to_string();
         let now = now_unix();
@@ -790,10 +844,10 @@ mod tests {
         assert_eq!(code.len(), 6);
         assert_eq!(id.redeem_pairing(&code).await.unwrap().id, u.id);
         assert!(id.redeem_pairing(&code).await.is_err(), "single use");
-        // Five wrong guesses burn outstanding codes.
+        // Fifty wrong guesses burn outstanding codes.
         let (code, _) = id.pairing_code(u.id).await.unwrap();
         let wrong = if code == "000000" { "000001" } else { "000000" };
-        for _ in 0..5 {
+        for _ in 0..50 {
             assert!(id.redeem_pairing(wrong).await.is_err());
         }
         assert!(id.redeem_pairing(&code).await.is_err(), "burned");
