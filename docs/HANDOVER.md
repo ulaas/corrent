@@ -105,8 +105,20 @@ clusters, `?v=` + ETag on segments, and an 8 KiB index buffer. Checked with mpv 
 - Windows service install, stop and shutdown;
 - crossfade, which mpv can't do because it plays one file at a time.
 
-**Desktop roadmap:** hardening per `docs/STABILITY.md` (S1 first), upstreaming the librqbit patches
-(`docs/upstream/`), and a first tagged release.
+**Desktop roadmap:** hardening per `docs/STABILITY.md`. S1 (profile data-loss guards) is done on
+Windows; see its Results rows. S2 is next. Then upstreaming the librqbit patches (`docs/upstream/`),
+and a first tagged release.
+- S1 adds a lock that the desktop app and `correntd` share: `corrent.lock` in the data folder. It
+  replaces `correntd.lock`, and a stale `correntd.lock` file is harmless.
+- Store and RSS saves now go through `corrent_core::writer`.
+- Left open from the S1 review:
+  - Closing the console window of a `correntd` started by hand on Windows, or logging off, still
+    kills it before it saves. A fix needs a `SetConsoleCtrlHandler` callback that blocks until
+    shutdown has run; the service path handles this.
+  - On Windows, E1 refuses torrents with a `:` in a file name (for example `Title: Subtitle.mkv`).
+    Offering a rename in the add dialog would be friendlier.
+  - A watch-folder add that the user cancels renames the file to `.failed`, the same as a failed
+    add.
 
 ## Conventions that bit during this work
 
