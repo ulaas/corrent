@@ -207,3 +207,25 @@ computer's engine** switches back.
 
 `GET /api/v1/server/remote` also reports what is running: the Connect id and home relay, the
 mapped public address, and errors.
+
+## Tasks, notifications, backups, metrics
+
+**Tasks** (`GET /api/v1/tasks`, `PUT /tasks/{id}`, `POST /tasks/{id}/run`, `GET /tasks/{id}/history`;
+web: Settings → Tasks and backups): `scan_libraries` (6 h), `refresh_metadata` (1 day),
+`wanted_search` (15 min), `cleanup_cache` (1 day: transcode leftovers), `backup` (1 day). Each can
+be turned off, given another interval or run by hand; the last 50 runs are kept.
+
+**Notifications** (`/api/v1/notifications`, web: Settings → Notifications): ntfy topics, Discord
+webhooks, generic JSON webhooks (`{event, title, body, time, server}`) or notifier plugins, for
+`download_done`, `torrent_added`, `release_grabbed`, `device_paired`, `task_failed`. Texts are in
+the server's language.
+
+**Backups** (`GET/POST /api/v1/backups`, `GET /backups/{name}`, admins): zips in
+`<data>/backups/` holding a consistent copy of `corrent.db` (`VACUUM INTO`), `server.toml`,
+`settings.toml`, `store.json`, `rss.json`, `connect.key` and `tls/`; the newest seven are kept.
+They contain private keys (owner-only files). Restore: stop the server, unzip into the data folder,
+start it.
+
+**Metrics**: `metrics = true` in `server.toml` serves Prometheus text at `/metrics` (torrents by
+state, rates, totals, peers, DHT, free space, library items, transcode sessions, WebSocket
+clients, users). It is subject to the same LAN guard as everything else.

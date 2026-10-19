@@ -654,6 +654,107 @@ async fn remote_access_settings() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tasks_notifications_backups_metrics() {
+    let h = harness("admin", ServerConfig { tls: false, metrics: true, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+
+    // Tasks: listed with defaults, settings stick, a run is recorded.
+    let (s, v, _) = get(app, "/api/v1/tasks", &admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v.as_array().unwrap().iter().any(|t| t["id"] == "backup" && t["every_min"] == 1440));
+    let (s, v, _) = send(app, Method::PUT, "/api/v1/tasks/backup", &admin, json!({ "every_min": 60 })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v.as_array().unwrap().iter().any(|t| t["id"] == "backup" && t["every_min"] == 60));
+    let (s, v, _) = send(app, Method::POST, "/api/v1/tasks/cleanup_cache/run", &admin, Value::Null).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["ok"], true);
+    let (_, v, _) = get(app, "/api/v1/tasks/cleanup_cache/history", &admin).await;
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert_eq!(v[0]["trigger"], "admin");
+    let (s, _, _) = send(app, Method::POST, "/api/v1/tasks/nope/run", &admin, Value::Null).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Backups: a zip with the database and the configuration, downloadable by admins.
+    let (s, v, _) = send(app, Method::POST, "/api/v1/tasks/backup/run", &admin, Value::Null).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, list, _) = get(app, "/api/v1/backups", &admin).await;
+    let name = list[0]["name"].as_str().unwrap().to_string();
+    let zip_path = crate::backups::path_of(&h.st.paths.data_dir, &name).unwrap();
+    let mut z = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+    let names: Vec<String> = z.file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
+    assert!(names.contains(&"corrent.db".to_string()), "{names:?}");
+    let mut db = Vec::new();
+    std::io::Read::read_to_end(&mut z.by_name("corrent.db").unwrap(), &mut db).unwrap();
+    assert!(db.starts_with(b"SQLite format 3"));
+    let (s, _, hd) = get(app, &format!("/api/v1/backups/{name}"), &admin).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(hd[header::CONTENT_TYPE], "application/zip");
+    let (s, _, _) = get(app, "/api/v1/backups/..%2Fcorrent.db", &admin).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Notifications: a webhook receives the test message and events.
+    let got: Arc<std::sync::Mutex<Vec<Value>>> = Arc::default();
+    let g2 = got.clone();
+    let hook = axum::Router::new().route(
+        "/hook",
+        axum::routing::post(move |axum::Json(v): axum::Json<Value>| {
+            let g2 = g2.clone();
+            async move {
+                g2.lock().unwrap().push(v);
+                "ok"
+            }
+        }),
+    );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", l.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(l, hook).await });
+    let (s, _, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/notifications",
+        &admin,
+        json!({ "name": "x", "kind": "webhook", "url": "ftp://x" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, t, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/notifications",
+        &admin,
+        json!({ "name": "Hook", "kind": "webhook", "url": url, "events": ["download_done"], "enabled": true }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{t}");
+    let id = t["id"].as_i64().unwrap();
+    let (s, v, _) = send(app, Method::POST, &format!("/api/v1/notifications/{id}/test"), &admin, Value::Null).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    crate::notify::send(&h.st, "device_paired", "ignored".into(), String::new());
+    crate::notify::send(&h.st, "download_done", "Download complete".into(), "Sintel".into());
+    for _ in 0..100 {
+        if got.lock().unwrap().len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    {
+        let got = got.lock().unwrap();
+        assert_eq!(got.len(), 2, "test + the subscribed event only: {got:?}");
+        assert_eq!(got[0]["event"], "test");
+        assert_eq!(got[1]["body"], "Sintel");
+    }
+
+    // Metrics (enabled in this server's config).
+    let (s, v, _) = call(app, Method::GET, "/metrics", Call::default()).await;
+    assert_eq!(s, StatusCode::OK);
+    let text = v.as_str().unwrap();
+    assert!(text.contains("# TYPE corrent_download_bytes_per_second gauge"), "{text}");
+    assert!(text.contains("corrent_users 1"), "{text}");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_with_the_servers_own_ca() {
     let h = harness("https", ServerConfig::default()).await;
     let tls =

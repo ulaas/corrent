@@ -68,7 +68,7 @@ pub async fn start(
     let (user, issued) = state.identity.local_device_token().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     let listener = crate::serve_http(crate::router(state.clone()), SocketAddr::from(([127, 0, 0, 1], 0))).await?;
     crate::restart_watching(&state).await;
-    crate::start_wanted_scheduler(state.clone());
+    crate::start_tasks(state.clone());
     Ok(LocalServer {
         base_url: format!("http://127.0.0.1:{}", listener.addr.port()),
         token: issued.token,

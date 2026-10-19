@@ -1,0 +1,292 @@
+//! Scheduled tasks: library scans, metadata, the wanted-list search, cache cleanup and backups,
+//! each on its own interval (changeable, or off), runnable by hand, with a history of runs.
+
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use corrent_db::rusqlite::{OptionalExtension, params};
+use corrent_proto::tasks::{TaskInfo, TaskRun, TaskUpdate};
+
+use crate::state::AppState;
+
+/// Task ids and their default intervals in minutes.
+pub const TASKS: [(&str, u32); 5] = [
+    ("scan_libraries", 6 * 60),
+    ("refresh_metadata", 24 * 60),
+    ("wanted_search", 15),
+    ("cleanup_cache", 24 * 60),
+    ("backup", 24 * 60),
+];
+
+/// Tasks running right now.
+#[derive(Default)]
+pub struct Running(Mutex<HashSet<String>>);
+
+impl Running {
+    fn start(&self, id: &str) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string())
+    }
+    fn end(&self, id: &str) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+    fn is(&self, id: &str) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).contains(id)
+    }
+}
+
+fn run_row(r: &corrent_db::rusqlite::Row) -> corrent_db::rusqlite::Result<TaskRun> {
+    Ok(TaskRun {
+        id: r.get(0)?,
+        task: r.get(1)?,
+        started: r.get(2)?,
+        finished: r.get(3)?,
+        ok: r.get::<_, Option<i64>>(4)?.map(|v| v != 0),
+        message: r.get(5)?,
+        trigger: r.get(6)?,
+    })
+}
+
+const RUN_COLS: &str = "id, task, started, finished, ok, message, trigger";
+
+/// Settings of every task (defaults filled in).
+async fn settings(st: &AppState) -> Vec<(String, bool, u32)> {
+    let stored: Vec<(String, bool, u32)> = st
+        .identity
+        .db()
+        .read(|c| {
+            let mut s = c.prepare("SELECT id, enabled, every_min FROM tasks")?;
+            s.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0, r.get::<_, i64>(2)? as u32)))?.collect()
+        })
+        .await
+        .unwrap_or_default();
+    TASKS
+        .iter()
+        .map(|(id, every)| {
+            stored.iter().find(|s| s.0 == *id).cloned().unwrap_or_else(|| (id.to_string(), true, *every))
+        })
+        .collect()
+}
+
+async fn last_run(st: &AppState, id: &str) -> Option<TaskRun> {
+    let id = id.to_string();
+    st.identity
+        .db()
+        .read(move |c| {
+            c.query_row(
+                &format!("SELECT {RUN_COLS} FROM task_runs WHERE task = ?1 ORDER BY started DESC, id DESC LIMIT 1"),
+                [id],
+                run_row,
+            )
+            .optional()
+        })
+        .await
+        .ok()
+        .flatten()
+}
+
+pub async fn list(st: &AppState) -> Vec<TaskInfo> {
+    let mut out = Vec::new();
+    for (id, enabled, every_min) in settings(st).await {
+        let last = last_run(st, &id).await;
+        let next_at = (enabled && every_min > 0).then(|| {
+            last.as_ref().map(|l| l.started + every_min as i64 * 60).unwrap_or_else(corrent_core::util::now_unix)
+        });
+        out.push(TaskInfo { running: st.tasks.is(&id), id, enabled, every_min, last, next_at });
+    }
+    out
+}
+
+pub async fn history(st: &AppState, id: &str, limit: u32) -> Vec<TaskRun> {
+    let id = id.to_string();
+    st.identity
+        .db()
+        .read(move |c| {
+            let mut s = c.prepare(&format!(
+                "SELECT {RUN_COLS} FROM task_runs WHERE task = ?1 ORDER BY started DESC, id DESC LIMIT ?2"
+            ))?;
+            s.query_map(params![id, limit], run_row)?.collect()
+        })
+        .await
+        .unwrap_or_default()
+}
+
+pub async fn update(st: &AppState, id: &str, u: TaskUpdate) -> Result<(), String> {
+    let (_, enabled, every) = settings(st).await.into_iter().find(|s| s.0 == id).ok_or("no such task")?;
+    let (enabled, every) = (u.enabled.unwrap_or(enabled), u.every_min.unwrap_or(every).min(60 * 24 * 30));
+    let id = id.to_string();
+    st.identity
+        .db()
+        .write(move |t| {
+            t.execute(
+                "INSERT INTO tasks(id, enabled, every_min) VALUES (?1, ?2, ?3)                  ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, every_min = excluded.every_min",
+                params![id, enabled as i64, every],
+            )
+            .map(drop)
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// What a task does; the message is shown in the history.
+async fn execute(st: &Arc<AppState>, id: &str) -> Result<String, String> {
+    match id {
+        "scan_libraries" => {
+            let libs = st.library.list().await.map_err(|e| e.to_string())?;
+            for l in &libs {
+                st.library.start_scan(l.id);
+            }
+            Ok(format!("{} libraries", libs.len()))
+        }
+        "refresh_metadata" => {
+            let libs = st.library.list().await.map_err(|e| e.to_string())?;
+            for l in &libs {
+                crate::metadata::refresh_library(st.clone(), l.id).await;
+            }
+            Ok(format!("{} libraries", libs.len()))
+        }
+        "wanted_search" => {
+            if !st.settings.load().search.providers.iter().any(|p| p.enabled) {
+                return Ok("no search providers".into());
+            }
+            let n = crate::integrate::run_wanted(st).await;
+            if n > 0 {
+                crate::notify::send(
+                    st,
+                    "release_grabbed",
+                    t!("Releases found for your wanted list").to_string(),
+                    t!("{n} added to the downloads.", n = n),
+                );
+            }
+            Ok(format!("{n} grabbed"))
+        }
+        "cleanup_cache" => {
+            let root = st.paths.data_dir.join("transcode");
+            let active: HashSet<String> = st.hls.sessions().into_iter().map(|s| s.id).collect();
+            let n = tokio::task::spawn_blocking(move || cleanup(&root, &active)).await.map_err(|e| e.to_string())?;
+            Ok(format!("{n} removed"))
+        }
+        "backup" => {
+            let b = crate::backups::create(st).await?;
+            Ok(b.name)
+        }
+        _ => Err("no such task".into()),
+    }
+}
+
+/// Removes transcode leftovers older than a day that no session uses.
+fn cleanup(root: &std::path::Path, active: &HashSet<String>) -> usize {
+    let day = Duration::from_secs(86_400);
+    let mut n = 0;
+    for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a > day);
+        if old && !active.contains(&name) {
+            let r = if e.path().is_dir() { std::fs::remove_dir_all(e.path()) } else { std::fs::remove_file(e.path()) };
+            n += r.is_ok() as usize;
+        }
+    }
+    n
+}
+
+/// Runs a task now (unless it is running already); `trigger` is "schedule" or a user name.
+pub async fn run(st: Arc<AppState>, id: &str, trigger: &str) -> Result<TaskRun, String> {
+    if !TASKS.iter().any(|(t, _)| *t == id) {
+        return Err("no such task".into());
+    }
+    if !st.tasks.start(id) {
+        return Err("already running".into());
+    }
+    let (task, trig, now) = (id.to_string(), trigger.to_string(), corrent_core::util::now_unix());
+    let run_id = st
+        .identity
+        .db()
+        .write(move |t| {
+            t.execute("INSERT INTO task_runs(task, started, trigger) VALUES (?1, ?2, ?3)", params![task, now, trig])?;
+            Ok(t.last_insert_rowid())
+        })
+        .await;
+    let result = execute(&st, id).await;
+    st.tasks.end(id);
+    let (ok, message) = match &result {
+        Ok(m) => (true, m.clone()),
+        Err(e) => (false, e.clone()),
+    };
+    if !ok {
+        tracing::warn!("task {id}: {message}");
+        crate::notify::send(&st, "task_failed", t!("A server task failed: {task}", task = id), message.clone());
+    }
+    if let Ok(run_id) = run_id {
+        let (m, fin) = (message.clone(), corrent_core::util::now_unix());
+        let _ = st
+            .identity
+            .db()
+            .write(move |t| {
+                t.execute(
+                    "UPDATE task_runs SET finished = ?1, ok = ?2, message = ?3 WHERE id = ?4",
+                    params![fin, ok as i64, m, run_id],
+                )?;
+                // Keep the last 50 runs per task.
+                t.execute(
+                    "DELETE FROM task_runs WHERE id IN (SELECT id FROM task_runs WHERE task = (SELECT task FROM task_runs WHERE id = ?1)                      ORDER BY started DESC, id DESC LIMIT -1 OFFSET 50)",
+                    [run_id],
+                )
+                .map(drop)
+            })
+            .await;
+    }
+    Ok(TaskRun {
+        id: run_id.unwrap_or_default(),
+        task: id.to_string(),
+        started: now,
+        finished: Some(corrent_core::util::now_unix()),
+        ok: Some(ok),
+        message,
+        trigger: trigger.to_string(),
+    })
+}
+
+/// Checks every minute which tasks are due (stops with the server state).
+pub fn start(st: Arc<AppState>) {
+    tokio::spawn(async move {
+        let stopped = st.stopped();
+        tokio::pin!(stopped);
+        // Let the server settle before the first round.
+        let mut tick =
+            tokio::time::interval_at(tokio::time::Instant::now() + Duration::from_secs(30), Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = &mut stopped => break,
+            }
+            for t in list(&st).await {
+                let due = t.enabled
+                    && t.every_min > 0
+                    && !t.running
+                    && t.next_at.is_some_and(|n| n <= corrent_core::util::now_unix());
+                // A first-ever backup or metadata refresh waits for its interval instead of running at once.
+                if due && (t.last.is_some() || matches!(t.id.as_str(), "wanted_search" | "cleanup_cache")) {
+                    let st = st.clone();
+                    tokio::spawn(async move {
+                        let _ = run(st, &t.id, "schedule").await;
+                    });
+                } else if due && t.last.is_none() {
+                    // Record a starting point so the interval counts from now.
+                    let id = t.id.clone();
+                    let now = corrent_core::util::now_unix();
+                    let _ = st
+                        .identity
+                        .db()
+                        .write(move |tx| {
+                            tx.execute(
+                                "INSERT INTO task_runs(task, started, finished, ok, message, trigger) VALUES (?1, ?2, ?2, 1, '', 'schedule')",
+                                params![id, now],
+                            )
+                            .map(drop)
+                        })
+                        .await;
+                }
+            }
+        }
+    });
+}

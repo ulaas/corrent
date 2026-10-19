@@ -3,6 +3,9 @@
 //! Corrent's server: the HTTP APIs over the engine (and, as the media server grows, the library,
 //! playback and remote access). Hosted in-process by the GUI or by the headless `correntd`.
 
+#[macro_use]
+extern crate corrent_i18n;
+
 #[allow(unused_imports)]
 use corrent_core::{config, engine, rss, store, util};
 
@@ -11,17 +14,21 @@ pub mod discovery;
 pub mod events;
 /// Wire event types, re-exported for hosts.
 pub use corrent_proto::event as events_api;
+pub mod backups;
 pub mod identity;
 pub mod integrate;
 pub mod local;
 pub mod metadata;
+pub mod metrics;
 pub mod net;
+pub mod notify;
 #[cfg(feature = "p2p")]
 pub mod p2p;
 pub mod paths;
 pub mod plugins;
 pub mod remote;
 pub mod state;
+pub mod tasks;
 pub mod tls;
 pub mod v1;
 pub mod webapi;
@@ -114,6 +121,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         metadata_slot: Default::default(),
         stopping: tokio::sync::watch::Sender::new(false),
         remote: Default::default(),
+        tasks: Default::default(),
         remote_status: Default::default(),
     });
     metadata::start(state.clone());
@@ -150,13 +158,17 @@ pub fn router(st: Arc<AppState>) -> Router {
         app =
             app.merge(webapi::media_server_router(st.engine.clone(), st.settings.clone(), st.identity.clone(), st.tls));
     }
+    if st.cfg.load().metrics {
+        app = app.route("/metrics", axum::routing::get(metrics::serve).with_state(st.clone()));
+    }
     app.fallback(webclient::serve)
         .layer(axum::middleware::from_fn_with_state(st.clone(), v1::guard))
         // Small by default; the routes that take uploads raise it for themselves.
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
 }
 
-pub use integrate::{forward_engine_events, start_wanted_scheduler};
+pub use integrate::forward_engine_events;
+pub use tasks::start as start_tasks;
 
 /// A running listener; stops when dropped.
 pub struct Listener {

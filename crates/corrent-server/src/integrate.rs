@@ -39,6 +39,15 @@ pub fn on_engine_event(st: &Arc<AppState>, rt: &tokio::runtime::Handle, ev: Engi
         return;
     }
     match &ev {
+        EngineEvent::Completed { name, .. } => {
+            crate::notify::send_on(rt, st, "download_done", t!("Download complete").to_string(), name.clone())
+        }
+        EngineEvent::Added { name, .. } => {
+            crate::notify::send_on(rt, st, "torrent_added", t!("Torrent added").to_string(), name.clone())
+        }
+        _ => {}
+    }
+    match &ev {
         EngineEvent::Completed { hash, category, content_path, .. } => {
             rt.spawn(on_completed(st.clone(), *hash, category.clone(), content_path.clone()));
         }

@@ -33,6 +33,11 @@ impl Hub {
         self.events.subscribe()
     }
 
+    /// Connected realtime clients (each subscribes to events).
+    pub fn clients(&self) -> usize {
+        self.events.receiver_count()
+    }
+
     /// Turns an engine event into client events (ones that only make sense in the GUI that
     /// hosts the engine, like preview answers, are dropped here).
     pub fn engine_event(&self, ev: EngineEvent) {

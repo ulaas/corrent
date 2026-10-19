@@ -34,6 +34,8 @@
     { id: 'rss', label: tk('RSS feeds and rules'), icon: 'rss', group: tk('Server'), perm: Perm.SETTINGS_READ, load: () => import('./settings/RssSettings.svelte') },
     { id: 'remote', label: tk('Remote access'), icon: 'globe', group: tk('Administration'), perm: Perm.SETTINGS_WRITE, load: () => import('./settings/Remote.svelte') },
     { id: 'plugins', label: tk('Plugins'), icon: 'puzzle-piece', group: tk('Administration'), perm: Perm.SETTINGS_READ, load: () => import('./settings/Plugins.svelte') },
+    { id: 'tasks', label: tk('Tasks and backups'), icon: 'clock', group: tk('Administration'), perm: Perm.SETTINGS_READ, load: () => import('./settings/Tasks.svelte') },
+    { id: 'notifications', label: tk('Notifications'), icon: 'bell', group: tk('Administration'), perm: Perm.SETTINGS_WRITE, load: () => import('./settings/Notifications.svelte') },
     { id: 'libraries', label: tk('Libraries'), icon: 'books', group: tk('Administration'), perm: Perm.LIBRARY_MANAGE, load: () => import('./settings/Libraries.svelte') },
     { id: 'users', label: tk('Users'), icon: 'users', group: tk('Administration'), perm: Perm.USERS_MANAGE, load: () => import('./settings/Users.svelte') },
     { id: 'sessions', label: tk('Now playing'), icon: 'broadcast', group: tk('Administration'), perm: Perm.PLAYBACK_TRANSCODE, load: () => import('./settings/Sessions.svelte') },

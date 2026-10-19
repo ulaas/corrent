@@ -185,5 +185,11 @@ async fn pair(
     let name = req.device.name.clone();
     let issued = st.identity.issue(user.id, Some(req.device), ip.0.to_string(), user_agent(&headers)).await?;
     st.identity.audit(Some(&user.name), &ip.0.to_string(), "pair", &name, true, "").await;
+    crate::notify::send(
+        &st,
+        "device_paired",
+        t!("A device was paired").to_string(),
+        t!("“{device}” signed in as {user}.", device = name, user = user.name),
+    );
     Ok(session_response(&st, user, issued, true))
 }

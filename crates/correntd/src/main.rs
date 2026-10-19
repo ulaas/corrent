@@ -353,7 +353,7 @@ async fn serve(
     let state = corrent_server::build_state(parts).await?;
     // Events queued while the server was starting are handled now.
     corrent_server::forward_engine_events(events, state.clone());
-    corrent_server::start_wanted_scheduler(state.clone());
+    corrent_server::start_tasks(state.clone());
     let app = corrent_server::router(state.clone());
     let ip: IpAddr = cfg.bind.parse().map_err(|_| anyhow::anyhow!("bad bind address {:?}", cfg.bind))?;
     let main_addr = SocketAddr::new(ip, cfg.https_port);
@@ -393,18 +393,8 @@ async fn serve(
         println!("  first run: open the address above on this computer to create the administrator,");
         println!("  or run `correntd --init-admin <name>`.");
     }
-    // Libraries: watch their folders and rescan everything every six hours.
+    // Libraries: watch their folders (full rescans are the scan_libraries task).
     corrent_server::restart_watching(&state).await;
-    let lib = state.library.clone();
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
-        loop {
-            tick.tick().await;
-            for l in lib.list().await.unwrap_or_default() {
-                lib.start_scan(l.id);
-            }
-        }
-    });
     sd_notify("READY=1");
     wait_for_shutdown().await;
     state.hub.publish(corrent_proto_bye());

@@ -4,6 +4,7 @@
 //! `corrent_session` cookie (the web client) — cookie requests that change something must echo
 //! the session's CSRF token in `X-Corrent-CSRF`. Errors are `ApiError` JSON with a stable code.
 
+mod admin;
 mod auth;
 mod devices;
 mod events;
@@ -214,6 +215,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(playback::routes())
         .merge(wanted::routes())
         .merge(plugins::routes())
+        .merge(admin::routes())
         .route("/events", axum::routing::get(events::events))
         .fallback(|| async { err(ErrorCode::NotFound, "no such endpoint") })
 }

@@ -622,3 +622,40 @@ export interface ServerSettings {
   search: { providers: TorznabProvider[] };
   [k: string]: unknown;
 }
+
+export interface TaskRun {
+  id: number;
+  task: string;
+  started: number;
+  finished?: number;
+  ok?: boolean;
+  message: string;
+  trigger: string;
+}
+
+export interface TaskInfo {
+  id: string;
+  enabled: boolean;
+  every_min: number;
+  running: boolean;
+  last?: TaskRun;
+  next_at?: number;
+}
+
+export type NotifyKind = 'webhook' | 'discord' | 'ntfy' | 'plugin';
+
+export interface NotifyTarget {
+  id: number;
+  name: string;
+  kind: NotifyKind;
+  url: string;
+  plugin: string;
+  events: string[];
+  enabled: boolean;
+}
+
+export interface BackupFile {
+  name: string;
+  size: number;
+  created: number;
+}

@@ -9,6 +9,7 @@ pub mod error;
 pub mod event;
 pub mod library;
 pub mod server;
+pub mod tasks;
 pub mod torrent;
 
 pub use error::{ApiError, ErrorCode};
