@@ -28,6 +28,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/quality-profiles", get(profiles).post(create_profile))
         .route("/quality-profiles/{id}", put(update_profile).delete(delete_profile))
         .route("/items/{id}/releases", get(item_releases))
+        .route("/items/{id}/monitor", put(monitor).delete(unmonitor))
+        .route("/monitored", get(monitored))
         .route("/items/{id}/grab", post(grab_item))
         .route("/torrents/{hash}/files/{file}/stream", get(stream))
 }
@@ -228,4 +230,37 @@ async fn stream(
         }
     }
     out.body(Body::from_stream(res.bytes_stream())).map_err(|e| err(ErrorCode::Internal, e.to_string()))
+}
+
+/// Follows a show; its missing aired episodes are added to the wanted list right away.
+async fn monitor(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Path(id): Path<i64>,
+    Json(r): Json<corrent_proto::library::MonitorRequest>,
+) -> ApiResult<Vec<corrent_proto::library::MonitoredShow>> {
+    auth.require(Perms::TORRENTS_ADD)?;
+    st.library.monitor_show(id, r.profile_id, r.from_season.unwrap_or(1), auth.name()).await.map_err(lib_err)?;
+    let st2 = st.clone();
+    tokio::spawn(async move {
+        if let Some(show) = st2.library.monitored().await.ok().and_then(|l| l.into_iter().find(|m| m.item_id == id))
+            && let Err(e) = crate::monitor::check_show(&st2, &show).await
+        {
+            tracing::info!("monitor {}: {e}", show.title);
+        }
+    });
+    Ok(Json(st.library.monitored().await.map_err(lib_err)?))
+}
+
+async fn unmonitor(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<i64>) -> ApiResult<serde_json::Value> {
+    auth.require(Perms::TORRENTS_ADD)?;
+    st.library.unmonitor_show(id).await.map_err(lib_err)?;
+    Ok(Json(serde_json::json!({})))
+}
+
+async fn monitored(
+    State(st): State<Arc<AppState>>,
+    _auth: Auth,
+) -> ApiResult<Vec<corrent_proto::library::MonitoredShow>> {
+    Ok(Json(st.library.monitored().await.map_err(lib_err)?))
 }

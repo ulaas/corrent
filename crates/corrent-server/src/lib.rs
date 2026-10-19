@@ -20,6 +20,7 @@ pub mod integrate;
 pub mod local;
 pub mod metadata;
 pub mod metrics;
+pub mod monitor;
 pub mod net;
 pub mod notify;
 #[cfg(feature = "p2p")]

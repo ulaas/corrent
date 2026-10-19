@@ -68,6 +68,10 @@ impl Guest for Example {
     }
 
     fn episodes(_show: String, season: u32, _language: String) -> Result<Vec<Episode>, String> {
+        // Two seasons of three episodes (an empty season ends the list).
+        if season > 2 {
+            return Ok(Vec::new());
+        }
         Ok((1..=3)
             .map(|e| Episode {
                 season,

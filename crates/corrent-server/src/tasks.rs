@@ -11,8 +11,9 @@ use corrent_proto::tasks::{TaskInfo, TaskRun, TaskUpdate};
 use crate::state::AppState;
 
 /// Task ids and their default intervals in minutes.
-pub const TASKS: [(&str, u32); 5] = [
+pub const TASKS: [(&str, u32); 6] = [
     ("scan_libraries", 6 * 60),
+    ("monitor_shows", 6 * 60),
     ("refresh_metadata", 24 * 60),
     ("wanted_search", 15),
     ("cleanup_cache", 24 * 60),
@@ -145,6 +146,7 @@ async fn execute(st: &Arc<AppState>, id: &str) -> Result<String, String> {
             }
             Ok(format!("{} libraries", libs.len()))
         }
+        "monitor_shows" => crate::monitor::check_all(st).await,
         "wanted_search" => {
             if !st.settings.load().search.providers.iter().any(|p| p.enabled) {
                 return Ok("no search providers".into());
@@ -265,7 +267,10 @@ pub fn start(st: Arc<AppState>) {
                     && !t.running
                     && t.next_at.is_some_and(|n| n <= corrent_core::util::now_unix());
                 // A first-ever backup or metadata refresh waits for its interval instead of running at once.
-                if due && (t.last.is_some() || matches!(t.id.as_str(), "wanted_search" | "cleanup_cache")) {
+                if due
+                    && (t.last.is_some()
+                        || matches!(t.id.as_str(), "wanted_search" | "cleanup_cache" | "monitor_shows"))
+                {
                     let st = st.clone();
                     tokio::spawn(async move {
                         let _ = run(st, &t.id, "schedule").await;

@@ -1254,6 +1254,61 @@ async fn plugins_identify_library_items() {
     assert_eq!(s, StatusCode::OK);
     let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
     assert_eq!(d["provider_ids"]["example"], "ex-big-buck-bunny");
+
+    // A followed show: the aired episodes it lacks become wanted (the example lists two
+    // seasons of three episodes, aired in 2020).
+    let shows = h.dir.join("dl/Shows");
+    std::fs::create_dir_all(shows.join("Test Show/Season 1")).unwrap();
+    std::fs::write(shows.join("Test Show/Season 1/Test.Show.S01E01.mkv"), b"not really").unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Shows", "kind": "shows", "folders": [shows] }),
+    )
+    .await;
+    let shows_lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let show = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={shows_lib}&kind=show"), &admin).await;
+        let id = v["items"][0]["id"].as_i64();
+        if let Some(id) = id {
+            let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
+            if d["provider_ids"]["example"].is_string() {
+                break id;
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "show identified: {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    let (s, v, _) = send(app, Method::PUT, &format!("/api/v1/items/{show}/monitor"), &admin, json!({})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let wanted = loop {
+        let (_, w, _) = get(app, "/api/v1/wanted", &admin).await;
+        if w.as_array().is_some_and(|a| a.len() >= 5) {
+            break w;
+        }
+        assert!(std::time::Instant::now() < deadline, "episodes wanted: {w}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let eps: Vec<(i64, i64)> = wanted
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| (w["season"].as_i64().unwrap(), w["episode"].as_i64().unwrap()))
+        .collect();
+    assert_eq!(eps.len(), 5, "S01E01 is in the library: {eps:?}");
+    assert!(!eps.contains(&(1, 1)));
+    // Checking again adds nothing new.
+    let (_, r, _) = send(app, Method::POST, "/api/v1/tasks/monitor_shows/run", &admin, Value::Null).await;
+    assert_eq!(r["ok"], true, "{r}");
+    let (_, w, _) = get(app, "/api/v1/wanted", &admin).await;
+    assert_eq!(w.as_array().unwrap().len(), 5);
+    let (_, m, _) = get(app, "/api/v1/monitored", &admin).await;
+    assert_eq!(m[0]["item_id"], show);
+
     // Built-in plugins can't be removed; installed ones can.
     let (s, _, _) =
         call(app, Method::DELETE, "/api/v1/plugins/tmdb", Call { bearer: Some(&admin), ..Default::default() }).await;

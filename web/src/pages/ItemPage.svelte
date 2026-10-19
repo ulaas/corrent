@@ -16,7 +16,36 @@
   import { toast } from '../lib/toast.svelte';
   import { ms } from '../lib/prefs.svelte';
   import { t } from '../lib/i18n.svelte';
+  import { can } from '../lib/session.svelte';
+  import { Perm } from '../lib/types';
   import type { Item, ItemDetail, Page } from '../lib/types';
+
+  // Following a show: aired episodes it lacks go on the wanted list.
+  let following = $state<boolean | null>(null);
+  async function loadFollowing(id: number) {
+    try {
+      const list = await api.get<{ item_id: number }[]>('/monitored');
+      following = list.some((m) => m.item_id === id);
+    } catch {
+      following = null;
+    }
+  }
+  $effect(() => {
+    const it = item;
+    following = null;
+    if (it?.kind === 'show' && can(Perm.TORRENTS_ADD)) void loadFollowing(it.id);
+  });
+
+  async function toggleFollow(id: number) {
+    try {
+      if (following) await api.del(`/items/${id}/monitor`);
+      else await api.put(`/items/${id}/monitor`, {});
+      following = !following;
+      toast(following ? t('Missing episodes will be searched for.') : t('No longer following this show.'), 'success');
+    } catch (e) {
+      toast(errorText(e), 'error');
+    }
+  }
 
   let { params }: { params: Record<string, string> } = $props();
   const id = $derived(+params.id);
@@ -167,6 +196,13 @@
               </button>
               {#if resumable}
                 <button class="btn lg" onclick={() => go(playHref(item!.id, false))}><Icon name="arrow-counter-clockwise" />{t('From the start')}</button>
+              {/if}
+            {/if}
+            {#if item.kind === 'show' && can(Perm.TORRENTS_ADD)}
+              {#if following !== null}
+                <button class="btn lg" aria-pressed={following} onclick={() => toggleFollow(item!.id)}>
+                  <Icon name={following ? 'bell' : 'plus-circle'} />{following ? t('Following') : t('Follow new episodes')}
+                </button>
               {/if}
             {/if}
             <button

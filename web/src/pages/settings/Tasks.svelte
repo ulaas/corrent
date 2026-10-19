@@ -11,6 +11,7 @@
 
   const NAMES: Record<string, string> = {
     scan_libraries: tk('Scan the libraries'),
+    monitor_shows: tk('Look for new episodes of followed shows'),
     refresh_metadata: tk('Look up metadata and artwork'),
     wanted_search: tk('Search for wanted releases'),
     cleanup_cache: tk('Clean up the transcoding cache'),

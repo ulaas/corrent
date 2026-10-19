@@ -548,3 +548,24 @@ pub struct Release {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejected: Option<String>,
 }
+
+/// A followed show (`GET /api/v1/monitored`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MonitoredShow {
+    pub item_id: i64,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<i64>,
+    pub from_season: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<i64>,
+}
+
+/// `PUT /api/v1/items/{id}/monitor`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MonitorRequest {
+    pub profile_id: Option<i64>,
+    /// First season to fill in (default 1).
+    pub from_season: Option<i64>,
+}

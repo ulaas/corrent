@@ -531,3 +531,8 @@
 "Backups" = "Yedekler"
 "A backup holds the database, settings, certificates and keys. To restore, stop the server and unzip it into its data folder. Keep backups private." = "Bir yedek veritabanını, ayarları, sertifikaları ve anahtarları içerir. Geri yüklemek için sunucuyu durdurun ve yedeği veri klasörüne açın. Yedekleri gizli tutun."
 "No backups yet." = "Henüz yedek yok."
+"Missing episodes will be searched for." = "Eksik bölümler aranacak."
+"No longer following this show." = "Bu dizi artık takip edilmiyor."
+"Following" = "Takip ediliyor"
+"Follow new episodes" = "Yeni bölümleri takip et"
+"Look for new episodes of followed shows" = "Takip edilen dizilerin yeni bölümlerini ara"

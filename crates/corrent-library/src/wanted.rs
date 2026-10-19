@@ -413,6 +413,111 @@ impl Library {
     }
 }
 
+impl Library {
+    /// Follows a show: newly aired episodes it doesn't have become wanted (see `monitor_due`).
+    pub async fn monitor_show(&self, item: i64, profile_id: Option<i64>, from_season: i64, by: &str) -> Result<()> {
+        let (by, now) = (by.to_string(), now_unix());
+        let n = self
+            .db()
+            .write(move |t| {
+                if t.query_row("SELECT kind FROM items WHERE id = ?1", [item], |r| r.get::<_, String>(0)).optional()?.as_deref()
+                    != Some("show")
+                {
+                    return Ok(0);
+                }
+                t.execute(
+                    "INSERT INTO monitored_shows(item_id, profile_id, from_season, added_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(item_id) DO UPDATE SET profile_id = excluded.profile_id, from_season = excluded.from_season",
+                    params![item, profile_id, from_season.max(0), by, now],
+                )
+            })
+            .await?;
+        if n == 0 { Err(LibError::NotFound) } else { Ok(()) }
+    }
+
+    pub async fn unmonitor_show(&self, item: i64) -> Result<()> {
+        self.db().write(move |t| t.execute("DELETE FROM monitored_shows WHERE item_id = ?1", [item])).await?;
+        Ok(())
+    }
+
+    pub async fn monitored(&self) -> Result<Vec<corrent_proto::library::MonitoredShow>> {
+        Ok(self
+            .db()
+            .read(|c| {
+                let mut st = c.prepare(
+                    "SELECT m.item_id, i.title, m.profile_id, m.from_season, m.checked_at FROM monitored_shows m \
+                     JOIN items i ON i.id = m.item_id ORDER BY i.sort_title",
+                )?;
+                st.query_map([], |r| {
+                    Ok(corrent_proto::library::MonitoredShow {
+                        item_id: r.get(0)?,
+                        title: r.get(1)?,
+                        profile_id: r.get(2)?,
+                        from_season: r.get(3)?,
+                        checked_at: r.get(4)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .await?)
+    }
+
+    pub async fn mark_monitor_checked(&self, item: i64) -> Result<()> {
+        let now = now_unix();
+        self.db()
+            .write(move |t| {
+                t.execute("UPDATE monitored_shows SET checked_at = ?1 WHERE item_id = ?2", params![now, item])
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// The (season, episode) numbers a show has in the library.
+    pub async fn show_episodes(&self, show: i64) -> Result<std::collections::HashSet<(i64, i64)>> {
+        Ok(self
+            .db()
+            .read(move |c| {
+                let mut st = c.prepare(
+                    "SELECT s.index_no, e.index_no FROM items e JOIN items s ON e.parent_id = s.id \
+                     WHERE s.parent_id = ?1 AND e.kind = 'episode' AND s.index_no IS NOT NULL AND e.index_no IS NOT NULL",
+                )?;
+                st.query_map([show], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()
+            })
+            .await?)
+    }
+
+    /// Whether an episode is already on the wanted list (in any state).
+    pub async fn episode_wanted(&self, title: &str, season: i64, episode: i64) -> Result<bool> {
+        let title = title.to_string();
+        Ok(self
+            .db()
+            .read(move |c| {
+                c.query_row(
+                    "SELECT 1 FROM wanted WHERE title = ?1 COLLATE NOCASE AND season = ?2 AND episode = ?3",
+                    params![title, season, episode],
+                    |_| Ok(()),
+                )
+                .optional()
+            })
+            .await?
+            .is_some())
+    }
+
+    /// A show's library, title and provider ids (for looking up its episodes).
+    pub async fn show_info(&self, show: i64) -> Result<(i64, String, std::collections::BTreeMap<String, String>)> {
+        self.db()
+            .read(move |c| {
+                c.query_row("SELECT library_id, title, provider_ids FROM items WHERE id = ?1", [show], |r| {
+                    let ids: String = r.get(2)?;
+                    Ok((r.get(0)?, r.get(1)?, serde_json::from_str(&ids).unwrap_or_default()))
+                })
+                .optional()
+            })
+            .await?
+            .ok_or(LibError::NotFound)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

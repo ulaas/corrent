@@ -42,7 +42,7 @@ pub fn confident<'a>(p: &Pending, found: &'a [Candidate]) -> Option<&'a Candidat
 }
 
 /// Providers ready for a kind, in their configured order.
-async fn providers_for(host: &Arc<PluginHost>, kind: MediaKind) -> Vec<String> {
+pub(crate) async fn providers_for(host: &Arc<PluginHost>, kind: MediaKind) -> Vec<String> {
     let mut out = Vec::new();
     for id in host.ready(Kind::Metadata) {
         if host.metadata_kinds(&id).await.is_ok_and(|k| k.contains(&kind)) {
