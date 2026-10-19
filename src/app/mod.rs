@@ -327,6 +327,8 @@ pub struct CorrentApp {
     /// First-run welcome flow (shown when no settings file existed).
     pub onboarding: Option<onboarding::Onboarding>,
     pub quitting: bool,
+    /// "When done → Shut down": run once the engine has stopped (see `on_exit`).
+    pub power_after_exit: Option<crate::integration::power::WhenDone>,
     applied_appearance: Option<(crate::config::Appearance, bool)>,
     /// Appearance being edited in the settings window (previewed live).
     pub appearance_preview: Option<crate::config::Appearance>,
@@ -423,8 +425,19 @@ impl CorrentApp {
         )
         .with_media_gl(cc)
         .with_mica_spike(cc)
+        .with_end_session(cc)
         .init_integration()
         .with_tray(&cc.egui_ctx)
+    }
+
+    /// Save and stop when the OS ends the session (see `integration::end_session`).
+    fn with_end_session(self, cc: &eframe::CreationContext<'_>) -> Self {
+        crate::integration::end_session::track(&self.engine, self.paths.log_dir());
+        #[cfg(windows)]
+        crate::integration::end_session::install(cc);
+        #[cfg(not(windows))]
+        let _ = cc;
+        self
     }
 
     /// Construct the app state without OS integration (used by `new` and by UI tests).
@@ -490,6 +503,7 @@ impl CorrentApp {
             settings_draft: None,
             onboarding: first_run.then_some(onboarding::Onboarding { step: 0 }),
             quitting: false,
+            power_after_exit: None,
             applied_appearance: None,
             appearance_preview: None,
             ipc,
@@ -1038,8 +1052,15 @@ impl eframe::App for CorrentApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.engine.shutdown_blocking(std::time::Duration::from_secs(8));
-        self.wait_for_old_engine();
+        let power = self.power_after_exit.take();
+        when_done::exit_steps(
+            || {
+                self.engine.shutdown_blocking(std::time::Duration::from_secs(8));
+                self.wait_for_old_engine();
+            },
+            power,
+            crate::integration::power::perform,
+        );
     }
 }
 

@@ -782,6 +782,11 @@ impl Actor {
                 self.apply_rate_limits();
             }
             EngineCommand::Shutdown(_) => unreachable!("handled in run loop"),
+            EngineCommand::Flush(done) => {
+                self.store.flush();
+                self.rss.flush();
+                let _ = done.send(());
+            }
             #[cfg(debug_assertions)]
             EngineCommand::DevPanic => panic!("CORRENT_DEV_PANIC=engine"),
         }

@@ -509,6 +509,10 @@ impl Ctx {
                 self.unavailable()
             }
             EngineCommand::SetDetailTarget(_) | EngineCommand::Shutdown(_) => {}
+            // The server keeps its own data; nothing to save here.
+            EngineCommand::Flush(done) => {
+                let _ = done.send(());
+            }
             #[cfg(debug_assertions)]
             EngineCommand::DevPanic => panic!("CORRENT_DEV_PANIC=engine (remote)"),
         }

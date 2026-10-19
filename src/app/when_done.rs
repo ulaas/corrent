@@ -113,14 +113,15 @@ impl CorrentApp {
                     self.toasts.push(ToastKind::Error, t!("Couldn't put the computer to sleep: {e}", e = e));
                 }
             }
-            WhenDone::Shutdown => match crate::integration::power::perform(WhenDone::Shutdown) {
-                Ok(()) => self.quit_now(ctx),
-                Err(e) => self.toasts.push(ToastKind::Error, t!("Couldn't shut down: {e}", e = e)),
-            },
+            WhenDone::Shutdown => {
+                // Quit first: the engine saves and stops, then `on_exit` powers off.
+                self.power_after_exit = Some(WhenDone::Shutdown);
+                self.quit_now(ctx);
+            }
         }
     }
 
-    fn quit_now(&mut self, ctx: &Context) {
+    pub(super) fn quit_now(&mut self, ctx: &Context) {
         self.quitting = true;
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -174,5 +175,42 @@ impl CorrentApp {
             Err(e) if manual => self.toasts.push(ToastKind::Error, t!("Couldn't check for updates: {e}", e = e)),
             Err(e) => tracing::info!("update check failed: {e}"),
         }
+    }
+}
+
+/// The last steps of quitting: stop the engine (it saves everything), then the power action
+/// chosen in "When done", if any. A failure can only be logged now.
+pub(super) fn exit_steps(
+    stop: impl FnOnce(),
+    power: Option<WhenDone>,
+    perform: impl FnOnce(WhenDone) -> std::io::Result<()>,
+) {
+    stop();
+    if let Some(action) = power
+        && let Err(e) = perform(action)
+    {
+        tracing::error!("when done: {action:?} failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn power_off_comes_after_the_engine_stopped() {
+        let order = RefCell::new(Vec::new());
+        exit_steps(
+            || order.borrow_mut().push("stop"),
+            Some(WhenDone::Shutdown),
+            |a| {
+                order.borrow_mut().push(if a == WhenDone::Shutdown { "shutdown" } else { "other" });
+                Ok(())
+            },
+        );
+        assert_eq!(*order.borrow(), ["stop", "shutdown"]);
+        exit_steps(|| order.borrow_mut().push("stop"), None, |_| panic!("no power action"));
+        exit_steps(|| {}, Some(WhenDone::Shutdown), |_| Err(std::io::Error::other("refused")));
     }
 }

@@ -138,6 +138,8 @@ fn main() -> eframe::Result {
         .build()
         .expect("failed to build tokio runtime");
     let _guard = rt.enter();
+    #[cfg(unix)]
+    integration::end_session::install_signals(rt.handle());
 
     let icon = app::icon::app_icon();
     let viewport = egui::ViewportBuilder::default()

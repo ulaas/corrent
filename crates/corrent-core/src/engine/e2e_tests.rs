@@ -849,3 +849,24 @@ async fn a_stray_store_entry_is_pruned_after_a_snapshot() {
     assert!(snap.torrents.contains_key(&stray), "the snapshot has everything");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flush_saves_now_and_keeps_the_engine_running() {
+    let dir = temp_dir("flush");
+    let l = start(&dir);
+    let hashes = add_tiny_torrents(&l, &dir, 1).await;
+    // Wait out the debounce so the next change is the only unsaved one.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    l.engine.send(EngineCommand::SetCategory { hashes: hashes.clone(), category: Some("Flushed".into()) });
+    wait_for(&l, "the new category", 10, |sn| {
+        find(sn, hashes[0]).is_some_and(|t| t.category.as_deref() == Some("Flushed"))
+    })
+    .await;
+    let engine = l.engine.clone();
+    assert!(tokio::task::spawn_blocking(move || engine.flush_blocking(Duration::from_secs(5))).await.unwrap());
+    let store = read_store(&l.paths);
+    assert_eq!(store.torrents[&hashes[0]].category.as_deref(), Some("Flushed"), "on disk right away");
+    assert!(l.engine.is_alive(), "still running");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

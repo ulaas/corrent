@@ -225,6 +225,9 @@ pub enum EngineCommand {
     ApplySettings(Box<Settings>),
     SetAltSpeed(bool),
     Shutdown(std::sync::mpsc::Sender<()>),
+    /// Save the app data (store, feeds) now and answer; the engine keeps running (the OS is
+    /// asking whether the session may end, and the answer may still be no).
+    Flush(std::sync::mpsc::Sender<()>),
     /// Debug builds only: panic inside the engine task (crash-report testing).
     #[cfg(debug_assertions)]
     DevPanic,
@@ -424,6 +427,13 @@ impl EngineHandle {
     }
 
     /// Ask the engine to stop and wait (bounded) for it to flush state.
+    /// Save the app data and wait (at most `timeout`). False if the engine didn't answer.
+    pub fn flush_blocking(&self, timeout: std::time::Duration) -> bool {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.send(EngineCommand::Flush(tx));
+        rx.recv_timeout(timeout).is_ok()
+    }
+
     pub fn shutdown_blocking(&self, timeout: std::time::Duration) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.send(EngineCommand::Shutdown(tx));
