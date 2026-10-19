@@ -1106,6 +1106,117 @@ async fn intros_are_found_by_their_sound() {
     h.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn playlists_and_collections() {
+    let h = harness("lists", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let dir = h.dir.join("Vids");
+    std::fs::create_dir_all(&dir).unwrap();
+    for n in ["a", "b", "c"] {
+        let ok = std::process::Command::new("mpv")
+            .args([
+                "--really-quiet",
+                "av://lavfi:testsrc=duration=1:size=64x48:rate=5",
+                "--of=matroska",
+                "--ovc=libx264",
+                "--ovcopts=preset=ultrafast",
+            ])
+            .arg(format!("--o={}", dir.join(format!("{n}.mkv")).display()))
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            eprintln!("mpv not available; skipping");
+            h.stop().await;
+            return;
+        }
+    }
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Vids", "kind": "videos", "folders": [dir] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let ids: Vec<i64> = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}&kind=video"), &admin).await;
+        if v["total"] == 3 {
+            break v["items"].as_array().unwrap().iter().map(|i| i["id"].as_i64().unwrap()).collect();
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let (s, p, _) =
+        send(app, Method::POST, "/api/v1/playlists", &admin, json!({ "name": "Mix", "items": [ids[2], ids[0]] })).await;
+    assert_eq!((s, p["count"].clone(), p["mine"].clone()), (StatusCode::OK, json!(2), json!(true)), "{p}");
+    let pid = p["id"].as_i64().unwrap();
+    send(app, Method::POST, &format!("/api/v1/playlists/{pid}/items"), &admin, json!({ "items": [ids[1]] })).await;
+    let order = |v: &Value| v.as_array().unwrap().iter().map(|i| i["id"].as_i64().unwrap()).collect::<Vec<_>>();
+    let (_, v, _) = get(app, &format!("/api/v1/playlists/{pid}/items"), &admin).await;
+    assert_eq!(order(&v), vec![ids[2], ids[0], ids[1]]);
+    send(app, Method::POST, &format!("/api/v1/playlists/{pid}/move"), &admin, json!({ "from": 2, "to": 0 })).await;
+    send(app, Method::DELETE, &format!("/api/v1/playlists/{pid}/items/1"), &admin, json!({})).await;
+    let (_, v, _) = get(app, &format!("/api/v1/playlists/{pid}/items"), &admin).await;
+    assert_eq!(order(&v), vec![ids[1], ids[0]]);
+    // Others see it only when public, and can't change it.
+    send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        &admin,
+        json!({ "name": "pal", "password": "long enough pw", "role": "user" }),
+    )
+    .await;
+    let (_, v, _) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call {
+            body: Some(json!({ "username": "pal", "password": "long enough pw", "device": device() })),
+            ..Default::default()
+        },
+    )
+    .await;
+    let pal = v["token"].as_str().unwrap().to_string();
+    assert_eq!(get(app, "/api/v1/playlists", &pal).await.1, json!([]));
+    assert_eq!(get(app, &format!("/api/v1/playlists/{pid}/items"), &pal).await.0, StatusCode::NOT_FOUND);
+    send(
+        app,
+        Method::PATCH,
+        &format!("/api/v1/playlists/{pid}"),
+        &admin,
+        json!({ "public": true, "name": "Shared mix" }),
+    )
+    .await;
+    let (_, v, _) = get(app, "/api/v1/playlists", &pal).await;
+    assert_eq!(
+        (v[0]["name"].clone(), v[0]["mine"].clone(), v[0]["owner"].clone()),
+        (json!("Shared mix"), json!(false), json!("admin"))
+    );
+    assert_eq!(
+        send(app, Method::DELETE, &format!("/api/v1/playlists/{pid}"), &pal, json!({})).await.0,
+        StatusCode::NOT_FOUND
+    );
+    // Collections (as a metadata provider creates them).
+    let (a, b) = (ids[0], ids[1]);
+    h.st.library
+        .db()
+        .write(move |t| {
+            t.execute("INSERT INTO collections(id, library_id, name) VALUES (7, ?1, 'Trilogy')", [lib])?;
+            t.execute("INSERT INTO collection_items(collection_id, item_id) VALUES (7, ?1), (7, ?2)", [a, b])
+        })
+        .await
+        .unwrap();
+    let (_, v, _) = get(app, "/api/v1/collections", &admin).await;
+    assert_eq!((v[0]["name"].clone(), v[0]["count"].clone()), (json!("Trilogy"), json!(2)));
+    assert_eq!(get(app, "/api/v1/collections/7/items", &admin).await.1.as_array().unwrap().len(), 2);
+    assert_eq!(get(app, &format!("/api/v1/items/{a}"), &admin).await.1["collections"], json!([[7, "Trilogy"]]));
+    h.stop().await;
+}
+
 /// Web plugins: listed for the web client, their files served, nothing outside `web/`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn web_plugins_serve_their_files() {

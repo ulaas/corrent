@@ -20,6 +20,7 @@
   import { can } from '../lib/session.svelte';
   import { Perm } from '../lib/types';
   import { extensions } from '../lib/extensions.svelte';
+  import AddToPlaylist from '../components/AddToPlaylist.svelte';
   import type { Item, ItemDetail, Page } from '../lib/types';
 
   // Following a show: aired episodes it lacks go on the wanted list.
@@ -267,12 +268,18 @@
             {#if (item.kind === 'movie' || item.kind === 'episode' || item.kind === 'video') && can(Perm.LIBRARY_MANAGE)}
               <button class="btn lg" onclick={() => findSubs(item!.id)}><Icon name="closed-captioning" />{t('Find subtitles')}</button>
             {/if}
+            {#if isPlayable(item.kind) || item.kind === 'album' || item.kind === 'season'}
+              <AddToPlaylist items={[item.id]} big />
+            {/if}
             {#each extensions.itemActions as x (x.id)}
               <button class="btn lg" onclick={() => Promise.resolve(x.run($state.snapshot(item!) as ItemDetail)).catch((e) => toast(errorText(e), 'error'))}><Icon name="puzzle-piece" />{x.label}</button>
             {/each}
           </div>
 
           {#if item.overview}<p class="overview">{item.overview}</p>{/if}
+          {#if item.collections?.length}
+            <div class="row wrap">{#each item.collections as [cid, cname] (cid)}<a class="chip" href="/collection/{cid}" use:link><Icon name="stack" size={14} />{t('Part of {name}', { name: cname })}</a>{/each}</div>
+          {/if}
           {#if crew.length}
             <dl class="crew">
               {#each crew as c (c.person_id + c.role)}<div><dt>{c.role}</dt><dd>{c.name}</dd></div>{/each}

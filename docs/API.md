@@ -142,6 +142,18 @@ bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a sess
 | GET | `/api/v1/library/search` |
 | GET PUT | `/api/v1/users/{id}/libraries` |
 
+### Playlists and collections
+
+| Method | Path |
+|---|---|
+| GET POST | `/api/v1/playlists` |
+| GET PATCH DELETE | `/api/v1/playlists/{id}` |
+| GET POST | `/api/v1/playlists/{id}/items` |
+| DELETE | `/api/v1/playlists/{id}/items/{index}` |
+| POST | `/api/v1/playlists/{id}/move` |
+| GET | `/api/v1/collections` |
+| GET | `/api/v1/collections/{id}/items` |
+
 ### Plugins and metadata
 
 | Method | Path |

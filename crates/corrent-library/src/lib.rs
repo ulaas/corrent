@@ -6,6 +6,7 @@
 extern crate corrent_i18n;
 
 pub mod artwork;
+pub mod lists;
 pub mod lyrics;
 pub mod meta;
 pub mod nfo;

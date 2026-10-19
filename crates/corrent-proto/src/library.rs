@@ -340,6 +340,9 @@ pub struct ItemDetail {
     pub files: Vec<MediaFile>,
     pub provider_ids: BTreeMap<String, String>,
     pub locked_fields: Vec<String>,
+    /// Collections (film series) the item belongs to: (id, name).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collections: Vec<(i64, String)>,
     /// Free-form facts (album artist, ReplayGain, …).
     pub extra: BTreeMap<String, serde_json::Value>,
 }
@@ -783,4 +786,33 @@ pub struct LyricLine {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_ms: Option<i64>,
     pub text: String,
+}
+
+/// A playlist: a person's ordered items (music, videos), shared when public.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Playlist {
+    pub id: i64,
+    pub name: String,
+    pub public: bool,
+    /// The owner's account name.
+    pub owner: String,
+    /// The caller owns it (may change it).
+    pub mine: bool,
+    pub count: i64,
+    pub runtime_ms: i64,
+    pub created_at: i64,
+    /// Artwork of its first items.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageRef>,
+}
+
+/// A collection (a film series, as metadata providers name them).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Collection {
+    pub id: i64,
+    pub name: String,
+    pub library_id: i64,
+    pub count: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageRef>,
 }

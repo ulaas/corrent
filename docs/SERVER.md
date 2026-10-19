@@ -113,6 +113,11 @@ for changes and every library is rescanned every six hours. Files that disappear
 missing and removed after 30 days; a folder that can't be read at all (unplugged drive, offline
 share) leaves the library untouched. Admins can limit which libraries a user sees.
 
+**Playlists and collections**: everyone keeps playlists (music and videos, in their order;
+"Others can see it" shares one read-only), made from item pages (Add to playlist) or the
+Playlists page in both clients. Collections (film series) come from metadata providers; item
+pages link to theirs.
+
 **Podcasts**: a library of the kind *Podcasts* holds a folder per podcast with dated episode
 files (`2026-10-01 Title.mp3`). Settings → Podcasts subscribes to feeds; the `podcasts` task
 (hourly) downloads new episodes into the library's first folder and keeps the newest N (0 = all;

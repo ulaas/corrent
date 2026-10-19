@@ -10,6 +10,7 @@ pub(crate) mod cast;
 mod devices;
 mod events;
 pub mod library;
+mod lists;
 mod me;
 pub mod playback;
 mod plugins;
@@ -229,6 +230,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(cast::routes())
         .merge(podcasts::routes())
         .merge(radio::routes())
+        .merge(lists::routes())
         .merge(me::routes())
         .route("/events", axum::routing::get(events::events))
         .fallback(|| async { err(ErrorCode::NotFound, "no such endpoint") })

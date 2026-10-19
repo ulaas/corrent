@@ -54,6 +54,9 @@
         </a>
       {/each}
     {/if}
+    <a href="/playlists" use:link class="item" class:active={current === 'playlists' || current === 'playlist' || current === 'collection'} aria-current={current === 'playlists' ? 'page' : undefined}>
+      <Icon name="playlist" size={20} /><span class="label">{t('Playlists')}</span>
+    </a>
     <a href="/radio" use:link class="item" class:active={current === 'radio'} aria-current={current === 'radio' ? 'page' : undefined}>
       <Icon name="broadcast" size={20} /><span class="label">{t('Radio')}</span>
     </a>

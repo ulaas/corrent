@@ -30,6 +30,9 @@
   define('search', '/search');
   define('rss', '/rss');
   define('radio', '/radio');
+  define('playlists', '/playlists');
+  define('playlist', '/playlist/:id');
+  define('collection', '/collection/:id');
   define('settings', '/settings');
   define('settings', '/settings/:section');
 
@@ -43,6 +46,9 @@
     search: () => import('./pages/Search.svelte'),
     rss: () => import('./pages/Rss.svelte'),
     radio: () => import('./pages/Radio.svelte'),
+    playlists: () => import('./pages/Playlists.svelte'),
+    playlist: () => import('./pages/PlaylistPage.svelte'),
+    collection: () => import('./pages/CollectionPage.svelte'),
     settings: () => import('./pages/Settings.svelte'),
     notfound: () => import('./pages/NotFound.svelte'),
   };

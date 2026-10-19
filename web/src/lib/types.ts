@@ -456,6 +456,7 @@ export interface Credit {
 
 export interface ItemDetail extends Item {
   original_title?: string;
+  collections?: [number, string][];
   overview?: string;
   rating?: number;
   official_rating?: string;
@@ -731,4 +732,24 @@ export interface Station {
   url: string;
   image?: string | null;
   added_at: number;
+}
+
+export interface Playlist {
+  id: number;
+  name: string;
+  public: boolean;
+  owner: string;
+  mine: boolean;
+  count: number;
+  runtime_ms: number;
+  created_at: number;
+  images?: ImageRef[];
+}
+
+export interface Collection {
+  id: number;
+  name: string;
+  library_id: number;
+  count: number;
+  images?: ImageRef[];
 }

@@ -391,6 +391,12 @@ fn detail(c: &Connection, user: i64, id: i64) -> rusqlite::Result<Option<ItemDet
             .collect(),
         locked_fields: locked.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
         extra: to_map(&extra),
+        collections: c
+            .prepare_cached(
+                "SELECT cl.id, cl.name FROM collections cl JOIN collection_items x ON x.collection_id = cl.id WHERE x.item_id = ?1 ORDER BY cl.name",
+            )?
+            .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
     }))
 }
 

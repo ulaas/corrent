@@ -8,6 +8,7 @@ pub mod client;
 pub mod downloads;
 pub mod images;
 pub mod libraries;
+pub mod lists;
 pub mod offline;
 pub mod player;
 pub mod profiles;
@@ -43,6 +44,10 @@ pub enum Page {
     TvSettings,
     /// Internet radio stations.
     Radio,
+    /// Playlists and collections.
+    Playlists,
+    /// A playlist (or, with `true`, a collection).
+    Playlist(i64, bool),
 }
 
 const PAGE: i64 = 120;
@@ -54,6 +59,10 @@ struct Grid {
     requested: HashSet<i64>,
     pending: Vec<(i64, Slot<ItemPage<Item>>)>,
 }
+
+/// Playlists and collections.
+type Lists = (Vec<corrent_proto::library::Playlist>, Vec<corrent_proto::library::Collection>);
+type ListItems = ((i64, bool), Slot<Vec<Item>>);
 
 #[derive(Default)]
 pub struct MediaState {
@@ -93,6 +102,11 @@ pub struct MediaState {
     offline: Option<Arc<offline::Store>>,
     offline_loading: Option<Slot<Arc<offline::Store>>>,
     radio: Option<Slot<Vec<corrent_server::radio::Station>>>,
+    playlists: Option<Slot<Lists>>,
+    /// (playlist or collection id, is a collection) and its items.
+    list_items: Option<ListItems>,
+    my_playlists: Option<Slot<Vec<corrent_proto::library::Playlist>>>,
+    new_playlist: String,
     /// Sound devices for the Playback settings (asked once).
     pub audio_devices: Option<Slot<Vec<(String, String)>>>,
     /// Waiting downloads were restarted (once per session).
@@ -518,6 +532,8 @@ impl CorrentApp {
                     Page::Downloads => self.downloads_page(ui, p, &client),
                     Page::TvSettings => self.tv_settings_page(ui, p),
                     Page::Radio => self.radio_page(ui, p, &client),
+                    Page::Playlists => self.playlists_page(ui, p, &client),
+                    Page::Playlist(id, col) => self.playlist_page(ui, p, &client, id, col),
                 }
                 ui.add_space(24.0);
                 if let Some(r) = self.media.focus_rect.take() {
@@ -546,6 +562,14 @@ impl CorrentApp {
                 self.open(Page::Home);
             }
             if ui
+                .add(egui::Button::new(RichText::new(icons::PLAYLIST).size(18.0)).frame(false))
+                .on_hover_text(t!("Playlists"))
+                .clicked()
+            {
+                self.media.playlists = None;
+                self.open(Page::Playlists);
+            }
+            if ui
                 .add(egui::Button::new(RichText::new(icons::BROADCAST).size(18.0)).frame(false))
                 .on_hover_text(t!("Radio"))
                 .clicked()
@@ -572,6 +596,8 @@ impl CorrentApp {
                 Page::Downloads => t!("Downloads").to_string(),
                 Page::TvSettings => t!("Settings").to_string(),
                 Page::Radio => t!("Radio").to_string(),
+                Page::Playlists => t!("Playlists").to_string(),
+                Page::Playlist(..) => String::new(),
             };
             ui.label(RichText::new(title).size(20.0).strong().color(p.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1132,6 +1158,9 @@ impl CorrentApp {
                 self.open_subtitle_finder(it.id);
             }
             self.download_button(ui, client, &it, &siblings);
+            if it.kind.playable() || matches!(it.kind, ItemKind::Season | ItemKind::Album) {
+                self.add_to_playlist_button(ui, client, it.id);
+            }
         });
         ui.add_space(12.0);
         if !d.genres.is_empty() {
