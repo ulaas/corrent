@@ -50,11 +50,17 @@ Windows, and what is still open.
 7. **Test profiles:** the desktop app uses `--portable` (`target/debug/corrent-data`). The server takes
    `correntd --data-dir target/debug/correntd-data`.
 
-**Not yet verified on Windows** for the media server crates: the full gate (the desktop crate passed
-it on Windows before this work), `correntd` as a Windows service, the mpv worker, DLNA/SSDP and
-mDNS through the Windows firewall, and the Jellyfin listener on port 8096. Expect a first round of
-Windows-only fixes, especially paths, process spawning, file locking in tests that delete
-temporary folders, and firewall prompts.
+**Verified on Windows (2026-10-19):** the full gate passes (`c68d054`). The first round of fixes:
+`paths::resolve` returned verbatim `\\?\C:\…` paths, so library file paths never matched torrent
+or settings paths; and a fast download could announce `Completed` before its add was recorded
+(no category). With `mpv.exe` on `PATH`, the mpv-based server tests run (they make test clips with
+it); without `libmpv-2.dll` the in-process ones are skipped.
+
+**Not yet verified on Windows:** `correntd` as a Windows service, the mpv worker, DLNA/SSDP and
+mDNS through the Windows firewall, and the Jellyfin listener on port 8096.
+
+Windows notes: run mpv checks with `--no-config` (a user `mpv.conf` with `keep-open` makes it
+never exit); an `ffprobe.exe` from a Python package may be on `PATH` and isn't the real one.
 
 ## Recent work worth knowing
 
@@ -75,31 +81,12 @@ temporary folders, and firewall prompts.
 
 ## Open items
 
-**From the Fable review of the remuxer (`3a857b1`).** Fixed already: the lacing-overflow panic on
-crafted files, and the web player's stale options after a fallback. Still to do, roughly in order:
-
-1. Cap concurrent remux work with a semaphore (around `remux.get` and `segment`), and build `mdat`
-   from slices of the cluster body instead of copying frames three times. Today an untrusted file
-   plus many parallel requests can use a lot of memory.
-2. A zlib-compressed or encrypted track the remuxer doesn't copy (typically VobSub subtitles) still
-   rejects the whole file. Check compression only on the selected video and audio tracks
-   (`mkv.rs` `track()` → `mp4::out_track`).
-3. Cache the header and segment plan per file, not per audio track. Today each audio choice, including
-   bogus `/remux/{file}/{n}` values, re-indexes the file.
-4. Use saturating arithmetic for timestamps, Cues offsets and gap durations, and clamp
-   `timecode_scale`. Overflow is only an error in debug builds; release builds wrap silently.
-5. A BlockGroup whose `ReferenceBlock` lies beyond the 1 MiB peek counts as a keyframe; treat it as
-   "unknown" instead.
-6. A negative first PTS is clamped to 0 without shifting the rest, so segments overlap. Apply one
-   global offset (or an edit list).
-7. The last video sample in a segment should end at the next segment's start, not at
-   `DefaultDuration` or 1/24 s.
-8. Compensate audio gaps of a single frame (threshold `gap > duration / 2`).
-9. Resync after a damaged cluster header instead of failing the index. Clamp the last cluster to
-   the file length.
-10. Give segment responses an ETag or `Last-Modified` from the file's size and mtime, or put the
-    mtime in the URL. Today a replaced file can serve stale cached segments.
-11. Index with a 4–8 KiB read buffer instead of 64 KiB per cluster.
+**From the Fable review of the remuxer (`3a857b1`):** all eleven items are done (`f68ba87`): a
+4-slot limit on remux work and zero-copy frames, compression checked only on the remuxed tracks,
+the index cached per file, saturating timestamps, block groups read child by child, one global
+shift for negative timestamps, segment-end durations, half-frame audio gaps, resync after damaged
+clusters, `?v=` + ETag on segments, and an 8 KiB index buffer. Checked with mpv against an x264
+(B-frames) + AAC file, playing through and after a seek.
 
 **Soak.**
 - An 82-minute run with 5,000 torrents went cleanly; see `docs/SERVER-STABILITY.md`.

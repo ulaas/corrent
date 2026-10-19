@@ -22,6 +22,8 @@ const MAX_SCAN_BYTES: u64 = 512 * 1024 * 1024;
 /// Remux work (indexing, segments) at the same time: each segment holds its clusters and the
 /// output in memory, so many parallel requests for big segments must wait their turn.
 const SLOTS: usize = 4;
+/// Video frames after a cut that can be shown before it (open GOPs' leading pictures).
+const LEADING_FRAMES: usize = 16;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
@@ -73,7 +75,8 @@ pub fn prepare(path: &Path, audio: Option<i64>) -> Result<Remux, MkvError> {
     Ok(Remux { index, tracks })
 }
 
-fn version(meta: &std::fs::Metadata) -> String {
+/// A file's [`Index::version`] from its metadata (without indexing it).
+pub fn version(meta: &std::fs::Metadata) -> String {
     let modified =
         meta.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
     format!("{:x}-{modified:x}", meta.len())
@@ -229,7 +232,13 @@ impl Remux {
         let s = self.segments.get(n).ok_or(MkvError::Invalid("no such segment"))?;
         let wanted: Vec<u64> = self.tracks.iter().map(|t| t.source).collect();
         let frames = mkv::frames(&self.path, &self.header, s.from, s.to, &wanted)?;
-        let end = s.start_ns.saturating_add(s.duration_ns);
+        let mut end = s.start_ns.saturating_add(s.duration_ns);
+        // Open GOPs: the next segment's first decode time lies before its keyframe.
+        if let Some(next) = self.segments.get(n + 1)
+            && let Ok(Some(t)) = mkv::earliest_pts(&self.path, &self.header, next.from, LEADING_FRAMES)
+        {
+            end = end.min(t);
+        }
         Ok(mp4::media_segment(n as u32 + 1, &self.tracks, &frames, self.shift_ns, end))
     }
 }
@@ -240,6 +249,8 @@ pub struct Cache {
     files: Mutex<Vec<(FileKey, Arc<Index>)>>,
     remuxes: Mutex<Vec<(RemuxKey, Arc<Remux>)>>,
     slots: Arc<tokio::sync::Semaphore>,
+    /// One index build per file at a time: a player's first requests arrive together.
+    building: Mutex<std::collections::HashMap<PathBuf, Arc<Mutex<()>>>>,
 }
 
 impl Default for Cache {
@@ -248,6 +259,7 @@ impl Default for Cache {
             files: Mutex::default(),
             remuxes: Mutex::default(),
             slots: Arc::new(tokio::sync::Semaphore::new(SLOTS)),
+            building: Mutex::default(),
         }
     }
 }
@@ -257,6 +269,12 @@ struct FileKey {
     path: PathBuf,
     len: u64,
     modified: Option<std::time::SystemTime>,
+}
+
+impl FileKey {
+    fn new(path: &Path, meta: &std::fs::Metadata) -> FileKey {
+        FileKey { path: path.to_path_buf(), len: meta.len(), modified: meta.modified().ok() }
+    }
 }
 
 /// A file and its audio choice.
@@ -290,25 +308,53 @@ impl Cache {
         self.slots.clone().acquire_owned().await.expect("never closed")
     }
 
+    /// The remux of `path` if it is prepared already (no slot needed to use its playlist or init
+    /// segment).
+    pub async fn cached(&self, path: &Path, audio: Option<i64>) -> Option<Arc<Remux>> {
+        let meta = tokio::fs::metadata(path).await.ok()?;
+        lookup(&self.remuxes, &(FileKey::new(path, &meta), audio))
+    }
+
     /// The prepared remux of `path` (blocking: call off the async threads).
     pub fn get(&self, path: &Path, audio: Option<i64>) -> Result<Arc<Remux>, MkvError> {
         let meta = std::fs::metadata(path)?;
-        let file = FileKey { path: path.to_path_buf(), len: meta.len(), modified: meta.modified().ok() };
+        let file = FileKey::new(path, &meta);
         let key = (file.clone(), audio);
         if let Some(r) = lookup(&self.remuxes, &key) {
             return Ok(r);
         }
         let index = match lookup(&self.files, &file) {
             Some(i) => i,
-            None => {
-                let i = Arc::new(index(path)?);
-                remember(&self.files, file.clone(), i.clone(), |k| k.path == file.path, CACHE_SIZE);
-                i
-            }
+            None => self.build(&file)?,
         };
         let r = Arc::new(Remux { tracks: tracks(&index, audio)?, index });
         remember(&self.remuxes, key, r.clone(), |(k, a)| k.path == file.path && *a == audio, CACHE_SIZE * 2);
         Ok(r)
+    }
+
+    /// Indexes `file`, or waits for the request already doing it.
+    fn build(&self, file: &FileKey) -> Result<Arc<Index>, MkvError> {
+        let lock = {
+            let mut b = self.building.lock().unwrap_or_else(|e| e.into_inner());
+            b.entry(file.path.clone()).or_default().clone()
+        };
+        let result = {
+            let _turn = lock.lock().unwrap_or_else(|e| e.into_inner());
+            match lookup(&self.files, file) {
+                Some(i) => Ok(i),
+                None => index(&file.path).map(|i| {
+                    let i = Arc::new(i);
+                    remember(&self.files, file.clone(), i.clone(), |k| k.path == file.path, CACHE_SIZE);
+                    i
+                }),
+            }
+        };
+        let mut b = self.building.lock().unwrap_or_else(|e| e.into_inner());
+        // Ours and the map's: nobody else is waiting.
+        if Arc::strong_count(&lock) == 2 {
+            b.remove(&file.path);
+        }
+        result
     }
 }
 
@@ -410,6 +456,35 @@ mod tests {
         let h = mkv::open(&p).unwrap();
         assert_eq!(h.timecode_scale, 1_000_000_000);
         let _ = prepare(&p, Some(1)).map(|r| r.segment(0));
+        let _ = std::fs::remove_file(p);
+        // Open GOPs: segment 1 starts decoding 40 ms before its keyframe, so segment 0's last
+        // frame ends there instead of overlapping it.
+        let p = Sample { leading: true, ..Sample::new(5) }.write("opengop");
+        let r = prepare(&p, None).unwrap();
+        assert_eq!(mkv::earliest_pts(&p, &r.header, r.segments[1].from, LEADING_FRAMES).unwrap(), Some(3_960_000_000));
+        let seg0 = r.segment(0).unwrap();
+        let traf = mp4::tests::boxes(mp4::tests::boxes(mp4::tests::boxes(&seg0)[0].1)[1].1);
+        let trun = traf[2].1;
+        let count = u32::from_be_bytes(trun[4..8].try_into().unwrap()) as usize;
+        let total: u64 =
+            (0..count).map(|i| u32::from_be_bytes(trun[12 + i * 16..16 + i * 16].try_into().unwrap()) as u64).sum();
+        assert_eq!(total, 3960 * 90);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn concurrent_first_requests_index_once() {
+        let p = mkv::tests::write_sample("once", 5);
+        let cache = Arc::new(Cache::default());
+        let handles: Vec<_> = (0..6)
+            .map(|i| {
+                let (cache, p) = (cache.clone(), p.clone());
+                std::thread::spawn(move || cache.get(&p, if i % 2 == 0 { Some(1) } else { None }).unwrap())
+            })
+            .collect();
+        let got: Vec<Arc<Remux>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert!(got.iter().all(|r| Arc::ptr_eq(&r.index, &got[0].index)));
+        assert!(cache.building.lock().unwrap().is_empty());
         let _ = std::fs::remove_file(p);
     }
 }

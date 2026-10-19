@@ -392,6 +392,8 @@ pub fn open(path: &Path) -> Result<Header> {
     let mut raw_cues: Vec<(u64, u64, u64, Option<u64>)> = Vec::new();
     let mut duration_ticks: Option<f64> = None;
     let mut video: Option<u64> = None;
+    // Found by searching for the cluster id after damage (which can also match frame data).
+    let mut resynced = false;
     loop {
         let pos = r.stream_position()?;
         if seg_end.is_some_and(|e| pos >= e) {
@@ -403,10 +405,13 @@ pub fn open(path: &Path) -> Result<Header> {
             // Damaged data: carry on at the next cluster.
             Err(MkvError::Invalid(_)) => {
                 if resync(&mut r, pos + 1)? {
+                    resynced = true;
                     continue;
                 }
                 break;
             }
+            // Cut off after some clusters (an unfinished download): index what is there.
+            Err(e) if is_damage(&e) && !h.clusters.is_empty() => break,
             Err(e) => return Err(e),
         };
         let (id, size, _) = el;
@@ -434,24 +439,36 @@ pub fn open(path: &Path) -> Result<Header> {
                 let size =
                     size.ok_or_else(|| MkvError::Unsupported("clusters of unknown size (a live recording)".into()))?;
                 let offset = r.stream_position()?;
-                // A cut-off file: the last cluster ends where the file does.
-                let size = size.min(file_len.saturating_sub(offset));
-                match cluster_start(&mut r, size, video, h.timecode_scale) {
+                // A cut-off file: the last cluster ends where the file does. But a match found
+                // by resyncing that only fits by cutting would swallow every cluster after it.
+                let remaining = file_len.saturating_sub(offset);
+                let start = if resynced && size > remaining {
+                    Err(MkvError::Invalid("cluster size past the end of the file"))
+                } else {
+                    cluster_start(&mut r, size.min(remaining), video, h.timecode_scale)
+                };
+                match start {
                     Ok((time, key)) => {
+                        let size = size.min(remaining);
                         h.clusters.push(Cluster { start: pos, offset, size, time_ns: time, key });
                         r.seek(SeekFrom::Start(offset + size))?;
+                        resynced = false;
                     }
                     // A damaged cluster is left out; carry on at the next one.
                     Err(e) if is_damage(&e) => {
                         if !resync(&mut r, pos + 1)? {
                             break;
                         }
+                        resynced = true;
                     }
                     Err(e) => return Err(e),
                 }
             }
             CUES => {
-                let b = read_body(&mut r, size.ok_or(MkvError::Invalid("cues size"))?)?;
+                // Possibly cut off (parsed leniently).
+                let size = size.ok_or(MkvError::Invalid("cues size"))?;
+                let here = r.stream_position()?;
+                let b = read_body(&mut r, size.min(file_len.saturating_sub(here)))?;
                 for (id, cp) in children_lenient(&b) {
                     if id != CUE_POINT {
                         continue;
@@ -482,6 +499,7 @@ pub fn open(path: &Path) -> Result<Header> {
                 if !resync(&mut r, pos + 1)? {
                     break;
                 }
+                resynced = true;
             }
         }
     }
@@ -569,14 +587,23 @@ pub fn keyframes(path: &Path, h: &Header, i: usize) -> Result<Vec<(u64, i64)>> {
 }
 
 /// A cluster's timestamp and whether its first video block is a keyframe (reads only headers).
+/// The timestamp must come first (after an optional CRC-32 or Void), which also rejects most
+/// false matches of the cluster id when resyncing.
 fn cluster_start(r: &mut BufReader<File>, size: u64, video: Option<u64>, scale: u64) -> Result<(i64, bool)> {
     let end = r.stream_position()? + size;
     let mut time: Option<i64> = None;
     while r.stream_position()? < end {
         let Some((id, s, _)) = element(r)? else { break };
         let s = s.ok_or(MkvError::Invalid("unknown size in a cluster"))?;
+        if time.is_none() && !matches!(id, TIMECODE | CRC32 | VOID) {
+            return Err(MkvError::Invalid("cluster without a timestamp first"));
+        }
         match id {
-            TIMECODE => time = Some(uint(&read_body(r, s.min(8))?).min(i64::MAX as u64) as i64),
+            TIMECODE => {
+                let peek = s.min(8);
+                time = Some(uint(&read_body(r, peek)?).min(i64::MAX as u64) as i64);
+                r.seek_relative((s - peek).min(i64::MAX as u64) as i64)?;
+            }
             SIMPLE_BLOCK | BLOCK_GROUP => {
                 let Some(t) = time else { return Err(MkvError::Invalid("block before the cluster timestamp")) };
                 let (track, key) = if id == SIMPLE_BLOCK {
@@ -587,8 +614,8 @@ fn cluster_start(r: &mut BufReader<File>, size: u64, video: Option<u64>, scale: 
                     let (tr, _, flags, _) = block_header(&b)?;
                     (tr, flags & 0x80 != 0)
                 } else {
-                    let Some(found) = group_start(r, s)? else { continue };
-                    found
+                    let Some((tr, _, key)) = group_start(r, s)? else { continue };
+                    (tr, key)
                 };
                 if Some(track) == video || video.is_none() {
                     return Ok((ns(t, scale), key));
@@ -602,11 +629,12 @@ fn cluster_start(r: &mut BufReader<File>, size: u64, video: Option<u64>, scale: 
     Ok((ns(time.unwrap_or(0), scale), video.is_none()))
 }
 
-/// A block group's track and whether it is a keyframe (no `ReferenceBlock`), reading only the
-/// headers of its children: the block can be megabytes with the reference after it.
-fn group_start(r: &mut BufReader<File>, size: u64) -> Result<Option<(u64, bool)>> {
+/// A block group's track, relative timestamp and whether it is a keyframe (no
+/// `ReferenceBlock`), reading only the headers of its children: the block can be megabytes with
+/// the reference after it.
+fn group_start(r: &mut BufReader<File>, size: u64) -> Result<Option<(u64, i16, bool)>> {
     let end = r.stream_position()? + size;
-    let (mut track, mut reference) = (None, false);
+    let (mut block, mut reference) = (None, false);
     while r.stream_position()? < end {
         let Some((id, s, _)) = element(r)? else { break };
         let s = s.ok_or(MkvError::Invalid("unknown size in a block group"))?;
@@ -614,7 +642,8 @@ fn group_start(r: &mut BufReader<File>, size: u64) -> Result<Option<(u64, bool)>
         match id {
             BLOCK => {
                 let peek = s.min(16);
-                track = Some(block_header(&read_body(r, peek)?)?.0);
+                let (track, rel, ..) = block_header(&read_body(r, peek)?)?;
+                block = Some((track, rel));
                 skip = s - peek;
             }
             REFERENCE_BLOCK => reference = true,
@@ -623,7 +652,49 @@ fn group_start(r: &mut BufReader<File>, size: u64) -> Result<Option<(u64, bool)>
         r.seek_relative(skip.min(i64::MAX as u64) as i64)?;
     }
     r.seek(SeekFrom::Start(end))?;
-    Ok(track.map(|t| (t, !reference)))
+    Ok(block.map(|(t, rel)| (t, rel, !reference)))
+}
+
+/// The earliest presentation time among the first `n` video frames from `pos` on, reading only
+/// block headers. A segment starting at `pos` begins its decode timeline there, which with open
+/// GOPs is before its keyframe (frames shown before it follow it in the file).
+pub fn earliest_pts(path: &Path, h: &Header, pos: Pos, n: usize) -> Result<Option<i64>> {
+    let Some(video) = h.tracks.iter().find(|t| t.kind == 1).map(|t| t.number) else { return Ok(None) };
+    let mut r = BufReader::with_capacity(8 * 1024, File::open(path)?);
+    let (mut seen, mut min) = (0, None::<i64>);
+    for (i, c) in h.clusters.iter().enumerate().skip(pos.0) {
+        r.seek(SeekFrom::Start(c.offset + if i == pos.0 { pos.1 } else { 0 }))?;
+        let end = c.offset + c.size;
+        while seen < n && r.stream_position()? < end {
+            let Some((id, s, _)) = element(&mut r)? else { break };
+            let s = s.ok_or(MkvError::Invalid("unknown size in a cluster"))?;
+            let (track, rel) = match id {
+                SIMPLE_BLOCK => {
+                    let peek = s.min(16);
+                    let (track, rel, ..) = block_header(&read_body(&mut r, peek)?)?;
+                    r.seek_relative((s - peek) as i64)?;
+                    (track, rel)
+                }
+                BLOCK_GROUP => match group_start(&mut r, s)? {
+                    Some((track, rel, _)) => (track, rel),
+                    None => continue,
+                },
+                _ => {
+                    r.seek_relative(s.min(i64::MAX as u64) as i64)?;
+                    continue;
+                }
+            };
+            if track == video {
+                let pts = c.time_ns.saturating_add(ns(rel as i64, h.timecode_scale));
+                min = Some(min.map_or(pts, |m| m.min(pts)));
+                seen += 1;
+            }
+        }
+        if seen >= n {
+            break;
+        }
+    }
+    Ok(min)
 }
 
 /// Children of a possibly cut-off body (the last one may be partial: it's dropped).
@@ -741,6 +812,8 @@ pub(crate) mod tests {
         pub compressed_audio: bool,
         /// Cluster bodies added after the generated ones.
         pub extra: Vec<Vec<u8>>,
+        /// Open GOPs: after each keyframe but the first, a frame shown 40 ms before it.
+        pub leading: bool,
     }
 
     impl Sample {
@@ -753,6 +826,7 @@ pub(crate) mod tests {
                 compressed_subtitles: false,
                 compressed_audio: false,
                 extra: Vec::new(),
+                leading: false,
             }
         }
 
@@ -805,6 +879,9 @@ pub(crate) mod tests {
                 // Decode order I P B: presentation 0, 80, 40 ms.
                 let rel = if c == 0 { self.first_rel } else { 0 };
                 body.extend(sb(1, rel, 0x80, &[0, 0, 0, 2, 0x65, c as u8]));
+                if self.leading && c > 0 {
+                    body.extend(sb(1, -40, 0, &[0, 0, 0, 2, 0x01, 7]));
+                }
                 body.extend(sb(2, 0, 0, &[0xAA; 6]));
                 body.extend(sb(1, 80, 0, &[0, 0, 0, 2, 0x41, 1]));
                 body.extend(sb(1, 40, 0, &[0, 0, 0, 2, 0x01, 2]));
@@ -880,6 +957,29 @@ pub(crate) mod tests {
         let last = c.clusters.last().unwrap();
         assert_eq!((c.clusters.len(), last.offset + last.size), (5, cut.len() as u64));
         assert!(frames(&p, &c, (4, 0), (5, 0), &[1, 2]).is_ok());
+        // Cut inside the last cluster's id: the four before it remain.
+        std::fs::write(&p, &good[..h.clusters[4].start as usize + 2]).unwrap();
+        assert_eq!(open(&p).unwrap().clusters.len(), 4);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn resync_skips_cluster_ids_inside_frames() {
+        // A damaged cluster (block before its timestamp) whose frame data happens to contain a
+        // cluster id with a timestamp and a huge size: taking it would swallow the clusters after.
+        let mut fake = CLUSTER.to_be_bytes().to_vec();
+        fake.extend([0x01, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]);
+        fake.extend(u(TIMECODE, 1));
+        fake.extend(simple_block(1, 0, 0x80, &[1, 2, 3]));
+        let damaged = simple_block(1, 0, 0x80, &fake);
+        let extra = vec![
+            damaged,
+            [u(TIMECODE, 2000), simple_block(1, 0, 0x80, &[9])].concat(),
+            [u(TIMECODE, 4000), simple_block(1, 0, 0x80, &[9])].concat(),
+        ];
+        let p = Sample { extra, ..Sample::new(0) }.write("fakeid");
+        let h = open(&p).unwrap();
+        assert_eq!(h.clusters.iter().map(|c| c.time_ns / 1_000_000).collect::<Vec<_>>(), vec![2000, 4000]);
         let _ = std::fs::remove_file(p);
     }
 

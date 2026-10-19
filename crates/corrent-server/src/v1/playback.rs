@@ -153,12 +153,17 @@ pub(crate) async fn prepare(
     let remux = match (&decision, remux_ok && downloading.is_none(), decide::remux(&facts, &profile, &play)) {
         (Decision::Transcode { .. }, true, Some(audio)) => {
             let (cache_st, path) = (st.clone(), PathBuf::from(&file.path));
-            let slot = st.remux.slot().await;
-            let ready = tokio::task::spawn_blocking(move || {
-                let _slot = slot;
-                cache_st.remux.get(&path, audio)
-            })
-            .await;
+            let ready = match st.remux.cached(&path, audio).await {
+                Some(r) => Ok(Ok(r)),
+                None => {
+                    let slot = st.remux.slot().await;
+                    tokio::task::spawn_blocking(move || {
+                        let _slot = slot;
+                        cache_st.remux.get(&path, audio)
+                    })
+                    .await
+                }
+            };
             match ready {
                 Ok(Ok(_)) => Some(audio),
                 Ok(Err(e)) => {
@@ -307,41 +312,67 @@ async fn remux_file(
     Path((file, audio, name)): Path<(i64, i64, String)>,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, ApiErr> {
+    enum Want {
+        Playlist,
+        Init,
+        Segment(usize),
+    }
     // The user must be allowed to see the file.
     let path = PathBuf::from(st.library.file_path(auth.0.user.id, file).await.map_err(lib_err)?);
     let audio = (audio > 0).then_some(audio);
-    let if_none_match = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()).map(str::to_string);
-    let st2 = st.clone();
-    // Held by the blocking task, so a request that goes away doesn't free the slot early.
-    let slot = st.remux.slot().await;
-    type Built = (String, Option<(&'static str, Vec<u8>)>);
-    let res = tokio::task::spawn_blocking(move || -> Result<Built, String> {
-        let _slot = slot;
-        let r = st2.remux.get(&path, audio).map_err(|e| e.to_string())?;
-        let etag = format!("\"{}\"", r.version);
-        if name != "index.m3u8" && if_none_match.as_deref() == Some(etag.as_str()) {
-            return Ok((etag, None));
-        }
-        let body = match name.as_str() {
-            "index.m3u8" => ("application/vnd.apple.mpegurl", r.playlist(&format!("?v={}", r.version)).into_bytes()),
-            "init.mp4" => ("video/mp4", r.init()),
-            n => {
-                let i: usize = n.strip_suffix(".m4s").and_then(|x| x.parse().ok()).ok_or("no such segment")?;
-                ("video/iso.segment", r.segment(i).map_err(|e| e.to_string())?)
-            }
-        };
-        Ok((etag, Some(body)))
-    })
-    .await
-    .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
-    let (etag, built) = res.map_err(|e| err(ErrorCode::NotFound, e))?;
-    let etag = HeaderValue::from_str(&etag).map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
-    let Some((ctype, body)) = built else {
-        return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
+    let want = match name.as_str() {
+        "index.m3u8" => Want::Playlist,
+        "init.mp4" => Want::Init,
+        n => Want::Segment(
+            n.strip_suffix(".m4s")
+                .and_then(|x| x.parse().ok())
+                .ok_or_else(|| err(ErrorCode::NotFound, "no such segment"))?,
+        ),
     };
-    if ctype.ends_with("mpegurl") {
-        return Ok(([(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, "no-store")], body).into_response());
+    // Revalidation needs neither the index nor a slot.
+    let meta = tokio::fs::metadata(&path).await.map_err(|e| err(ErrorCode::NotFound, e.to_string()))?;
+    let etag = format!("\"{}\"", corrent_transcode::remux::version(&meta));
+    let if_none_match = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok());
+    if !matches!(want, Want::Playlist) && if_none_match == Some(etag.as_str()) {
+        let etag = HeaderValue::from_str(&etag).map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+        return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
     }
+    let segment = match want {
+        Want::Segment(i) => Some(i),
+        _ => None,
+    };
+    let (r, built) = match (segment, st.remux.cached(&path, audio).await) {
+        // The playlist and init segment of a prepared file are cheap: no slot.
+        (None, Some(r)) => (r, None),
+        _ => {
+            let st2 = st.clone();
+            // Held by the blocking task, so a request that goes away doesn't free the slot early.
+            let slot = st.remux.slot().await;
+            tokio::task::spawn_blocking(move || -> Result<_, String> {
+                let _slot = slot;
+                let r = st2.remux.get(&path, audio).map_err(|e| e.to_string())?;
+                let body = segment.map(|i| r.segment(i).map_err(|e| e.to_string())).transpose()?;
+                Ok((r, body))
+            })
+            .await
+            .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
+            .map_err(|e| err(ErrorCode::NotFound, e))?
+        }
+    };
+    match want {
+        Want::Playlist => {
+            let body = r.playlist(&format!("?v={}", r.version));
+            Ok(([(header::CONTENT_TYPE, "application/vnd.apple.mpegurl"), (header::CACHE_CONTROL, "no-store")], body)
+                .into_response())
+        }
+        Want::Init => segment_response("video/mp4", &r.version, r.init()),
+        Want::Segment(_) => segment_response("video/iso.segment", &r.version, built.unwrap_or_default()),
+    }
+}
+
+/// A remuxed `init.mp4` or segment, cacheable and tagged with the file's version.
+fn segment_response(ctype: &'static str, version: &str, body: Vec<u8>) -> Result<Response, ApiErr> {
+    let etag = HeaderValue::from_str(&format!("\"{version}\"")).map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
     let ctype = HeaderValue::from_static(ctype);
     let cache = HeaderValue::from_static("private, max-age=3600");
     Ok(([(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, cache), (header::ETAG, etag)], body).into_response())

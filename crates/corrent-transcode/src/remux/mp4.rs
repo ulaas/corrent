@@ -479,16 +479,6 @@ pub fn media_segment(seq: u32, tracks: &[OutTrack], frames: &[Frame], shift_ns: 
             let mut last_pts = i64::MIN;
             for f in &mine {
                 let pts = to_ts(f.pts_ns);
-                if pts != last_pts
-                    && let Some(prev) = samples.last_mut()
-                {
-                    let gap = pts.saturating_sub(running);
-                    if gap > prev.duration as i64 / 2 {
-                        prev.duration = prev.duration.saturating_add(clamp_u32(gap));
-                        running = running.saturating_add(gap);
-                    }
-                }
-                last_pts = pts;
                 let duration = match &t.codec {
                     Codec::Aac { .. } => 1024,
                     Codec::Ac3 { .. } => 1536,
@@ -497,6 +487,16 @@ pub fn media_segment(seq: u32, tracks: &[OutTrack], frames: &[Frame], shift_ns: 
                     Codec::Mp3 { samples } => *samples,
                     _ => 1024,
                 };
+                if pts != last_pts
+                    && let Some(prev) = samples.last_mut()
+                {
+                    let gap = pts.saturating_sub(running);
+                    if gap > duration as i64 / 2 {
+                        prev.duration = prev.duration.saturating_add(clamp_u32(gap));
+                        running = running.saturating_add(gap);
+                    }
+                }
+                last_pts = pts;
                 samples.push(Sample { duration, size: f.data.len() as u32, key: true, cto: 0 });
                 running = running.saturating_add(duration as i64);
             }
@@ -649,12 +649,15 @@ pub(crate) mod tests {
             frame(2, ms(1043), true, vec![3]),
             // One AAC frame (21.3 ms) missing: also filled.
             frame(2, ms(1086), true, vec![4]),
+            // And another right after (the threshold is one frame, not the stretched sample).
+            frame(2, ms(1129), true, vec![5]),
         ];
         let g = media_segment(2, std::slice::from_ref(&audio), &gap, 0, 0);
         let gtrun = trun_of(&g, 0);
         let dur = |i: usize| u32::from_be_bytes(gtrun[12 + i * 8..16 + i * 8].try_into().unwrap());
         // The third frame runs on to 1086 ms: 1024 samples plus the 1072-sample gap.
         assert_eq!((dur(0), dur(1), dur(2)), (1021 * 48, 1024, 2096), "{gtrun:?}");
+        assert_eq!(dur(3), 1129 * 48 - 1086 * 48, "{gtrun:?}");
         // Audio data follows the video's.
         let atrun = boxes(moof[2].1)[2].1;
         let aoff = u32::from_be_bytes(atrun[8..12].try_into().unwrap()) as usize;
