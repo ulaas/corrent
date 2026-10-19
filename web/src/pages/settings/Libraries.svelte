@@ -161,6 +161,9 @@
       </div>
       <Toggle bind:checked={edit.settings.watch} label={t('Watch the folders for changes')} />
       <Toggle bind:checked={edit.settings.fetch_metadata} label={t('Fetch metadata and artwork online')} hint={t('Uses metadata plugins when they are installed.')} />
+      {#if edit.kind === 'movies' || edit.kind === 'shows'}
+        <Toggle bind:checked={edit.settings.write_nfo} label={t('Write .nfo files')} hint={t('Saves titles, plots and ids next to the files for Kodi and other players. Existing .nfo files that Corrent didn’t write are left alone.')} />
+      {/if}
       <div class="grid2">
         <label class="field"><span class="label">{t('Counts as played after')}</span>
           <span class="row"><input class="input num-input" type="number" min="50" max="100" bind:value={edit.settings.played_threshold} />%</span></label>

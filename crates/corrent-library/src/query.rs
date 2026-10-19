@@ -446,6 +446,23 @@ impl Library {
             .await?)
     }
 
+    /// Some main file inside an item (itself or any descendant): where its folder is.
+    pub async fn any_file(&self, item: i64) -> Result<Option<String>> {
+        Ok(self
+            .db()
+            .read(move |c| {
+                c.query_row(
+                    "WITH RECURSIVE d(id) AS (SELECT ?1 UNION ALL SELECT i.id FROM items i JOIN d ON i.parent_id = d.id) \
+                     SELECT f.path FROM d JOIN item_files x ON x.item_id = d.id AND x.role = 'main' JOIN files f ON f.id = x.file_id \
+                     WHERE f.missing_since IS NULL ORDER BY f.path LIMIT 1",
+                    [item],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await?)
+    }
+
     /// The file of an external subtitle stream, if the user may see the media file.
     pub async fn subtitle_path(&self, user: i64, file_id: i64, idx: i64) -> Result<String> {
         self.file_path(user, file_id).await?;

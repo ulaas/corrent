@@ -129,6 +129,10 @@ categories): the hourly `stop_watched_seeding` task pauses a finished torrent of
 once every enabled account that can see the library has played all playable items whose files
 came from it.
 
+**`.nfo` files**: movie and show libraries can write Kodi `.nfo` files (library setting) after
+identification and edits — `<movie file>.nfo`, `tvshow.nfo`, `<episode file>.nfo`. Files Corrent
+didn't write (no `<!-- written by Corrent -->` line) are never replaced.
+
 Lyrics come from a `.lrc` (synced) or `.txt` file named like the track, else the track's lyrics
 tag (`GET /api/v1/items/{id}/lyrics`); the web player shows them in its queue panel (synced lines
 follow the music, click one to jump), the desktop player behind the microphone button.

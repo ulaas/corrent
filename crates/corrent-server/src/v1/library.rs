@@ -251,6 +251,7 @@ async fn edit(
 ) -> ApiResult<serde_json::Value> {
     auth.require(Perms::LIBRARY_MANAGE)?;
     st.library.edit_item(id, e.title, e.overview, e.year, e.locked_fields).await.map_err(lib_err)?;
+    crate::metadata::write_nfo(&st, id).await;
     Ok(Json(serde_json::json!({})))
 }
 

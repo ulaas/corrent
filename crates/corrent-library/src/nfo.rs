@@ -140,6 +140,79 @@ fn field(n: &mut Nfo, tag: &str, v: String, uniqueid_type: &mut Option<String>) 
     }
 }
 
+/// The first line of `.nfo` files Corrent writes (it only ever overwrites its own).
+pub const MARK: &str = "<!-- written by Corrent -->";
+
+fn esc(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect::<String>()
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// A Kodi-style `.nfo` (`movie`, `tvshow` or `episodedetails`).
+pub fn render(n: &Nfo) -> String {
+    let mut o = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n{MARK}\n<{}>\n", n.kind);
+    let mut el = |tag: &str, v: &str| o.push_str(&format!("  <{tag}>{}</{tag}>\n", esc(v)));
+    if let Some(v) = &n.title {
+        el("title", v);
+    }
+    if let Some(v) = &n.original_title {
+        el("originaltitle", v);
+    }
+    if let Some(v) = &n.sort_title {
+        el("sorttitle", v);
+    }
+    if let Some(v) = n.year {
+        el("year", &v.to_string());
+    }
+    if let Some(v) = n.season {
+        el("season", &v.to_string());
+    }
+    if let Some(v) = n.episode {
+        el("episode", &v.to_string());
+    }
+    if let Some(v) = &n.plot {
+        el("plot", v);
+    }
+    if let Some(v) = n.rating {
+        el("rating", &format!("{v:.1}"));
+    }
+    if let Some(v) = &n.mpaa {
+        el("mpaa", v);
+    }
+    if let Some(v) = &n.premiered {
+        el("premiered", v);
+    }
+    if let Some(v) = n.runtime_min {
+        el("runtime", &v.to_string());
+    }
+    for g in &n.genres {
+        el("genre", g);
+    }
+    for d in &n.directors {
+        el("director", d);
+    }
+    for w in &n.writers {
+        el("credits", w);
+    }
+    for (k, v) in &n.ids {
+        o.push_str(&format!("  <uniqueid type=\"{}\">{}</uniqueid>\n", esc(k), esc(v)));
+    }
+    for (name, role) in &n.actors {
+        o.push_str(&format!("  <actor>\n    <name>{}</name>\n", esc(name)));
+        if let Some(r) = role {
+            o.push_str(&format!("    <role>{}</role>\n", esc(r)));
+        }
+        o.push_str("  </actor>\n");
+    }
+    o.push_str(&format!("</{}>\n", n.kind));
+    o
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +252,29 @@ mod tests {
         let n = parse("<movie><title>Tom &amp; Jerry</title><plot><![CDATA[a <b> c]]></plot></movie>").unwrap();
         assert_eq!((n.title.as_deref(), n.plot.as_deref()), (Some("Tom & Jerry"), Some("a <b> c")));
         assert!(parse(&"<a>".repeat(100)).is_none());
+    }
+
+    #[test]
+    fn render_round_trips() {
+        let mut n = Nfo {
+            kind: "movie".into(),
+            title: Some("Sintel & <Friends>".into()),
+            year: Some(2010),
+            plot: Some("A girl and a dragon.".into()),
+            genres: vec!["Animation".into()],
+            directors: vec!["Colin Levy".into()],
+            actors: vec![("Halina Reijn".into(), Some("Sintel".into()))],
+            ..Default::default()
+        };
+        n.ids.insert("tmdb".into(), "45745".into());
+        let text = render(&n);
+        assert!(text.contains(MARK));
+        let back = parse(&text).unwrap();
+        assert_eq!(back.title, n.title);
+        assert_eq!(back.year, Some(2010));
+        assert_eq!(back.genres, n.genres);
+        assert_eq!(back.directors, n.directors);
+        assert_eq!(back.actors, n.actors);
+        assert_eq!(back.ids.get("tmdb").map(String::as_str), Some("45745"));
     }
 }

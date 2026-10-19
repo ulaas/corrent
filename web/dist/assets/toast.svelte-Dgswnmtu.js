@@ -1,0 +1,1 @@
+import{ot as e}from"./i18n.svelte-B4hfAn12.js";var t=e([]),n=1;function r(e,r=`info`,a,o=5e3){let s=n++;return t.push({id:s,kind:r,text:e,action:a}),t.length>5&&t.shift(),o>0&&setTimeout(()=>i(s),a?o*1.6:o),s}function i(e){let n=t.findIndex(t=>t.id===e);n>=0&&t.splice(n,1)}export{r as n,t as r,i as t};

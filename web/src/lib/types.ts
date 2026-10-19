@@ -352,6 +352,7 @@ export interface LibrarySettings {
   language: string;
   played_threshold: number;
   stop_seeding_when_watched?: boolean;
+  write_nfo?: boolean;
 }
 
 export interface Library {

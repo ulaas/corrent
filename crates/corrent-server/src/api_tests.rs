@@ -1715,6 +1715,70 @@ async fn watched_by_everyone_counts_every_account() {
     h.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn nfo_files_are_written_and_foreign_ones_kept() {
+    let h = harness("nfo", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let dir = h.dir.join("Movies").join("Clip (2020)");
+    std::fs::create_dir_all(&dir).unwrap();
+    let made = std::process::Command::new("mpv")
+        .args([
+            "--really-quiet",
+            "av://lavfi:testsrc=duration=2:size=160x120:rate=10",
+            "--of=matroska",
+            "--ovc=libx264",
+            "--ovcopts=preset=ultrafast",
+        ])
+        .arg(format!("--o={}", dir.join("Clip (2020).mkv").display()))
+        .status()
+        .is_ok_and(|s| s.success());
+    if !made {
+        eprintln!("mpv not available; skipping");
+        h.stop().await;
+        return;
+    }
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Movies", "kind": "movies", "folders": [h.dir.join("Movies")], "settings": { "write_nfo": true, "watch": false } }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let item = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if let Some(id) = v["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let (s, v, _) = send(
+        app,
+        Method::PATCH,
+        &format!("/api/v1/items/{item}"),
+        &admin,
+        json!({ "title": "Clip & Co", "overview": "Test pattern." }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let nfo = std::fs::read_to_string(dir.join("Clip (2020).nfo")).unwrap();
+    assert!(
+        nfo.contains(corrent_library::nfo::MARK)
+            && nfo.contains("<title>Clip &amp; Co</title>")
+            && nfo.contains("<plot>Test pattern.</plot>"),
+        "{nfo}"
+    );
+    // Someone else's .nfo stays as it is.
+    std::fs::write(dir.join("Clip (2020).nfo"), "<movie><title>Mine</title></movie>").unwrap();
+    send(app, Method::PATCH, &format!("/api/v1/items/{item}"), &admin, json!({ "title": "Other" })).await;
+    assert_eq!(std::fs::read_to_string(dir.join("Clip (2020).nfo")).unwrap(), "<movie><title>Mine</title></movie>");
+    h.stop().await;
+}
+
 async fn v_id(app: &Router, admin: &str) -> String {
     get(app, "/api/v1/podcasts", admin).await.1[0]["id"].as_str().unwrap().to_string()
 }

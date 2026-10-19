@@ -367,7 +367,7 @@ Portable mode (`--portable`) keeps all of it under `target/debug/corrent-data` a
   Matching: parsed title/year → provider search → scored candidates (title similarity, year, runtime)
   → auto-accept above a threshold, otherwise "Identify…" in the UI. Refresh policies (never / missing
   only / all) per library; locked fields are never overwritten; `.nfo` reading (Kodi format) as a
-  built-in provider so existing libraries import their edits; `.nfo` writing (opt).
+  built-in provider so existing libraries import their edits; `.nfo` writing (opt) — done (library setting; only ever replaces its own files).
 - **Accept:** a fake provider plugin in tests; an identify flow test; rate limits respected
   (TMDB ~40 req/10 s) with a per-provider token bucket in the host, not in the plugin.
 

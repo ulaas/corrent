@@ -134,6 +134,8 @@ pub struct LibrarySettings {
     pub seed_minutes: Option<u32>,
     /// Stop seeding a torrent once everyone who can see this library has watched what it brought.
     pub stop_seeding_when_watched: bool,
+    /// Write Kodi `.nfo` files next to movies, shows and episodes (only ever replacing ours).
+    pub write_nfo: bool,
     /// Quality profile for releases found for this library.
     pub profile_id: Option<i64>,
 }

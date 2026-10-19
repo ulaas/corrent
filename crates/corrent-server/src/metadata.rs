@@ -147,7 +147,85 @@ pub async fn apply(
         }
     }
     st.library.mark_meta_checked(item, Some(provider.to_string())).await.map_err(|e| e.to_string())?;
+    write_nfo(st, item).await;
+    if kind == ItemKind::Show {
+        for (season, _) in st.library.seasons(item).await.unwrap_or_default() {
+            let q =
+                corrent_proto::library::ItemQuery { parent_id: Some(season), limit: Some(1000), ..Default::default() };
+            for ep in st.library.items(0, q).await.map(|p| p.items).unwrap_or_default() {
+                write_nfo(st, ep.id).await;
+            }
+        }
+    }
     Ok(())
+}
+
+/// Writes the item's `.nfo` when its library asks for it (movies, shows, episodes). Never
+/// replaces an `.nfo` someone else wrote.
+pub async fn write_nfo(st: &AppState, item: i64) {
+    let Ok(d) = st.library.item(0, item).await else { return };
+    let Ok(lib) = st.library.get(d.item.library_id).await else { return };
+    if !lib.settings.write_nfo {
+        return;
+    }
+    let kind = match d.item.kind {
+        ItemKind::Movie => "movie",
+        ItemKind::Show => "tvshow",
+        ItemKind::Episode => "episodedetails",
+        _ => return,
+    };
+    let Ok(Some(file)) = st.library.any_file(item).await else { return };
+    let file = std::path::PathBuf::from(file);
+    let target = if d.item.kind == ItemKind::Show {
+        let roots: Vec<std::path::PathBuf> = lib.folders.iter().map(std::path::PathBuf::from).collect();
+        let Some(root) = roots.iter().filter(|r| file.starts_with(r)).max_by_key(|r| r.as_os_str().len()) else {
+            return;
+        };
+        let Some(show) = corrent_library::parse::show_folder(root, &file) else { return };
+        root.join(show).join("tvshow.nfo")
+    } else {
+        file.with_extension("nfo")
+    };
+    let season = match (d.item.kind, d.item.parent_id) {
+        (ItemKind::Episode, Some(p)) => st.library.item(0, p).await.ok().and_then(|s| s.item.index),
+        _ => None,
+    };
+    let people = |role: &str| d.credits.iter().filter(|c| c.role == role).map(|c| c.name.clone()).collect::<Vec<_>>();
+    let n = corrent_library::nfo::Nfo {
+        kind: kind.into(),
+        title: Some(d.item.title.clone()),
+        original_title: d.original_title.clone(),
+        year: d.item.year,
+        plot: d.overview.clone(),
+        rating: d.rating,
+        mpaa: d.official_rating.clone(),
+        premiered: d.premiered.clone(),
+        season,
+        episode: if d.item.kind == ItemKind::Episode { d.item.index } else { None },
+        runtime_min: d.item.runtime_ms.map(|r| r / 60_000).filter(|m| *m > 0),
+        genres: d.genres.clone(),
+        directors: people("director"),
+        writers: people("writer"),
+        actors: d.credits.iter().filter(|c| c.role == "actor").map(|c| (c.name.clone(), c.character.clone())).collect(),
+        ids: d.provider_ids.clone(),
+        ..Default::default()
+    };
+    let text = corrent_library::nfo::render(&n);
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Ok(old) = std::fs::read_to_string(&target)
+            && !old.contains(corrent_library::nfo::MARK)
+        {
+            return;
+        }
+        // A plain replace (no backup copies left in media folders).
+        let tmp = target.with_extension("nfo.corrent-tmp");
+        let r = std::fs::write(&tmp, text.as_bytes()).and_then(|_| std::fs::rename(&tmp, &target));
+        if let Err(e) = r {
+            let _ = std::fs::remove_file(&tmp);
+            tracing::warn!("{}: {e}", target.display());
+        }
+    })
+    .await;
 }
 
 /// Searches every ready provider for an item (the "Identify…" list).

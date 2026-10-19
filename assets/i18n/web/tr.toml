@@ -592,3 +592,5 @@
 "Stop seeding once everyone has watched" = "Herkes izleyince paylaşımı durdur"
 "Pauses a finished torrent of these categories when every account that sees this library has played what it brought." = "Bu kütüphaneyi gören her hesap, bu kategorilerdeki bitmiş bir torrentin getirdiklerini oynattığında torrenti duraklatır."
 "Stop seeding once everyone has watched what a torrent brought" = "Bir torrentin getirdiklerini herkes izleyince paylaşımı durdur"
+"Write .nfo files" = ".nfo dosyaları yaz"
+"Saves titles, plots and ids next to the files for Kodi and other players. Existing .nfo files that Corrent didn’t write are left alone." = "Kodi ve diğer oynatıcılar için başlıkları, konuları ve kimlikleri dosyaların yanına kaydeder. Corrent'in yazmadığı mevcut .nfo dosyalarına dokunulmaz."
