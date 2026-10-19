@@ -265,3 +265,31 @@ Verified from source: `AuthorizationContext.cs` (10.10 + master gating), `BaseIt
 Unverified (marked inline): Android TV/Swiftfin/Infuse exact call lists and TLS behaviour, Kotlin SDK default-port candidates and whether its stream URL builders append `ApiKey`, UDP server source for 10.10+/12 (only 10.8 fetched; protocol unchanged per the SDK and a live capture), `LibraryChanged`/`UserDataChanged`/`MediaSegmentDto`/`ThemeMediaResult.OwnerId` payload shapes, jellyfin-web's `DisplayPreferences/usersettings?client=emby` call, JMP bundling jellyfin-web, the Android phone app working against a non-Jellyfin root page, `MimeTypes.GetMimeType("playlist.m3u8")` value.
 
 Note for the implementer: while I was reading, `library.rs`, `query.rs`, `v1/mod.rs`, `lib.rs`, `Cargo.toml`, `SERVER.md` were touched on disk by someone else, but `git diff` shows only `Cargo.lock` changed, so the signatures referenced above (`ItemQuery`, `Item`, `Library::{items,item,main_file,file_path,subtitle_path,search,home,set_state,user_libraries}`, `identity::{issue,verify_token,authenticate}`, `v1::playback::prepare`, `HlsManager::{create,playlist,segment,owner,stop}`, `remote::apply`, `dlna` listener pattern) are current.
+---
+
+# Review (Fable) — corrections folded into the implementation
+
+P0 (blocking): (1) query-string keys and `MediaBrowser` header keys matched case-insensitively
+everywhere (one `JfQuery` extractor); (2) `GET /Sessions` returns the caller's own session from
+MS16a (Kodi indexes `[0]`), plus 204 stubs for `POST /Sessions/{id}/Playing` and
+`POST|DELETE /Sessions/{id}/User/{userId}`; (3) podcasts aren't typed by item kind — podcast
+libraries are left out of the Jellyfin views for now; `MediaType` comes from the main file's
+streams (no video → Audio); (4) CORS off by default (`jellyfin_cors = false`); (5) realistic size
+≈ 4k lines + tests for 16a+b; responses are built with `serde_json::json!`, only inputs are typed;
+MS16c is a separate decision.
+
+P1: stubs for `Movies/Recommendations`, `Shows/Upcoming`, `Users/{id}/Suggestions`,
+`Items/Suggestions`, `Items/{id}/Images` (`[]`), `POST Items/{id}/Refresh`,
+`System/Configuration/encoding`; `Items/{id}` resolves every id kind (views, people, genres);
+music/TV query parameters (`ArtistIds`, `AlbumArtistIds`, `AlbumIds`, `IsFolder`, `Years`);
+seasons carry `SeriesId`/`SeriesName`/series image tags; `AuthenticateByName` without device
+info synthesizes a device id; `Identity::signin_users()`; migrations array; `Applied` key includes
+the Jellyfin settings; `StartTimeTicks` ignored on full-VOD playlists; the Remote page tells
+people to type the IP (or add a host name).
+
+P2: Connect peers count as local (documented); `OperatingSystem` omitted; photos served from
+the original for `Primary`; `GroupItems` ignored; root alias (MS16c) off or dropped.
+
+Order: foundations (nest, lowercase paths, case-insensitive query, auth, ids/ticks, errors,
+listener, migration) → users/sessions → browse → playback/playstate → fuzz, docs, UI →
+optional UDP 7359 discovery and `/socket` keep-alive.
