@@ -221,6 +221,61 @@ export interface PairingCode {
   code: string;
   expires_at: number;
   link: string;
+  qr_svg?: string;
+}
+
+export interface RemoteConfig {
+  remote_access: boolean;
+  discovery: boolean;
+  connect: boolean;
+  connect_relay: boolean;
+  port_mapping: boolean;
+  allowed_networks: string[];
+  trusted_proxies: string[];
+  hostnames: string[];
+}
+
+export interface RemoteStatus {
+  https_port: number;
+  discovery: boolean;
+  discovery_error?: string;
+  connect_id?: string;
+  connect_relay?: string;
+  connect_error?: string;
+  mapped_address?: string;
+  port_mapping_error?: string;
+}
+
+export interface RemoteAccess {
+  config: RemoteConfig;
+  status: RemoteStatus;
+}
+
+export interface PluginSettingDef {
+  key: string;
+  label: string;
+  help: string;
+  secret: boolean;
+  required: boolean;
+  default?: string | null;
+}
+
+export interface PluginInfo {
+  manifest: {
+    id: string;
+    name: string;
+    version: string;
+    description: string;
+    author: string;
+    kinds: string[];
+    permissions: { hosts: string[]; allow_local_network: boolean; rate_per_sec?: number | null };
+    settings: PluginSettingDef[];
+  };
+  enabled: boolean;
+  builtin: boolean;
+  settings: Record<string, string>;
+  missing: string[];
+  failures: number;
 }
 
 export interface AuditEntry {

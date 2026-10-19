@@ -110,6 +110,9 @@
       {:else}
         <p class="caption form-error">{t('This code has expired.')}</p>
       {/if}
+      {#if pairing.qr_svg}
+        <img class="qr" alt={t('QR code of the pairing link')} src={`data:image/svg+xml;base64,${btoa(pairing.qr_svg)}`} />
+      {/if}
       <div class="link">
         <span class="mono caption ellipsis" title={pairing.link}>{pairing.link}</span>
         <button class="btn sm" onclick={() => copy(pairing!.link)}><Icon name="copy" size={14} />{t('Copy link')}</button>
@@ -123,6 +126,14 @@
 {/if}
 
 <style>
+  .qr {
+    display: block;
+    width: 200px;
+    height: 200px;
+    margin: 12px auto;
+    border-radius: 8px;
+    background: #fff;
+  }
   .dev {
     grid-template-columns: 1fr auto;
   }

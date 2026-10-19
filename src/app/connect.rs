@@ -68,6 +68,8 @@ pub struct ConnectDialog {
     confirmed: bool,
     step: Step,
     trusting: Option<Slot<Trusted>>,
+    /// Servers announcing themselves on the LAN (searched when the dialog opens).
+    found: Option<Slot<Vec<corrent_server::discovery::Found>>>,
     pairing: Option<Slot<ServerEntry>>,
     error: Option<String>,
 }
@@ -86,6 +88,7 @@ impl Default for ConnectDialog {
             confirmed: false,
             step: Step::Address,
             trusting: None,
+            found: None,
             pairing: None,
             error: None,
         }
@@ -112,7 +115,14 @@ impl CorrentApp {
     }
 
     pub fn open_connect(&mut self) {
-        self.connect = Some(ConnectDialog::default());
+        let found = fetch(&self.rt, &self.ctx, async {
+            tokio::task::spawn_blocking(|| {
+                corrent_server::discovery::browse(std::time::Duration::from_secs(3)).map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        });
+        self.connect = Some(ConnectDialog { found: Some(found), ..Default::default() });
     }
 
     /// Switches to a server (`Some`) or back to this computer's engine (`None`) and remembers it.
@@ -243,6 +253,28 @@ impl CorrentApp {
                         ))
                         .color(p.text_dim),
                     );
+                    // Servers on this network: a click fills in the address (their announced
+                    // fingerprint is only a hint, so it is still shown for checking).
+                    match d.found.as_ref().and_then(ready) {
+                        None => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(RichText::new(t!("Looking for servers on this network…")).small().color(p.text_dim));
+                            });
+                        }
+                        Some(Ok(list)) if !list.is_empty() => {
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(t!("On this network")).small().strong().color(p.text_dim));
+                            for f in list {
+                                let Some(url) = f.url() else { continue };
+                                let label = format!("{}  {}   {}", icons::HARD_DRIVES, f.advert.name, url);
+                                if ui.add(egui::Button::selectable(d.address == url, label)).clicked() {
+                                    d.address = url;
+                                }
+                            }
+                        }
+                        Some(_) => {}
+                    }
                     ui.add_space(8.0);
                     ui.label(t!("Pairing link or address"));
                     ui.add(

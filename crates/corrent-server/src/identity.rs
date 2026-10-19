@@ -829,7 +829,16 @@ impl Identity {
         if let Some(c) = connect_id {
             link.push_str(&format!("&connect={c}"));
         }
-        PairingCode { code: code.to_string(), expires_at, link }
+        let qr_svg = qrcode::QrCode::new(link.as_bytes())
+            .map(|q| {
+                q.render::<qrcode::render::svg::Color>()
+                    .min_dimensions(220, 220)
+                    .dark_color(qrcode::render::svg::Color("#000000"))
+                    .light_color(qrcode::render::svg::Color("#ffffff"))
+                    .build()
+            })
+            .unwrap_or_default();
+        PairingCode { code: code.to_string(), expires_at, link, qr_svg }
     }
 }
 

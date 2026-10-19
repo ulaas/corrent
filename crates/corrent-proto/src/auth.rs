@@ -154,6 +154,9 @@ pub struct PairingCode {
     pub expires_at: i64,
     /// `corrent://pair?…` link carrying the address, server id, certificate fingerprint and code.
     pub link: String,
+    /// The link as a QR code (SVG), for apps on phones and TVs.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub qr_svg: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

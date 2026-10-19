@@ -1028,3 +1028,5 @@
 "The Corrent Connect address isn't valid." = "Corrent Connect adresi geçerli değil."
 "Corrent Connect: {e}" = "Corrent Connect: {e}"
 "Server: {name} (Corrent Connect)" = "Sunucu: {name} (Corrent Connect)"
+"Looking for servers on this network…" = "Bu ağdaki sunucular aranıyor…"
+"On this network" = "Bu ağda"
