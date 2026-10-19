@@ -324,17 +324,19 @@ pub fn local_offset_secs() -> i64 {
     use std::time::{Duration, Instant};
     // Re-read every 10 minutes so a daylight-saving change while Corrent runs is picked up.
     static OFF: Mutex<Option<(Instant, i64)>> = Mutex::new(None);
-    let mut g = OFF.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, v)) = *g
+    let cached = *OFF.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, v)) = cached
         && at.elapsed() < Duration::from_secs(600)
     {
         return v;
     }
+    // Computed without the lock: on Unix it runs `date`, and every date shown in the UI would wait
+    // behind a slow process start. Two threads may compute it at once; both get the same value.
     #[cfg(windows)]
     let v = windows_offset().unwrap_or(0);
     #[cfg(not(windows))]
     let v = unix_offset().unwrap_or(0);
-    *g = Some((Instant::now(), v));
+    *OFF.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), v));
     v
 }
 
@@ -620,6 +622,17 @@ mod more_tests {
         assert_eq!(fmt_ratio(1.234), "1.23");
         assert_eq!(fmt_date(0), "—");
         assert_eq!(civil_from_days(19782), (2024, 2, 29), "leap day");
+    }
+
+    #[test]
+    fn offset_is_shared_by_concurrent_callers() {
+        let all: Vec<i64> = (0..8)
+            .map(|_| std::thread::spawn(local_offset_secs))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect();
+        assert!(all.windows(2).all(|w| w[0] == w[1]), "{all:?}");
     }
 
     #[test]
