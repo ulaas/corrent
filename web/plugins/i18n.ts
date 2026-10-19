@@ -1,7 +1,6 @@
 // `virtual:i18n/tr`: the Turkish catalog for the keys the web client uses, merged from
 // assets/i18n/tr.toml (shared with the desktop app) and assets/i18n/web/tr.toml (web only).
 import type { Plugin } from 'vite';
-// @ts-expect-error plain JS helper shared with scripts/check-i18n.mjs
 import { CATALOGS, catalog, usedKeys } from '../scripts/i18n-keys.mjs';
 
 const ID = 'virtual:i18n/tr';

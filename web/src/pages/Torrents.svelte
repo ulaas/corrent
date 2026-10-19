@@ -200,7 +200,7 @@
     moving = null;
     try {
       await api.post('/torrents/move', { hashes, to });
-      toast(t('Moving {n} torrent(s)…', { n: hashes.length }), 'info');
+      toast(hashes.length === 1 ? t('Moving 1 torrent…') : t('Moving {n} torrents…', { n: hashes.length }), 'info');
     } catch (e) {
       toast(errorText(e), 'error');
     }
@@ -451,7 +451,7 @@
           <Icon name="speedometer" size={16} />{t('Alt speed')}
         </button>
       {/if}
-      <span class="caption muted num">{rows.length === live.list.length ? t('{n} torrents', { n: live.list.length }) : t('{shown} of {n} torrents', { shown: rows.length, n: live.list.length })}</span>
+      <span class="caption muted num">{rows.length === live.list.length ? (live.list.length === 1 ? t('1 torrent') : t('{n} torrents', { n: live.list.length })) : t('{shown} of {n} torrents', { shown: rows.length, n: live.list.length })}</span>
     </footer>
   </section>
 
@@ -464,7 +464,7 @@
 {#if editing}<EditTorrent torrent={editing} onclose={() => (editing = null)} />{/if}
 {#if labels}<LabelsManager onclose={() => (labels = false)} />{/if}
 {#if moving}
-  <FolderPicker title={t('Move {n} torrent(s) to…', { n: moving.length })} start={byHash.get(moving[0])?.save_path ?? ''} onpick={move} onclose={() => (moving = null)} />
+  <FolderPicker title={moving.length === 1 ? t('Move 1 torrent to…') : t('Move {n} torrents to…', { n: moving.length })} start={byHash.get(moving[0])?.save_path ?? ''} onpick={move} onclose={() => (moving = null)} />
 {/if}
 
 <style>

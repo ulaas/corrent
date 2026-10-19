@@ -1,0 +1,37 @@
+import type { Torrent } from '../src/lib/types';
+
+export function row(i: number, extra: Partial<Torrent> = {}): Torrent {
+  return {
+    hash: String(i).padStart(40, '0'),
+    name: `t${i}`,
+    state: 'downloading',
+    size: 100,
+    done: 0,
+    progress: 0,
+    uploaded: 0,
+    downloaded: 0,
+    down_bps: 0,
+    up_bps: 0,
+    ratio: 0,
+    peers_live: 0,
+    peers_seen: 0,
+    peers_connecting: 0,
+    save_path: '',
+    content_path: '',
+    tags: [],
+    added_at: 0,
+    queue_pos: i,
+    trackers: [],
+    has_metadata: true,
+    file_count: 1,
+    piece_count: 1,
+    piece_size: 16384,
+    last_activity: 0,
+    seeding_secs: 0,
+    down_limit_kib: 0,
+    up_limit_kib: 0,
+    pending: false,
+    restore_failed: false,
+    ...extra,
+  };
+}

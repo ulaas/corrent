@@ -78,7 +78,7 @@
     <aside class="queue" aria-label={t('Queue')} transition:fly={{ y: 30, duration: ms(240) }}>
       <header>
         <h3>{t('Up next')}</h3>
-        <span class="caption muted">{t('{n} tracks', { n: music.order.length })}</span>
+        <span class="caption muted">{music.order.length === 1 ? t('1 track') : t('{n} tracks', { n: music.order.length })}</span>
       </header>
       <ol>
         {#each music.order as qi, i (qi)}

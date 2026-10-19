@@ -2,3 +2,4 @@
 *.ttf binary
 *.png binary
 *.ico binary
+web/dist/** -diff linguist-generated=true

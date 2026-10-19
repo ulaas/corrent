@@ -140,9 +140,9 @@
             {#if item.year}<span>{item.year}</span>{/if}
             {#if item.kind === 'album' && item.context?.[0]}<span>{item.context[0]}</span>{/if}
             {#if item.runtime_ms}<span>{runtime(item.runtime_ms)}</span>{/if}
-            {#if item.kind === 'album' && albumTime}<span>{t('{n} tracks', { n: children.length })} · {runtime(albumTime)}</span>{/if}
+            {#if item.kind === 'album' && albumTime}<span>{children.length === 1 ? t('1 track') : t('{n} tracks', { n: children.length })} · {runtime(albumTime)}</span>{/if}
             {#if item.child_count && (item.kind === 'show' || item.kind === 'artist')}
-              <span>{item.kind === 'show' ? t('{n} seasons', { n: item.child_count }) : t('{n} albums', { n: item.child_count })}</span>
+              <span>{item.kind === 'show' ? (item.child_count === 1 ? t('1 season') : t('{n} seasons', { n: item.child_count })) : item.child_count === 1 ? t('1 album') : t('{n} albums', { n: item.child_count })}</span>
             {/if}
             {#if item.official_rating}<span class="rating">{item.official_rating}</span>{/if}
             {#if item.rating}<span class="star"><Icon name="sparkle" size={14} />{item.rating.toFixed(1)}</span>{/if}

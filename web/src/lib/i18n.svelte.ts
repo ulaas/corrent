@@ -1,4 +1,4 @@
-// Translations: the English text is the key (`t("Hello {name}", { name })`). Turkish strings
+// Translations: the English text is the key, with named {placeholders}. Turkish strings
 // come from assets/i18n/{tr.toml,web/tr.toml} through the Vite plugin, loaded on demand.
 import { interpolate } from './interpolate';
 

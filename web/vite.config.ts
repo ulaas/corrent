@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
-import { tokensPlugin } from './plugins/tokens';
-import { i18nPlugin } from './plugins/i18n';
+import { tokensPlugin } from './plugins/tokens.ts';
+import { i18nPlugin } from './plugins/i18n.ts';
 
 // The dev server proxies the API to a local correntd (plain HTTP, see docs/SERVER.md).
 const target = process.env.CORRENT_SERVER ?? 'http://127.0.0.1:28443';

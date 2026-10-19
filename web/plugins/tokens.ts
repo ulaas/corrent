@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Plugin } from 'vite';
-import { onColor } from '../src/lib/color';
+import { onColor } from '../src/lib/color.ts';
 
 const FILE = resolve(import.meta.dirname, '../../design/tokens.json');
 const CSS_ID = 'virtual:tokens.css';
