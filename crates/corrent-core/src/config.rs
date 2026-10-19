@@ -623,12 +623,13 @@ impl Default for Advanced {
 }
 
 impl Settings {
-    /// Load settings. Returns (settings, first_run, warning). A damaged file is kept as
-    /// `settings.toml.bad-<time>` and every section that still parses is salvaged.
+    /// Load settings. Returns (settings, first_run, warning). A damaged (or empty) file is kept
+    /// as `settings.toml.bad-<time>`; then `settings.toml.bak` is used if it is good, otherwise
+    /// every section that still parses is salvaged.
     pub fn load(paths: &Paths) -> (Settings, bool, Option<String>) {
         let file = paths.settings_file();
         match std::fs::read_to_string(&file) {
-            Ok(text) => match toml::from_str::<Settings>(&text) {
+            Ok(text) => match Settings::parse(&text) {
                 Ok(mut s) => {
                     use crate::migrate::{SETTINGS_VERSION, migrate_settings};
                     let from = s.schema_version;
@@ -666,9 +667,32 @@ impl Settings {
                     )
                 }
                 Err(e) => {
-                    tracing::error!("settings file is invalid ({e}); salvaging what parses");
+                    tracing::error!("settings file is invalid ({e})");
                     let bad = file.with_extension(format!("toml.bad-{}", crate::util::now_unix()));
                     let kept = std::fs::copy(&file, &bad).is_ok();
+                    let bak = file.with_extension("toml.bak");
+                    let good = std::fs::read_to_string(&bak)
+                        .ok()
+                        .and_then(|b| Settings::parse(&b).ok())
+                        .filter(|b| b.schema_version <= crate::migrate::SETTINGS_VERSION);
+                    if kept && let Some(mut s) = good {
+                        // Put the good copy back first, so even a failed save below leaves a good file.
+                        let _ = std::fs::copy(&bak, &file);
+                        let from = s.schema_version;
+                        crate::migrate::migrate_settings(&mut s, from);
+                        let _ = s.save(paths);
+                        tracing::info!("settings restored from {}", bak.display());
+                        return (
+                            s,
+                            false,
+                            Some(t!(
+                                "Your settings file was damaged and was restored from its backup. The damaged file was \
+                                 kept as {path}.",
+                                path = bad.display()
+                            )),
+                        );
+                    }
+                    tracing::warn!("no usable settings backup; salvaging what parses");
                     let (mut s, lost) = Settings::salvage(&text);
                     crate::migrate::migrate_settings(&mut s, crate::migrate::toml_version(&text));
                     if kept {
@@ -708,6 +732,15 @@ impl Settings {
                 )
             }
         }
+    }
+
+    /// Parse a settings file. An empty file, or a very short one without `schema_version`, is
+    /// damage (a crash while writing it), not "all defaults".
+    fn parse(text: &str) -> Result<Settings, String> {
+        if text.trim().is_empty() || (text.len() < 16 && !text.contains("schema_version")) {
+            return Err("the file is empty".into());
+        }
+        toml::from_str(text).map_err(|e| e.to_string())
     }
 
     /// Recover every section of a damaged settings file that still deserializes.
@@ -872,6 +905,69 @@ mod tests {
 #[cfg(test)]
 mod more_tests {
     use super::*;
+
+    fn profile(name: &str) -> Paths {
+        let dir = std::env::temp_dir().join(format!("corrent-settings-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Paths { data_dir: dir, portable: true }
+    }
+
+    fn bad_copies(p: &Paths) -> usize {
+        std::fs::read_dir(&p.data_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("settings.toml.bad-"))
+            .count()
+    }
+
+    #[test]
+    fn damaged_settings_come_back_from_the_backup() {
+        let good = format!("schema_version = {}\n\n[speed]\ndownload_limit = 5\n", crate::migrate::SETTINGS_VERSION);
+        for (name, damaged) in [
+            ("empty", ""),
+            ("blank", "  \r\n\t\n"),
+            ("short", "[speed]\n"),
+            ("cut", "schema_version = 1\n[speed]\ndownload_limit = "),
+            ("garbage", "\u{0}\u{0}\u{0}PK\u{3}\u{4} not toml at all"),
+        ] {
+            let p = profile(name);
+            std::fs::write(p.settings_file(), damaged).unwrap();
+            std::fs::write(p.data_dir.join("settings.toml.bak"), &good).unwrap();
+            let (s, first_run, warning) = Settings::load(&p);
+            assert_eq!(s.speed.download_limit, 5, "{name}");
+            assert!(!first_run, "{name}");
+            assert!(warning.unwrap_or_default().contains("restored from its backup"), "{name}");
+            assert_eq!(bad_copies(&p), 1, "{name}: the damaged file is kept");
+            // The file is good again, and so is the backup after the next save.
+            let (again, _, warning) = Settings::load(&p);
+            assert_eq!(again.speed.download_limit, 5, "{name}");
+            assert!(warning.is_none(), "{name}");
+            again.save(&p).unwrap();
+            let bak = std::fs::read_to_string(p.data_dir.join("settings.toml.bak")).unwrap();
+            assert!(Settings::parse(&bak).is_ok(), "{name}");
+            let _ = std::fs::remove_dir_all(&p.data_dir);
+        }
+    }
+
+    #[test]
+    fn empty_settings_without_a_backup_are_not_silent() {
+        let p = profile("nobak");
+        std::fs::write(p.settings_file(), "").unwrap();
+        let (s, first_run, warning) = Settings::load(&p);
+        assert_eq!(s, Settings { schema_version: crate::migrate::SETTINGS_VERSION, ..Default::default() });
+        assert!(!first_run);
+        assert!(warning.is_some());
+        assert_eq!(bad_copies(&p), 1);
+        // A backup that is itself damaged is not used either.
+        let p = profile("badbak");
+        std::fs::write(p.settings_file(), "").unwrap();
+        std::fs::write(p.data_dir.join("settings.toml.bak"), "").unwrap();
+        let (_, _, warning) = Settings::load(&p);
+        assert!(!warning.unwrap_or_default().contains("restored from its backup"));
+        let _ = std::fs::remove_dir_all(&p.data_dir);
+        let _ = std::fs::remove_dir_all(profile("nobak").data_dir);
+    }
 
     #[test]
     fn restart_needed_only_for_engine_settings() {

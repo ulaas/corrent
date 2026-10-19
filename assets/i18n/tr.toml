@@ -791,6 +791,7 @@
 "Your own colors; edit them below or import a theme file" = "Kendi renkleriniz; aşağıda düzenleyin veya bir tema dosyası içe aktarın"
 "Your settings couldn't be saved: {why}" = "Ayarlarınız kaydedilemedi: {why}"
 "Your settings file couldn't be read ({e}). Defaults are used and nothing is saved this session, so the file stays as it is." = "Ayarlar dosyanız okunamadı ({e}). Varsayılanlar kullanılıyor ve bu oturumda hiçbir şey kaydedilmiyor, böylece dosya olduğu gibi kalır."
+"Your settings file was damaged and was restored from its backup. The damaged file was kept as {path}." = "Ayarlar dosyanız bozuldu ve yedeğinden geri yüklendi. Bozuk dosya {path} olarak saklandı."
 "Your settings were saved by a newer version of Corrent (format {from}). They are used as-is but won't be saved, so the newer version keeps working. Update Corrent to change settings." = "Ayarlarınız Corrent'in daha yeni bir sürümüyle kaydedilmiş (biçim {from}). Olduğu gibi kullanılıyorlar ama kaydedilmeyecekler, böylece yeni sürüm çalışmaya devam eder. Ayarları değiştirmek için Corrent'i güncelleyin."
 "Your settings were saved by a newer version of Corrent and couldn't be fully read. Defaults are used for the rest of this session; the file is left untouched." = "Ayarlarınız Corrent'in daha yeni bir sürümüyle kaydedilmiş ve tamamen okunamadı. Bu oturumun geri kalanında varsayılanlar kullanılıyor; dosyaya dokunulmadı."
 "comma-separated" = "virgülle ayrılmış"
