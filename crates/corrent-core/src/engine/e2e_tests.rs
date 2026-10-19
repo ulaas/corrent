@@ -647,3 +647,78 @@ async fn watch_folder_keeps_files_until_their_add_finishes() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A multi-file .torrent whose files have the given path components (16 KiB each).
+#[cfg(any(windows, target_os = "macos"))]
+fn multi_file_torrent(name: &str, files: &[&[&str]]) -> Vec<u8> {
+    fn s(b: &mut Vec<u8>, x: &str) {
+        b.extend_from_slice(format!("{}:{x}", x.len()).as_bytes());
+    }
+    let mut b = b"d4:infod5:filesl".to_vec();
+    for f in files {
+        b.extend_from_slice(b"d6:lengthi16384e4:pathl");
+        for c in *f {
+            s(&mut b, c);
+        }
+        b.extend_from_slice(b"ee");
+    }
+    b.extend_from_slice(b"e4:name");
+    s(&mut b, name);
+    b.extend_from_slice(b"12:piece lengthi16384e6:pieces");
+    let pieces = vec![7u8; 20 * files.len()];
+    b.extend_from_slice(format!("{}:", pieces.len()).as_bytes());
+    b.extend_from_slice(&pieces);
+    b.extend_from_slice(b"ee");
+    b
+}
+
+/// Add `bytes` and return the error toast it ends with (None if it was added).
+#[cfg(any(windows, target_os = "macos"))]
+async fn add_error(l: &Leecher, dir: &Path, bytes: Vec<u8>) -> Option<String> {
+    l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        source: AddSource::Bytes { name: "crafted.torrent".into(), bytes },
+        torrent_bytes: None,
+        save_path: dir.join("dl"),
+        create_subfolder: true,
+        category: None,
+        tags: Vec::new(),
+        paused: true,
+        only_files: None,
+        add_to_top: false,
+        initial_peers: None,
+        added_by: None,
+    })));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match l.events.try_recv() {
+            Ok(EngineEvent::Added { .. }) => return None,
+            Ok(EngineEvent::Toast(super::ToastKind::Error, text)) => return Some(text),
+            Ok(_) => {}
+            Err(_) => {
+                assert!(Instant::now() < deadline, "the add neither finished nor failed");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn files_differing_only_in_case_are_refused() {
+    let dir = temp_dir("case-dup");
+    let l = start(&dir);
+    let bytes = multi_file_torrent("pair", &[&["A.txt"], &["a.txt"]]);
+    let err = add_error(&l, &dir, bytes).await.expect("refused");
+    assert!(err.contains("letter case"), "{err}");
+    // Windows names that would escape the save folder, open a device or merge two files. Only
+    // run once the check exists: unchecked, `C:x` is written relative to the C: drive's folder.
+    #[cfg(windows)]
+    for (name, file) in [("drive", "C:corrent-e1-probe"), ("device", "CON.txt"), ("dot", "name.")] {
+        let bytes = multi_file_torrent(name, &[&[file], &["ok.txt"]]);
+        let err = add_error(&l, &dir, bytes).await.unwrap_or_else(|| panic!("{file} was added"));
+        assert!(err.contains("can't store safely"), "{err}");
+    }
+    assert!(l.engine.snapshot().torrents.iter().all(|t| t.pending), "nothing was added");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

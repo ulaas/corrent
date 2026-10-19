@@ -2311,7 +2311,18 @@ async fn list_only(sess: &Arc<Session>, bytes: Vec<u8>) -> anyhow::Result<librqb
         .add_torrent(AddTorrent::from_bytes(bytes), Some(AddTorrentOptions { list_only: true, ..Default::default() }))
         .await?
     {
-        AddTorrentResponse::ListOnly(l) => Ok(l),
+        AddTorrentResponse::ListOnly(l) => {
+            // Every add and preview comes through here (files, magnets, URLs, RSS, watch folders,
+            // the Web API, imports), before anything is written.
+            // BEP 47 padding files (`.pad/<size>`) may repeat and aren't the user's files.
+            let files = l
+                .info
+                .iter_file_details()
+                .filter(|f| !f.attrs().padding)
+                .map(|f| f.filename.to_vec().into_iter().map(|c| c.to_string()).collect::<Vec<String>>());
+            super::paths::check_torrent_paths(files, super::paths::Rules::HOST).map_err(anyhow::Error::msg)?;
+            Ok(l)
+        }
         _ => anyhow::bail!("unexpected response from engine"),
     }
 }
@@ -2360,7 +2371,21 @@ pub fn sanitize_name(name: &str) -> String {
                 }
             })
             .collect();
-    let trimmed = cleaned.trim().trim_end_matches('.').to_string();
+    let mut trimmed = cleaned.trim().trim_end_matches('.').to_string();
+    if super::paths::is_reserved(&trimmed) {
+        trimmed.insert(0, '_');
+    }
+    // At most 255 UTF-16 units (the Windows limit for one component).
+    let mut units = 0;
+    let end = trimmed
+        .char_indices()
+        .find(|(_, c)| {
+            units += c.len_utf16();
+            units > 255
+        })
+        .map_or(trimmed.len(), |(i, _)| i);
+    trimmed.truncate(end);
+    let trimmed = trimmed.trim_end_matches(['.', ' ']).to_string();
     if trimmed.is_empty() { "torrent".into() } else { trimmed }
 }
 
@@ -2606,6 +2631,11 @@ mod more_tests {
         assert_eq!(sanitize_name("a<b>c|d*e"), "a_b_c_d_e");
         assert_eq!(sanitize_name("tab\there"), "tab_here");
         assert_eq!(sanitize_name("ok name"), "ok name");
+        assert_eq!(sanitize_name("CON"), "_CON");
+        assert_eq!(sanitize_name("nul.tar"), "_nul.tar");
+        let long = sanitize_name(&"é".repeat(300));
+        assert_eq!(long.encode_utf16().count(), 255);
+        assert_eq!(sanitize_name(&format!("{}. x", "a".repeat(254))), "a".repeat(254), "no trailing dot after the cut");
     }
 
     #[test]
