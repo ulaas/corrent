@@ -5,11 +5,43 @@
   import Img from './Img.svelte';
   import Seek from './Seek.svelte';
   import { music } from '../lib/player.svelte';
-  import { ms, prefs } from '../lib/prefs.svelte';
+  import { motion, ms, prefs } from '../lib/prefs.svelte';
   import { clock } from '../lib/format';
   import { t } from '../lib/i18n.svelte';
+  import { api } from '../lib/api';
+  import type { Lyrics } from '../lib/types';
 
   const cur = $derived(music.current);
+  let tab = $state<'queue' | 'lyrics'>('queue');
+  // Lyrics of the current track (null: none; undefined: loading).
+  let lyrics = $state<Lyrics | null | undefined>(undefined);
+  let lyricsFor = -1;
+  $effect(() => {
+    const id = cur?.id;
+    if (tab !== 'lyrics' || id == null || id === lyricsFor) return;
+    lyricsFor = id;
+    lyrics = undefined;
+    api.get<Lyrics>(`/items/${id}/lyrics`).then(
+      (l) => id === lyricsFor && (lyrics = l),
+      () => id === lyricsFor && (lyrics = null),
+    );
+  });
+  const lineAt = $derived.by(() => {
+    if (!lyrics?.synced) return -1;
+    const now = music.time * 1000;
+    let at = -1;
+    for (let i = 0; i < lyrics.lines.length; i++) {
+      if ((lyrics.lines[i].time_ms ?? 0) <= now) at = i;
+      else break;
+    }
+    return at;
+  });
+  let lyricsBox: HTMLElement | undefined = $state();
+  $effect(() => {
+    const i = lineAt;
+    const el = lyricsBox?.querySelector<HTMLElement>(`[data-line="${i}"]`);
+    el?.scrollIntoView({ block: 'center', behavior: motion() ? 'smooth' : 'auto' });
+  });
   const art = $derived(cur?.art ? { kind: 'poster', sha: cur.art, width: 400, height: 400 } : null);
 </script>
 
@@ -77,9 +109,29 @@
   {#if music.expanded}
     <aside class="queue" aria-label={t('Queue')} transition:fly={{ y: 30, duration: ms(240) }}>
       <header>
-        <h3>{t('Up next')}</h3>
-        <span class="caption muted">{music.order.length === 1 ? t('1 track') : t('{n} tracks', { n: music.order.length })}</span>
+        <div class="tabs" role="tablist">
+          <button role="tab" class:sel={tab === 'queue'} aria-selected={tab === 'queue'} onclick={() => (tab = 'queue')}>{t('Up next')}</button>
+          <button role="tab" class:sel={tab === 'lyrics'} aria-selected={tab === 'lyrics'} onclick={() => (tab = 'lyrics')}>{t('Lyrics')}</button>
+        </div>
+        {#if tab === 'queue'}<span class="caption muted">{music.order.length === 1 ? t('1 track') : t('{n} tracks', { n: music.order.length })}</span>{/if}
       </header>
+      {#if tab === 'lyrics'}
+        <div class="lyrics" bind:this={lyricsBox}>
+          {#if lyrics === undefined}
+            <p class="muted">{t('Loading…')}</p>
+          {:else if lyrics === null || !lyrics.lines.length}
+            <p class="muted">{t('No lyrics for this track.')}</p>
+          {:else}
+            {#each lyrics.lines as l, i (i)}
+              <p data-line={i} class:now={i === lineAt} class:past={lyrics.synced && i < lineAt}>
+                {#if lyrics.synced && l.time_ms != null}
+                  <button class="line" onclick={() => music.seek((l.time_ms ?? 0) / 1000)}>{l.text || '♪'}</button>
+                {:else}{l.text || '\u00a0'}{/if}
+              </p>
+            {/each}
+          {/if}
+        </div>
+      {:else}
       <ol>
         {#each music.order as qi, i (qi)}
           {@const e = music.queue[qi]}
@@ -98,6 +150,7 @@
           </li>
         {/each}
       </ol>
+      {/if}
     </aside>
   {/if}
 {/if}
@@ -236,6 +289,49 @@
     align-items: baseline;
     justify-content: space-between;
     padding: 16px 18px 10px;
+  }
+  .tabs {
+    display: flex;
+    gap: 14px;
+  }
+  .tabs button {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    font-weight: 600;
+    font-size: 1.05rem;
+    color: var(--text-mute);
+    cursor: pointer;
+  }
+  .tabs button.sel {
+    color: var(--text);
+  }
+  .lyrics {
+    overflow-y: auto;
+    padding: 4px 18px 16px;
+    line-height: 1.5;
+  }
+  .lyrics p {
+    margin: 0 0 6px;
+    color: var(--text-dim);
+    transition: color var(--t-micro, 0.15s);
+  }
+  .lyrics p.past {
+    color: var(--text-mute);
+  }
+  .lyrics p.now {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .lyrics .line {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
   }
   .queue ol {
     list-style: none;

@@ -113,6 +113,10 @@ for changes and every library is rescanned every six hours. Files that disappear
 missing and removed after 30 days; a folder that can't be read at all (unplugged drive, offline
 share) leaves the library untouched. Admins can limit which libraries a user sees.
 
+Lyrics come from a `.lrc` (synced) or `.txt` file named like the track, else the track's lyrics
+tag (`GET /api/v1/items/{id}/lyrics`); the web player shows them in its queue panel (synced lines
+follow the music, click one to jump), the desktop player behind the microphone button.
+
 ## Torrents and libraries together
 
 A library lists the torrent categories that feed it (`settings.import_categories`). Those

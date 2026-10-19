@@ -32,6 +32,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/items/{id}", get(item).patch(edit))
         .route("/items/{id}/state", put(set_state))
         .route("/items/{id}/file", get(item_file))
+        .route("/items/{id}/lyrics", get(lyrics))
         .route("/files/{id}", get(file))
         .route("/images/{sha}", get(image))
         .route("/home", get(home))
@@ -383,4 +384,17 @@ async fn set_user_libraries(
     st.library.set_user_libraries(id, libs.clone()).await.map_err(lib_err)?;
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "user_libraries", &id.to_string(), true, "").await;
     Ok(Json(libs))
+}
+
+/// A track's lyrics (sidecar `.lrc`/`.txt` or the file's tag).
+async fn lyrics(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Path(id): Path<i64>,
+) -> ApiResult<corrent_proto::library::Lyrics> {
+    let (_, path) = st.library.main_file(auth.0.user.id, id).await.map_err(lib_err)?;
+    let found = tokio::task::spawn_blocking(move || corrent_library::lyrics::find(std::path::Path::new(&path)))
+        .await
+        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+    found.map(Json).ok_or_else(|| err(ErrorCode::NotFound, "no lyrics"))
 }

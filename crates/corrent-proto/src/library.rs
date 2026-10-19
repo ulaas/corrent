@@ -698,3 +698,18 @@ pub enum CastCommand {
     Volume { level: f64 },
     Stop,
 }
+
+/// `GET /api/v1/items/{id}/lyrics`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Lyrics {
+    /// Lines carry times (an `.lrc` file or synced tags).
+    pub synced: bool,
+    pub lines: Vec<LyricLine>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LyricLine {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_ms: Option<i64>,
+    pub text: String,
+}

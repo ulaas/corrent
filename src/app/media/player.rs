@@ -147,6 +147,8 @@ pub struct Player {
     pub offline: Option<(Arc<super::offline::Store>, String)>,
     /// Casting to a device: the controls drive it and mpv waits, paused.
     casting: Option<super::cast::Casting>,
+    /// The current track's lyrics (item id, answer).
+    lyrics: Option<(i64, super::client::Slot<corrent_proto::library::Lyrics>)>,
 }
 
 fn track_list(n: &Node) -> Vec<Track> {
@@ -399,6 +401,7 @@ impl Player {
             room_code: String::new(),
             cast,
             casting: None,
+            lyrics: None,
             offline: None,
         };
         p.load_current();
@@ -1175,6 +1178,13 @@ impl Player {
             ui.label(
                 egui::RichText::new(format!("{} / {}", fmt_time(pos), fmt_time(dur))).monospace().color(p.text_dim),
             );
+            let lr = ui
+                .add(
+                    egui::Button::new(egui::RichText::new(egui_phosphor::regular::MICROPHONE_STAGE).size(16.0))
+                        .frame(false),
+                )
+                .on_hover_text(t!("Lyrics"));
+            self.lyrics_popup(&lr, p, pos);
             if ui
                 .add(egui::Button::new(egui::RichText::new(egui_phosphor::regular::X).size(16.0)).frame(false))
                 .clicked()
@@ -1183,6 +1193,54 @@ impl Player {
             }
         });
         action
+    }
+
+    /// Lyrics of the current track, the line at `pos` highlighted (synced ones scroll along).
+    fn lyrics_popup(&mut self, button: &egui::Response, p: &Palette, pos: f64) {
+        let Some(item) = self.current().map(|e| e.item_id) else { return };
+        let open = egui::Popup::is_id_open(&button.ctx, egui::Popup::default_response_id(button));
+        if (open || button.clicked()) && self.lyrics.as_ref().is_none_or(|(i, _)| *i != item) {
+            let c = self.client.clone();
+            let slot = super::client::fetch(&self.rt, &button.ctx, async move {
+                c.get(&format!("/api/v1/items/{item}/lyrics")).await
+            });
+            self.lyrics = Some((item, slot));
+        }
+        let got = self.lyrics.as_ref().and_then(|(_, s)| super::client::ready(s));
+        egui::Popup::from_toggle_button_response(button).show(|ui| {
+            ui.set_width(340.0);
+            ui.label(egui::RichText::new(t!("Lyrics")).strong());
+            match got {
+                None => {
+                    ui.spinner();
+                }
+                Some(Err(_)) => {
+                    ui.label(egui::RichText::new(t!("No lyrics for this track.")).color(p.text_dim));
+                }
+                Some(Ok(l)) => {
+                    let now = (pos * 1000.0) as i64;
+                    let at =
+                        if l.synced { l.lines.iter().rposition(|x| x.time_ms.is_some_and(|t| t <= now)) } else { None };
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        for (i, line) in l.lines.iter().enumerate() {
+                            let text = if line.text.is_empty() { "♪" } else { &line.text };
+                            let rich = if Some(i) == at {
+                                egui::RichText::new(text).strong().color(p.text)
+                            } else {
+                                egui::RichText::new(text).color(p.text_dim)
+                            };
+                            let r = ui.label(rich);
+                            if Some(i) == at {
+                                r.scroll_to_me(Some(egui::Align::Center));
+                            }
+                        }
+                    });
+                    if l.synced {
+                        ui.ctx().request_repaint_after(Duration::from_millis(250));
+                    }
+                }
+            }
+        });
     }
 
     /// A trickplay sheet as a texture: fetched and decoded in the background on first use.

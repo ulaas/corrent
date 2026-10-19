@@ -695,3 +695,8 @@ export interface CastStatus {
   by: string;
   error?: string;
 }
+
+export interface Lyrics {
+  synced: boolean;
+  lines: { time_ms?: number; text: string }[];
+}

@@ -1144,3 +1144,5 @@
 "What the player mixes for." = "Oynatıcının neye göre karıştırdığı."
 "Where the media player sends sound." = "Medya oynatıcının sesi gönderdiği yer."
 "audio sound output device speakers headphones exclusive bit-perfect channels surround stereo 5.1 7.1 passthrough receiver hdmi spdif dolby dts normalize loudness equalizer bass treble replaygain gapless" = "ses çıkış aygıt hoparlör kulaklık özel bit kanallar surround stereo 5.1 7.1 aktarım alıcı hdmi spdif dolby dts dengele yükseklik ekolayzır bas tiz replaygain boşluksuz audio sound output device speakers headphones exclusive equalizer"
+"Lyrics" = "Şarkı sözleri"
+"No lyrics for this track." = "Bu parçanın sözleri yok."
