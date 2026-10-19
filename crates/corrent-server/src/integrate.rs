@@ -128,14 +128,18 @@ fn place_files(src: &Path, dest: &Path, link: bool) -> Result<usize, String> {
 
 async fn on_added(st: Arc<AppState>, hash: InfoHash) {
     // The torrent shows up in the snapshot on the next tick.
-    let mut cat = None;
+    let mut found = None;
     for _ in 0..20 {
         if let Some(t) = st.engine.snapshot().torrents.iter().find(|t| t.hash == hash) {
-            cat = t.category.clone();
+            found = Some((t.category.clone(), t.name.clone()));
             break;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+    let Some((cat, name)) = found else { return };
+    // Added some other way (an RSS rule, by hand, Sonarr): it may be what the wanted list
+    // waits for, so the wanted search stops looking.
+    claim_wanted(&st, hash, &name).await;
     let Some(cat) = cat else { return };
     for lib in st.library.libraries_for_category(&cat).await.unwrap_or_default() {
         let s = &lib.settings;
@@ -146,6 +150,17 @@ async fn on_added(st: Arc<AppState>, hash: InfoHash) {
                 minutes: s.seed_minutes,
             });
             break;
+        }
+    }
+}
+
+/// Marks wanted entries that `name` fits as grabbed by this torrent.
+pub async fn claim_wanted(st: &AppState, hash: InfoHash, name: &str) {
+    let Ok(waiting) = st.library.wanted(Some("wanted".into())).await else { return };
+    for w in waiting {
+        if w.kind != corrent_proto::library::WantedKind::Other && corrent_library::wanted::fits(name, &w).is_ok() {
+            tracing::info!("wanted: “{}” arrived as {name}", w.title);
+            let _ = st.library.set_wanted_status(w.id, "grabbed", Some(hash.to_hex())).await;
         }
     }
 }

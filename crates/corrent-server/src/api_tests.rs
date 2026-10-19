@@ -925,6 +925,45 @@ async fn api_inputs_are_refused_cleanly() {
     h.stop().await;
 }
 
+/// A torrent added some other way (an RSS rule, by hand) that is what the wanted list waits for
+/// marks the entry as grabbed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn added_torrents_claim_wanted_entries() {
+    let mut h = harness("claim-wanted", ServerConfig { tls: false, ..Default::default() }).await;
+    crate::forward_engine_events(h.l_events(), h.st.clone());
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let (_, w, _) = send(app, Method::POST, "/api/v1/wanted", &admin, json!({ "title": "Sintel", "year": 2010 })).await;
+    let (_, other, _) = send(app, Method::POST, "/api/v1/wanted", &admin, json!({ "title": "Tears of Steel" })).await;
+    let seeder = testkit::seeder_with(&h.dir, "Sintel.2010.1080p.mkv", vec![7u8; 100_000]).await;
+    h.st.engine.send(corrent_core::engine::EngineCommand::Add(Box::new(corrent_core::engine::AddRequest {
+        source: corrent_core::engine::types::AddSource::Bytes { name: "s.torrent".into(), bytes: seeder.bytes.clone() },
+        torrent_bytes: None,
+        save_path: h.dir.join("dl"),
+        create_subfolder: false,
+        category: None,
+        tags: vec![],
+        paused: true,
+        only_files: None,
+        add_to_top: false,
+        initial_peers: None,
+        added_by: None,
+    })));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let (_, v, _) = get(app, "/api/v1/wanted", &admin).await;
+        let by_id = |id: &Value| v.as_array().unwrap().iter().find(|x| x["id"] == *id).cloned().unwrap();
+        if by_id(&w["id"])["status"] == "grabbed" {
+            assert_eq!(by_id(&w["id"])["torrent"], seeder.hash.to_hex());
+            assert_eq!(by_id(&other["id"])["status"], "wanted");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "claimed: {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_with_the_servers_own_ca() {
     let h = harness("https", ServerConfig::default()).await;
