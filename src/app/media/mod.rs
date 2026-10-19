@@ -107,6 +107,14 @@ impl MediaState {
         *self = MediaState { gl, ..Default::default() };
     }
 
+    /// Tests: a library grid with these items already loaded.
+    #[cfg(test)]
+    pub(crate) fn fill_grid(&mut self, library: i64, items: Vec<Item>) {
+        let g = self.grids.entry(library).or_default();
+        g.total = Some(items.len() as i64);
+        g.items = items.into_iter().enumerate().map(|(i, it)| (i as i64, it)).collect();
+    }
+
     pub(crate) fn invalidate(&mut self) {
         self.home = None;
         self.libraries = None;

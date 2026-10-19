@@ -543,3 +543,60 @@ fn media_pages_browse_a_library_and_tv_mode_moves_focus() {
     h.state_mut().set_tv(false);
     h.run_steps(2);
 }
+
+/// Scale check (U2): a 50,000-item library grid scrolls within the frame budget. Run with
+/// `cargo test --release perf_50k_grid -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn perf_50k_grid() {
+    use corrent_proto::library::{Item, ItemKind};
+    use std::time::Instant;
+    let (_f, mut app) = app("perf-grid", vec![]);
+    app.main_view = super::feeds::MainView::Media;
+    // A client to nowhere: artwork requests fail quietly, as with a slow server.
+    app.media.client = Some(super::media::client::MediaClient::new("http://127.0.0.1:9", "t", None).unwrap());
+    let items: Vec<Item> = (0..50_000)
+        .map(|i| Item {
+            id: i,
+            library_id: 1,
+            kind: ItemKind::Movie,
+            parent_id: None,
+            title: format!("Movie number {i}"),
+            year: Some(1950 + (i % 70) as i32),
+            index: None,
+            runtime_ms: Some(5_400_000),
+            context: Vec::new(),
+            images: Vec::new(),
+            state: Default::default(),
+            added_at: i,
+            child_count: None,
+            partial: false,
+        })
+        .collect();
+    app.media.fill_grid(1, items);
+    app.media.page = Some(super::media::Page::Library(1));
+    let mut h = harness(app);
+    h.run_steps(3);
+    assert!(h.query_by_label("Movie number 0").is_some(), "the grid is drawn");
+    // The pointer over the grid, so the wheel scrolls it.
+    h.event(egui::Event::PointerMoved(egui::pos2(700.0, 400.0)));
+    let mut times = Vec::new();
+    for frame in 0..200 {
+        // Scroll down steadily, with a long fling now and then.
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -if frame % 50 == 0 { 20_000.0 } else { 400.0 }),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        });
+        let t = Instant::now();
+        h.step();
+        times.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    assert!(h.query_by_label("Movie number 0").is_none(), "scrolled away from the top");
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let p50 = times[times.len() / 2];
+    let p99 = times[times.len() * 99 / 100];
+    println!("50k grid: frame p50 {p50:.2} ms, p99 {p99:.2} ms");
+    assert!(p99 < 16.0, "frame p99 {p99:.2} ms");
+}
