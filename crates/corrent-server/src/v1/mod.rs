@@ -6,6 +6,7 @@
 
 mod auth;
 mod devices;
+mod events;
 mod rss;
 mod search;
 mod server;
@@ -168,5 +169,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(torrents::routes())
         .merge(rss::routes())
         .merge(search::routes())
+        .route("/events", axum::routing::get(events::events))
         .fallback(|| async { err(ErrorCode::NotFound, "no such endpoint") })
 }

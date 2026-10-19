@@ -78,6 +78,16 @@ pub fn router(st: Arc<AppState>) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
 }
 
+/// Forwards the engine's events to connected clients (for hosts that own the engine's event
+/// channel, like `correntd`). Runs until the channel closes.
+pub fn forward_engine_events(rx: std::sync::mpsc::Receiver<corrent_core::engine::EngineEvent>, hub: Arc<Hub>) {
+    let _ = std::thread::Builder::new().name("corrent-events".into()).spawn(move || {
+        while let Ok(ev) = rx.recv() {
+            hub.engine_event(ev);
+        }
+    });
+}
+
 /// A running listener; stops when dropped.
 pub struct Listener {
     pub addr: SocketAddr,

@@ -404,3 +404,102 @@ async fn torrents_settings_pairing_and_qbittorrent_login() {
     assert_eq!(s, StatusCode::OK);
     h.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn events_stream_full_list_then_deltas() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+
+    let h = harness("events", ServerConfig { tls: false, ..Default::default() }).await;
+    let token = admin_token(&h.app).await;
+    let listener = crate::serve_http(h.app.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let mut req = format!("ws://{}/api/v1/events?rate_ms=250", listener.addr).into_client_request().unwrap();
+    req.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let mut next = async || -> Value {
+        loop {
+            let m = tokio::time::timeout(std::time::Duration::from_secs(20), ws.next())
+                .await
+                .expect("event in time")
+                .unwrap()
+                .unwrap();
+            match m {
+                Message::Text(t) => return serde_json::from_str(&t).unwrap(),
+                Message::Binary(b) => {
+                    let mut out = Vec::new();
+                    std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&b[..]), &mut out).unwrap();
+                    return serde_json::from_slice(&out).unwrap();
+                }
+                _ => continue,
+            }
+        }
+    };
+    assert_eq!(next().await["t"], "hello");
+    drop(next);
+    ws.send(Message::Text(r#"{"t":"subscribe","topics":[{"topic":"torrents"},{"topic":"session"}]}"#.into()))
+        .await
+        .unwrap();
+    let mut seen_full = false;
+    let mut seen_session = false;
+    let seeder = testkit::seeder(&h.dir).await;
+    let hash = seeder.hash.to_hex();
+    let mut seen_new = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !(seen_full && seen_session && seen_new) {
+        assert!(std::time::Instant::now() < deadline, "full={seen_full} session={seen_session} new={seen_new}");
+        let m = tokio::time::timeout(std::time::Duration::from_secs(20), ws.next()).await.unwrap().unwrap().unwrap();
+        let v: Value = match m {
+            Message::Text(t) => serde_json::from_str(&t).unwrap(),
+            Message::Binary(b) => {
+                let mut out = Vec::new();
+                std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&b[..]), &mut out).unwrap();
+                serde_json::from_slice(&out).unwrap()
+            }
+            _ => continue,
+        };
+        match v["t"].as_str() {
+            Some("torrents_full") => {
+                seen_full = true;
+                // Add a torrent once the client has the (empty) list: it must arrive as a delta.
+                testkit::add(&h.l, &seeder, &h.dir);
+            }
+            Some("session") => seen_session = true,
+            Some("torrents_delta") => {
+                assert!(seen_full, "full list comes first");
+                if v["delta"]["upserted"].as_array().is_some_and(|a| a.iter().any(|t| t["hash"] == hash.as_str())) {
+                    seen_new = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    drop(ws);
+    drop(listener);
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn browser_websockets_need_our_origin() {
+    let h = harness("wsorigin", ServerConfig { tls: false, ..Default::default() }).await;
+    admin_token(&h.app).await;
+    let (_, _, hd) = call(
+        &h.app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call { body: Some(json!({ "username": "admin", "password": "correct horse" })), ..Default::default() },
+    )
+    .await;
+    let cookie = hd.get(header::SET_COOKIE).unwrap().to_str().unwrap().split(';').next().unwrap().to_string();
+    let listener = crate::serve_http(h.app.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{}/api/v1/events", listener.addr).into_client_request().unwrap();
+    req.headers_mut().insert("cookie", cookie.parse().unwrap());
+    req.headers_mut().insert("origin", "http://evil.example".parse().unwrap());
+    assert!(tokio_tungstenite::connect_async(req).await.is_err(), "cross-site socket refused");
+    let mut req = format!("ws://{}/api/v1/events", listener.addr).into_client_request().unwrap();
+    req.headers_mut().insert("cookie", cookie.parse().unwrap());
+    req.headers_mut().insert("origin", format!("http://{}", listener.addr).parse().unwrap());
+    assert!(tokio_tungstenite::connect_async(req).await.is_ok(), "same-origin socket accepted");
+    drop(listener);
+    h.stop().await;
+}
