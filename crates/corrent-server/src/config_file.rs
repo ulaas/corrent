@@ -49,6 +49,11 @@ pub struct ServerConfig {
     pub plugin_catalog: String,
     /// Ed25519 public keys (hex) whose signatures on catalog plugins are trusted.
     pub plugin_keys: Vec<String>,
+    /// DLNA/UPnP media server for TVs and players on the local network (plain HTTP).
+    pub dlna: bool,
+    pub dlna_port: u16,
+    /// The account whose libraries DLNA shows; empty = the first administrator.
+    pub dlna_user: String,
 }
 
 impl Default for ServerConfig {
@@ -75,6 +80,9 @@ impl Default for ServerConfig {
             metrics_token: String::new(),
             plugin_catalog: String::new(),
             plugin_keys: Vec::new(),
+            dlna: false,
+            dlna_port: 8201,
+            dlna_user: String::new(),
         }
     }
 }

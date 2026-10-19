@@ -553,3 +553,8 @@
 "Skip credits" = "Jeneriği atla"
 "Watching together: {n} people" = "Birlikte izleniyor: {n} kişi"
 "Link copied: send it to whoever watches with you." = "Bağlantı kopyalandı: birlikte izleyeceğiniz kişiye gönderin."
+"Share libraries with TVs and players (DLNA)" = "Kütüphaneleri TV'ler ve oynatıcılarla paylaş (DLNA)"
+"Smart TVs, receivers, VLC and Kodi on this network find the server and play its files. DLNA has no sign-in: anyone on this network can browse what the chosen account may see." = "Bu ağdaki akıllı TV'ler, alıcılar, VLC ve Kodi sunucuyu bulur ve dosyalarını oynatır. DLNA'da oturum açma yoktur: bu ağdaki herkes seçilen hesabın görebildiklerine göz atabilir."
+"Account to share" = "Paylaşılacak hesap"
+"Empty: the first administrator. A limited account keeps some libraries private." = "Boş: ilk yönetici. Sınırlı bir hesap bazı kütüphaneleri gizli tutar."
+"DLNA is on (port {port})." = "DLNA açık (bağlantı noktası {port})."

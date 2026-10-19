@@ -11,6 +11,7 @@ use corrent_core::{config, engine, rss, store, util};
 
 pub mod config_file;
 pub mod discovery;
+pub mod dlna;
 pub mod events;
 /// Wire event types, re-exported for hosts.
 pub use corrent_proto::event as events_api;

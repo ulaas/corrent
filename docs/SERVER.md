@@ -158,6 +158,18 @@ account that may see the item. Rooms close when the last person leaves or after 
 (at most 200 rooms, 20 people each). API: `POST /api/v1/syncplay`, `GET /syncplay/{code}`,
 `POST /syncplay/{code}/join|leave|command`; WebSocket topic `room` with the code as argument.
 
+## DLNA for TVs and players
+
+Settings → Remote access → **Share libraries with TVs and players (DLNA)** (or `dlna = true` in
+`server.toml`) turns on a UPnP-AV MediaServer: smart TVs, receivers, VLC, Kodi and BubbleUPnP on
+the local network find it by SSDP and browse libraries → shows → seasons → episodes, artists →
+albums → tracks, folders and photos, then play the files as they are (Range requests; no
+transcoding — the TV must support the format). DLNA has no sign-in, so it shows what one account
+may see (`dlna_user`, empty = the first administrator; a limited account keeps libraries
+private), answers local addresses only, and plays only the signed links it handed out (new key at
+every start). It is plain HTTP on `dlna_port` (8201) because TVs don't trust self-signed
+certificates; it doesn't run when the server listens on loopback only.
+
 ## Installing as a service
 
 Packages: `Corrent-Server-<v>-linux-x86_64.tar.gz` / `-darwin-*.tar.gz` (`scripts/package-server.sh`),

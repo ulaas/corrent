@@ -279,7 +279,7 @@ async fn search(State(st): State<Arc<AppState>>, auth: Auth, Query(q): Query<Sea
 }
 
 /// Serves a file with Range, conditional requests and the right type (direct play).
-async fn serve_path(path: PathBuf, req: Request) -> Result<Response, ApiErr> {
+pub(crate) async fn serve_path(path: PathBuf, req: Request) -> Result<Response, ApiErr> {
     let mime = mime_for(&path);
     let res = tower_http::services::ServeFile::new_with_mime(&path, &mime)
         .oneshot(req)
@@ -290,7 +290,7 @@ async fn serve_path(path: PathBuf, req: Request) -> Result<Response, ApiErr> {
     Ok(res)
 }
 
-fn mime_for(p: &std::path::Path) -> mime_guess::Mime {
+pub(crate) fn mime_for(p: &std::path::Path) -> mime_guess::Mime {
     let ext = p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
     // Types browsers need exactly right for <video>/<audio>.
     let t = match ext.as_str() {

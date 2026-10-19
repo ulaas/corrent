@@ -433,6 +433,9 @@ async fn serve(
     if let Some(id) = &state.remote_status.load().connect_id {
         println!("  Corrent Connect: {id}");
     }
+    if let Some(p) = state.remote_status.load().dlna_port {
+        println!("  DLNA: on (port {p})");
+    }
     if state.identity.user_count().await.unwrap_or(1) == 0 {
         println!("  first run: open the address above on this computer to create the administrator,");
         println!("  or run `correntd --init-admin <name>`.");

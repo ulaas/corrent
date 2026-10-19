@@ -29,6 +29,8 @@ corrent-mpv = { path = "../corrent-mpv" }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", default-features = false, features = ["fs"] }
 mime_guess = "2"
+librqbit-dualstack-sockets = "0.7"
+librqbit-upnp = "9.0.1"
 rust-embed = "8"
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net"] }

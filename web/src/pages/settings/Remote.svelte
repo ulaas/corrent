@@ -81,6 +81,17 @@
       <Toggle bind:checked={draft.discovery} label={t('Announce the server on the local network')} hint={t('The Corrent app finds it in “Connect to a server” without typing an address.')} />
     </div>
     {#if st.discovery_error}<div class="srow"><p class="form-error small">{st.discovery_error}</p></div>{/if}
+    <div class="srow toggle-row">
+      <Toggle bind:checked={draft.dlna} label={t('Share libraries with TVs and players (DLNA)')} hint={t('Smart TVs, receivers, VLC and Kodi on this network find the server and play its files. DLNA has no sign-in: anyone on this network can browse what the chosen account may see.')} />
+    </div>
+    {#if draft.dlna}
+      <div class="srow">
+        <div class="stext"><span class="slabel">{t('Account to share')}</span><span class="shint">{t('Empty: the first administrator. A limited account keeps some libraries private.')}</span></div>
+        <div class="sctl"><input class="input" bind:value={draft.dlna_user} placeholder={t('User name')} aria-label={t('Account to share')} /></div>
+      </div>
+      {#if st.dlna_port}<div class="srow col"><span class="small muted">{t('DLNA is on (port {port}).', { port: st.dlna_port })}</span></div>{/if}
+    {/if}
+    {#if st.dlna_error}<div class="srow"><p class="form-error small">{st.dlna_error}</p></div>{/if}
   </div>
 
   <div class="sgroup">

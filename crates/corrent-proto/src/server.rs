@@ -38,6 +38,10 @@ pub struct RemoteConfig {
     pub connect_relay: bool,
     /// Ask the router to forward the HTTPS port (UPnP / NAT-PMP / PCP).
     pub port_mapping: bool,
+    /// DLNA/UPnP media server for TVs and players on this network.
+    pub dlna: bool,
+    /// The account whose libraries DLNA shows (empty: the first administrator).
+    pub dlna_user: String,
     /// Extra networks treated as local (CIDR).
     pub allowed_networks: Vec<String>,
     pub trusted_proxies: Vec<String>,
@@ -65,6 +69,11 @@ pub struct RemoteStatus {
     pub mapped_address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port_mapping_error: Option<String>,
+    /// The DLNA port while DLNA runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dlna_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dlna_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

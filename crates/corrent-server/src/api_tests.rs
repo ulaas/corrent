@@ -1252,6 +1252,100 @@ async fn syncplay_rooms() {
     h.stop().await;
 }
 
+async fn soap(app: &Router, peer: &str, action: &str, body: &str) -> (StatusCode, String) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/dlna/control/ContentDirectory")
+        .header(header::HOST, "192.168.1.5:8201")
+        .header("soapaction", format!("\"urn:schemas-upnp-org:service:ContentDirectory:1#{action}\""))
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let (s, v) = raw(app, peer, req).await;
+    (s, String::from_utf8_lossy(&v).into_owned())
+}
+
+async fn raw(app: &Router, peer: &str, mut req: Request<Body>) -> (StatusCode, Vec<u8>) {
+    let peer: SocketAddr = format!("{peer}:50000").parse().unwrap();
+    req.extensions_mut().insert(ConnectInfo(peer));
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    (status, res.into_body().collect().await.unwrap().to_bytes().to_vec())
+}
+
+fn browse(object: &str, flag: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+         <u:Browse xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\"><ObjectID>{object}</ObjectID>\
+         <BrowseFlag>{flag}</BrowseFlag><Filter>*</Filter><StartingIndex>0</StartingIndex>\
+         <RequestedCount>0</RequestedCount><SortCriteria></SortCriteria></u:Browse></s:Body></s:Envelope>"
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dlna_browses_and_streams() {
+    let h = harness("dlna", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let photos = h.dir.join("Pics");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])).save(photos.join("a & b.png")).unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Pics & more", "kind": "photos", "folders": [photos] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let item = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if let Some(id) = v["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let dlna = crate::dlna::test_router(h.st.clone()).await.unwrap();
+
+    // The description, from the local network only.
+    let desc = || Request::builder().uri("/dlna/description.xml").body(Body::empty()).unwrap();
+    let (s, d) = raw(&dlna, "192.168.1.9", desc()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&d).contains("urn:schemas-upnp-org:device:MediaServer:1"));
+    assert_eq!(raw(&dlna, "8.8.8.8", desc()).await.0, StatusCode::FORBIDDEN);
+
+    // Root → the library → the photo with a signed URL.
+    let (s, root) = soap(&dlna, "192.168.1.9", "Browse", &browse("0", "BrowseDirectChildren")).await;
+    assert_eq!(s, StatusCode::OK, "{root}");
+    assert!(root.contains(&format!("id=&quot;l{lib}&quot;")) && root.contains("Pics &amp;amp; more"), "{root}");
+    let (_, items) = soap(&dlna, "192.168.1.9", "Browse", &browse(&format!("l{lib}"), "BrowseDirectChildren")).await;
+    assert!(items.contains("object.item.imageItem.photo"), "{items}");
+    assert!(items.contains("<TotalMatches>1</TotalMatches>"), "{items}");
+    let start = items.find("http://192.168.1.5:8201/dlna/media/").expect("a media URL");
+    let url = &items[start..];
+    let url = &url[..url.find("&lt;").unwrap()];
+    let path = url.trim_start_matches("http://192.168.1.5:8201");
+    let (s, bytes) = raw(&dlna, "192.168.1.9", Request::builder().uri(path).body(Body::empty()).unwrap()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(bytes.starts_with(b"\x89PNG"));
+    // A forged signature, an unknown object, an unknown action.
+    let forged = format!("/dlna/media/{item}/000000000000000000000000.png");
+    assert_eq!(
+        raw(&dlna, "192.168.1.9", Request::builder().uri(forged).body(Body::empty()).unwrap()).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let (_, meta) = soap(&dlna, "192.168.1.9", "Browse", &browse(&format!("i{item}"), "BrowseMetadata")).await;
+    assert!(meta.contains("<NumberReturned>1</NumberReturned>"), "{meta}");
+    let (s, nope) = soap(&dlna, "192.168.1.9", "Browse", &browse("i999999", "BrowseMetadata")).await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(nope.contains("<errorCode>701</errorCode>"));
+    assert!(soap(&dlna, "192.168.1.9", "GetSystemUpdateID", "").await.1.contains("<Id>"));
+    assert_eq!(soap(&dlna, "192.168.1.9", "Explode", "").await.0, StatusCode::INTERNAL_SERVER_ERROR);
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn https_with_the_servers_own_ca() {
     let h = harness("https", ServerConfig::default()).await;

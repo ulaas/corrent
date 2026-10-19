@@ -16,8 +16,19 @@ pub struct Running {
     connect: Option<crate::p2p::Listener>,
     #[cfg(feature = "p2p")]
     mapper: Option<(portmapper::Client, tokio::task::JoinHandle<()>)>,
+    dlna: Option<crate::dlna::Running>,
     /// The settings the parts were started with.
-    applied: Option<(bool, bool, bool, bool, String)>,
+    applied: Option<Applied>,
+}
+
+#[derive(Clone, PartialEq)]
+struct Applied {
+    discovery: bool,
+    connect: bool,
+    connect_relay: bool,
+    port_mapping: bool,
+    name: String,
+    dlna: (bool, u16, String),
 }
 
 pub fn config_of(c: &ServerConfig) -> RemoteConfig {
@@ -27,6 +38,8 @@ pub fn config_of(c: &ServerConfig) -> RemoteConfig {
         connect: c.connect,
         connect_relay: c.connect_relay,
         port_mapping: c.port_mapping,
+        dlna: c.dlna,
+        dlna_user: c.dlna_user.clone(),
         allowed_networks: c.allowed_networks.clone(),
         trusted_proxies: c.trusted_proxies.clone(),
         hostnames: c.hostnames.clone(),
@@ -39,6 +52,8 @@ pub fn with_config(mut c: ServerConfig, r: RemoteConfig) -> ServerConfig {
     c.connect = r.connect;
     c.connect_relay = r.connect_relay;
     c.port_mapping = r.port_mapping;
+    c.dlna = r.dlna;
+    c.dlna_user = r.dlna_user.trim().to_string();
     c.allowed_networks = r.allowed_networks;
     c.trusted_proxies = r.trusted_proxies;
     c.hostnames = r.hostnames;
@@ -63,7 +78,14 @@ fn update(st: &AppState, f: impl FnOnce(&mut RemoteStatus)) {
 pub async fn apply(st: &Arc<AppState>, port: u16) {
     let cfg = st.cfg.load_full();
     let name = cfg.display_name();
-    let key = (cfg.discovery, cfg.connect, cfg.connect_relay, cfg.port_mapping, name.clone());
+    let key = Applied {
+        discovery: cfg.discovery,
+        connect: cfg.connect,
+        connect_relay: cfg.connect_relay,
+        port_mapping: cfg.port_mapping,
+        name: name.clone(),
+        dlna: (cfg.dlna, cfg.dlna_port, cfg.dlna_user.clone()),
+    };
     let mut run = st.remote.lock().await;
     if run.applied.as_ref() == Some(&key) {
         return;
@@ -75,7 +97,7 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
 
     // LAN discovery: only when the server listens beyond loopback.
     let want_ad = cfg.discovery && port != 0 && !loopback_only(&cfg.bind);
-    let name_changed = previous.as_ref().is_some_and(|p| p.4 != name);
+    let name_changed = previous.as_ref().is_some_and(|p| p.name != name);
     if !want_ad || name_changed {
         run.advertiser = None;
     }
@@ -112,7 +134,7 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
     #[cfg(feature = "p2p")]
     {
         // Corrent Connect.
-        let relay_changed = previous.as_ref().is_some_and(|p| p.2 != cfg.connect_relay);
+        let relay_changed = previous.as_ref().is_some_and(|p| p.connect_relay != cfg.connect_relay);
         if !cfg.connect || relay_changed {
             run.connect = None;
             update(st, |s| {
@@ -208,9 +230,44 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
             s.port_mapping_error = msg;
         });
     }
+    // DLNA (its own plain-HTTP listener; restarted when its settings or the name change).
+    let dlna_changed = previous.as_ref().is_some_and(|p| p.dlna != key_dlna(&cfg) || p.name != name);
+    if !cfg.dlna || dlna_changed {
+        run.dlna = None;
+        update(st, |s| {
+            s.dlna_port = None;
+            s.dlna_error = None;
+        });
+    }
+    if cfg.dlna && run.dlna.is_none() {
+        let started = if loopback_only(&cfg.bind) {
+            Err(anyhow::anyhow!("the server listens on this computer only (bind = {:?})", cfg.bind))
+        } else {
+            crate::dlna::start(st.clone()).await
+        };
+        match started {
+            Ok(d) => {
+                let port = d.port;
+                run.dlna = Some(d);
+                update(st, |s| {
+                    s.dlna_port = Some(port);
+                    s.dlna_error = None;
+                });
+            }
+            Err(e) => {
+                failed = true;
+                tracing::warn!("DLNA: {e:#}");
+                update(st, |s| s.dlna_error = Some(format!("{e:#}")));
+            }
+        }
+    }
     if failed {
         run.applied = None;
     }
+}
+
+fn key_dlna(c: &ServerConfig) -> (bool, u16, String) {
+    (c.dlna, c.dlna_port, c.dlna_user.clone())
 }
 
 /// Stops everything (the server shuts down).

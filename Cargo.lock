@@ -1488,6 +1488,8 @@ dependencies = [
  "if-addrs",
  "image",
  "iroh",
+ "librqbit-dualstack-sockets",
+ "librqbit-upnp",
  "mdns-sd",
  "mime_guess",
  "portmapper",

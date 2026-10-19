@@ -232,6 +232,8 @@ export interface RemoteConfig {
   connect: boolean;
   connect_relay: boolean;
   port_mapping: boolean;
+  dlna: boolean;
+  dlna_user: string;
   allowed_networks: string[];
   trusted_proxies: string[];
   hostnames: string[];
@@ -246,6 +248,8 @@ export interface RemoteStatus {
   connect_error?: string;
   mapped_address?: string;
   port_mapping_error?: string;
+  dlna_port?: number;
+  dlna_error?: string;
 }
 
 export interface RemoteAccess {

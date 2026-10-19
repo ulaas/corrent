@@ -1,0 +1,457 @@
+//! DLNA / UPnP-AV: a MediaServer that TVs, receivers and players on the local network (smart
+//! TVs, VLC, Kodi, BubbleUPnP) find on their own and browse; they play the files as they are.
+//!
+//! Off by default (`dlna = true` in `server.toml`, then restart). DLNA has no accounts, so it
+//! shows what one account (`dlna_user`, else the first administrator) may see, answers only
+//! local addresses, and serves media only through signed URLs it handed out while browsing
+//! (the key changes with every start). Plain HTTP on `dlna_port`: TVs don't trust our
+//! certificates. The service descriptions (`*.xml`) come from librqbit-upnp-serve (Apache-2.0).
+
+mod didl;
+mod ssdp;
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use axum::Router;
+use axum::body::Body;
+use axum::extract::{ConnectInfo, Path, Request, State};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, get, post};
+use corrent_proto::auth::Role;
+use corrent_proto::library::{ItemKind, ItemQuery, SortBy};
+
+use crate::state::AppState;
+
+pub const DEVICE: &str = "urn:schemas-upnp-org:device:MediaServer:1";
+const XML: &str = "text/xml; charset=\"utf-8\"";
+/// Most objects one Browse answer carries (clients page through the rest).
+const PAGE_MAX: usize = 500;
+
+/// The running server (dropping it stops announcing; the HTTP listener stops with it).
+pub struct Running {
+    _http: crate::Listener,
+    ssdp: tokio::task::JoinHandle<()>,
+    pub port: u16,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.ssdp.abort();
+    }
+}
+
+struct Dlna {
+    st: Arc<AppState>,
+    user: i64,
+    key: aws_lc_rs::hmac::Key,
+    udn: String,
+    name: String,
+    /// Changes when the server starts (clients drop cached listings).
+    update_id: u32,
+}
+
+/// Starts the HTTP side and the SSDP announcer.
+pub async fn start(st: Arc<AppState>) -> anyhow::Result<Running> {
+    let d = prepare(st).await?;
+    let cfg = d.st.cfg.load_full();
+    let addr = SocketAddr::new(cfg.bind.parse().unwrap_or([0, 0, 0, 0].into()), cfg.dlna_port);
+    let http = crate::serve_http(router(d.clone()), addr).await?;
+    let port = http.addr.port();
+    let runner = ssdp::Ssdp::new(d.udn.clone(), port).await?;
+    let ssdp = tokio::spawn(async move { runner.run().await });
+    tracing::info!("DLNA: announcing “{}” as {} (port {port})", d.name, d.udn);
+    Ok(Running { _http: http, ssdp, port })
+}
+
+/// The HTTP side alone (tests).
+#[cfg(test)]
+pub(crate) async fn test_router(st: Arc<AppState>) -> anyhow::Result<Router> {
+    Ok(router(prepare(st).await?))
+}
+
+async fn prepare(st: Arc<AppState>) -> anyhow::Result<Arc<Dlna>> {
+    let cfg = st.cfg.load_full();
+    let users = st.identity.users().await.map_err(|e| anyhow::anyhow!("{}", e.message))?;
+    let user = if cfg.dlna_user.trim().is_empty() {
+        users.iter().filter(|u| u.role == Role::Admin && !u.disabled).min_by_key(|u| u.id)
+    } else {
+        users.iter().find(|u| u.name.eq_ignore_ascii_case(cfg.dlna_user.trim()) && !u.disabled)
+    };
+    let Some(user) = user else {
+        anyhow::bail!("no account for DLNA (set dlna_user to an existing, enabled account)");
+    };
+    let rng = aws_lc_rs::rand::SystemRandom::new();
+    let key = aws_lc_rs::hmac::Key::generate(aws_lc_rs::hmac::HMAC_SHA256, &rng)
+        .map_err(|_| anyhow::anyhow!("no random numbers"))?;
+    let d = Arc::new(Dlna {
+        user: user.id,
+        key,
+        udn: udn(&st.server_id),
+        name: cfg.display_name(),
+        update_id: (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(1)
+            & 0x7fff_ffff) as u32,
+        st: st.clone(),
+    });
+    Ok(d)
+}
+
+/// A stable UPnP device id from the server id.
+fn udn(server_id: &str) -> String {
+    let h = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, format!("corrent-dlna:{server_id}").as_bytes());
+    let b = h.as_ref();
+    let hex: String = b[..16].iter().map(|x| format!("{x:02x}")).collect();
+    format!("uuid:{}-{}-4{}-a{}-{}", &hex[0..8], &hex[8..12], &hex[13..16], &hex[17..20], &hex[20..32])
+}
+
+fn router(d: Arc<Dlna>) -> Router {
+    let allowed = crate::net::parse_cidrs(&d.st.cfg.load().allowed_networks);
+    Router::new()
+        .route("/dlna/description.xml", get(description))
+        .route("/dlna/ContentDirectory.xml", get(|| async { xml(include_str!("ContentDirectory.xml").to_string()) }))
+        .route("/dlna/ConnectionManager.xml", get(|| async { xml(include_str!("ConnectionManager.xml").to_string()) }))
+        .route("/dlna/control/ContentDirectory", post(content_directory))
+        .route("/dlna/control/ConnectionManager", post(connection_manager))
+        .route("/dlna/events/{service}", any(subscribe))
+        .route("/dlna/media/{item}/{sig}", get(media))
+        .route("/dlna/art/{sha}/{sig}", get(art))
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
+        .layer(axum::middleware::from_fn(
+            move |ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request, next: Next| {
+                let ok = crate::net::is_local(peer.ip(), &allowed);
+                async move { if ok { next.run(req).await } else { StatusCode::FORBIDDEN.into_response() } }
+            },
+        ))
+        .with_state(d)
+}
+
+fn xml(body: String) -> Response {
+    ([(header::CONTENT_TYPE, XML)], body).into_response()
+}
+
+fn sign(d: &Dlna, what: &str) -> String {
+    let t = aws_lc_rs::hmac::sign(&d.key, what.as_bytes());
+    t.as_ref()[..12].iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn signed(d: &Dlna, what: &str, sig: &str) -> bool {
+    let want = sign(d, what);
+    // Constant time: the comparison doesn't stop at the first difference.
+    want.len() == sig.len() && want.bytes().zip(sig.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0
+}
+
+async fn description(State(d): State<Arc<Dlna>>) -> Response {
+    xml(format!(
+        r#"<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0" xmlns:dlna="urn:schemas-dlna-org:device-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <device>
+    <deviceType>{DEVICE}</deviceType>
+    <friendlyName>{name}</friendlyName>
+    <manufacturer>Corrent</manufacturer>
+    <manufacturerURL>https://github.com/corrent</manufacturerURL>
+    <modelName>Corrent media server</modelName>
+    <modelNumber>{version}</modelNumber>
+    <UDN>{udn}</UDN>
+    <dlna:X_DLNADOC>DMS-1.50</dlna:X_DLNADOC>
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:ContentDirectory</serviceId>
+        <SCPDURL>/dlna/ContentDirectory.xml</SCPDURL>
+        <controlURL>/dlna/control/ContentDirectory</controlURL>
+        <eventSubURL>/dlna/events/ContentDirectory</eventSubURL>
+      </service>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId>
+        <SCPDURL>/dlna/ConnectionManager.xml</SCPDURL>
+        <controlURL>/dlna/control/ConnectionManager</controlURL>
+        <eventSubURL>/dlna/events/ConnectionManager</eventSubURL>
+      </service>
+    </serviceList>
+  </device>
+</root>"#,
+        name = didl::esc(&d.name),
+        version = env!("CARGO_PKG_VERSION"),
+        udn = d.udn,
+    ))
+}
+
+/// The SOAP action a request names (`"urn:…:ContentDirectory:1#Browse"` → `Browse`).
+fn action(h: &HeaderMap) -> String {
+    h.get("soapaction")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim_matches('"').rsplit_once('#').map(|(_, a)| a.to_string()))
+        .unwrap_or_default()
+}
+
+fn soap(service: &str, action: &str, inner: &str) -> Response {
+    xml(format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:{action}Response xmlns:u="urn:schemas-upnp-org:service:{service}:1">{inner}</u:{action}Response></s:Body></s:Envelope>"#
+    ))
+}
+
+fn soap_fault(code: u16, text: &str) -> Response {
+    let body = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>{code}</errorCode><errorDescription>{}</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>"#,
+        didl::esc(text)
+    );
+    (StatusCode::INTERNAL_SERVER_ERROR, [(header::CONTENT_TYPE, XML)], body).into_response()
+}
+
+async fn connection_manager(headers: HeaderMap) -> Response {
+    const S: &str = "ConnectionManager";
+    match action(&headers).as_str() {
+        "GetProtocolInfo" => soap(S, "GetProtocolInfo", "<Source>http-get:*:*:*</Source><Sink></Sink>"),
+        "GetCurrentConnectionIDs" => soap(S, "GetCurrentConnectionIDs", "<ConnectionIDs>0</ConnectionIDs>"),
+        "GetCurrentConnectionInfo" => soap(
+            S,
+            "GetCurrentConnectionInfo",
+            "<RcsID>-1</RcsID><AVTransportID>-1</AVTransportID><ProtocolInfo></ProtocolInfo>\
+             <PeerConnectionManager></PeerConnectionManager><PeerConnectionID>-1</PeerConnectionID>\
+             <Direction>Output</Direction><Status>OK</Status>",
+        ),
+        _ => soap_fault(401, "Invalid Action"),
+    }
+}
+
+/// Event subscriptions are accepted (some TVs insist) but nothing is ever sent: listings change
+/// with `SystemUpdateID` on the next browse.
+async fn subscribe(method: Method) -> Response {
+    match method.as_str() {
+        "SUBSCRIBE" => {
+            let sid = format!("uuid:{}", corrent_core::util::random_hex(16));
+            let mut r = StatusCode::OK.into_response();
+            if let Ok(v) = HeaderValue::from_str(&sid) {
+                r.headers_mut().insert("sid", v);
+            }
+            r.headers_mut().insert("timeout", HeaderValue::from_static("Second-1800"));
+            r
+        }
+        "UNSUBSCRIBE" => StatusCode::OK.into_response(),
+        _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+    }
+}
+
+async fn content_directory(State(d): State<Arc<Dlna>>, headers: HeaderMap, body: String) -> Response {
+    const S: &str = "ContentDirectory";
+    match action(&headers).as_str() {
+        "Browse" => {
+            let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
+            let object = didl::tag(&body, "ObjectID").unwrap_or_else(|| "0".into());
+            let flag = didl::tag(&body, "BrowseFlag").unwrap_or_default();
+            let start: usize = didl::tag(&body, "StartingIndex").and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            let count: usize = didl::tag(&body, "RequestedCount").and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            let count = if count == 0 { PAGE_MAX } else { count.min(PAGE_MAX) };
+            let r = if flag == "BrowseMetadata" {
+                metadata(&d, &host, &object).await.map(|o| (o.into_iter().collect::<Vec<_>>(), 1))
+            } else {
+                children(&d, &host, &object, start, count).await
+            };
+            match r {
+                Ok((objects, total)) => {
+                    let result = didl::document(&objects);
+                    soap(
+                        S,
+                        "Browse",
+                        &format!(
+                            "<Result>{}</Result><NumberReturned>{}</NumberReturned><TotalMatches>{total}</TotalMatches><UpdateID>{}</UpdateID>",
+                            didl::esc(&result),
+                            objects.len(),
+                            d.update_id
+                        ),
+                    )
+                }
+                Err(()) => soap_fault(701, "No such object"),
+            }
+        }
+        "GetSystemUpdateID" => soap(S, "GetSystemUpdateID", &format!("<Id>{}</Id>", d.update_id)),
+        "GetSearchCapabilities" => soap(S, "GetSearchCapabilities", "<SearchCaps></SearchCaps>"),
+        "GetSortCapabilities" => soap(S, "GetSortCapabilities", "<SortCaps></SortCaps>"),
+        _ => soap_fault(401, "Invalid Action"),
+    }
+}
+
+fn is_container(k: ItemKind) -> bool {
+    matches!(k, ItemKind::Show | ItemKind::Season | ItemKind::Artist | ItemKind::Album | ItemKind::Folder)
+}
+
+async fn libraries(d: &Dlna) -> Result<Vec<corrent_proto::library::Library>, ()> {
+    let all = d.st.library.list().await.map_err(|_| ())?;
+    let allowed = d.st.library.user_libraries(d.user).await.map_err(|_| ())?;
+    Ok(if allowed.is_empty() { all } else { all.into_iter().filter(|l| allowed.contains(&l.id)).collect() })
+}
+
+fn root() -> didl::Object {
+    didl::Object::Container { id: "0".into(), parent: "-1".into(), title: "Corrent".into(), children: None }
+}
+
+fn library_object(l: &corrent_proto::library::Library) -> didl::Object {
+    didl::Object::Container {
+        id: format!("l{}", l.id),
+        parent: "0".into(),
+        title: l.name.clone(),
+        children: Some(l.item_count),
+    }
+}
+
+/// An item as a DIDL object: containers for shows, seasons, artists, albums and folders; files
+/// (with a signed URL) for the rest. `None`: nothing to play (the file is missing).
+async fn item_object(d: &Dlna, host: &str, it: &corrent_proto::library::Item) -> Option<didl::Object> {
+    let parent = it.parent_id.map(|p| format!("i{p}")).unwrap_or_else(|| format!("l{}", it.library_id));
+    let art = it
+        .images
+        .iter()
+        .find(|i| matches!(i.kind.as_str(), "poster" | "primary" | "cover" | "thumb"))
+        .or(it.images.first());
+    let art = art.map(|i| format!("http://{host}/dlna/art/{}/{}", i.sha, sign(d, &format!("art:{}", i.sha))));
+    if is_container(it.kind) {
+        return Some(didl::Object::Container {
+            id: format!("i{}", it.id),
+            parent,
+            title: it.title.clone(),
+            children: it.child_count,
+        });
+    }
+    let (_, path) = d.st.library.main_file(d.user, it.id).await.ok()?;
+    let path = std::path::PathBuf::from(path);
+    let size = tokio::fs::metadata(&path).await.ok()?.len();
+    let mime = crate::v1::library::mime_for(&path).to_string();
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("bin").to_ascii_lowercase();
+    let url = format!("http://{host}/dlna/media/{}/{}.{ext}", it.id, sign(d, &format!("media:{}", it.id)));
+    let class = match it.kind {
+        ItemKind::Movie => "object.item.videoItem.movie",
+        ItemKind::Episode | ItemKind::Video => "object.item.videoItem",
+        ItemKind::Track => "object.item.audioItem.musicTrack",
+        ItemKind::Book => "object.item.audioItem.audioBook",
+        ItemKind::Photo => "object.item.imageItem.photo",
+        _ => "object.item",
+    };
+    Some(didl::Object::Item(didl::Item {
+        id: format!("i{}", it.id),
+        parent,
+        title: match (it.kind, it.index) {
+            (ItemKind::Episode | ItemKind::Track, Some(n)) => format!("{n:02}. {}", it.title),
+            _ => it.title.clone(),
+        },
+        class,
+        year: it.year,
+        // Episode: show, season; track: album artist, album.
+        artist: (it.kind == ItemKind::Track).then(|| it.context.first().cloned()).flatten(),
+        album: (it.kind == ItemKind::Track).then(|| it.context.get(1).cloned()).flatten(),
+        track: (it.kind == ItemKind::Track).then_some(it.index).flatten(),
+        duration_ms: it.runtime_ms,
+        art,
+        url,
+        mime,
+        size,
+    }))
+}
+
+async fn metadata(d: &Dlna, host: &str, object: &str) -> Result<Option<didl::Object>, ()> {
+    if object == "0" {
+        return Ok(Some(root()));
+    }
+    if let Some(id) = object.strip_prefix('l').and_then(|s| s.parse::<i64>().ok()) {
+        return Ok(libraries(d).await?.iter().find(|l| l.id == id).map(library_object));
+    }
+    let id = object.strip_prefix('i').and_then(|s| s.parse::<i64>().ok()).ok_or(())?;
+    let it = d.st.library.item(d.user, id).await.map_err(|_| ())?;
+    Ok(item_object(d, host, &it.item).await)
+}
+
+async fn children(
+    d: &Dlna,
+    host: &str,
+    object: &str,
+    start: usize,
+    count: usize,
+) -> Result<(Vec<didl::Object>, i64), ()> {
+    if object == "0" {
+        let libs = libraries(d).await?;
+        let total = libs.len() as i64;
+        return Ok((libs.iter().skip(start).take(count).map(library_object).collect(), total));
+    }
+    let mut q = ItemQuery { offset: start as i64, limit: Some(count as i64), ..Default::default() };
+    if let Some(id) = object.strip_prefix('l').and_then(|s| s.parse::<i64>().ok()) {
+        if !libraries(d).await?.iter().any(|l| l.id == id) {
+            return Err(());
+        }
+        q.library_id = Some(id);
+    } else {
+        let id = object.strip_prefix('i').and_then(|s| s.parse::<i64>().ok()).ok_or(())?;
+        let parent = d.st.library.item(d.user, id).await.map_err(|_| ())?;
+        // Seasons, episodes and tracks in their order; the rest by title.
+        if matches!(parent.item.kind, ItemKind::Show | ItemKind::Season | ItemKind::Album) {
+            q.sort = SortBy::Index;
+        }
+        q.parent_id = Some(id);
+    }
+    let page = d.st.library.items(d.user, q).await.map_err(|_| ())?;
+    let mut out = Vec::with_capacity(page.items.len());
+    for it in &page.items {
+        if let Some(o) = item_object(d, host, it).await {
+            out.push(o);
+        }
+    }
+    Ok((out, page.total))
+}
+
+/// Headers DLNA renderers look for before they play.
+fn dlna_headers(res: &mut Response, image: bool) {
+    let h = res.headers_mut();
+    h.insert("transfermode.dlna.org", HeaderValue::from_static(if image { "Interactive" } else { "Streaming" }));
+    h.insert(
+        "contentfeatures.dlna.org",
+        HeaderValue::from_static("DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"),
+    );
+}
+
+async fn media(State(d): State<Arc<Dlna>>, Path((item, sig)): Path<(i64, String)>, req: Request) -> Response {
+    let sig = sig.split('.').next().unwrap_or("");
+    if !signed(&d, &format!("media:{item}"), sig) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Ok((_, path)) = d.st.library.main_file(d.user, item).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match crate::v1::library::serve_path(path.into(), req).await {
+        Ok(mut r) => {
+            let image = r
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|t| t.starts_with("image/"));
+            dlna_headers(&mut r, image);
+            r
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn art(State(d): State<Arc<Dlna>>, Path((sha, sig)): Path<(String, String)>, req: Request) -> Response {
+    if !signed(&d, &format!("art:{sha}"), &sig) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(path) = corrent_library::artwork::existing(d.st.library.artwork_root(), &sha, Some(480)) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match crate::v1::library::serve_path(path, req).await {
+        Ok(mut r) => {
+            dlna_headers(&mut r, true);
+            r
+        }
+        Err(_) => (StatusCode::NOT_FOUND, Body::empty()).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests;
