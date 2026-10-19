@@ -1,0 +1,29 @@
+[package]
+name = "corrent-library"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Corrent's media library: scanning, parsing, probing, tags, artwork, search, watch state"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+corrent-db = { path = "../corrent-db" }
+corrent-mpv = { path = "../corrent-mpv" }
+corrent-proto = { path = "../corrent-proto" }
+corrent-i18n = { path = "../corrent-i18n" }
+tokio = { version = "1.53", features = ["rt", "sync", "process", "time", "macros"] }
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+lofty = "0.25"
+quick-xml = "=0.42.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
+
+[target."cfg(windows)".dependencies]
+aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
+
+[dev-dependencies]
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "process", "time"] }

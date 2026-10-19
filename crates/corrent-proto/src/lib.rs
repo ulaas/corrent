@@ -7,6 +7,7 @@ extern crate corrent_i18n;
 pub mod auth;
 pub mod error;
 pub mod event;
+pub mod library;
 pub mod server;
 pub mod torrent;
 

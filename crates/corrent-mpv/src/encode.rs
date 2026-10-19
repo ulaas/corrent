@@ -9,7 +9,8 @@ use crate::{EndReason, Error, Event, Mpv, Result};
 
 /// One encode job. `options` are mpv option pairs such as `("ovc", "libx264")`,
 /// `("of", "hls")`, `("ofopts", "hls_time=4")`, `("start", "120")`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct EncodeJob {
     pub input: String,
     pub output: String,

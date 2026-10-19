@@ -10,6 +10,5 @@ publish = false
 [dependencies]
 corrent-i18n = { path = "../corrent-i18n" }
 serde = { version = "1", features = ["derive"] }
-
-[dev-dependencies]
 serde_json = "1"
+

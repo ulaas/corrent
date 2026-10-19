@@ -198,7 +198,7 @@ mod tests {
                     // Server-side crates answer with error codes that clients translate; their
                     // English messages and SQL are for logs and developers, and correntd's
                     // console output is English like the GUI's --help.
-                    let codes_only = ["corrent-server", "corrent-db", "correntd"]
+                    let codes_only = ["corrent-server", "corrent-db", "corrent-library", "correntd"]
                         .iter()
                         .any(|c| p.components().any(|x| x.as_os_str() == *c));
                     let sentence = prose.is_match(line) && !line.contains("# Corrent theme") && !codes_only;

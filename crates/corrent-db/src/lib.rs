@@ -10,7 +10,10 @@ pub use rusqlite;
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
 
 /// Every migration, in order. Version N = the first N applied.
-pub const MIGRATIONS: &[(&str, &str)] = &[("identity", include_str!("../migrations/0001_identity.sql"))];
+pub const MIGRATIONS: &[(&str, &str)] = &[
+    ("identity", include_str!("../migrations/0001_identity.sql")),
+    ("library", include_str!("../migrations/0002_library.sql")),
+];
 
 pub fn schema_version() -> u32 {
     MIGRATIONS.len() as u32
