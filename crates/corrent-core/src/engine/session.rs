@@ -97,8 +97,9 @@ fn options(
     }
 }
 
-/// Create a session. If the configured port is unavailable, fall back to a random port so the
-/// client still starts (the status bar shows the real port).
+/// Create a session. If the configured port is taken (or not allowed), fall back to a random
+/// port so the client still starts (the status bar shows the real port). Other failures, such
+/// as a damaged session database, are reported as themselves.
 /// Cancelling `cancel` stops every task of the session, also when no one calls `stop()` (an
 /// engine task that panicked).
 pub async fn create(
@@ -114,7 +115,7 @@ pub async fn create(
     let list_warning = (!lists.warnings.is_empty()).then(|| lists.warnings.join(" "));
     match Session::new_with_opts(out.clone(), options(paths, s, None, alt, &lists, cancel)).await {
         Ok(sess) => Ok((sess, list_warning)),
-        Err(e) if !s.connection.random_port => {
+        Err(e) if !s.connection.random_port && is_port_error(&e) => {
             tracing::warn!(
                 "could not start session on port {}: {e:#}; retrying on a random port",
                 s.connection.listen_port
@@ -130,6 +131,68 @@ pub async fn create(
             ))
         }
         Err(e) => Err(e),
+    }
+}
+
+/// True when starting the peer listeners failed because the port is in use or not allowed.
+///
+/// The OS error is only in the message: librqbit's bind error doesn't expose it as a source.
+/// A DHT port clash isn't a listener error (retrying the peer port wouldn't help), and an
+/// address that doesn't exist or isn't supported (a vanished adapter, IPv6 turned off) is
+/// reported as itself.
+fn is_port_error(e: &anyhow::Error) -> bool {
+    let frames: Vec<String> = e.chain().map(|c| c.to_string().to_ascii_lowercase()).collect();
+    let listeners = frames.iter().any(|f| f.contains("error starting listeners"));
+    const TAKEN: [&str; 8] = [
+        "os error 10048", // WSAEADDRINUSE
+        "os error 10013", // WSAEACCES (a port reserved by Hyper-V/WinNAT, or excluded)
+        "os error 98)",   // Linux EADDRINUSE
+        "os error 48)",   // macOS EADDRINUSE
+        "os error 13)",   // EACCES (a privileged port)
+        "already in use",
+        "access is denied",
+        "permission denied",
+    ];
+    let taken = frames.iter().any(|f| f.contains("error binding") && TAKEN.iter().any(|m| f.contains(m)));
+    listeners && taken
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::is_port_error;
+
+    fn listener_error(os: &str) -> anyhow::Error {
+        anyhow::anyhow!("error binding: {os}")
+            .context("error starting TCP listener")
+            .context("error starting listeners")
+    }
+
+    #[test]
+    fn only_a_taken_listener_port_falls_back() {
+        for os in [
+            "Only one usage of each socket address is normally permitted. (os error 10048)",
+            "An attempt was made to access a socket in a way forbidden by its access permissions. (os error 10013)",
+            "Address already in use (os error 98)",
+            "Permission denied (os error 13)",
+        ] {
+            assert!(is_port_error(&listener_error(os)), "{os}");
+        }
+        for os in [
+            "The requested address is not valid in its context. (os error 10049)",
+            "Cannot assign requested address (os error 99)",
+            "An address incompatible with the requested protocol was used. (os error 10047)",
+        ] {
+            assert!(!is_port_error(&listener_error(os)), "{os}");
+        }
+        let db = anyhow::anyhow!("expected value at line 1 column 1")
+            .context("error deserializing session database")
+            .context("error initializing JsonSessionPersistenceStore");
+        assert!(!is_port_error(&db));
+        // The DHT's UDP port is not the peer port.
+        let dht = anyhow::anyhow!("Address already in use (os error 98)")
+            .context("error binding")
+            .context("error starting DHT");
+        assert!(!is_port_error(&dht));
     }
 }
 

@@ -106,10 +106,15 @@ pub struct Leecher {
 }
 
 pub fn start(dir: &Path) -> Leecher {
+    start_with(dir, settings(dir))
+}
+
+/// Like `start`, with other settings (start from `settings(dir)`).
+pub fn start_with(dir: &Path, settings: Settings) -> Leecher {
     let paths = Paths { data_dir: dir.join("data"), portable: true };
     let (tx, events) = std::sync::mpsc::channel();
     let engine =
-        EngineHandle::start(&tokio::runtime::Handle::current(), paths.clone(), settings(dir), super::Wake::noop(), tx);
+        EngineHandle::start(&tokio::runtime::Handle::current(), paths.clone(), settings, super::Wake::noop(), tx);
     Leecher { engine, events, paths }
 }
 

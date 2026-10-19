@@ -912,7 +912,9 @@ async fn a_data_folder_with_a_non_unicode_name_works() {
     std::fs::create_dir_all(&dir).unwrap();
     assert!(dir.to_str().is_none());
     let l = start(&dir);
-    let hashes = add_tiny_torrents(&l, &dir, 1).await;
+    // Downloads go to a Unicode folder: this is about the data folder only (a non-Unicode save
+    // path is converted lossily when the torrent is added, a separate P4 item).
+    let hashes = add_tiny_torrents(&l, &base, 1).await;
     assert!(l.engine.is_alive());
     let paths = stop(l).await;
     let db = std::fs::read_to_string(paths.session_dir().join("session.json")).unwrap();
@@ -920,4 +922,90 @@ async fn a_data_folder_with_a_non_unicode_name_works() {
     assert!(paths.session_dir().join(format!("{}.bitv", hashes[0].to_hex())).exists());
     no_temp_files(&paths);
     let _ = std::fs::remove_dir_all(base);
+}
+
+/// What syncing session.json costs (STABILITY.md risk 4): pause and resume 250 torrents, each of
+/// which rewrites (and now syncs) the engine's database. Numbers go to docs/PERFORMANCE.md.
+#[ignore = "timing, run by hand: cargo test -p corrent-core --lib perf_session_flush -- --ignored --nocapture"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn perf_session_flush_cost() {
+    let dir = temp_dir("perf-flush");
+    let l = start(&dir);
+    let n = 250;
+    let t = Instant::now();
+    add_tiny_torrents(&l, &dir, n).await;
+    println!("add {n}: {:?}", t.elapsed());
+    // A Flush queued behind the command is answered once the actor has worked through it.
+    for (what, cmd) in [("resume all", EngineCommand::ResumeAll), ("pause all", EngineCommand::PauseAll)] {
+        let t = Instant::now();
+        l.engine.send(cmd);
+        let engine = l.engine.clone();
+        assert!(tokio::task::spawn_blocking(move || engine.flush_blocking(Duration::from_secs(300))).await.unwrap());
+        println!("{what} {n}: {:?}", t.elapsed());
+    }
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Error toasts and data warnings seen until `until` returns true or `secs` pass.
+async fn notices_until(l: &Leecher, secs: u64, until: impl Fn(&super::types::Snapshot) -> bool) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let mut seen = Vec::new();
+    while Instant::now() < deadline && !until(&l.engine.snapshot()) {
+        while let Ok(ev) = l.events.try_recv() {
+            match ev {
+                EngineEvent::Toast(_, t) | EngineEvent::DataWarning(t) => seen.push(t),
+                _ => {}
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    while let Ok(ev) = l.events.try_recv() {
+        if let EngineEvent::Toast(_, t) | EngineEvent::DataWarning(t) = ev {
+            seen.push(t);
+        }
+    }
+    seen
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_occupied_port_falls_back_to_a_random_one() {
+    let dir = temp_dir("port-taken");
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let mut cfg = settings(&dir);
+    cfg.connection.random_port = false;
+    cfg.connection.listen_port = port;
+    let l = start_with(&dir, cfg);
+    let notices = notices_until(&l, 30, |sn| {
+        sn.engine_state == super::types::EngineState::Running && sn.session.listen_port.is_some()
+    })
+    .await;
+    let snap = l.engine.snapshot();
+    assert_eq!(snap.engine_state, super::types::EngineState::Running, "{notices:?}");
+    assert_ne!(snap.session.listen_port, Some(port));
+    assert!(notices.iter().any(|n| n.contains(&format!("Port {port} is unavailable"))), "{notices:?}");
+    stop(l).await;
+    drop(taken);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_damaged_session_database_is_not_blamed_on_the_port() {
+    let dir = temp_dir("db-not-port");
+    let mut cfg = settings(&dir);
+    cfg.connection.random_port = false;
+    cfg.connection.listen_port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let session = dir.join("data").join("session");
+    std::fs::create_dir_all(&session).unwrap();
+    std::fs::write(session.join("session.json"), b"this is not json").unwrap();
+    let l = start_with(&dir, cfg);
+    let notices = notices_until(&l, 30, |sn| matches!(sn.engine_state, super::types::EngineState::Failed(_))).await;
+    let super::types::EngineState::Failed(why) = l.engine.snapshot().engine_state.clone() else {
+        panic!("the engine should not start: {notices:?}")
+    };
+    assert!(why.contains("session database"), "{why}");
+    assert!(!notices.iter().any(|n| n.contains("Port ")), "{notices:?}");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
 }
