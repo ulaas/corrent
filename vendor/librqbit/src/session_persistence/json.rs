@@ -91,7 +91,8 @@ impl JsonSessionPersistenceStore {
     async fn flush(&self) -> anyhow::Result<()> {
         // we don't need the write lock technically, but we need to stop concurrent modifications
         let db_content = self.db_content.write().await;
-        let tmp_filename = format!("{}.tmp", self.db_filename.to_str().unwrap());
+        // CORRENT PATCH (D5): no `to_str().unwrap()` (panicked on a non-UTF-8 data folder).
+        let tmp_filename = self.db_filename.with_extension("json.tmp");
         let mut tmp = tokio::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -108,6 +109,15 @@ impl JsonSessionPersistenceStore {
         tmp.write_all(&buf)
             .await
             .with_context(|| format!("error writing {tmp_filename:?}"))?;
+        // CORRENT PATCH (D5): on disk before the rename, so a power cut can't leave a renamed
+        // but empty or cut-off session database.
+        tmp.flush()
+            .await
+            .with_context(|| format!("error writing {tmp_filename:?}"))?;
+        tmp.sync_all()
+            .await
+            .with_context(|| format!("error syncing {tmp_filename:?}"))?;
+        drop(tmp);
         trace!(?tmp_filename, "wrote to temp file");
 
         tokio::fs::rename(&tmp_filename, &self.db_filename)
@@ -163,21 +173,26 @@ impl JsonSessionPersistenceStore {
 
         if write_torrent_file && !torrent_bytes.is_empty() {
             let torrent_bytes_file = self.torrent_bytes_filename(&torrent.info_hash());
-            match tokio::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&torrent_bytes_file)
-                .await
-            {
-                Ok(mut f) => {
-                    if let Err(e) = f.write_all(&torrent_bytes).await {
-                        warn!(error=?e, file=?torrent_bytes_file, "error writing torrent bytes")
-                    }
-                }
-                Err(e) => {
-                    warn!(error=?e, file=?torrent_bytes_file, "error opening torrent bytes file")
-                }
+            // CORRENT PATCH (D5): written to a temp file, synced and renamed into place, so the
+            // metainfo is never cut off (it was truncated and rewritten in place on every re-add).
+            let tmp = torrent_bytes_file.with_extension("torrent.tmp");
+            let written = async {
+                let mut f = tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&tmp)
+                    .await?;
+                f.write_all(&torrent_bytes).await?;
+                f.flush().await?;
+                f.sync_all().await?;
+                drop(f);
+                tokio::fs::rename(&tmp, &torrent_bytes_file).await
+            }
+            .await;
+            if let Err(e) = written {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                warn!(error=?e, file=?torrent_bytes_file, "error writing torrent bytes")
             }
         }
 
@@ -221,7 +236,8 @@ impl BitVFactory for JsonSessionPersistenceStore {
     ) -> anyhow::Result<Box<dyn BitV>> {
         let h = self.to_hash(id).await?;
         let filename = self.bitv_filename(&h);
-        let tmp_filename = format!("{}.tmp", filename.to_str().context("bug")?);
+        // CORRENT PATCH (D5): no `to_str()` (failed on a non-UTF-8 data folder).
+        let tmp_filename = filename.with_extension("bitv.tmp");
         let mut dst = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -232,6 +248,14 @@ impl BitVFactory for JsonSessionPersistenceStore {
         tokio::io::copy(&mut b.as_raw_slice(), &mut dst)
             .await
             .context("error writing bitslice to {filename:?}")?;
+        // CORRENT PATCH (D5): synced before the rename (later updates already sync, bitv.rs).
+        dst.flush()
+            .await
+            .with_context(|| format!("error writing {tmp_filename:?}"))?;
+        dst.sync_all()
+            .await
+            .with_context(|| format!("error syncing {tmp_filename:?}"))?;
+        drop(dst);
         tokio::fs::rename(&tmp_filename, &filename)
             .await
             .with_context(|| format!("error renaming {tmp_filename:?} to {filename:?}"))?;

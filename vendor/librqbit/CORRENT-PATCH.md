@@ -15,6 +15,15 @@ used by the `webui`/`http-api` features Corrent doesn't enable), plus runtime co
   `next_id` returned "largest stored id + 1", and ids are stored only after an add finishes, so
   concurrent adds got the same id and all but one were refused as "already managed" (found by
   the soak adding 500 torrents at once). Diff: `docs/upstream/librqbit-json-next-id.patch`.
+- Durable session files (`src/session_persistence/json.rs`, marked `CORRENT PATCH (D5)`):
+  - `session.json` and the initial `<hash>.bitv` are synced before their rename.
+  - `<hash>.torrent` goes through a synced temp file and a rename. Before, it was truncated and
+    rewritten in place on every add and re-add.
+  - Temp names no longer use `to_str().unwrap()`, which panicked for a data folder whose name
+    isn't valid Unicode.
+
+  The folder itself isn't synced (that matters on Unix only): a lost rename leaves the previous,
+  complete file. Diff: `docs/upstream/librqbit-persistence-fsync.patch`.
 
 librqbit rebuilds these from the add-time options whenever a torrent goes live again, so Corrent
 stores them itself and re-applies them (`Actor::apply_torrent_limits`).

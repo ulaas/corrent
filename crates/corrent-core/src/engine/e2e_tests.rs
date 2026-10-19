@@ -870,3 +870,54 @@ async fn flush_saves_now_and_keeps_the_engine_running() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// No `<name>.tmp` left in the engine's session folder.
+fn no_temp_files(paths: &Paths) {
+    let left: Vec<_> = std::fs::read_dir(paths.session_dir())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn persisted_metainfo_is_written_whole_and_atomically() {
+    let dir = temp_dir("persist");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    download(&l, &s, &dir).await;
+    let torrent = l.paths.session_dir().join(format!("{}.torrent", s.hash.to_hex()));
+    assert_eq!(std::fs::read(&torrent).unwrap(), s.bytes);
+    // A recheck forgets and re-adds the torrent, which writes the metainfo again.
+    l.engine.send(EngineCommand::Recheck(vec![s.hash]));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_for(&l, "rechecked", 30, |sn| complete(sn, s.hash)).await;
+    let paths = stop(l).await;
+    assert_eq!(std::fs::read(&torrent).unwrap(), s.bytes);
+    no_temp_files(&paths);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// librqbit built its temp file names with `to_str().unwrap()`, which panicked in the engine
+/// task for a data folder whose name isn't valid Unicode (possible on NTFS and on Unix).
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_data_folder_with_a_non_unicode_name_works() {
+    use std::os::windows::ffi::OsStringExt;
+    let base = temp_dir("non-unicode");
+    // "s" followed by an unpaired surrogate: a valid NTFS name that `to_str()` can't represent.
+    let dir = base.join(std::ffi::OsString::from_wide(&[b's' as u16, 0xD800]));
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(dir.to_str().is_none());
+    let l = start(&dir);
+    let hashes = add_tiny_torrents(&l, &dir, 1).await;
+    assert!(l.engine.is_alive());
+    let paths = stop(l).await;
+    let db = std::fs::read_to_string(paths.session_dir().join("session.json")).unwrap();
+    assert!(db.contains(&hashes[0].to_hex()), "{db}");
+    assert!(paths.session_dir().join(format!("{}.bitv", hashes[0].to_hex())).exists());
+    no_temp_files(&paths);
+    let _ = std::fs::remove_dir_all(base);
+}
