@@ -1,5 +1,5 @@
 diff --git a/vendor/librqbit/src/session_persistence/json.rs b/vendor/librqbit/src/session_persistence/json.rs
-index c5ea199..13329a1 100644
+index c5ea199..79a548c 100644
 --- a/vendor/librqbit/src/session_persistence/json.rs
 +++ b/vendor/librqbit/src/session_persistence/json.rs
 @@ -91,7 +91,8 @@ impl JsonSessionPersistenceStore {
@@ -12,7 +12,7 @@ index c5ea199..13329a1 100644
          let mut tmp = tokio::fs::OpenOptions::new()
              .create(true)
              .truncate(true)
-@@ -108,6 +109,15 @@ impl JsonSessionPersistenceStore {
+@@ -108,9 +109,18 @@ impl JsonSessionPersistenceStore {
          tmp.write_all(&buf)
              .await
              .with_context(|| format!("error writing {tmp_filename:?}"))?;
@@ -27,7 +27,11 @@ index c5ea199..13329a1 100644
 +        drop(tmp);
          trace!(?tmp_filename, "wrote to temp file");
  
-         tokio::fs::rename(&tmp_filename, &self.db_filename)
+-        tokio::fs::rename(&tmp_filename, &self.db_filename)
++        rename_retrying(&tmp_filename, &self.db_filename)
+             .await
+             .context("error renaming persistence file")?;
+         trace!(filename=?self.db_filename, "wrote persistence");
 @@ -163,21 +173,26 @@ impl JsonSessionPersistenceStore {
  
          if write_torrent_file && !torrent_bytes.is_empty() {
@@ -61,7 +65,7 @@ index c5ea199..13329a1 100644
 +                f.flush().await?;
 +                f.sync_all().await?;
 +                drop(f);
-+                tokio::fs::rename(&tmp, &torrent_bytes_file).await
++                rename_retrying(&tmp, &torrent_bytes_file).await
 +            }
 +            .await;
 +            if let Err(e) = written {
@@ -70,7 +74,33 @@ index c5ea199..13329a1 100644
              }
          }
  
-@@ -221,7 +236,8 @@ impl BitVFactory for JsonSessionPersistenceStore {
+@@ -188,6 +203,25 @@ impl JsonSessionPersistenceStore {
+     }
+ }
+ 
++// CORRENT PATCH (D5): on Windows, antivirus, the indexer or a sync client briefly holding the
++// target makes a rename fail with a sharing or access error; retry for about 1.5 s.
++async fn rename_retrying(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
++    let mut delay = std::time::Duration::from_millis(50);
++    loop {
++        match tokio::fs::rename(from, to).await {
++            Err(e)
++                if delay <= std::time::Duration::from_millis(800)
++                    && (e.kind() == std::io::ErrorKind::PermissionDenied
++                        || (cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33)))) =>
++            {
++                tokio::time::sleep(delay).await;
++                delay *= 2;
++            }
++            r => return r,
++        }
++    }
++}
++
+ #[async_trait::async_trait]
+ impl BitVFactory for JsonSessionPersistenceStore {
+     async fn load(&self, id: TorrentIdOrHash) -> anyhow::Result<Option<Box<dyn BitV>>> {
+@@ -221,7 +255,8 @@ impl BitVFactory for JsonSessionPersistenceStore {
      ) -> anyhow::Result<Box<dyn BitV>> {
          let h = self.to_hash(id).await?;
          let filename = self.bitv_filename(&h);
@@ -80,10 +110,11 @@ index c5ea199..13329a1 100644
          let mut dst = tokio::fs::OpenOptions::new()
              .write(true)
              .create(true)
-@@ -232,6 +248,14 @@ impl BitVFactory for JsonSessionPersistenceStore {
+@@ -232,7 +267,15 @@ impl BitVFactory for JsonSessionPersistenceStore {
          tokio::io::copy(&mut b.as_raw_slice(), &mut dst)
              .await
              .context("error writing bitslice to {filename:?}")?;
+-        tokio::fs::rename(&tmp_filename, &filename)
 +        // CORRENT PATCH (D5): synced before the rename (later updates already sync, bitv.rs).
 +        dst.flush()
 +            .await
@@ -92,6 +123,7 @@ index c5ea199..13329a1 100644
 +            .await
 +            .with_context(|| format!("error syncing {tmp_filename:?}"))?;
 +        drop(dst);
-         tokio::fs::rename(&tmp_filename, &filename)
++        rename_retrying(&tmp_filename, &filename)
              .await
              .with_context(|| format!("error renaming {tmp_filename:?} to {filename:?}"))?;
+         trace!(?filename, "stored initial check bitfield");

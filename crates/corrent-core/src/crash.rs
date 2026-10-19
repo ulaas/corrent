@@ -118,7 +118,8 @@ fn start_at(log_dir: &Path, boot: Option<String>) -> PreviousRun {
         })
     };
     let rebooted = since.is_some() && other_boot(previous_boot.as_deref(), boot.as_deref());
-    let _ = std::fs::remove_file(power_loss_flag(log_dir));
+    // A flag the engine didn't take yet (it never started) stays: one extra check is harmless,
+    // a missed one isn't.
     if rebooted {
         // Last sign of life: the heartbeat, else the start of that run.
         let at = std::fs::read_to_string(alive(log_dir))
@@ -266,12 +267,15 @@ mod power_loss_tests {
         let run = start_at(&dir, Some("t1000530".into()));
         assert!(run.unclean && !run.rebooted, "within a minute: the same boot");
         assert_eq!(take_power_loss(&dir), None);
-        // A clean exit is never a power loss, and a stale flag goes away.
+        // A clean exit is never a power loss; a flag nobody took yet stays for the engine.
         finish(&dir);
-        std::fs::write(power_loss_flag(&dir), "5").unwrap();
         let run = start_at(&dir, Some("t9999999".into()));
         assert!(!run.unclean && !run.rebooted);
         assert_eq!(take_power_loss(&dir), None);
+        std::fs::write(power_loss_flag(&dir), "5").unwrap();
+        finish(&dir);
+        start_at(&dir, Some("t9999999".into()));
+        assert_eq!(take_power_loss(&dir), Some(5));
         let _ = std::fs::remove_dir_all(dir);
     }
 

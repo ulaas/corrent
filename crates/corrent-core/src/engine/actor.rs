@@ -301,11 +301,11 @@ impl Actor {
         self.engine_state = if self.session.is_some() { EngineState::Restarting } else { EngineState::Starting };
         self.publish();
         self.recover_session_db();
+        self.purge_pending();
         if std::mem::take(&mut self.first_start) {
             self.check_after_power_loss();
         }
         super::session_db::snapshot(&self.paths.session_dir());
-        self.purge_pending();
         let mut last_err = String::new();
         for attempt in 0..3 {
             let cancel = tokio_util::sync::CancellationToken::new();
@@ -342,19 +342,24 @@ impl Actor {
         self.publish();
     }
 
-    async fn stop_session(&mut self) {
+    /// Stop the session. False if it didn't stop in time (its tasks may still write
+    /// `session.json`).
+    async fn stop_session(&mut self) -> bool {
         self.api = None;
         if let Some(st) = &self.stream {
             st.set_session(None);
         }
+        let mut stopped = true;
         if let Some(sess) = self.session.take() {
             if tokio::time::timeout(Duration::from_secs(6), sess.stop()).await.is_err() {
                 tracing::warn!("session stop timed out");
+                stopped = false;
             }
             // Give listeners a moment to release their sockets before a restart binds again.
             drop(sess);
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
+        stopped
     }
 
     async fn shutdown(&mut self, internal: &mut mpsc::UnboundedReceiver<Internal>) {
@@ -376,10 +381,14 @@ impl Actor {
             h.abort();
         }
         self.store.flush();
-        self.stop_session().await;
-        self.purge_pending();
-        // The freshest good copy of the engine's list (the start-time copy covers a crash).
-        super::session_db::snapshot(&self.paths.session_dir());
+        if self.stop_session().await {
+            self.purge_pending();
+            // The freshest good copy of the engine's list (the start-time copy covers a crash).
+            super::session_db::snapshot(&self.paths.session_dir());
+        } else {
+            // librqbit may still be writing session.json: leave it alone (purges stay pending).
+            tracing::warn!("not touching session.json: the engine didn't stop in time");
+        }
         self.store.flush();
         self.rss.flush();
     }
@@ -1131,17 +1140,27 @@ impl Actor {
     /// librqbit reads it.
     fn recover_session_db(&mut self) {
         let known: HashSet<InfoHash> = self.store.data.torrents.keys().copied().collect();
-        match super::session_db::recover(&self.paths.session_dir(), &known) {
+        let gone: HashSet<InfoHash> = self.store.data.purge.iter().copied().collect();
+        match super::session_db::recover(&self.paths.session_dir(), &known, &gone) {
             None => {}
             Some(Ok(r)) => {
                 self.prune_suspended = true;
+                // Paused by the user as far as Corrent is concerned: the queue must not resume
+                // them into folders that may have changed since the copy.
+                for h in &r.torrents {
+                    if let Some(m) = self.store.data.torrents.get_mut(h) {
+                        m.pause_reason = Some(PauseReason::User);
+                        m.force_started = false;
+                    }
+                }
+                self.store.mark_dirty();
                 self.emit(EngineEvent::DataWarning(t!(
                     "The engine's torrent list was damaged and was restored from a copy saved {date}. Its {n} \
-                     torrents are paused, because their folders may have changed since; resume them after a look. \
+                     torrents were stopped (paused), because their folders may have changed since; resume them after a look. \
                      Torrents added after that copy are missing, but their categories and tags were kept. The \
                      damaged file was kept next to it.",
                     date = crate::util::fmt_date(r.saved_at),
-                    n = r.torrents
+                    n = r.torrents.len()
                 )));
             }
             Some(Err(path)) => {

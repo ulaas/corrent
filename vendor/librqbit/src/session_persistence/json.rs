@@ -120,7 +120,7 @@ impl JsonSessionPersistenceStore {
         drop(tmp);
         trace!(?tmp_filename, "wrote to temp file");
 
-        tokio::fs::rename(&tmp_filename, &self.db_filename)
+        rename_retrying(&tmp_filename, &self.db_filename)
             .await
             .context("error renaming persistence file")?;
         trace!(filename=?self.db_filename, "wrote persistence");
@@ -187,7 +187,7 @@ impl JsonSessionPersistenceStore {
                 f.flush().await?;
                 f.sync_all().await?;
                 drop(f);
-                tokio::fs::rename(&tmp, &torrent_bytes_file).await
+                rename_retrying(&tmp, &torrent_bytes_file).await
             }
             .await;
             if let Err(e) = written {
@@ -200,6 +200,25 @@ impl JsonSessionPersistenceStore {
         self.flush().await?;
 
         Ok(())
+    }
+}
+
+// CORRENT PATCH (D5): on Windows, antivirus, the indexer or a sync client briefly holding the
+// target makes a rename fail with a sharing or access error; retry for about 1.5 s.
+async fn rename_retrying(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    let mut delay = std::time::Duration::from_millis(50);
+    loop {
+        match tokio::fs::rename(from, to).await {
+            Err(e)
+                if delay <= std::time::Duration::from_millis(800)
+                    && (e.kind() == std::io::ErrorKind::PermissionDenied
+                        || (cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33)))) =>
+            {
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            r => return r,
+        }
     }
 }
 
@@ -256,7 +275,7 @@ impl BitVFactory for JsonSessionPersistenceStore {
             .await
             .with_context(|| format!("error syncing {tmp_filename:?}"))?;
         drop(dst);
-        tokio::fs::rename(&tmp_filename, &filename)
+        rename_retrying(&tmp_filename, &filename)
             .await
             .with_context(|| format!("error renaming {tmp_filename:?} to {filename:?}"))?;
         trace!(?filename, "stored initial check bitfield");

@@ -21,6 +21,8 @@ used by the `webui`/`http-api` features Corrent doesn't enable), plus runtime co
     rewritten in place on every add and re-add.
   - Temp names no longer use `to_str().unwrap()`, which panicked for a data folder whose name
     isn't valid Unicode.
+  - The renames are retried for about 1.5 s when a sharing or access error says another program
+    holds the target (antivirus, indexer, sync clients on Windows).
 
   The folder itself isn't synced (that matters on Unix only): a lost rename leaves the previous,
   complete file. Diff: `docs/upstream/librqbit-persistence-fsync.patch`.

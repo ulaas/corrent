@@ -64,7 +64,7 @@ pub struct Recovered {
     /// When the copy was taken (unix time).
     pub saved_at: i64,
     /// Torrents in the restored list (all paused).
-    pub torrents: usize,
+    pub torrents: Vec<InfoHash>,
 }
 
 /// Before the engine starts: if `session.json` is damaged, or missing while a good copy exists,
@@ -73,8 +73,14 @@ pub struct Recovered {
 /// and every torrent comes back paused, because its folder may have changed since the copy.
 /// The damaged file is kept as `session.json.bad-<ts>`.
 ///
+/// `gone` are torrents being removed (never brought back, even if their metainfo is still there).
+///
 /// `None`: nothing to do. `Err`: damaged and no usable copy (the file is left as it is).
-pub fn recover(session_dir: &Path, known: &HashSet<InfoHash>) -> Option<Result<Recovered, String>> {
+pub fn recover(
+    session_dir: &Path,
+    known: &HashSet<InfoHash>,
+    gone: &HashSet<InfoHash>,
+) -> Option<Result<Recovered, String>> {
     let path = db_file(session_dir);
     let goods = || {
         crate::util::generations(&path, "good")
@@ -104,9 +110,12 @@ pub fn recover(session_dir: &Path, known: &HashSet<InfoHash>) -> Option<Result<R
     };
     let (saved_at, mut db) = good;
     db.torrents.retain(|_, e| {
-        let hash = InfoHash::from_hex(&e.info_hash);
-        hash.is_some_and(|h| known.contains(&h)) || session_dir.join(format!("{}.torrent", e.info_hash)).exists()
+        let Some(h) = InfoHash::from_hex(&e.info_hash) else { return false };
+        !gone.contains(&h) && (known.contains(&h) || session_dir.join(format!("{}.torrent", e.info_hash)).exists())
     });
+    if known.is_empty() {
+        tracing::warn!("restoring session.json without a store: only torrents with metainfo are kept");
+    }
     for e in db.torrents.values_mut() {
         e.is_paused = true;
     }
@@ -118,7 +127,8 @@ pub fn recover(session_dir: &Path, known: &HashSet<InfoHash>) -> Option<Result<R
         return Some(Err(format!("{}: {e:#}", path.display())));
     }
     tracing::warn!("session.json restored from the copy of {saved_at} ({} torrents, all paused)", db.torrents.len());
-    Some(Ok(Recovered { saved_at, torrents: db.torrents.len() }))
+    let torrents = db.torrents.values().filter_map(|e| InfoHash::from_hex(&e.info_hash)).collect();
+    Some(Ok(Recovered { saved_at, torrents }))
 }
 
 /// Data written within this long before a power loss may not have reached the disk.
@@ -138,10 +148,11 @@ pub fn clear_unfinished_bitfields(session_dir: &Path, store: &crate::store::Stor
         }
         let Some(hash) = p.file_stem().and_then(|s| s.to_str()).and_then(InfoHash::from_hex) else { continue };
         // When data was last written: a finished torrent when it finished (seeding only reads),
-        // an unfinished one when it last transferred.
+        // an unfinished one when it last transferred, or was added (its first transfers reach
+        // the store's file only with the next save).
         let safe = store.torrents.get(&hash).is_some_and(|m| {
-            let last_write = m.completed_at.unwrap_or(m.last_activity);
-            last_write + UNSAFE_WINDOW < alive_at
+            let last_write = m.completed_at.unwrap_or(m.last_activity.max(m.added_at));
+            last_write > 0 && last_write + UNSAFE_WINDOW < alive_at
         });
         if !safe && std::fs::remove_file(&p).is_ok() {
             tracing::info!("after a power loss: {} will be checked in full", hash.to_hex());
@@ -232,15 +243,15 @@ mod tests {
         std::fs::write(&path, "{ cut off").unwrap();
         // B was removed since the copy: neither the store nor the session folder knows it.
         let known: HashSet<InfoHash> = [hash(A)].into();
-        let r = recover(&dir, &known).unwrap().unwrap();
-        assert_eq!(r, Recovered { saved_at: 200, torrents: 1 });
+        let r = recover(&dir, &known, &HashSet::new()).unwrap().unwrap();
+        assert_eq!(r, Recovered { saved_at: 200, torrents: vec![hash(A)] });
         let back = parse(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(back.torrents.len(), 1);
         assert!(back.torrents.values().all(|e| e.info_hash == A && e.is_paused), "paused");
         let bad = crate::util::generations(&path, "bad");
         assert_eq!(std::fs::read(&bad[0].1).unwrap(), b"{ cut off");
         // Now good: nothing more to do.
-        assert_eq!(recover(&dir, &known), None);
+        assert_eq!(recover(&dir, &known, &HashSet::new()), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -249,18 +260,21 @@ mod tests {
         let dir = scratch("keep");
         good(&dir, 100, &db(&[(0, A), (1, B)]));
         std::fs::write(dir.join(format!("{B}.torrent")), b"d4:infoe").unwrap();
-        let r = recover(&dir, &HashSet::new()).unwrap().unwrap();
-        assert_eq!(r.torrents, 1, "B (its metainfo is there), not A");
+        let r = recover(&dir, &HashSet::new(), &HashSet::new()).unwrap().unwrap();
+        assert_eq!(r.torrents, vec![hash(B)], "B (its metainfo is there), not A");
+        // Being removed: not brought back even with its metainfo.
+        std::fs::write(dir.join("session.json"), "{").unwrap();
+        assert!(recover(&dir, &HashSet::new(), &[hash(B)].into()).unwrap().unwrap().torrents.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn a_missing_list_comes_back_only_if_there_was_one() {
         let dir = scratch("missing");
-        assert_eq!(recover(&dir, &HashSet::new()), None, "a new profile");
+        assert_eq!(recover(&dir, &HashSet::new(), &HashSet::new()), None, "a new profile");
         good(&dir, 100, &db(&[(0, A)]));
-        let r = recover(&dir, &[hash(A)].into()).unwrap().unwrap();
-        assert_eq!(r.torrents, 1);
+        let r = recover(&dir, &[hash(A)].into(), &HashSet::new()).unwrap().unwrap();
+        assert_eq!(r.torrents, vec![hash(A)]);
         assert!(dir.join("session.json").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -271,7 +285,7 @@ mod tests {
         let path = dir.join("session.json");
         std::fs::write(&path, "garbage").unwrap();
         good(&dir, 100, "also garbage");
-        assert!(matches!(recover(&dir, &HashSet::new()), Some(Err(_))));
+        assert!(matches!(recover(&dir, &HashSet::new(), &HashSet::new()), Some(Err(_))));
         assert_eq!(std::fs::read(&path).unwrap(), b"garbage");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -286,7 +300,8 @@ mod tests {
             ("2", Some(now - 60), now - 60, false), // finished a minute before
             ("3", None, now - 10, false),           // downloading
             ("4", None, now - 3600, true),          // paused for an hour
-            ("5", None, 0, true),                   // never downloaded anything
+            ("5", None, 0, true),                   // added an hour ago, never transferred
+            ("7", None, 0, false),                  // added a minute ago
         ];
         for (c, completed, active, _) in cases {
             let h = c.repeat(40);
@@ -294,11 +309,12 @@ mod tests {
             let m = store.torrents.entry(hash(&h)).or_default();
             m.completed_at = completed;
             m.last_activity = active;
+            m.added_at = if c == "7" { now - 60 } else { now - 7200 };
         }
         // Not in the store: checked.
         std::fs::write(dir.join(format!("{}.bitv", "6".repeat(40))), b"x").unwrap();
         std::fs::write(dir.join("other.bitv"), b"x").unwrap();
-        assert_eq!(clear_unfinished_bitfields(&dir, &store, now), 3);
+        assert_eq!(clear_unfinished_bitfields(&dir, &store, now), 4);
         for (c, _, _, kept) in cases {
             assert_eq!(dir.join(format!("{}.bitv", c.repeat(40))).exists(), kept, "{c}");
         }
