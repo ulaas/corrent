@@ -5,6 +5,7 @@
 pub mod decide;
 pub mod hls;
 pub mod hw;
+pub mod intro;
 pub mod trickplay;
 pub mod vtt;
 
