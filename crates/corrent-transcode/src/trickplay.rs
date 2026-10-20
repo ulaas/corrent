@@ -28,48 +28,56 @@ pub async fn generate(
     std::fs::create_dir_all(&frames).map_err(|e| e.to_string())?;
     let job = EncodeJob {
         input: input.to_string(),
-        output: frames.join("f%05d.jpg").display().to_string(),
+        // PNG frames: libmpv builds without the MJPEG encoder exist (the Windows one we bundle);
+        // the sheets are JPEG, made here.
+        output: frames.join("f%05d.png").display().to_string(),
         options: vec![
             ("of".into(), "image2".into()),
-            ("ovc".into(), "mjpeg".into()),
-            ("ovcopts".into(), "q=6".into()),
-            ("vf".into(), format!("fps=1/{interval_secs},scale={width}:-2,format=yuvj420p")),
+            ("ovc".into(), "png".into()),
+            ("vf".into(), format!("fps=1/{interval_secs},scale={width}:-2,format=rgb24")),
             ("aid".into(), "no".into()),
             ("sid".into(), "no".into()),
         ],
         audio_file: None,
     };
-    let ok = match &worker {
-        Some(w) => {
-            let file = out.join("job.json");
-            std::fs::write(&file, serde_json::to_vec(&job).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-            let mut cmd = tokio::process::Command::new(w);
-            // No console window flashing up (the worker is a console program).
-            #[cfg(windows)]
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-            let status = cmd
-                .arg("encode")
-                .arg(&file)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .kill_on_drop(true)
-                .status();
-            let r = tokio::time::timeout(Duration::from_secs(3 * 3600), status).await;
-            let _ = std::fs::remove_file(&file);
-            matches!(r, Ok(Ok(s)) if s.success())
-        }
-        None => tokio::task::spawn_blocking(move || {
-            corrent_mpv::encode::run(&job, Duration::from_secs(3 * 3600), &mut |_| true).is_ok()
-        })
-        .await
-        .unwrap_or(false),
-    };
+    let ok = run_job(job, worker.as_deref(), &out.join("job.json"), Duration::from_secs(3 * 3600)).await;
     if !ok {
         let _ = std::fs::remove_dir_all(&frames);
         return Err("frame extraction failed".into());
     }
     let out2 = out.to_path_buf();
     tokio::task::spawn_blocking(move || tile(&frames, &out2, interval_secs)).await.map_err(|e| e.to_string())?
+}
+
+/// Runs an encode job in the `corrent-mpvw` worker (its own process: a crash in a codec can't
+/// take the server down) when there is one, else in this process. `job_file` is where the job
+/// is written for the worker (removed afterwards).
+pub(crate) async fn run_job(job: EncodeJob, worker: Option<&Path>, job_file: &Path, timeout: Duration) -> bool {
+    match worker {
+        Some(w) => {
+            let Ok(bytes) = serde_json::to_vec(&job) else { return false };
+            if std::fs::write(job_file, bytes).is_err() {
+                return false;
+            }
+            let mut cmd = tokio::process::Command::new(w);
+            // No console window flashing up (the worker is a console program).
+            #[cfg(windows)]
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            let status = cmd
+                .arg("encode")
+                .arg(job_file)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .status();
+            let r = tokio::time::timeout(timeout, status).await;
+            let _ = std::fs::remove_file(job_file);
+            matches!(r, Ok(Ok(s)) if s.success())
+        }
+        None => tokio::task::spawn_blocking(move || corrent_mpv::encode::run(&job, timeout, &mut |_| true).is_ok())
+            .await
+            .unwrap_or(false),
+    }
 }
 
 fn tile(frames: &Path, out: &Path, interval_secs: u32) -> Result<usize, String> {

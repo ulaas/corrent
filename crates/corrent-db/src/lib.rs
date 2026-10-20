@@ -21,6 +21,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("prefs", include_str!("../migrations/0008_prefs.sql")),
     ("jellyfin", include_str!("../migrations/0009_jellyfin.sql")),
     ("segments", include_str!("../migrations/0010_segments.sql")),
+    ("image_locks", include_str!("../migrations/0011_image_locks.sql")),
 ];
 
 pub fn schema_version() -> u32 {

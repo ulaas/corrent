@@ -2693,3 +2693,96 @@ fn api_doc_lists_every_route() {
     }
     assert!(missing.is_empty(), "add these to docs/API.md: {missing:?}");
 }
+
+/// A movie without artwork gets a frame as its thumbnail and poster after the scan; a frame the
+/// user picks is locked against providers and later frames.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn videos_without_artwork_get_a_frame() {
+    if !corrent_mpv::Library::available() {
+        eprintln!("libmpv not found; skipping");
+        return;
+    }
+    let h = harness("frames", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let dir = h.dir.join("Movies").join("Clip (2020)");
+    std::fs::create_dir_all(&dir).unwrap();
+    let job = corrent_mpv::encode::EncodeJob {
+        input: "av://lavfi:testsrc=duration=8:size=320x180:rate=10,format=yuv420p".into(),
+        output: dir.join("Clip (2020).mkv").display().to_string(),
+        options: vec![
+            ("of".into(), "matroska".into()),
+            ("ovc".into(), "libx264".into()),
+            ("ovcopts".into(), "preset=ultrafast".into()),
+        ],
+        audio_file: None,
+    };
+    corrent_mpv::encode::run(&job, std::time::Duration::from_secs(60), &mut |_| true).unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Movies", "kind": "movies", "folders": [h.dir.join("Movies")], "settings": { "watch": false } }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    // The scan's end starts a thumbnail pass; the task does the same.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let (item, images) = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        let kinds: Vec<String> = v["items"][0]["images"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|i| i["kind"].as_str().map(String::from))
+            .collect();
+        if kinds.contains(&"thumb".to_string()) {
+            break (v["items"][0]["id"].as_i64().unwrap(), v["items"][0]["images"].clone());
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        run_task(app, &admin, "video_thumbnails").await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    let kinds: Vec<&str> = images.as_array().unwrap().iter().filter_map(|i| i["kind"].as_str()).collect();
+    assert!(kinds.contains(&"poster"), "a movie without a poster shows the frame: {images}");
+    let sha = |imgs: &Value, k: &str| {
+        imgs.as_array().unwrap().iter().find(|i| i["kind"] == k).and_then(|i| i["sha"].as_str()).unwrap().to_string()
+    };
+    let auto = sha(&images, "thumb");
+    // The user picks another moment: stored and locked.
+    let (s, r, _) =
+        send(app, Method::POST, &format!("/api/v1/items/{item}/thumbnail"), &admin, json!({ "at_ms": 6500 })).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["stored"], true);
+    let (_, d, _) = get(app, &format!("/api/v1/items/{item}"), &admin).await;
+    let picked = sha(&d["images"], "thumb");
+    assert_ne!(picked, auto, "a different frame");
+    // Neither provider artwork nor a later frame replaces it.
+    let png = {
+        let mut b = Vec::new();
+        image::RgbImage::from_pixel(64, 36, image::Rgb([1, 2, 3]))
+            .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png)
+            .unwrap();
+        b
+    };
+    use corrent_library::meta::Replace;
+    let lib_ = &h.st.library;
+    assert!(
+        !lib_
+            .set_artwork(item, "thumb", png.clone(), "https://provider/x.jpg", Replace::IfMissingOrFrame, false)
+            .await
+            .unwrap()
+    );
+    assert!(!lib_.set_artwork(item, "thumb", png.clone(), "frame", Replace::Always, false).await.unwrap());
+    // The automatic poster frame does give way to provider artwork.
+    assert!(
+        lib_.set_artwork(item, "poster", png, "https://provider/p.jpg", Replace::IfMissingOrFrame, false)
+            .await
+            .unwrap()
+    );
+    // An item that isn't there.
+    let (s, _, _) = send(app, Method::POST, "/api/v1/items/999999/thumbnail", &admin, json!({})).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    h.stop().await;
+}

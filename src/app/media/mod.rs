@@ -80,7 +80,11 @@ pub struct MediaState {
     /// The focused widget on each page in `back` (TV mode returns to the card you left).
     back_focus: Vec<Option<egui::Id>>,
     libraries: Option<Slot<Vec<Library>>>,
+    /// The last libraries and home rows loaded: shown while a refresh is on its way, so the
+    /// periodic refresh never blanks the page (or moves it).
+    libraries_shown: Vec<Library>,
     home: Option<Slot<Vec<HomeRow>>>,
+    home_shown: Option<Vec<HomeRow>>,
     grids: HashMap<i64, Grid>,
     detail: Option<(i64, Slot<ItemDetail>)>,
     children: HashMap<i64, Slot<ItemPage<Item>>>,
@@ -122,7 +126,7 @@ pub struct MediaState {
 
 impl MediaState {
     pub fn libraries(&self) -> Vec<Library> {
-        self.libraries.as_ref().and_then(ready).and_then(Result::ok).unwrap_or_default()
+        self.libraries.as_ref().and_then(ready).and_then(Result::ok).unwrap_or_else(|| self.libraries_shown.clone())
     }
 
     pub fn local(&self) -> Option<&Arc<corrent_server::local::LocalServer>> {
@@ -155,7 +159,10 @@ impl MediaState {
         g.items = items.into_iter().enumerate().map(|(i, it)| (i as i64, it)).collect();
     }
 
+    /// Load everything again (after a change); what is on screen stays until the new data is
+    /// there.
     pub(crate) fn invalidate(&mut self) {
+        self.keep_shown();
         self.home = None;
         self.libraries = None;
         self.person = None;
@@ -163,6 +170,28 @@ impl MediaState {
         self.grids.clear();
         self.children.clear();
         self.detail = None;
+    }
+
+    /// The periodic refresh: home, libraries and the loaded parts of library grids are fetched
+    /// again and replace what is shown when they arrive; nothing goes blank.
+    fn refresh(&mut self) {
+        self.keep_shown();
+        self.home = None;
+        self.libraries = None;
+        self.user_prefs = None;
+        for g in self.grids.values_mut() {
+            // Visible pages are requested again and overwrite the items they bring.
+            g.requested.clear();
+        }
+    }
+
+    fn keep_shown(&mut self) {
+        if let Some(Ok(rows)) = self.home.as_ref().and_then(ready) {
+            self.home_shown = Some(rows);
+        }
+        if let Some(Ok(libs)) = self.libraries.as_ref().and_then(ready) {
+            self.libraries_shown = libs;
+        }
     }
 }
 
@@ -436,7 +465,7 @@ impl CorrentApp {
             && self.media.refreshed.is_none_or(|t| t.elapsed().as_secs() > 30)
         {
             self.media.refreshed = Some(std::time::Instant::now());
-            self.media.invalidate();
+            self.media.refresh();
         }
     }
 
@@ -457,7 +486,11 @@ impl CorrentApp {
 
     /// Backdrop images of the home rows (screensaver).
     pub(super) fn media_backdrops(&self) -> Vec<String> {
-        let Some(Ok(rows)) = self.media.home.as_ref().and_then(ready) else { return Vec::new() };
+        let Some(rows) =
+            self.media.home.as_ref().and_then(ready).and_then(Result::ok).or_else(|| self.media.home_shown.clone())
+        else {
+            return Vec::new();
+        };
         let mut out: Vec<String> = Vec::new();
         for it in rows.iter().flat_map(|r| &r.items) {
             if let Some(im) = it.images.iter().find(|i| i.kind == "backdrop")
@@ -750,12 +783,12 @@ impl CorrentApp {
                 Color32::from_black_alpha((60.0 * hover) as u8),
             );
         }
-        let wanted = if aspect >= 1.0 { "thumb" } else { "poster" };
-        let image = item
-            .images
+        // Landscape cards: thumbnail, backdrop, poster; portrait ones: poster first.
+        let order: [&str; 3] =
+            if aspect >= 1.0 { ["thumb", "backdrop", "poster"] } else { ["poster", "thumb", "backdrop"] };
+        let image = order
             .iter()
-            .find(|i| i.kind == wanted)
-            .or_else(|| item.images.iter().find(|i| i.kind == "poster"))
+            .find_map(|k| item.images.iter().find(|i| i.kind == *k))
             .or_else(|| item.images.first())
             .cloned();
         let ppp = ui.ctx().pixels_per_point();
@@ -1102,7 +1135,7 @@ impl CorrentApp {
             let c = client.clone();
             self.media.home = Some(fetch(&self.rt, &self.ctx, async move { c.get("/api/v1/home").await }));
         }
-        let rows = self.media.home.as_ref().and_then(ready);
+        let rows = self.media.home.as_ref().and_then(ready).or_else(|| self.media.home_shown.clone().map(Ok));
         match rows {
             None => {
                 ui.add_space(40.0);

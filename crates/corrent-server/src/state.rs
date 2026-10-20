@@ -51,6 +51,8 @@ pub struct AppState {
     /// Files whose trickplay is being made, and the one-at-a-time slot.
     pub trickplay_busy: Mutex<std::collections::HashSet<i64>>,
     pub trickplay_slot: tokio::sync::Mutex<()>,
+    /// Frame thumbnails are made one at a time.
+    pub thumb_slot: tokio::sync::Mutex<()>,
     /// Plugin host (None when wasmtime couldn't start).
     pub plugins: Option<Arc<corrent_plugins::PluginHost>>,
     /// One metadata refresh at a time.

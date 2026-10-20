@@ -57,6 +57,9 @@ impl CorrentApp {
         self.media.client = Some(client);
         self.media.profiles.current = user;
         self.media.invalidate();
+        // Another person: nothing of the previous profile's stays on screen meanwhile.
+        self.media.home_shown = None;
+        self.media.libraries_shown.clear();
         self.media.page = None;
     }
 

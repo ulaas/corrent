@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use corrent_library::LibError;
 use corrent_proto::ErrorCode;
@@ -32,6 +32,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/items/{id}", get(item).patch(edit))
         .route("/items/{id}/state", put(set_state))
         .route("/items/{id}/file", get(item_file))
+        .route("/items/{id}/thumbnail", post(thumbnail_from_frame))
         .route("/items/{id}/lyrics", get(lyrics))
         .route("/files/{id}", get(file))
         .route("/images/{sha}", get(image))
@@ -319,6 +320,46 @@ async fn item_file(
 ) -> Result<Response, ApiErr> {
     let (_, path) = st.library.main_file(auth.0.user.id, id).await.map_err(lib_err)?;
     serve_path(PathBuf::from(path), req).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct FrameRequest {
+    /// Where in the video (default: the automatic position, 15–20 % in).
+    at_ms: Option<i64>,
+    /// `thumb` (default) or `poster`.
+    kind: Option<String>,
+    /// Keep it over provider artwork and automatic frames (default true: someone chose it).
+    lock: Option<bool>,
+}
+
+/// Takes a frame of the item's video as its thumbnail (or poster).
+async fn thumbnail_from_frame(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Path(id): Path<i64>,
+    body: Option<Json<FrameRequest>>,
+) -> ApiResult<serde_json::Value> {
+    auth.require(Perms::LIBRARY_MANAGE)?;
+    let req = body.map(|b| b.0).unwrap_or_default();
+    let kind = req.kind.as_deref().unwrap_or("thumb");
+    if !matches!(kind, "thumb" | "poster") {
+        return Err(err(ErrorCode::BadRequest, "kind must be thumb or poster"));
+    }
+    let (_, path) = st.library.main_file(auth.0.user.id, id).await.map_err(lib_err)?;
+    let d = st.library.item(auth.0.user.id, id).await.map_err(lib_err)?;
+    let at = match req.at_ms {
+        Some(ms) => ms.max(0) as f64 / 1000.0,
+        None => corrent_transcode::frame::position_secs(d.item.runtime_ms, d.item.kind == ItemKind::Episode),
+    };
+    let jpg = crate::thumbs::frame(&st, &path, at).await.map_err(|e| err(ErrorCode::Internal, e))?;
+    let lock = req.lock.unwrap_or(true);
+    let stored = st
+        .library
+        .set_artwork(id, kind, jpg, corrent_library::meta::FRAME, corrent_library::meta::Replace::Always, lock)
+        .await
+        .map_err(lib_err)?;
+    Ok(Json(serde_json::json!({ "stored": stored })))
 }
 
 async fn file(

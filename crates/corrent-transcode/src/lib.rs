@@ -3,6 +3,7 @@
 //! thumbnails.
 
 pub mod decide;
+pub mod frame;
 pub mod hls;
 pub mod hw;
 pub mod intro;

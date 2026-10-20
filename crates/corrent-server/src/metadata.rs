@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use corrent_library::meta::{MetaDetails, Pending};
+use corrent_library::meta::{MetaDetails, Pending, Replace};
 use corrent_plugins::{Candidate, ItemDetails, Kind, MediaKind, PluginHost, SearchQuery};
 use corrent_proto::library::ItemKind;
 
@@ -101,7 +101,7 @@ pub async fn apply(
     st.library.apply_details(item, to_meta(&d, provider, id)).await.map_err(|e| e.to_string())?;
     for a in &d.artwork {
         if let Some(bytes) = fetch_image(st, &a.url).await {
-            let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, true).await;
+            let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, Replace::IfMissingOrFrame, false).await;
         }
     }
     // Supplementing providers (fanart.tv) add the kinds of artwork the main one lacks.
@@ -125,7 +125,7 @@ pub async fn apply(
         let Ok(extra) = host.metadata_details(sid, mk, c.id, language.to_string()).await else { continue };
         for a in extra.artwork.iter().filter(|a| !have.contains(&a.kind)) {
             if let Some(bytes) = fetch_image(st, &a.url).await {
-                let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, true).await;
+                let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, Replace::IfMissingOrFrame, false).await;
             }
         }
     }
@@ -141,7 +141,8 @@ pub async fn apply(
                 if let Some(url) = eps.iter().find(|e| e.episode as i64 == num).and_then(|e| e.still_url.clone())
                     && let Some(bytes) = fetch_image(st, &url).await
                 {
-                    let _ = st.library.set_artwork(ep_item, "thumb", bytes, &url, true).await;
+                    let _ =
+                        st.library.set_artwork(ep_item, "thumb", bytes, &url, Replace::IfMissingOrFrame, false).await;
                 }
             }
         }
@@ -316,6 +317,8 @@ pub async fn refresh_library(st: Arc<AppState>, library_id: i64) {
 
 /// After every finished scan, look for metadata.
 pub fn start(st: Arc<AppState>) {
+    // Videos added before thumbnails existed (or while the server was off) get theirs now.
+    crate::thumbs::start(&st);
     let mut rx = st.library.subscribe();
     tokio::spawn(async move {
         let stopped = st.stopped();
@@ -328,6 +331,7 @@ pub fn start(st: Arc<AppState>) {
             match ev {
                 Ok(corrent_library::LibraryEvent::Scan(s)) if !s.running && s.error.is_none() => {
                     tokio::spawn(refresh_library(st.clone(), s.library_id));
+                    crate::thumbs::start(&st);
                 }
                 Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(_) => break,

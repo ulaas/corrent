@@ -95,11 +95,53 @@ async fn encoder_detection_and_trickplay() {
     std::fs::create_dir_all(&out).unwrap();
     let n = crate::trickplay::generate(&input, &out, 5, 160, None).await.unwrap();
     assert!((4..=6).contains(&n), "{n} frames");
+    // Through the worker too (the server's way).
+    if let Some(w) = corrent_mpv::worker_path() {
+        let out2 = dir.join("trick-worker");
+        std::fs::create_dir_all(&out2).unwrap();
+        let n2 = crate::trickplay::generate(&input, &out2, 5, 160, Some(w)).await.unwrap();
+        assert_eq!(n2, n);
+    }
     let vtt = std::fs::read_to_string(out.join("index.vtt")).unwrap();
     assert!(vtt.starts_with("WEBVTT") && vtt.contains("sheet-0.jpg#xywh=160,0,160,120"), "{vtt}");
     let (w, _) = image::image_dimensions(out.join("sheet-0.jpg")).unwrap();
     assert_eq!(w, 160 * n as u32);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_frame_comes_out_as_a_jpeg() {
+    if !corrent_mpv::Library::available() {
+        eprintln!("libmpv not found; skipping");
+        return;
+    }
+    let dir = scratch("frame");
+    let input = source(&dir, 12);
+    let at = crate::frame::position_secs(Some(12_000), false);
+    assert_eq!(at, 5.0);
+    // In this process, and through the worker as the server does.
+    let png = crate::frame::extract(&input, at, 160, None, &dir.join("tmp")).await.unwrap();
+    assert_eq!(png.get(..4), Some(&[0x89, b'P', b'N', b'G'][..]), "a PNG");
+    if let Some(w) = corrent_mpv::worker_path() {
+        let again = crate::frame::extract(&input, at, 160, Some(w), &dir.join("tmpw")).await.unwrap();
+        assert_eq!(image::load_from_memory(&again).unwrap().width(), 160);
+    }
+    let img = image::load_from_memory(&png).unwrap();
+    assert_eq!((img.width(), img.height()), (160, 120));
+    assert!(!dir.join("tmp").exists(), "the job's folder is cleaned up");
+    // A file that isn't there: an error rather than a hang.
+    let gone = dir.join("gone.mkv").display().to_string();
+    assert!(crate::frame::extract(&gone, 5.0, 160, None, &dir.join("tmp2")).await.is_err());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn thumbnail_positions() {
+    use crate::frame::position_secs;
+    assert_eq!(position_secs(None, false), 30.0);
+    assert_eq!(position_secs(Some(100 * 60_000), false), 900.0);
+    assert_eq!(position_secs(Some(40 * 60_000), true), 480.0);
+    assert_eq!(position_secs(Some(3_000), false), 2.0, "a short clip: a second before the end");
 }
 
 /// A real x264 (with B-frames) + AAC Matroska file remuxed to HLS/fMP4 plays and seeks in mpv.

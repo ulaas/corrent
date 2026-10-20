@@ -561,7 +561,8 @@ fn set_image(t: &Transaction, owner: i64, kind: &str, s: &artwork::Stored, sourc
         "INSERT INTO images(owner_kind, owner_id, kind, sha256, width, height, blurhash, source) \
          VALUES ('item', ?1, ?2, ?3, ?4, ?5, ?6, ?7) \
          ON CONFLICT(owner_kind, owner_id, kind) DO UPDATE SET sha256 = excluded.sha256, width = excluded.width, \
-         height = excluded.height, blurhash = excluded.blurhash, source = excluded.source",
+         height = excluded.height, blurhash = excluded.blurhash, source = excluded.source \
+         WHERE images.locked = 0",
         params![owner, kind, s.sha, s.width, s.height, s.blurhash, source],
     )?;
     Ok(())

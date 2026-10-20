@@ -168,6 +168,7 @@ bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a sess
 | PUT | `/api/v1/plugins/{id}/enabled` |
 | GET POST | `/api/v1/items/{id}/identify` |
 | POST | `/api/v1/items/{id}/refresh-metadata` |
+| POST | `/api/v1/items/{id}/thumbnail` |
 | POST | `/api/v1/libraries/{id}/refresh-metadata` |
 
 ### Subtitles

@@ -9,6 +9,42 @@ use corrent_proto::library::ItemKind;
 use crate::scan::refresh_fts;
 use crate::{Library, Result, artwork, now_unix};
 
+/// Whether new artwork may replace an item's image of the same kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Replace {
+    /// Only when there is none.
+    IfMissing,
+    /// Also over a frame thumbnail (`source = "frame"`): providers' artwork is better.
+    IfMissingOrFrame,
+    /// Always, except over a locked image unless this one is locked too (the user's choice).
+    Always,
+}
+
+impl Replace {
+    fn allows(self, source: &str, locked: bool, lock: bool) -> bool {
+        match self {
+            _ if locked && !lock => false,
+            Replace::IfMissing => false,
+            Replace::IfMissingOrFrame => source == FRAME,
+            Replace::Always => true,
+        }
+    }
+}
+
+/// The `source` of a thumbnail taken from the video itself.
+pub const FRAME: &str = "frame";
+
+/// A video without a thumbnail (`Library::items_needing_thumbs`).
+#[derive(Clone, Debug)]
+pub struct ThumbWanted {
+    pub item: i64,
+    /// `movie`, `episode` or `video`.
+    pub kind: String,
+    pub path: String,
+    pub runtime_ms: Option<i64>,
+    pub has_poster: bool,
+}
+
 /// Provider details in the library's terms (independent of the plugin crate).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MetaDetails {
@@ -191,31 +227,34 @@ impl Library {
         Ok(())
     }
 
-    /// Stores image bytes as an item's artwork of `kind`; with `only_if_missing`, an existing
-    /// image (e.g. a local poster) is kept.
+    /// Stores image bytes as an item's artwork of `kind`, if `replace` allows it over the image
+    /// it has. `lock`: the user chose this one (providers and frames never replace it).
+    /// Returns whether it was stored.
     pub async fn set_artwork(
         &self,
         item: i64,
         kind: &str,
         data: Vec<u8>,
         source: &str,
-        only_if_missing: bool,
+        replace: Replace,
+        lock: bool,
     ) -> Result<bool> {
         let k = kind.to_string();
-        if only_if_missing {
-            let has = self
-                .db()
-                .read(move |c| {
-                    c.query_row(
-                        "SELECT count(*) FROM images WHERE owner_kind = 'item' AND owner_id = ?1 AND kind = ?2",
-                        params![item, k],
-                        |r| r.get::<_, i64>(0),
-                    )
-                })
-                .await?;
-            if has > 0 {
-                return Ok(false);
-            }
+        let have: Option<(String, bool)> = self
+            .db()
+            .read(move |c| {
+                c.query_row(
+                    "SELECT source, locked FROM images WHERE owner_kind = 'item' AND owner_id = ?1 AND kind = ?2",
+                    params![item, k],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0)),
+                )
+                .optional()
+            })
+            .await?;
+        if let Some((src, locked)) = &have
+            && !replace.allows(src, *locked, lock)
+        {
+            return Ok(false);
         }
         let _permit = self.image_permit().await;
         let root = self.artwork_root().to_path_buf();
@@ -227,15 +266,59 @@ impl Library {
         self.db()
             .write(move |t| {
                 t.execute(
-                    "INSERT INTO images(owner_kind, owner_id, kind, sha256, width, height, blurhash, source) \
-                     VALUES ('item', ?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                    "INSERT INTO images(owner_kind, owner_id, kind, sha256, width, height, blurhash, source, locked) \
+                     VALUES ('item', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
                      ON CONFLICT(owner_kind, owner_id, kind) DO UPDATE SET sha256 = excluded.sha256, width = excluded.width, \
-                     height = excluded.height, blurhash = excluded.blurhash, source = excluded.source",
-                    params![item, kind, stored.sha, stored.width, stored.height, stored.blurhash, source],
+                     height = excluded.height, blurhash = excluded.blurhash, source = excluded.source, locked = excluded.locked",
+                    params![item, kind, stored.sha, stored.width, stored.height, stored.blurhash, source, lock as i64],
                 )
             })
             .await?;
         Ok(true)
+    }
+
+    /// Videos, movies and episodes with a file and no thumbnail that weren't tried yet, newest
+    /// first: (item, kind, file path, runtime in ms, has a poster).
+    pub async fn items_needing_thumbs(&self, limit: i64) -> Result<Vec<ThumbWanted>> {
+        Ok(self
+            .db()
+            .read(move |c| {
+                let mut st = c.prepare(
+                    "SELECT i.id, i.kind, f.path, i.runtime_ms, \
+                       EXISTS(SELECT 1 FROM images p WHERE p.owner_kind = 'item' AND p.owner_id = i.id AND p.kind = 'poster') \
+                     FROM items i \
+                     JOIN item_files x ON x.item_id = i.id AND x.role = 'main' \
+                     JOIN files f ON f.id = x.file_id AND f.missing_since IS NULL \
+                     WHERE i.kind IN ('movie', 'episode', 'video') \
+                       AND json_extract(i.extra, '$.thumb_tried') IS NULL \
+                       AND NOT EXISTS (SELECT 1 FROM images m WHERE m.owner_kind = 'item' AND m.owner_id = i.id AND m.kind = 'thumb') \
+                     GROUP BY i.id ORDER BY i.added_at DESC, i.id DESC LIMIT ?1",
+                )?;
+                let rows = st.query_map([limit], |r| {
+                    Ok(ThumbWanted {
+                        item: r.get(0)?,
+                        kind: r.get(1)?,
+                        path: r.get(2)?,
+                        runtime_ms: r.get(3)?,
+                        has_poster: r.get(4)?,
+                    })
+                })?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .await?)
+    }
+
+    /// A thumbnail was attempted for `item` (whatever came of it): not again on its own.
+    pub async fn mark_thumb_tried(&self, item: i64) -> Result<()> {
+        self.db()
+            .write(move |t| {
+                t.execute(
+                    "UPDATE items SET extra = json_set(extra, '$.thumb_tried', ?1) WHERE id = ?2",
+                    params![now_unix(), item],
+                )
+            })
+            .await?;
+        Ok(())
     }
 
     /// Updates episodes of a season from a provider's episode list (by episode number).
@@ -300,5 +383,23 @@ impl Library {
                 st.query_map([season_item], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()
             })
             .await?)
+    }
+}
+
+#[cfg(test)]
+mod replace_tests {
+    use super::{FRAME, Replace};
+
+    #[test]
+    fn what_replaces_what() {
+        // Local or provider art over a frame, never over a locked image or one that isn't a frame.
+        assert!(Replace::IfMissingOrFrame.allows(FRAME, false, false));
+        assert!(!Replace::IfMissingOrFrame.allows("https://image.tmdb.org/x.jpg", false, false));
+        assert!(!Replace::IfMissingOrFrame.allows(FRAME, true, false));
+        assert!(!Replace::IfMissing.allows(FRAME, false, false));
+        // The user's choice replaces anything, and is replaced only by another of theirs.
+        assert!(Replace::Always.allows("poster.jpg", false, true));
+        assert!(Replace::Always.allows(FRAME, true, true));
+        assert!(!Replace::Always.allows(FRAME, true, false));
     }
 }

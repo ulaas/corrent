@@ -37,6 +37,7 @@ pub mod radio;
 pub mod remote;
 pub mod state;
 pub mod tasks;
+pub mod thumbs;
 pub mod tls;
 pub mod v1;
 pub mod webapi;
@@ -153,6 +154,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         remux: Default::default(),
         trickplay_busy: Default::default(),
         trickplay_slot: Default::default(),
+        thumb_slot: Default::default(),
         plugins: plugin_host,
         metadata_slot: Default::default(),
         stopping: tokio::sync::watch::Sender::new(false),
