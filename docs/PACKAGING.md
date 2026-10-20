@@ -69,7 +69,8 @@ Without them the dmg is unsigned and opens after right-click › Open.
 ## Checklist for a release
 
 1. Bump `version` in `Cargo.toml` and the `<release>` in the metainfo; `cargo build` to update the lock file.
-2. Run the gates (`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo deny check && cargo test`).
+2. Run the gates (`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo deny check && cargo test`)
+   and `scripts/release-hygiene.ps1` (no debug hooks or test code in the release binaries).
 3. Commit, tag `vX.Y.Z`, push the tag (owner).
 4. Check the draft release's artifacts on each platform (`docs/PLATFORM-TESTING.md`), then publish.
 5. Submit the winget manifests.

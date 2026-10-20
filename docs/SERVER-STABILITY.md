@@ -56,6 +56,12 @@ transcodes, and samples RSS, threads, open files, WebSocket clients and transcod
 | 82 min, 5,000 torrents (half paused), scans, transcodes, this machine (2026-10-19) | 0 request errors, 0 panics, 0 failed tasks; all 5,000 added in 26 s (after fixing the concurrent-add id race it found); open files flat at 10,033, 60 threads; RSS 306 → 689 MB, leveling off near 700 MB over the last 30 min. Stopped early (moving development to Windows) |
 | 72 h with 5k torrents, scans and transcodes | Open [O]: `SOAK_TORRENTS=5000 scripts/soak.sh 4320` (bash; on Windows from Git Bash or WSL). Watch whether RSS stays near 700 MB |
 
+The desktop's panic-free gate (`docs/STABILITY.md` F17) denies `unwrap`, `expect` and `panic!`
+in the server crates too, but not indexing yet: about 215 `[i]`/`[a..b]` sites remain in the
+media parsers (corrent-transcode 108, corrent-server outside the Web API 55, corrent-library
+42). Their inputs are fuzzed (above); converting them and denying `clippy::indexing_slicing` per
+crate is open.
+
 ## Release bar for the server
 
 - Gate green (`fmt`, `clippy -D warnings`, all tests incl. robustness), `cargo deny check`.

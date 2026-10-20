@@ -115,7 +115,7 @@ clusters, `?v=` + ETag on segments, and an 8 KiB index buffer. Checked with mpv 
 
 **Desktop roadmap:** hardening per `docs/STABILITY.md`. S1 (profile data-loss guards), S2 (engine
 persistence durability), S3 (no hangs) and S4 (untrusted input) are done on Windows; see their
-Results rows. S5 is next. Then upstreaming the librqbit patches (`docs/upstream/`),
+Results rows. S5 (panic-free gate) is done too. Then upstreaming the librqbit patches (`docs/upstream/`),
 and a first tagged release.
 - S1 adds a lock that the desktop app and `correntd` share: `corrent.lock` in the data folder. It
   replaces `correntd.lock`, and a stale `correntd.lock` file is harmless.
@@ -132,6 +132,17 @@ and a first tagged release.
 - S4 vendors a third crate, `librqbit-bencode` (bounded nesting and checked numbers), patched
   like the other two (`[patch.crates-io]`). Its tests live in
   `crates/corrent-core/src/engine/untrusted_tests.rs`.
+- S5 adds:
+  - workspace lints in the root `Cargo.toml`, with `clippy.toml` exempting tests: no `unwrap`,
+    `expect` or `panic!` outside tests anywhere, and no indexing in corrent-core, the Web API or
+    the GUI. A site that can't fail keeps `#[expect(clippy::…, reason = "…")]`.
+  - `corrent_core::util::{lock, with_lock, read, write}` for std locks; a scan test rejects any
+    other way of taking one.
+  - a bounded command queue: `EngineHandle::send` returns false when it is full. Bounded internal
+    results; events stay unbounded.
+  - `corrent_core::retention`, a startup clean-up of old `.bad-*`, migration and `pre-restore-*`
+    copies.
+  - `scripts/release-hygiene.ps1`, a release check to run before tagging.
 - Left open from the S1 review:
   - Closing the console window of a `correntd` started by hand on Windows, or logging off, still
     kills it before it saves. A fix needs a `SetConsoleCtrlHandler` callback that blocks until

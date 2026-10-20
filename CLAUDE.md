@@ -134,7 +134,7 @@ MSI/portable zip/winget, AppImage/Flatpak, dmg; release workflow — see docs/PA
 translation + language setting, web interface, Mica spike (no-go) (M27).
 Fable reviews of every milestone range and a final roadmap audit were addressed. Default save folder: `Downloads/Corrent`.
 
-Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S4 done 2026-10-20, S5 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
+Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S5 done 2026-10-20, S6 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
 upstreaming the librqbit patches (docs/upstream/) and a first tagged release.
 
 Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.
