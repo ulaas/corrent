@@ -1,0 +1,184 @@
+diff -ru a/src/deserialize.rs b/src/deserialize.rs
+--- a/src/deserialize.rs	2006-07-24 04:21:28.000000000 +0300
++++ b/src/deserialize.rs	2026-10-20 10:26:51.706561200 +0300
+@@ -1,7 +1,7 @@
+ use std::marker::PhantomData;
+ 
+ use arrayvec::ArrayVec;
+-use atoi::{FromRadix10, FromRadix10Signed};
++use atoi::{FromRadix10Checked, FromRadix10SignedChecked};
+ use buffers::ByteBuf;
+ use clone_to_owned::CloneToOwned;
+ use serde::{Deserialize, Serialize, forward_to_deserialize_any};
+@@ -13,8 +13,16 @@
+     field_context: ErrorContext<'de>,
+     field_context_did_not_fit: u8,
+     parsing_key: bool,
++    // CORRENT PATCH (E2): lists and dicts open around the current position.
++    depth: usize,
+ }
+ 
++/// CORRENT PATCH (E2): the deepest nesting of lists and dicts accepted. Every level is a few
++/// stack frames of recursion; without a limit, `llll…` from a peer, a tracker, the DHT or a
++/// .torrent overflowed the stack and aborted the process. Real data nests a few levels (a
++/// hybrid torrent's file tree two per path component).
++pub const MAX_DEPTH: usize = 512;
++
+ impl<'de> BencodeDeserializer<'de> {
+     pub fn new_from_buf(buf: &'de [u8]) -> BencodeDeserializer<'de> {
+         Self {
+@@ -22,7 +30,17 @@
+             field_context: Default::default(),
+             field_context_did_not_fit: 0,
+             parsing_key: false,
++            depth: 0,
++        }
++    }
++
++    // CORRENT PATCH (E2)
++    fn enter(&mut self) -> Result<(), Error> {
++        if self.depth >= MAX_DEPTH {
++            return Err(Error::Custom(Box::new(format!("nested more than {MAX_DEPTH} levels deep"))));
+         }
++        self.depth += 1;
++        Ok(())
+     }
+ 
+     pub fn into_remaining(self) -> &'de [u8] {
+@@ -41,10 +59,12 @@
+         }
+     }
+ 
+-    fn parse_integer<I>(&mut self, atoi: impl Fn(&'de [u8]) -> (I, usize)) -> Result<I, Error> {
++    // CORRENT PATCH (E2): checked parsing; an integer too big for its type is invalid (it
++    // overflowed: a panic with overflow checks, a wrong value without).
++    fn parse_integer<I>(&mut self, atoi: impl Fn(&'de [u8]) -> (Option<I>, usize)) -> Result<I, Error> {
+         self.parse_first_byte(b'i', Error::InvalidValue)?;
+         match atoi(self.buf) {
+-            (v, len) if len > 0 && self.buf.get(len) == Some(&b'e') => {
++            (Some(v), len) if len > 0 && self.buf.get(len) == Some(&b'e') => {
+                 self.buf = &self.buf[len + 1..];
+                 Ok(v)
+             }
+@@ -53,8 +73,9 @@
+     }
+ 
+     fn parse_bytes(&mut self) -> Result<&'de [u8], Error> {
+-        let b = match usize::from_radix_10(self.buf) {
+-            (v, len) if len > 0 && self.buf.get(len) == Some(&b':') => {
++        // CORRENT PATCH (E2): a length too big for usize is invalid (it wrapped before).
++        let b = match usize::from_radix_10_checked(self.buf) {
++            (Some(v), len) if len > 0 && self.buf.get(len) == Some(&b':') => {
+                 self.buf = unsafe { self.buf.get_unchecked(len + 1..) };
+                 let (bytes, rest) = self.buf.split_at_checked(v).ok_or(Error::Eof)?;
+                 self.buf = rest;
+@@ -197,7 +218,7 @@
+     where
+         V: serde::de::Visitor<'de>,
+     {
+-        let value = self.parse_integer::<u8>(u8::from_radix_10)?;
++        let value = self.parse_integer::<u8>(u8::from_radix_10_checked)?;
+         if value > 1 {
+             return Err(Error::InvalidBool(value));
+         }
+@@ -208,56 +229,56 @@
+     where
+         V: serde::de::Visitor<'de>,
+     {
+-        visitor.visit_i8(self.parse_integer(i8::from_radix_10_signed)?)
++        visitor.visit_i8(self.parse_integer(i8::from_radix_10_signed_checked)?)
+     }
+ 
+     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+     where
+         V: serde::de::Visitor<'de>,
+     {
+-        visitor.visit_i16(self.parse_integer(i16::from_radix_10_signed)?)
++        visitor.visit_i16(self.parse_integer(i16::from_radix_10_signed_checked)?)
+     }
+ 
+     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+     where
+         V: serde::de::Visitor<'de>,
+     {
+-        visitor.visit_i32(self.parse_integer(i32::from_radix_10_signed)?)
++        visitor.visit_i32(self.parse_integer(i32::from_radix_10_signed_checked)?)
+     }
+ 
+     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+     where
+         V: serde::de::Visitor<'de>,
+     {
+-        visitor.visit_i64(self.parse_integer(i64::from_radix_10_signed)?)
++        visitor.visit_i64(self.parse_integer(i64::from_radix_10_signed_checked)?)
+     }
+ 
+     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+     where
+         V: serde::de::Visitor<'de>,
+     {
+-        visitor.visit_u8(self.parse_integer(u8::from_radix_10)?)
++        visitor.visit_u8(self.parse_integer(u8::from_radix_10_checked)?)
+     }
+ 
+     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+     where
+         V: serde::de::Visitor<'de>,
+     {
+-        visitor.visit_u16(self.parse_integer(u16::from_radix_10)?)
++        visitor.visit_u16(self.parse_integer(u16::from_radix_10_checked)?)
+     }
+ 
+     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+     where
+         V: serde::de::Visitor<'de>,
+     {
+-        visitor.visit_u32(self.parse_integer(u32::from_radix_10)?)
++        visitor.visit_u32(self.parse_integer(u32::from_radix_10_checked)?)
+     }
+ 
+     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+     where
+         V: serde::de::Visitor<'de>,
+     {
+-        visitor.visit_u64(self.parse_integer(u64::from_radix_10)?)
++        visitor.visit_u64(self.parse_integer(u64::from_radix_10_checked)?)
+     }
+ 
+     fn deserialize_f32<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+@@ -359,7 +380,10 @@
+         V: serde::de::Visitor<'de>,
+     {
+         self.parse_first_byte(b'l', Error::InvalidValue)?;
+-        visitor.visit_seq(SeqAccess { de: self })
++        self.enter()?;
++        let r = visitor.visit_seq(SeqAccess { de: &mut *self });
++        self.depth -= 1;
++        r
+     }
+ 
+     fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
+@@ -386,7 +410,10 @@
+         V: serde::de::Visitor<'de>,
+     {
+         self.parse_first_byte(b'd', Error::InvalidValue)?;
+-        visitor.visit_map(MapAccess { de: self })
++        self.enter()?;
++        let r = visitor.visit_map(MapAccess { de: &mut *self });
++        self.depth -= 1;
++        r
+     }
+ 
+     fn deserialize_struct<V>(
+diff -ru a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2006-07-24 04:21:28.000000000 +0300
++++ b/src/lib.rs	2026-10-20 10:27:48.276151400 +0300
+@@ -9,6 +9,8 @@
+     ErrorWithContext as DeserializeErrorWithContext, WithRawBytes, from_bytes,
+     from_bytes_with_rest,
+ };
++// CORRENT PATCH (E2): the nesting limit, for callers and their tests.
++pub use deserialize::MAX_DEPTH;
+ pub use serialize::{Error as SerializeError, bencode_serialize_to_writer};
+ 
+ pub use buffers::{ByteBuf, ByteBufOwned};

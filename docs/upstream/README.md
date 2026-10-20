@@ -1,6 +1,6 @@
 # Patches to propose upstream (librqbit)
 
-Corrent vendors two librqbit crates with small changes (`vendor/*/CORRENT-PATCH.md`). These are
+Corrent vendors three librqbit crates with small changes (`vendor/*/CORRENT-PATCH.md`). These are
 the diffs against the crates.io 9.0.1 sources (or against the previous patch for the same file),
 ready to turn into upstream pull requests:
 
@@ -14,6 +14,9 @@ ready to turn into upstream pull requests:
   copies are synced before their rename, so a power cut can't leave them empty or cut off. It
   also drops a `to_str().unwrap()` that panicked on non-Unicode paths. It applies on top of the
   next-id patch.
+- `librqbit-bencode-depth.patch` — librqbit-bencode: nesting bounded at 512 levels and checked
+  string lengths and integers, so hostile input can't overflow the stack or panic the parser
+  (vendored as `vendor/librqbit-bencode`).
 - `librqbit-http-timeouts.patch` — `SessionOptions::http_timeout` (60 s default, 15 s connect)
   for the session's HTTP client, and a 32 MiB cap on `.torrent` files downloaded from a URL.
 

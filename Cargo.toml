@@ -112,6 +112,8 @@ linux_mime_types = ["x-scheme-handler/magnet", "application/x-bittorrent"]
 # Keeps the DHT alive on Windows; see vendor/librqbit-dht/CORRENT-PATCH.md.
 librqbit-dht = { path = "vendor/librqbit-dht" }
 librqbit = { path = "vendor/librqbit" }
+# Bounded nesting and checked numbers; see vendor/librqbit-bencode/CORRENT-PATCH.md.
+librqbit-bencode = { path = "vendor/librqbit-bencode" }
 
 [build-dependencies]
 winresource = "0.1"

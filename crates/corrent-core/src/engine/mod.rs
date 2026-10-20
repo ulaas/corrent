@@ -17,6 +17,8 @@ pub mod stream;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 pub mod types;
+#[cfg(test)]
+mod untrusted_tests;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
