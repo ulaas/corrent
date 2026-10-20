@@ -4,6 +4,7 @@
 #[macro_use]
 extern crate corrent_i18n;
 
+pub mod agent;
 pub mod auth;
 pub mod error;
 pub mod event;

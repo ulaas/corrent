@@ -5,6 +5,7 @@
 //! the session's CSRF token in `X-Corrent-CSRF`. Errors are `ApiError` JSON with a stable code.
 
 mod admin;
+mod agent;
 mod auth;
 pub(crate) mod cast;
 mod devices;
@@ -232,6 +233,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(radio::routes())
         .merge(lists::routes())
         .merge(me::routes())
+        .merge(agent::routes())
         .route("/events", axum::routing::get(events::events))
         .fallback(|| async { err(ErrorCode::NotFound, "no such endpoint") })
 }

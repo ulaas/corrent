@@ -821,3 +821,45 @@ fn identify_dialog_searches_and_explains_missing_keys() {
     h.run_steps(2);
     assert!(h.query_by_label_contains("Nothing found").is_none());
 }
+
+/// Media → AI agent: how to connect, and a proposal an agent made, approved from the page.
+#[test]
+fn agent_page_shows_a_proposal_and_approves_it() {
+    let (f, mut app) = app("agent-page", vec![]);
+    let movies = f.dir.join("Movies/Sintl (2010)");
+    std::fs::create_dir_all(&movies).unwrap();
+    std::fs::write(movies.join("Sintl.2010.mkv"), b"not really a movie").unwrap();
+    app.main_view = super::feeds::MainView::Media;
+    let mut h = harness(app);
+    step_until(&mut h, "the in-process server", |h| h.state().media.client.is_some());
+    let client = h.state().media.client.clone().unwrap();
+    let rt = f.rt.as_ref().unwrap();
+    let lib: corrent_proto::library::Library = rt
+        .block_on(client.send(
+            reqwest::Method::POST,
+            "/api/v1/libraries",
+            &serde_json::json!({ "name": "Films", "kind": "movies", "folders": [f.dir.join("Movies")] }),
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let id = loop {
+        let page: serde_json::Value = rt.block_on(client.get(&format!("/api/v1/items?library_id={}", lib.id))).unwrap();
+        if let Some(id) = page["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline, "scan: {page}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    // What an agent would send.
+    let call = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "propose_details", "arguments": { "item_id": id, "title": "Sintel", "reason": "typo" } } });
+    let r: serde_json::Value = rt.block_on(client.send(reqwest::Method::POST, "/api/v1/mcp", &call)).unwrap();
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    h.state_mut().open_media_page(super::media::Page::Agent);
+    step_until(&mut h, "the proposal", |h| h.query_by_label_contains("Sintel").is_some());
+    h.get_by_label_contains("claude mcp add corrent");
+    h.get_by_label_contains("Approve").click();
+    step_until(&mut h, "approved", |h| h.query_by_label_contains("Nothing to decide").is_some());
+    let d: serde_json::Value = rt.block_on(client.get(&format!("/api/v1/items/{id}"))).unwrap();
+    assert_eq!(d["title"], "Sintel");
+}

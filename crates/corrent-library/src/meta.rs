@@ -332,6 +332,31 @@ impl Library {
         Ok(())
     }
 
+    /// Movies and shows no provider identified (for AI agents): id, title, year, kind, library.
+    pub async fn unmatched(&self, library_id: Option<i64>, limit: i64) -> Result<Vec<serde_json::Value>> {
+        Ok(self
+            .db()
+            .read(move |c| {
+                let mut st = c.prepare(
+                    "SELECT id, title, year, kind, library_id FROM items \
+                     WHERE kind IN ('movie', 'show') AND (?1 IS NULL OR library_id = ?1) \
+                     AND (json_extract(extra, '$.meta_provider') = '' OR json_extract(extra, '$.meta_checked') IS NULL) \
+                     ORDER BY added_at DESC LIMIT ?2",
+                )?;
+                let rows = st.query_map(params![library_id, limit], |r| {
+                    Ok(serde_json::json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "title": r.get::<_, String>(1)?,
+                        "year": r.get::<_, Option<i64>>(2)?,
+                        "kind": r.get::<_, String>(3)?,
+                        "library_id": r.get::<_, i64>(4)?,
+                    }))
+                })?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .await?)
+    }
+
     /// Items no provider matched are asked again (after a provider became usable). Returns how
     /// many.
     pub async fn reset_unmatched(&self) -> Result<usize> {

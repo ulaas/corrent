@@ -74,6 +74,8 @@ pub struct AppState {
     pub remote_status: ArcSwap<corrent_proto::server::RemoteStatus>,
     /// Set when a hosted server stops: its background tasks end (they hold the state).
     pub stopping: tokio::sync::watch::Sender<bool>,
+    /// Bumped when an AI agent proposes something or a proposal is decided.
+    pub agent_changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl AppState {

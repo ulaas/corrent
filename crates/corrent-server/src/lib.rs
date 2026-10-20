@@ -17,6 +17,7 @@ pub mod events;
 /// Wire event types, re-exported for hosts.
 pub use corrent_proto::event as events_api;
 pub mod acme;
+pub mod agent;
 pub mod backups;
 pub mod identity;
 pub mod integrate;
@@ -158,6 +159,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         plugins: plugin_host,
         metadata_slot: Default::default(),
         stopping: tokio::sync::watch::Sender::new(false),
+        agent_changed: tokio::sync::watch::Sender::new(0),
         remote: Default::default(),
         tasks: Default::default(),
         rooms: Default::default(),

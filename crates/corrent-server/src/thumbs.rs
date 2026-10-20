@@ -21,6 +21,31 @@ pub async fn frame(st: &AppState, path: &str, at_secs: f64) -> Result<Vec<u8>, S
     corrent_transcode::frame::extract(path, at_secs, WIDTH, corrent_mpv::worker_path(), &tmp).await
 }
 
+/// Takes the frame at `at` seconds (default: the automatic position) of an item's video as its
+/// `kind` image (`thumb` or `poster`), `lock`ed or not; a movie without a real poster shows a new
+/// thumbnail there too. Returns whether it was stored.
+pub async fn frame_as_image(
+    st: &AppState,
+    user: i64,
+    item: i64,
+    at: Option<f64>,
+    kind: &str,
+    lock: bool,
+) -> Result<bool, String> {
+    if !matches!(kind, "thumb" | "poster") {
+        return Err("kind must be thumb or poster".into());
+    }
+    let (_, path) = st.library.main_file(user, item).await.map_err(|e| e.to_string())?;
+    let d = st.library.item(user, item).await.map_err(|e| e.to_string())?;
+    let episode = d.item.kind == corrent_proto::library::ItemKind::Episode;
+    let at = at.unwrap_or_else(|| corrent_transcode::frame::position_secs(d.item.runtime_ms, episode));
+    let img = frame(st, &path, at).await?;
+    if kind == "thumb" && d.item.kind == corrent_proto::library::ItemKind::Movie {
+        let _ = st.library.set_artwork(item, "poster", img.clone(), FRAME, Replace::IfMissingOrFrame, false).await;
+    }
+    st.library.set_artwork(item, kind, img, FRAME, Replace::Always, lock).await.map_err(|e| e.to_string())
+}
+
 /// One pass over the videos that have no thumbnail yet (one at a time, server-wide).
 pub async fn run(st: &Arc<AppState>) -> Result<String, String> {
     let _one = st.thumb_slot.lock().await;

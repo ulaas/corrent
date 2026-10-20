@@ -33,6 +33,10 @@ pub fn version_text() -> String {
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
+    // An AI agent's MCP client talking to this profile's running app over stdin/stdout.
+    if flag("--mcp") {
+        std::process::exit(mcp_bridge(&Paths::resolve(flag("--portable"))));
+    }
     // Before anything touches the profile.
     if flag("--version") || flag("-V") {
         #[cfg(windows)]
@@ -62,6 +66,7 @@ fn main() -> eframe::Result {
         println!("  --unregister   remove the handler registration");
         println!("  --status       print handler registration status");
         println!("  --write-icons <dir>  write the app icon set to a folder");
+        println!("  --mcp          serve AI agents (MCP over stdin/stdout) from the running Corrent");
         println!("  --version      print the version and the commit it was built from");
         println!("  -h, --help     show this help");
         return Ok(());
@@ -241,6 +246,55 @@ fn handler_cli(register: bool, unregister: bool) -> i32 {
     println!("magnet:   {}", st.magnet.label());
     println!(".torrent: {}", st.torrent.label());
     i32::from(result.is_err())
+}
+
+/// `corrent --mcp`: an MCP server over stdin/stdout for AI agents (Claude Desktop, Claude Code…)
+/// that forwards each message to the running app's server (`mcp.json` in the profile says where).
+/// One JSON-RPC message per line in each direction. Returns the exit code.
+fn mcp_bridge(paths: &Paths) -> i32 {
+    use std::io::Write;
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return 1 };
+    let http = reqwest::Client::new();
+    let link = corrent_server::local::agent_link_file(&paths.data_dir);
+    let mut out = std::io::stdout();
+    for line in std::io::stdin().lines() {
+        let Ok(line) = line else { break };
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line.trim()) else { continue };
+        let id = msg.get("id").cloned();
+        // Read every time: the app may have restarted on another port.
+        let target = std::fs::read(&link)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| Some((v.get("url")?.as_str()?.to_string(), v.get("token")?.as_str()?.to_string())));
+        let answer = rt.block_on(async {
+            let (url, token) = target.ok_or("Corrent isn't running (start it, then try again)")?;
+            let res = http
+                .post(format!("{url}/api/v1/mcp"))
+                .bearer_auth(token)
+                .header(reqwest::header::ACCEPT, "application/json, text/event-stream")
+                .json(&msg)
+                .send()
+                .await
+                .map_err(|_| "Corrent isn't running (start it, then try again)")?;
+            if res.status() == reqwest::StatusCode::ACCEPTED {
+                return Ok(None);
+            }
+            let v: serde_json::Value = res.json().await.map_err(|_| "Corrent's answer wasn't JSON")?;
+            Ok::<_, &str>(Some(v))
+        });
+        let reply = match answer {
+            Ok(v) => v,
+            // Only requests (with an id) get an error back.
+            Err(e) => id
+                .map(|id| serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": e } })),
+        };
+        if let Some(v) = reply
+            && writeln!(out, "{v}").and_then(|_| out.flush()).is_err()
+        {
+            break;
+        }
+    }
+    0
 }
 
 /// Release builds use the GUI subsystem; reattach to the parent console for CLI output.

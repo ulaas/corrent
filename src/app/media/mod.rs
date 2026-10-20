@@ -3,6 +3,7 @@
 //! The app hosts the media server in-process (loopback only) and talks to it through the same
 //! API as remote clients, so the pages work identically against a remote server.
 
+pub mod agent;
 pub mod cast;
 pub mod client;
 pub mod downloads;
@@ -53,6 +54,8 @@ pub enum Page {
     Playlist(i64, bool),
     /// Every item of a home row ("See all"), by the row's id.
     Row(String),
+    /// AI agents: connecting one, and the changes they propose.
+    Agent,
 }
 
 const PAGE: i64 = 120;
@@ -97,6 +100,8 @@ pub struct MediaState {
     identify: Option<identify::Identify>,
     /// Settings → Metadata.
     pub providers: providers::ProvidersUi,
+    /// Media → AI agent.
+    pub agent: agent::AgentUi,
     remove_library: Option<(i64, String)>,
     /// The user's client preferences on the server (home row order and hidden rows).
     user_prefs: Option<Slot<serde_json::Value>>,
@@ -269,6 +274,8 @@ impl CorrentApp {
                     self.open(Page::Library(id));
                 } else if let Some(row) = page.strip_prefix("row:") {
                     self.open(Page::Row(row.to_string()));
+                } else if page == "agent" {
+                    self.open(Page::Agent);
                 }
             }
             if let Some(id) = std::env::var("CORRENT_DEV_ITEM").ok().and_then(|v| v.parse().ok()) {
@@ -490,6 +497,13 @@ impl CorrentApp {
         }
     }
 
+    /// Tests: show a media page.
+    #[cfg(test)]
+    pub(crate) fn open_media_page(&mut self, page: Page) {
+        self.main_view = super::feeds::MainView::Media;
+        self.open(page);
+    }
+
     /// Back one page (Home when there is no history).
     pub(super) fn media_back(&mut self) {
         self.media.page = Some(self.media.back.pop().unwrap_or(Page::Home));
@@ -663,6 +677,7 @@ impl CorrentApp {
                     Page::Playlists => self.playlists_page(ui, p, &client),
                     Page::Playlist(id, col) => self.playlist_page(ui, p, &client, id, col),
                     Page::Row(ref row) => self.row_page(ui, p, &client, row),
+                    Page::Agent => self.agent_page(ui, p, &client),
                 }
                 ui.add_space(24.0);
                 if let Some(r) = self.media.focus_rect.take() {
@@ -729,6 +744,7 @@ impl CorrentApp {
                 Page::Radio => t!("Radio").to_string(),
                 Page::Playlists => t!("Playlists").to_string(),
                 Page::Playlist(..) => String::new(),
+                Page::Agent => t!("AI agent").to_string(),
                 Page::Row(id) => self
                     .media
                     .home
@@ -1896,6 +1912,25 @@ impl CorrentApp {
         {
             self.main_view = super::feeds::MainView::Media;
             self.open(Page::Libraries);
+        }
+        // Proposals waiting show as a count.
+        if let Some(c) = self.media.client.clone() {
+            self.agent_tick(&c, in_media && page == Page::Agent);
+        }
+        let waiting = self.media.agent.pending();
+        if super::sidebar::row(
+            ui,
+            p,
+            icons::SPARKLE,
+            if waiting > 0 { p.accent } else { p.text_mute },
+            t!("AI agent"),
+            (waiting > 0).then_some(waiting),
+            in_media && page == Page::Agent,
+        )
+        .clicked()
+        {
+            self.main_view = super::feeds::MainView::Media;
+            self.open(Page::Agent);
         }
         ui.add_space(10.0);
     }

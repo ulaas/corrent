@@ -2939,3 +2939,120 @@ async fn items_wait_for_a_provider_and_are_identified_once_one_is_ready() {
     assert_eq!(d["extra"]["ratings"], json!({ "imdb": "7.4", "rotten_tomatoes": "85%" }), "{d}");
     h.stop().await;
 }
+
+/// An AI agent over MCP: it reads the library, proposes a change, and nothing changes until a
+/// person approves it (then the fields stay as approved); a rejected proposal changes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_proposes_and_a_person_decides() {
+    let h = harness("agent", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let movies = h.dir.join("dl/Movies");
+    std::fs::create_dir_all(movies.join("Sintl (2010)")).unwrap();
+    std::fs::write(movies.join("Sintl (2010)/Sintl.2010.mkv"), b"not really a movie").unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Movies", "kind": "movies", "folders": [movies] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let item = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if let Some(id) = v["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline, "scanned: {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let rpc = |id: i64, method: &str, params: Value| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+    // Handshake.
+    let (s, r, headers) = send(app, Method::POST, "/api/v1/mcp", &admin, rpc(1, "initialize", json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "1" } }))).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["result"]["protocolVersion"], "2025-06-18");
+    assert!(r["result"]["capabilities"]["tools"].is_object());
+    assert!(headers.get("mcp-session-id").is_some());
+    let (s, _, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/mcp",
+        &admin,
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "a notification has no answer");
+    // Tools.
+    let (_, r, _) = send(app, Method::POST, "/api/v1/mcp", &admin, rpc(2, "tools/list", json!({}))).await;
+    let names: Vec<&str> = r["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+    for n in ["list_libraries", "search_items", "get_item", "propose_details", "propose_import"] {
+        assert!(names.contains(&n), "{names:?}");
+    }
+    let call = |id: i64, name: &str, args: Value| rpc(id, "tools/call", json!({ "name": name, "arguments": args }));
+    let (_, r, _) =
+        send(app, Method::POST, "/api/v1/mcp", &admin, call(3, "search_items", json!({ "library_id": lib }))).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("Sintl"), "{r}");
+    let (_, r, _) = send(app, Method::POST, "/api/v1/mcp", &admin, call(4, "list_unmatched", json!({}))).await;
+    assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains(&format!("\"id\": {item}")), "{r}");
+    // A proposal: nothing changes yet.
+    let (_, r, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/mcp",
+        &admin,
+        call(5, "propose_details", json!({ "item_id": item, "title": "Sintel", "reason": "typo in the folder name" })),
+    )
+    .await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let (_, d, _) = get(app, &format!("/api/v1/items/{item}"), &admin).await;
+    assert_eq!(d["title"], "Sintl");
+    let (_, list, _) = get(app, "/api/v1/agent/proposals?pending=true", &admin).await;
+    let p = &list[0];
+    assert_eq!(p["status"], "pending");
+    assert!(
+        p["summary"].as_str().unwrap().contains("Sintel") && p["summary"].as_str().unwrap().contains("typo"),
+        "{p}"
+    );
+    // Approved: applied, and the title is kept from now on.
+    let (s, done, _) =
+        send(app, Method::POST, &format!("/api/v1/agent/proposals/{}/approve", p["id"]), &admin, json!({})).await;
+    assert_eq!((s, done["status"].as_str()), (StatusCode::OK, Some("applied")), "{done}");
+    let (_, d, _) = get(app, &format!("/api/v1/items/{item}"), &admin).await;
+    assert_eq!(d["title"], "Sintel");
+    assert!(d["locked_fields"].as_array().unwrap().iter().any(|f| f == "title"), "{d}");
+    let (s, _, _) =
+        send(app, Method::POST, &format!("/api/v1/agent/proposals/{}/approve", p["id"]), &admin, json!({})).await;
+    assert_eq!(s, StatusCode::CONFLICT, "decided once");
+    // Rejected: nothing changes.
+    let (_, r, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/mcp",
+        &admin,
+        call(6, "propose_details", json!({ "item_id": item, "year": 1999 })),
+    )
+    .await;
+    let id =
+        serde_json::from_str::<Value>(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap()["proposal"].clone();
+    let (_, done, _) =
+        send(app, Method::POST, &format!("/api/v1/agent/proposals/{id}/reject"), &admin, json!({})).await;
+    assert_eq!(done["status"], "rejected");
+    let (_, d, _) = get(app, &format!("/api/v1/items/{item}"), &admin).await;
+    assert_eq!(d["year"], 2010);
+    // Bad input is an error the agent can read, not a failure of the protocol.
+    let (_, r, _) = send(app, Method::POST, "/api/v1/mcp", &admin, call(7, "get_item", json!({}))).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    let (_, r, _) = send(app, Method::POST, "/api/v1/mcp", &admin, rpc(8, "no/such", json!({}))).await;
+    assert_eq!(r["error"]["code"], -32601);
+    // Without a token: nothing.
+    let (s, _, _) = call_anon(app, Method::POST, "/api/v1/mcp", rpc(9, "tools/list", json!({}))).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    h.stop().await;
+}
+
+async fn call_anon(app: &Router, method: Method, uri: &str, body: Value) -> (StatusCode, Value, HeaderMap) {
+    call(app, method, uri, Call { body: Some(body), ..Default::default() }).await
+}

@@ -346,20 +346,12 @@ async fn thumbnail_from_frame(
     if !matches!(kind, "thumb" | "poster") {
         return Err(err(ErrorCode::BadRequest, "kind must be thumb or poster"));
     }
-    let (_, path) = st.library.main_file(auth.0.user.id, id).await.map_err(lib_err)?;
-    let d = st.library.item(auth.0.user.id, id).await.map_err(lib_err)?;
-    let at = match req.at_ms {
-        Some(ms) => ms.max(0) as f64 / 1000.0,
-        None => corrent_transcode::frame::position_secs(d.item.runtime_ms, d.item.kind == ItemKind::Episode),
-    };
-    let jpg = crate::thumbs::frame(&st, &path, at).await.map_err(|e| err(ErrorCode::Internal, e))?;
-    let lock = req.lock.unwrap_or(true);
-    use corrent_library::meta::{FRAME, Replace};
-    // A movie without a real poster shows the chosen frame there too (providers may replace it).
-    if kind == "thumb" && d.item.kind == ItemKind::Movie {
-        let _ = st.library.set_artwork(id, "poster", jpg.clone(), FRAME, Replace::IfMissingOrFrame, false).await;
-    }
-    let stored = st.library.set_artwork(id, kind, jpg, FRAME, Replace::Always, lock).await.map_err(lib_err)?;
+    // An item that isn't there (or has no file) is a 404 before any decoding.
+    st.library.main_file(auth.0.user.id, id).await.map_err(lib_err)?;
+    let at = req.at_ms.map(|ms| ms.max(0) as f64 / 1000.0);
+    let stored = crate::thumbs::frame_as_image(&st, auth.0.user.id, id, at, kind, req.lock.unwrap_or(true))
+        .await
+        .map_err(|e| err(ErrorCode::Internal, e))?;
     Ok(Json(serde_json::json!({ "stored": stored })))
 }
 

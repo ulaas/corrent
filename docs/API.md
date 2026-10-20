@@ -241,6 +241,10 @@ bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a sess
 | POST | `/api/v1/torrents/{hash}/files` |
 | POST | `/api/v1/torrents/{hash}/trackers` |
 | POST | `/api/v1/torrents/{hash}/import` |
+| POST GET DELETE | `/api/v1/mcp` |
+| GET | `/api/v1/agent/proposals` |
+| POST | `/api/v1/agent/proposals/{id}/approve` |
+| POST | `/api/v1/agent/proposals/{id}/reject` |
 
 ### RSS
 
