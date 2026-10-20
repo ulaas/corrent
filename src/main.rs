@@ -130,6 +130,7 @@ fn main() -> eframe::Result {
         tracing::warn!("{note}");
     }
     let restore_note = backup::apply_pending(&paths);
+    corrent_core::retention::sweep_temp_files(&paths);
     corrent_core::retention::prune_in_background(&paths);
     // A media-server restore staged from the web interface replaces settings.toml too, so it goes
     // before the settings are read.

@@ -498,6 +498,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     if let Some(note) = corrent_core::backup::apply_pending(&paths) {
         tracing::info!("{note}");
     }
+    corrent_core::retention::sweep_temp_files(&paths);
     corrent_core::retention::prune_in_background(&paths);
     let (settings, _first_run, warning) = Settings::load(&paths);
     if let Some(w) = warning {

@@ -33,7 +33,9 @@ pub fn backup_before_migration(file: &Path, from: u32) -> Option<PathBuf> {
         return Some(existing.path());
     }
     let copy = file.with_extension(format!("{ext}.v{from}-{}", crate::util::now_unix()));
-    std::fs::copy(file, &copy).ok().map(|_| copy)
+    // Through a temp file: a copy cut off by a crash would count as the backup on the next start.
+    let bytes = std::fs::read(file).ok()?;
+    crate::util::write_replace(&copy, &bytes).ok().map(|()| copy)
 }
 
 /// Bring settings from schema `from` to the current version. Returns true if anything changed.

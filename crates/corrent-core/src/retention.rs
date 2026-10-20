@@ -84,6 +84,27 @@ pub fn prune_at(paths: &Paths, now: u64) -> Pruned {
     out
 }
 
+/// Remove the temp files a crash left behind (`<name>.tmp`, written before a rename), in the
+/// data folder and the folders Corrent writes atomically into. Call it at start, before the
+/// engine or the writer runs: then no `.tmp` file belongs to a write in progress
+/// (STABILITY.md D8).
+pub fn sweep_temp_files(paths: &Paths) -> usize {
+    let dirs = [paths.data_dir.clone(), paths.session_dir(), paths.torrents_dir(), paths.data_dir.join("ipfilter")];
+    let mut n = 0;
+    for dir in dirs {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let is_file = e.file_type().is_ok_and(|t| t.is_file());
+            if is_file && e.file_name().to_string_lossy().ends_with(".tmp") && std::fs::remove_file(e.path()).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    if n > 0 {
+        tracing::info!("removed {n} temp files left by an interrupted save");
+    }
+    n
+}
+
 /// [`prune_at`] now, logging what was removed.
 pub fn prune(paths: &Paths) -> Pruned {
     let out = prune_at(paths, u64::try_from(crate::util::now_unix()).unwrap_or(0));
@@ -164,6 +185,33 @@ mod tests {
         let out = prune_at(&paths, NOW);
         assert_eq!(out.removed.len(), 3, "only the old ones beyond the newest 3");
         assert_eq!(names(&d).len(), 5);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn temp_files_from_interrupted_saves_are_swept() {
+        let (d, paths) = dir("tmp");
+        for sub in ["session", "torrents", "ipfilter", "logs"] {
+            std::fs::create_dir_all(d.join(sub)).unwrap();
+        }
+        for f in [
+            "store.json.tmp",
+            "settings.toml.bak.tmp",
+            "session/session.json.tmp",
+            "session/ab.bitv.tmp",
+            "torrents/ab.torrent.tmp",
+            "ipfilter/blocklist-download.txt.tmp",
+        ] {
+            std::fs::write(d.join(f), "x").unwrap();
+        }
+        // Not Corrent's temp files, or not in its folders.
+        for f in ["store.json", "notes.tmp.txt", "logs/x.tmp"] {
+            std::fs::write(d.join(f), "x").unwrap();
+        }
+        std::fs::create_dir_all(d.join("folder.tmp")).unwrap();
+        assert_eq!(sweep_temp_files(&paths), 6);
+        assert!(d.join("store.json").exists() && d.join("notes.tmp.txt").exists() && d.join("logs/x.tmp").exists());
+        assert!(d.join("folder.tmp").is_dir());
         let _ = std::fs::remove_dir_all(d);
     }
 
