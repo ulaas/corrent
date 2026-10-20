@@ -713,6 +713,7 @@
 "The files of {name} are split between {old} and {new} ({e}). Put them in one folder and restart Corrent; the torrent will be added back." = "{name} dosyaları {old} ile {new} arasında bölünmüş durumda ({e}). Bunları tek bir klasöre koyup Corrent'i yeniden başlatın; torrent geri eklenecek."
 "The previous data was kept in {path}." = "Önceki veriler {path} konumunda saklandı."
 "The torrent contains a file name this system can't store safely: {name}" = "Torrent, bu sistemin güvenle saklayamayacağı bir dosya adı içeriyor: {name}"
+"The torrent contains a path that is too deep or too long: {path}…" = "Torrent çok derin veya çok uzun bir yol içeriyor: {path}…"
 "The torrent engine hasn't responded for {secs} seconds. If this doesn't clear up, restart Corrent." = "Torrent motoru {secs} saniyedir yanıt vermiyor. Düzelmezse Corrent'i yeniden başlatın."
 "The torrent engine stopped unexpectedly" = "Torrent motoru beklenmedik şekilde durdu"
 "The torrent is briefly re-added; its data is re-verified (not re-downloaded)." = "Torrent kısa süreliğine yeniden eklenir; verileri yeniden doğrulanır (yeniden indirilmez)."

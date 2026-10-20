@@ -33,6 +33,10 @@ pub fn is_reserved(name: &str) -> bool {
     RESERVED.iter().any(|r| r.eq_ignore_ascii_case(stem))
 }
 
+/// Folders a file may be nested in, and the length of its path inside the torrent.
+pub const MAX_COMPONENTS: usize = 64;
+pub const MAX_PATH_BYTES: usize = 4096;
+
 /// Check every file of a torrent (each as its path components) against `rules`.
 pub fn check_torrent_paths<I>(files: I, rules: Rules) -> Result<(), String>
 where
@@ -42,6 +46,13 @@ where
     for components in files {
         for c in &components {
             check_component(c, rules)?;
+        }
+        // Everywhere: no file system takes paths this long (Linux: 4096 bytes), and the folder
+        // tree in the UI would nest that deep.
+        let joined: usize = components.iter().map(|c| c.len() + 1).sum();
+        if components.len() > MAX_COMPONENTS || joined > MAX_PATH_BYTES {
+            let shown: String = components.join("/").chars().take(120).collect();
+            return Err(t!("The torrent contains a path that is too deep or too long: {path}…", path = shown));
         }
         if rules.case_insensitive {
             let key = components
@@ -139,6 +150,17 @@ mod tests {
             assert_eq!(check_torrent_paths(files(&[&[name]]), MAC), Ok(()), "{name}");
         }
         assert!(check_torrent_paths(files(&[&["a\nb"]]), LINUX).is_err(), "control characters everywhere");
+    }
+
+    #[test]
+    fn paths_too_deep_or_too_long_are_refused() {
+        let deep: Vec<String> = (0..=MAX_COMPONENTS).map(|i| format!("d{i}")).collect();
+        let err = check_torrent_paths(vec![deep], LINUX).unwrap_err();
+        assert!(err.contains("too deep or too long"), "{err}");
+        let ok: Vec<String> = (0..MAX_COMPONENTS).map(|i| format!("d{i}")).collect();
+        assert_eq!(check_torrent_paths(vec![ok], LINUX), Ok(()));
+        let long = vec!["a".repeat(200); 30];
+        assert!(check_torrent_paths(vec![long], LINUX).is_err(), "6 KB of path");
     }
 
     #[test]

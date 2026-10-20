@@ -27,23 +27,29 @@ pub fn priority_label(p: i8) -> &'static str {
     }
 }
 
+/// Folders shown nested; deeper ones are shown as a path on the file's row. The tree is drawn
+/// recursively on the UI thread (1 MiB of stack on Windows), and a torrent already in the list
+/// may have any depth (new ones are checked, `engine::paths`).
+const MAX_TREE_DEPTH: usize = 64;
+
 #[derive(Default)]
 struct Node {
     dirs: BTreeMap<String, Node>,
-    files: Vec<usize>, // indices into entries
+    /// (index into entries, how many of its components are folders above it in the tree).
+    files: Vec<(usize, usize)>,
 }
 
 impl Node {
-    fn insert(&mut self, comps: &[String], entry_idx: usize) {
-        if comps.len() <= 1 {
-            self.files.push(entry_idx);
+    fn insert(&mut self, comps: &[String], at: usize, entry_idx: usize) {
+        if comps.len() - at <= 1 || at >= MAX_TREE_DEPTH {
+            self.files.push((entry_idx, at));
         } else {
-            self.dirs.entry(comps[0].clone()).or_default().insert(&comps[1..], entry_idx);
+            self.dirs.entry(comps[at].clone()).or_default().insert(comps, at + 1, entry_idx);
         }
     }
 
     fn collect(&self, out: &mut Vec<usize>) {
-        out.extend(&self.files);
+        out.extend(self.files.iter().map(|f| f.0));
         for d in self.dirs.values() {
             d.collect(out);
         }
@@ -101,7 +107,9 @@ pub fn show(
         if !filter.is_empty() && !e.components.join("/").to_lowercase().contains(&filter) {
             continue;
         }
-        root.insert(e.components, i);
+        if !e.components.is_empty() {
+            root.insert(e.components, 0, i);
+        }
     }
     let mut change = TreeChange { set: Vec::new(), priority: Vec::new() };
     show_node(ui, p, id, &root, entries, checked, editable, !filter.is_empty(), &mut change);
@@ -158,9 +166,11 @@ fn show_node(
             });
         }
     }
-    for &i in &node.files {
+    for &(i, at) in &node.files {
         let e = &entries[i];
-        let name = e.components.last().map(String::as_str).unwrap_or("");
+        // The rest of the path for a file kept at MAX_TREE_DEPTH (usually just its name).
+        let name = e.components[at.min(e.components.len())..].join("/");
+        let name = name.as_str();
         let row = ui.horizontal(|ui| {
             ui.add_space(18.0);
             let mut on = checked(e.index);
@@ -238,14 +248,66 @@ mod tests {
             vec![vec!["a".into(), "x.txt".into()], vec!["a".into(), "b".into(), "y.txt".into()], vec!["z.txt".into()]];
         let mut root = Node::default();
         for (i, c) in comps.iter().enumerate() {
-            root.insert(c, i);
+            root.insert(c, 0, i);
         }
-        assert_eq!(root.files, vec![2]);
+        assert_eq!(root.files, vec![(2, 0)]);
         let a = &root.dirs["a"];
-        assert_eq!(a.files, vec![0]);
+        assert_eq!(a.files, vec![(0, 1)]);
         let mut all = Vec::new();
         root.collect(&mut all);
         all.sort();
         assert_eq!(all, vec![0, 1, 2]);
+    }
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+
+    fn deep(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("d{i}")).collect()
+    }
+
+    #[test]
+    fn deep_paths_stop_nesting_at_the_cap() {
+        let comps = deep(10_000);
+        let mut root = Node::default();
+        root.insert(&comps, 0, 0);
+        let (mut node, mut levels) = (&root, 0);
+        while let Some(d) = node.dirs.values().next() {
+            node = d;
+            levels += 1;
+        }
+        assert_eq!(levels, MAX_TREE_DEPTH);
+        assert_eq!(node.files, vec![(0, MAX_TREE_DEPTH)]);
+        let mut all = Vec::new();
+        root.collect(&mut all);
+        assert_eq!(all, vec![0], "folder toggles still reach it");
+    }
+
+    #[test]
+    fn a_deep_tree_draws_on_a_small_stack() {
+        // The Windows UI thread has 1 MiB of stack; a debug build has big frames.
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(|| {
+                let comps = deep(10_000);
+                let entries =
+                    [Entry { index: 0, components: &comps, len: 1, done: None, priority: None, streaming: false }];
+                let p = crate::ui::theme::Palette::dark(egui::Color32::from_rgb(0x4a, 0x9e, 0xff));
+                let mut h = egui_kittest::Harness::new_ui(|ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        show(ui, &p, Id::new("tree"), &entries, &|_| true, "", false);
+                    });
+                });
+                h.run();
+                // The rest of the path is on the file's row.
+                let rest = comps[MAX_TREE_DEPTH..].join("/");
+                assert!(h.query_by_label(&rest).is_some());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
