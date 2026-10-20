@@ -106,7 +106,7 @@ pub struct Actor {
     snapshot: Arc<ArcSwap<Snapshot>>,
     internal_tx: mpsc::UnboundedSender<Internal>,
     internal_rx: Option<mpsc::UnboundedReceiver<Internal>>,
-    self_tx: mpsc::UnboundedSender<EngineCommand>,
+    self_tx: mpsc::Sender<EngineCommand>,
 
     session: Option<Arc<Session>>,
     api: Option<Api>,
@@ -199,7 +199,7 @@ impl Actor {
         wake: Wake,
         events: std::sync::mpsc::Sender<EngineEvent>,
         snapshot: Arc<ArcSwap<Snapshot>>,
-        self_tx: mpsc::UnboundedSender<EngineCommand>,
+        self_tx: mpsc::Sender<EngineCommand>,
     ) -> Self {
         let generation = snapshot.load().generation;
         let (internal_tx, internal_rx) = mpsc::unbounded_channel();
@@ -279,7 +279,7 @@ impl Actor {
         }
     }
 
-    pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<EngineCommand>) {
+    pub async fn run(mut self, mut rx: mpsc::Receiver<EngineCommand>) {
         let Some(mut internal_rx) = self.internal_rx.take() else {
             tracing::error!("engine actor started twice");
             return;
@@ -534,7 +534,7 @@ impl Actor {
                                 ));
                             }
                             // The normal add path records added date, name and queue position.
-                            let _ = self_tx.send(EngineCommand::Add(Box::new(add)));
+                            let _ = self_tx.send(EngineCommand::Add(Box::new(add))).await;
                         }
                         anyhow::Ok((
                             created.name,
@@ -1435,8 +1435,12 @@ impl Actor {
     fn maybe_apply_deferred(&mut self) {
         if self.busy.is_empty()
             && let Some(s) = self.deferred_settings.take()
+            && let Err(mpsc::error::TrySendError::Full(EngineCommand::ApplySettings(s))) =
+                self.self_tx.try_send(EngineCommand::ApplySettings(s))
         {
-            let _ = self.self_tx.send(EngineCommand::ApplySettings(s));
+            // The actor's own queue is full: try again on the next tick (waiting here would
+            // deadlock, the actor is the one that empties it).
+            self.deferred_settings = Some(s);
         }
     }
 

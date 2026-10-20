@@ -503,9 +503,14 @@ async fn add(State(st): St, req: Request) -> Response {
     if sources.is_empty() {
         return "Fails.".into_response();
     }
+    // A stuck or flooded engine: refuse instead of queueing more (STABILITY.md F11).
+    let busy = || (StatusCode::SERVICE_UNAVAILABLE, "Corrent is busy, try again later").into_response();
+    if st.engine.queued() >= crate::engine::API_ADD_QUEUE {
+        return busy();
+    }
     for source in sources {
         tracing::info!("web API: adding {}", source.describe());
-        st.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        let queued = st.engine.send(EngineCommand::Add(Box::new(AddRequest {
             source,
             torrent_bytes: None,
             save_path: save_path.clone(),
@@ -518,6 +523,9 @@ async fn add(State(st): St, req: Request) -> Response {
             initial_peers: None,
             added_by: None,
         })));
+        if !queued {
+            return busy();
+        }
     }
     ok()
 }

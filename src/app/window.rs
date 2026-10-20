@@ -49,9 +49,15 @@ impl CorrentApp {
                     }
                 }
                 TrayAction::ShowWindow => self.show_window(ctx),
-                TrayAction::PauseAll => self.engine.send(EngineCommand::PauseAll),
-                TrayAction::ResumeAll => self.engine.send(EngineCommand::ResumeAll),
-                TrayAction::AltSpeed => self.engine.send(EngineCommand::SetAltSpeed(!self.snap.session.alt_speed)),
+                TrayAction::PauseAll => {
+                    self.engine.send(EngineCommand::PauseAll);
+                }
+                TrayAction::ResumeAll => {
+                    self.engine.send(EngineCommand::ResumeAll);
+                }
+                TrayAction::AltSpeed => {
+                    self.engine.send(EngineCommand::SetAltSpeed(!self.snap.session.alt_speed));
+                }
                 TrayAction::Settings => {
                     self.show_window(ctx);
                     self.open_settings();

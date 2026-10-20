@@ -245,8 +245,17 @@ pub fn free_space_for(path: &std::path::Path) -> Option<u64> {
 /// Commands queued while the engine is down, replayed after a restart.
 const BACKLOG_CAP: usize = 256;
 
+/// Commands waiting for the engine, at most (STABILITY.md F11). The actor takes one per loop
+/// turn, so a full queue means it is stuck or flooded: callers are refused instead of growing
+/// memory without end (the GUI shows a "busy" toast, the APIs answer 503).
+pub const COMMAND_QUEUE: usize = 1024;
+
+/// Adds from the APIs are refused once this many commands wait (each can carry a 32 MiB
+/// .torrent).
+pub const API_ADD_QUEUE: usize = 16;
+
 struct Inner {
-    tx: mpsc::UnboundedSender<EngineCommand>,
+    tx: mpsc::Sender<EngineCommand>,
     task: tokio::task::JoinHandle<()>,
     backlog: std::collections::VecDeque<EngineCommand>,
     stopping: bool,
@@ -272,7 +281,7 @@ impl Wake {
 /// What an engine backend gets: its commands, where to publish snapshots, how to wake the
 /// reader, and where to send events.
 pub struct BackendIo {
-    pub commands: mpsc::UnboundedReceiver<EngineCommand>,
+    pub commands: mpsc::Receiver<EngineCommand>,
     pub snapshot: Arc<ArcSwap<Snapshot>>,
     pub wake: Wake,
     pub events: std::sync::mpsc::Sender<EngineEvent>,
@@ -293,6 +302,8 @@ pub struct EngineHandle {
     wake: Wake,
     events: std::sync::mpsc::Sender<EngineEvent>,
     backend: Option<Backend>,
+    /// Commands refused because the queue was full (see [`Self::refused`]).
+    refused: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl EngineHandle {
@@ -313,6 +324,7 @@ impl EngineHandle {
             wake,
             events,
             backend: None,
+            refused: Default::default(),
         }
     }
 
@@ -334,6 +346,7 @@ impl EngineHandle {
             wake,
             events,
             backend: Some(backend),
+            refused: Default::default(),
         }
     }
 
@@ -348,8 +361,8 @@ impl EngineHandle {
         wake: &Wake,
         events: &std::sync::mpsc::Sender<EngineEvent>,
         snapshot: &Arc<ArcSwap<Snapshot>>,
-    ) -> (mpsc::UnboundedSender<EngineCommand>, tokio::task::JoinHandle<()>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    ) -> (mpsc::Sender<EngineCommand>, tokio::task::JoinHandle<()>) {
+        let (tx, rx) = mpsc::channel(COMMAND_QUEUE);
         let io = BackendIo { commands: rx, snapshot: snapshot.clone(), wake: wake.clone(), events: events.clone() };
         (tx, rt.spawn(backend(io)))
     }
@@ -361,8 +374,8 @@ impl EngineHandle {
         wake: &Wake,
         events: &std::sync::mpsc::Sender<EngineEvent>,
         snapshot: &Arc<ArcSwap<Snapshot>>,
-    ) -> (mpsc::UnboundedSender<EngineCommand>, tokio::task::JoinHandle<()>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    ) -> (mpsc::Sender<EngineCommand>, tokio::task::JoinHandle<()>) {
+        let (tx, rx) = mpsc::channel(COMMAND_QUEUE);
         let (paths, wake, events, snapshot, self_tx) =
             (paths.clone(), wake.clone(), events.clone(), snapshot.clone(), tx.clone());
         // Loading the store and feed history does file I/O (with retries): not on the UI thread.
@@ -389,23 +402,55 @@ impl EngineHandle {
         inner.stopping || !inner.task.is_finished()
     }
 
-    pub fn send(&self, cmd: EngineCommand) {
+    /// Queue `cmd` for the engine. False if it was dropped: the queue is full
+    /// ([`COMMAND_QUEUE`], counted in [`Self::refused`]) or the engine is down with a full
+    /// backlog. Shutdown and Flush are never refused: they wait for room.
+    pub fn send(&self, cmd: EngineCommand) -> bool {
+        use mpsc::error::TrySendError;
         let mut inner = self.lock();
         if matches!(cmd, EngineCommand::Shutdown(_)) {
             inner.stopping = true;
         }
         let dead = inner.task.is_finished();
-        let cmd = if dead { Err(cmd) } else { inner.tx.send(cmd).map_err(|e| e.0) };
-        if let Err(cmd) = cmd {
-            if matches!(cmd, EngineCommand::Shutdown(_)) {
-                return; // nothing to stop; dropping the reply sender ends the wait
+        let cmd = match if dead { Err(TrySendError::Closed(cmd)) } else { inner.tx.try_send(cmd) } {
+            Ok(()) => return true,
+            Err(TrySendError::Full(cmd)) => {
+                if matches!(cmd, EngineCommand::Shutdown(_) | EngineCommand::Flush(_)) {
+                    let tx = inner.tx.clone();
+                    self.rt.spawn(async move {
+                        let _ = tx.send(cmd).await;
+                    });
+                    return true;
+                }
+                let n = self.refused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if n.is_power_of_two() {
+                    tracing::warn!("the engine's command queue is full; {} command(s) refused so far", n + 1);
+                }
+                return false;
             }
-            if inner.backlog.len() < BACKLOG_CAP {
-                inner.backlog.push_back(cmd);
-            } else {
-                tracing::warn!("engine is down and its command backlog is full; command dropped");
-            }
+            Err(TrySendError::Closed(cmd)) => cmd,
+        };
+        if matches!(cmd, EngineCommand::Shutdown(_)) {
+            return true; // nothing to stop; dropping the reply sender ends the wait
         }
+        if inner.backlog.len() < BACKLOG_CAP {
+            inner.backlog.push_back(cmd);
+            true
+        } else {
+            tracing::warn!("engine is down and its command backlog is full; command dropped");
+            false
+        }
+    }
+
+    /// How many commands were refused because the engine's queue was full, since the start.
+    pub fn refused(&self) -> u64 {
+        self.refused.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Commands waiting for the engine now.
+    pub fn queued(&self) -> usize {
+        let inner = self.lock();
+        inner.tx.max_capacity() - inner.tx.capacity()
     }
 
     /// Start a fresh engine (after a crash) and replay commands queued meanwhile.
@@ -418,8 +463,9 @@ impl EngineHandle {
             Some(b) => Self::spawn_backend(&self.rt, b, &self.wake, &self.events, &self.snapshot),
             None => Self::spawn(&self.rt, &self.paths, settings, &self.wake, &self.events, &self.snapshot),
         };
+        // The backlog (at most BACKLOG_CAP) fits the fresh queue.
         for cmd in inner.backlog.drain(..) {
-            let _ = tx.send(cmd);
+            let _ = tx.try_send(cmd);
         }
         inner.tx = tx;
         inner.task = task;
@@ -444,5 +490,40 @@ impl EngineHandle {
         if rx.recv_timeout(timeout).is_err() {
             tracing::warn!("engine did not stop within {timeout:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    /// A backend that holds its commands but never reads them (a stuck engine).
+    fn stuck() -> Backend {
+        Arc::new(|io: BackendIo| {
+            Box::pin(async move {
+                let _commands = io.commands;
+                std::future::pending::<()>().await
+            })
+        })
+    }
+
+    #[test]
+    fn a_full_command_queue_refuses_and_counts() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = std::env::temp_dir().join(format!("corrent-queue-{}", std::process::id()));
+        let paths = Paths { data_dir: dir.clone(), portable: true };
+        let (events, _rx) = std::sync::mpsc::channel();
+        let e = EngineHandle::with_backend(rt.handle(), paths, Wake::noop(), events, stuck());
+        for _ in 0..COMMAND_QUEUE {
+            assert!(e.send(EngineCommand::PauseAll));
+        }
+        assert_eq!(e.queued(), COMMAND_QUEUE);
+        assert!(!e.send(EngineCommand::PauseAll), "refused when full");
+        assert!(!e.send(EngineCommand::ResumeAll));
+        assert_eq!(e.refused(), 2);
+        // Shutdown and Flush wait for room instead of being lost.
+        let (tx, _rx) = std::sync::mpsc::channel();
+        assert!(e.send(EngineCommand::Shutdown(tx)));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

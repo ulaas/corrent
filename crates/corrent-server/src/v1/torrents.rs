@@ -194,9 +194,14 @@ async fn add(State(st): State<Arc<AppState>>, auth: Auth, ip: ClientIp, req: Req
             .unwrap_or_else(|| settings.downloads.save_path.clone()),
     };
     let count = sources.len();
+    // A stuck or flooded engine: refuse instead of queueing more (STABILITY.md F11).
+    let busy = || err(ErrorCode::EngineUnavailable, "the engine is busy; try again later");
+    if st.engine.queued() >= corrent_core::engine::API_ADD_QUEUE {
+        return Err(busy());
+    }
     for source in sources {
         tracing::info!("API: {} adds {}", auth.name(), source.describe());
-        st.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        let queued = st.engine.send(EngineCommand::Add(Box::new(AddRequest {
             source,
             torrent_bytes: None,
             save_path: save_path.clone(),
@@ -209,6 +214,9 @@ async fn add(State(st): State<Arc<AppState>>, auth: Auth, ip: ClientIp, req: Req
             initial_peers: None,
             added_by: Some(auth.name().to_string()),
         })));
+        if !queued {
+            return Err(busy());
+        }
     }
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "torrent_add", &format!("{count}"), true, "").await;
     Ok(Json(Added { count }))

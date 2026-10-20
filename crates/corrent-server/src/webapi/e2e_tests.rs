@@ -154,3 +154,50 @@ async fn webapi_behaves_like_qbittorrent_for_sonarr() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A stuck or flooded engine: adds are refused with 503 instead of queueing without end
+/// (STABILITY.md F11).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn add_answers_503_when_the_engine_is_busy() {
+    use corrent_core::engine::{API_ADD_QUEUE, Backend, BackendIo, EngineCommand, EngineHandle, Wake};
+
+    use crate::webapi::{WebApiServer, WebApiSettings, hash_password};
+    let dir = temp_dir("webapi-busy");
+    let stuck: Backend = Arc::new(|io: BackendIo| {
+        Box::pin(async move {
+            let _commands = io.commands;
+            std::future::pending::<()>().await
+        })
+    });
+    let (events, _rx) = std::sync::mpsc::channel();
+    let paths = corrent_core::config::Paths { data_dir: dir.join("data"), portable: true };
+    let engine = EngineHandle::with_backend(&tokio::runtime::Handle::current(), paths, Wake::noop(), events, stuck);
+    let cfg = WebApiSettings {
+        enabled: true,
+        port: 0,
+        allow_lan: false,
+        username: "u".into(),
+        password_hash: hash_password("pw"),
+    };
+    let shared = Arc::new(arc_swap::ArcSwap::from_pointee(settings(&dir)));
+    let server = WebApiServer::start(cfg, engine.clone(), shared).await.unwrap();
+    let base = format!("http://127.0.0.1:{}/api/v2", server.addr.port());
+    let http = reqwest::Client::new();
+    let r =
+        http.post(format!("{base}/auth/login")).form(&[("username", "u"), ("password", "pw")]).send().await.unwrap();
+    let cookie = r.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+    let add = || {
+        http.post(format!("{base}/torrents/add"))
+            .header("Cookie", &cookie)
+            .form(&[("urls", "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")])
+            .send()
+    };
+    for _ in 0..API_ADD_QUEUE {
+        assert_eq!(add().await.unwrap().status(), 200);
+    }
+    assert_eq!(add().await.unwrap().status(), 503);
+    // Other commands still fill the queue up to its end, then are refused too.
+    while engine.send(EngineCommand::PauseAll) {}
+    assert!(engine.refused() >= 1);
+    let _ = std::fs::remove_dir_all(dir);
+}

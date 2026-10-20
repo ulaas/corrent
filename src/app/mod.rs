@@ -367,6 +367,8 @@ pub struct CorrentApp {
     engine_report: Option<Option<std::path::PathBuf>>,
     /// Generation of the latest engine snapshot and when it arrived (stall detection).
     last_snapshot: (u64, std::time::Instant),
+    /// Commands the engine refused so far (its queue was full), to tell the user once per burst.
+    refused_seen: u64,
     /// Mica spike (B5b, debug only): translucent backgrounds over the DWM backdrop.
     mica: bool,
     pub main_view: feeds::MainView,
@@ -538,6 +540,7 @@ impl CorrentApp {
             when_done: Default::default(),
             engine_report: None,
             last_snapshot: (0, std::time::Instant::now()),
+            refused_seen: 0,
             mica: false,
             main_view: Default::default(),
             feeds: Default::default(),
@@ -968,7 +971,9 @@ impl CorrentApp {
     fn run_toast_actions(&mut self, ctx: &Context, actions: Vec<toasts::ToastAction>) {
         for a in actions {
             match a {
-                toasts::ToastAction::Undo(h) => self.engine.send(crate::engine::EngineCommand::UndoRemove(h)),
+                toasts::ToastAction::Undo(h) => {
+                    self.engine.send(crate::engine::EngineCommand::UndoRemove(h));
+                }
                 toasts::ToastAction::OpenFolder(p) | toasts::ToastAction::OpenFile(p) => open_path(&p),
                 toasts::ToastAction::Copy(text) => self.copy(text),
                 toasts::ToastAction::OpenUrl(url) => {
@@ -1075,6 +1080,11 @@ impl eframe::App for CorrentApp {
         self.drain_background();
         self.drain_pickers();
         self.drain_events(ctx);
+        let refused = self.engine.refused();
+        if refused > self.refused_seen {
+            self.toasts.push(ToastKind::Warning, t!("Corrent is busy and couldn't do that. Try again in a moment."));
+        }
+        self.refused_seen = refused;
         self.media_tick(ctx);
         self.tv_tick(ctx);
         self.switch_tick();
@@ -1178,7 +1188,9 @@ impl CorrentApp {
         match std::env::var("CORRENT_DEV_PANIC").as_deref() {
             #[expect(clippy::panic, reason = "debug-only hook that tests crash reports")]
             Ok("ui") => panic!("CORRENT_DEV_PANIC=ui"),
-            Ok("engine") => self.engine.send(crate::engine::EngineCommand::DevPanic),
+            Ok("engine") => {
+                self.engine.send(crate::engine::EngineCommand::DevPanic);
+            }
             _ => {}
         }
         if let Ok(q) = std::env::var("CORRENT_DEV_SEARCH") {

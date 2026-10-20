@@ -179,6 +179,7 @@
 "Corrent couldn't lock its data folder {path}: {e}" = "Corrent veri klasörünü ({path}) kilitleyemedi: {e}"
 "Corrent is already running but isn't responding, so this link or file couldn't be handed to it. Close it and try again." = "Corrent zaten çalışıyor ancak yanıt vermiyor, bu yüzden bu bağlantı veya dosya ona iletilemedi. Kapatıp yeniden deneyin."
 "Corrent is already running with this data folder. Close it and try again." = "Corrent bu veri klasörüyle zaten çalışıyor. Kapatıp yeniden deneyin."
+"Corrent is busy and couldn't do that. Try again in a moment." = "Corrent şu anda meşgul ve bunu yapamadı. Birazdan tekrar deneyin."
 "Corrent" = "Corrent"
 "Corrent's data file was damaged. Its backup is shown, but it couldn't be put in place, so nothing is saved this session; restart Corrent to try again." = "Corrent'in veri dosyası bozuldu. Yedeği gösteriliyor ancak yerine konamadı, bu yüzden bu oturumda hiçbir şey kaydedilmiyor; yeniden denemek için Corrent'i yeniden başlatın."
 "Corrent\n↓ {down}   ↑ {up}\n{active} active" = "Corrent\n↓ {down}   ↑ {up}\n{active} etkin"
