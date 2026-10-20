@@ -257,9 +257,11 @@ Portable mode (`--portable`) keeps all of it under `target/debug/corrent-data` a
   (`::ffff:a.b.c.d`), be extensible with user CIDRs, and ignore `X-Forwarded-For` unless a trusted
   proxy address is configured (otherwise it is spoofable). Separate from `allow_lan` for the
   qBittorrent API, which stays as it is (that one picks the bind address instead).
-- **S6 Rate limits and lockouts [S]:** keep the per-IP failed-login bans; add per-account lockout
-  (10 failures → 15 min), a global token-bucket on `auth/*` and `pair/*`, request body caps per
-  route, header/idle timeouts (STABILITY F6 lands here).
+- **S6 Rate limits and lockouts [S]:** a global token-bucket on `auth/*` and `pair/*`, request
+  body caps per route, header/idle timeouts (STABILITY F6 lands here). Wrong pairing codes and PINs
+  are limited per address. Wrong passwords lock nothing out (2026-10-21, the owner's choice: the
+  per-IP ban of the qBittorrent API and the per-account lockout were removed); each check costs a
+  password hash instead.
 - **S7 Audit log [S]:** `audit(ts, user, ip, action, target, result, details)` for logins, token
   creation/revocation, settings changes, user/plugin changes, torrent removals with data, library
   deletes; viewable at `/admin/audit` in both clients; rotated by count.

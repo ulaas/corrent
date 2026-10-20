@@ -19,8 +19,6 @@ const PAIRING_SECS: i64 = 10 * 60;
 /// only five (see `Limiter::may_pair`), so one client can't burn other people's codes.
 const PAIRING_MAX_ATTEMPTS: i64 = 50;
 const PAIRING_MAX_OUTSTANDING: i64 = 3;
-const LOCKOUT_AFTER: i64 = 10;
-const LOCKOUT_SECS: i64 = 15 * 60;
 const AUDIT_KEEP: i64 = 20_000;
 /// Only refresh `last_seen`/expiry once a minute per token (reads stay reads).
 const TOUCH_EVERY: i64 = 60;
@@ -652,23 +650,21 @@ impl Identity {
         r.map_err(|c| ApiError::new(c, "can't delete that user"))
     }
 
-    /// Checks a password with per-account lockout. Disabled users can't sign in.
+    /// Checks a password. Disabled users can't sign in. Wrong passwords never lock the account
+    /// (the owner's choice); the `failed_logins`/`locked_until` columns are no longer used.
     pub async fn authenticate(&self, name: &str, password: &str) -> Result<User, ApiError> {
         let n = name.trim().to_string();
-        let now = now_unix();
         let row = self
             .db
             .read(move |c| {
-                c.query_row(
-                    &format!("SELECT {USER_COLS}, pw_hash, locked_until FROM users WHERE name = ?1"),
-                    [n],
-                    |r| Ok((user_row(r)?, r.get::<_, String>(8)?, r.get::<_, i64>(9)?)),
-                )
+                c.query_row(&format!("SELECT {USER_COLS}, pw_hash FROM users WHERE name = ?1"), [n], |r| {
+                    Ok((user_row(r)?, r.get::<_, String>(8)?))
+                })
                 .optional()
             })
             .await
             .map_err(db_err)?;
-        let Some((user, stored, locked_until)) = row else {
+        let Some((user, stored)) = row else {
             // Same work as a real check, so timing doesn't reveal which names exist.
             let cost = self.cost;
             let dummy = self
@@ -681,27 +677,15 @@ impl Identity {
             let _ = self.verify(dummy, password.to_string()).await;
             return Err(ApiError::new(ErrorCode::InvalidCredentials, "invalid credentials"));
         };
-        if locked_until > now {
-            return Err(ApiError::new(ErrorCode::AccountLocked, "account locked").with("until", locked_until));
-        }
         let ok = self.verify(stored.clone(), password.to_string()).await;
         let id = user.id;
         if !ok || user.disabled {
-            self.db
-                .write(move |t| {
-                    t.execute("UPDATE users SET failed_logins = failed_logins + 1 WHERE id = ?1", [id])?;
-                    t.execute(
-                        "UPDATE users SET locked_until = ?1, failed_logins = 0 WHERE id = ?2 AND failed_logins >= ?3",
-                        params![now + LOCKOUT_SECS, id, LOCKOUT_AFTER],
-                    )
-                })
-                .await
-                .map_err(db_err)?;
             return Err(ApiError::new(ErrorCode::InvalidCredentials, "invalid credentials"));
         }
         let upgrade = if stored.starts_with("argon2id$") { None } else { Some(self.hash(password.to_string()).await?) };
         self.db
             .write(move |t| {
+                // Clears a lockout set by an older version.
                 t.execute("UPDATE users SET failed_logins = 0, locked_until = 0 WHERE id = ?1", [id])?;
                 if let Some(h) = upgrade {
                     t.execute("UPDATE users SET pw_hash = ?1 WHERE id = ?2", params![h, id])?;
@@ -1039,7 +1023,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn users_tokens_and_lockout() {
+    async fn users_tokens_and_no_lockout() {
         let id = scratch("users");
         let admin = id.create_user(new_user("Admin", Role::Admin)).await.unwrap();
         assert!(admin.perms.contains(Perms::USERS_MANAGE));
@@ -1052,11 +1036,11 @@ mod tests {
         assert!(id.verify_token("ct_nope", "127.0.0.1").await.unwrap().is_none());
         id.revoke_session(p.session_id).await.unwrap();
         assert!(id.verify_token(&issued.token, "127.0.0.1").await.unwrap().is_none());
-        // Lockout after 10 failures, even with the right password afterwards.
-        for _ in 0..10 {
+        // No lockout: the right password still works after many wrong ones.
+        for _ in 0..12 {
             assert_eq!(id.authenticate("admin", "wrong").await.unwrap_err().code, ErrorCode::InvalidCredentials);
         }
-        assert_eq!(id.authenticate("admin", "correct horse").await.unwrap_err().code, ErrorCode::AccountLocked);
+        assert_eq!(id.authenticate("admin", "correct horse").await.unwrap().id, admin.id);
         // The last admin can't be demoted or deleted.
         let upd = UserUpdate { role: Some(Role::User), ..Default::default() };
         assert_eq!(id.update_user(admin.id, upd).await.unwrap_err().code, ErrorCode::Conflict);

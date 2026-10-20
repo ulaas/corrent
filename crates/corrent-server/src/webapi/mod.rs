@@ -235,14 +235,9 @@ async fn login(State(st): State<Arc<ApiState>>, ConnectInfo(peer): ConnectInfo<S
     let form = qbt::read_form(req).await;
     let user = form.get("username").map(String::as_str).unwrap_or("");
     let pass = form.get("password").map(String::as_str).unwrap_or("");
+    // No lockout after wrong passwords (the owner's choice): each check costs a PBKDF2 hash and
+    // at most two run at once (below), which keeps guessing slow.
     let ip = peer.ip();
-    if st.sessions.lock().unwrap_or_else(|e| e.into_inner()).banned(ip) {
-        return (
-            StatusCode::FORBIDDEN,
-            "Your IP address has been banned after too many failed authentication attempts.",
-        )
-            .into_response();
-    }
     let pass = pass.to_string();
     let ok = match &st.identity {
         Some(identity) => match identity.authenticate(user, &pass).await {
@@ -271,11 +266,10 @@ async fn login(State(st): State<Arc<ApiState>>, ConnectInfo(peer): ConnectInfo<S
     };
     let mut sessions = st.sessions.lock().unwrap_or_else(|e| e.into_inner());
     if !ok {
-        sessions.failed(ip);
         tracing::info!("web API: failed login from {ip}");
         return (StatusCode::OK, "Fails.").into_response();
     }
-    let sid = sessions.create(ip);
+    let sid = sessions.create();
     let secure = if st.secure_cookie { "; Secure" } else { "" };
     let cookie = format!("SID={sid}; HttpOnly; SameSite=Strict; Path=/{secure}");
     ([(header::SET_COOKIE, cookie)], "Ok.").into_response()

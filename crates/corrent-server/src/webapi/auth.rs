@@ -1,7 +1,6 @@
-//! Password hashing, session ids and login throttling for the web API.
+//! Password hashing and session ids for the web API.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
@@ -10,8 +9,6 @@ use aws_lc_rs::{pbkdf2, rand};
 const ITERATIONS: u32 = 100_000;
 const ITERS: NonZeroU32 = NonZeroU32::new(ITERATIONS).unwrap();
 const SESSION_TTL: Duration = Duration::from_secs(60 * 60);
-const MAX_FAILS: u32 = 5;
-const BAN: Duration = Duration::from_secs(5 * 60);
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
@@ -54,44 +51,10 @@ pub fn verify_password(stored: &str, password: &str) -> bool {
 #[derive(Default)]
 pub struct Sessions {
     sids: HashMap<String, Instant>,
-    fails: HashMap<IpAddr, (u32, Instant)>,
 }
 
 impl Sessions {
-    pub fn banned(&mut self, ip: IpAddr) -> bool {
-        match self.fails.get(&ip) {
-            Some((n, at)) if *n >= MAX_FAILS && at.elapsed() < BAN => true,
-            Some((_, at)) if at.elapsed() >= BAN => {
-                self.fails.remove(&ip);
-                false
-            }
-            _ => false,
-        }
-    }
-
-    pub fn failed(&mut self, ip: IpAddr) {
-        self.fails.retain(|_, (_, at)| at.elapsed() < BAN);
-        // Many addresses failing (a scan): forget the oldest rather than grow without end, but an
-        // address that is banned only once nothing else is left (else enough addresses would push
-        // a ban out and let it keep guessing).
-        while self.fails.len() >= MAX_FAILS_TRACKED && !self.fails.contains_key(&ip) {
-            let oldest = |banned: bool| {
-                self.fails
-                    .iter()
-                    .filter(|(_, (n, _))| (*n >= MAX_FAILS) == banned)
-                    .min_by_key(|(_, (_, at))| *at)
-                    .map(|(k, _)| *k)
-            };
-            let Some(gone) = oldest(false).or_else(|| oldest(true)) else { break };
-            self.fails.remove(&gone);
-        }
-        let e = self.fails.entry(ip).or_insert((0, Instant::now()));
-        e.0 += 1;
-        e.1 = Instant::now();
-    }
-
-    pub fn create(&mut self, ip: IpAddr) -> String {
-        self.fails.remove(&ip);
+    pub fn create(&mut self) -> String {
         self.sids.retain(|_, at| at.elapsed() < SESSION_TTL);
         // Logins only add sessions; past the cap the least recently used one goes.
         while self.sids.len() >= MAX_SESSIONS {
@@ -123,21 +86,18 @@ impl Sessions {
 
 /// Sessions kept at once (each login adds one; clients reuse theirs).
 const MAX_SESSIONS: usize = 256;
-/// Addresses with failed logins remembered at once.
-const MAX_FAILS_TRACKED: usize = 4096;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn sessions_and_failures_are_bounded() {
+    fn sessions_are_bounded() {
         let mut s = Sessions::default();
-        let ip: IpAddr = "127.0.0.1".parse().unwrap();
-        let first = s.create(ip);
+        let first = s.create();
         let mut sids = vec![first.clone()];
         for _ in 0..300 {
-            sids.push(s.create(ip));
+            sids.push(s.create());
             // Keep the first one in use: it is recent, so it survives the cap.
             assert!(s.check(&first));
         }
@@ -145,17 +105,6 @@ mod tests {
         assert!(s.check(&first), "a session in use stays");
         assert!(s.check(sids.last().unwrap()));
         assert!(!s.check(&sids[1]), "the least recently used went");
-        // A banned address stays banned however many others fail meanwhile.
-        let bad: IpAddr = "10.9.9.9".parse().unwrap();
-        for _ in 0..MAX_FAILS {
-            s.failed(bad);
-        }
-        assert!(s.banned(bad));
-        for i in 0..5000u32 {
-            s.failed(IpAddr::from(i.to_be_bytes()));
-        }
-        assert!(s.fails.len() <= MAX_FAILS_TRACKED);
-        assert!(s.banned(bad), "pushed out by a scan");
     }
 
     #[test]
@@ -170,16 +119,9 @@ mod tests {
     }
 
     #[test]
-    fn throttles_and_expires() {
+    fn sessions_check_and_end() {
         let mut s = Sessions::default();
-        let ip: IpAddr = "127.0.0.1".parse().unwrap();
-        for _ in 0..MAX_FAILS {
-            assert!(!s.banned(ip));
-            s.failed(ip);
-        }
-        assert!(s.banned(ip));
-        let sid = s.create(ip);
-        assert!(!s.banned(ip), "a successful login clears failures");
+        let sid = s.create();
         assert!(s.check(&sid));
         assert!(!s.check("nope"));
         s.remove(&sid);
