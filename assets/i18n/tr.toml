@@ -1250,3 +1250,6 @@
 "There is no movie, show or video library yet: add one in Manage libraries." = "Henüz film, dizi veya video kitaplığı yok: Kitaplıkları yönet bölümünden bir tane ekleyin."
 "Where the files go" = "Dosyaların gideceği yer"
 "{n} files couldn't be placed; see the log." = "{n} dosya yerleştirilemedi; günlüğe bakın."
+"Thumbnail updated." = "Küçük resim güncellendi."
+"Couldn't set the thumbnail: {why}" = "Küçük resim ayarlanamadı: {why}"
+"Use this frame as the thumbnail (T)" = "Bu kareyi küçük resim yap (T)"

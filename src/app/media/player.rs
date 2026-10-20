@@ -176,6 +176,11 @@ pub struct Player {
     casting: Option<super::cast::Casting>,
     /// The current track's lyrics (item id, answer).
     lyrics: Option<(i64, super::client::Slot<corrent_proto::library::Lyrics>)>,
+    ctx: egui::Context,
+    /// "Use this frame as the thumbnail" on its way to the server.
+    thumb_job: Option<super::client::Slot<serde_json::Value>>,
+    /// A message for the app's toasts (taken by the media view).
+    pub notice: Option<(crate::engine::ToastKind, String)>,
 }
 
 fn track_list(n: &Node) -> Vec<Track> {
@@ -459,6 +464,9 @@ impl Player {
             cast,
             casting: None,
             lyrics: None,
+            thumb_job: None,
+            notice: None,
+            ctx: ctx.clone(),
             offline: None,
         };
         p.load_current();
@@ -766,6 +774,7 @@ impl Player {
             self.cast.poll(c, &ctx);
         }
         let (pos, dur, paused) = self.position();
+        self.thumb_tick();
         let show = paused || Instant::now() < self.controls_until;
         let k = crate::ui::motion::toggle(&ctx, ui.id().with("controls"), show, crate::ui::motion::PANEL);
         if !show {
@@ -840,6 +849,35 @@ impl Player {
         }
     }
 
+    /// Whether the current item can take a thumbnail from its video (a library item played from
+    /// the server: not an offline copy, a stream or music).
+    fn can_set_thumbnail(&self) -> bool {
+        !self.audio_only && self.current().is_some_and(|e| e.local.is_none() && e.stream.is_none() && e.item_id > 0)
+    }
+
+    /// The frame at `at` seconds becomes the item's thumbnail (taken on the server from the file,
+    /// locked against providers).
+    fn set_thumbnail(&mut self, at: f64) {
+        let Some(item) = self.current().map(|e| e.item_id) else { return };
+        if self.thumb_job.is_some() {
+            return;
+        }
+        let c = self.client.clone();
+        let body = serde_json::json!({ "at_ms": (at * 1000.0) as i64, "lock": true });
+        self.thumb_job = Some(super::client::fetch(&self.rt, &self.ctx, async move {
+            c.send(reqwest::Method::POST, &format!("/api/v1/items/{item}/thumbnail"), &body).await
+        }));
+    }
+
+    fn thumb_tick(&mut self) {
+        let Some(r) = self.thumb_job.as_ref().and_then(super::client::ready) else { return };
+        self.thumb_job = None;
+        self.notice = Some(match r {
+            Ok(_) => (crate::engine::ToastKind::Success, t!("Thumbnail updated.").to_string()),
+            Err(e) => (crate::engine::ToastKind::Error, t!("Couldn't set the thumbnail: {why}", why = e)),
+        });
+    }
+
     /// A screenshot into the Pictures folder (mpv names the file).
     fn screenshot(&self) {
         let dir = directories::UserDirs::new()
@@ -871,6 +909,11 @@ impl Player {
     }
 
     fn keys(&mut self, ctx: &egui::Context, action: &mut PlayerAction) {
+        // T: this frame becomes the thumbnail (not while typing).
+        if !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(egui::Key::T)) && self.can_set_thumbnail() {
+            let (pos, _, _) = self.position();
+            self.set_thumbnail(pos);
+        }
         let (left, right, up, down, f, m, esc) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::ArrowLeft),
@@ -1067,7 +1110,26 @@ impl Player {
             self.cmd(&["cycle", "mute"]);
         }
         let time = format!("{} / {}", fmt_time(shown), fmt_time(dur));
+        // "Use this frame as the thumbnail", right after the time.
+        let thumb_at = |ui: &mut Ui, c: egui::Pos2| -> bool {
+            let r = Rect::from_center_size(c, vec2(28.0, 28.0));
+            let resp = ui
+                .interact(r, ui.id().with("set-thumb"), Sense::click())
+                .on_hover_text(t!("Use this frame as the thumbnail (T)"));
+            let c = if resp.hovered() { Color32::WHITE } else { white };
+            ui.painter().text(
+                r.center(),
+                egui::Align2::CENTER_CENTER,
+                pr::IMAGE_SQUARE,
+                egui::FontId::proportional(18.0),
+                c,
+            );
+            resp.clicked()
+        };
+        let can_thumb = !tiny && self.can_set_thumbnail();
         if narrow {
+            let g = ui.painter().layout_no_wrap(time.clone(), egui::FontId::monospace(12.0), white);
+            let tw = g.size().x;
             ui.painter().text(
                 pos2(bar.right(), bar.top() - 4.0),
                 egui::Align2::RIGHT_BOTTOM,
@@ -1075,6 +1137,9 @@ impl Player {
                 egui::FontId::monospace(12.0),
                 white,
             );
+            if can_thumb && thumb_at(ui, pos2(bar.right() - tw - 20.0, bar.top() - 12.0)) {
+                self.set_thumbnail(shown);
+            }
         } else {
             // Volume slider.
             let vr = Rect::from_min_size(pos2(x - 8.0, y - 3.0), vec2(90.0, 6.0));
@@ -1090,7 +1155,12 @@ impl Player {
                 white,
             );
             x += 106.0;
+            let g = ui.painter().layout_no_wrap(time.clone(), egui::FontId::monospace(13.0), white);
+            let tw = g.size().x;
             ui.painter().text(pos2(x, y), egui::Align2::LEFT_CENTER, time, egui::FontId::monospace(13.0), white);
+            if can_thumb && thumb_at(ui, pos2(x + tw + 22.0, y)) {
+                self.set_thumbnail(shown);
+            }
         }
         // Right side, from the edge inwards.
         let mut rx = rect.right() - 44.0;

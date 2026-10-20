@@ -397,6 +397,9 @@ pub struct CorrentApp {
     media_dev_library: Option<media::client::Slot<usize>>,
     #[cfg(debug_assertions)]
     media_dev_library_sent: bool,
+    /// CORRENT_DEV_PAUSE=<s>: when the hooked playback was paused (once).
+    #[cfg(debug_assertions)]
+    media_dev_paused: bool,
     pub media: media::MediaState,
     pub tv: tv::TvState,
     pub web_account: Option<web_account::WebAccount>,
@@ -578,6 +581,8 @@ impl CorrentApp {
             media_dev_library: None,
             #[cfg(debug_assertions)]
             media_dev_library_sent: false,
+            #[cfg(debug_assertions)]
+            media_dev_paused: false,
             local_stopping: None,
         }
     }

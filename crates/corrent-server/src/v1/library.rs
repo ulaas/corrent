@@ -354,11 +354,12 @@ async fn thumbnail_from_frame(
     };
     let jpg = crate::thumbs::frame(&st, &path, at).await.map_err(|e| err(ErrorCode::Internal, e))?;
     let lock = req.lock.unwrap_or(true);
-    let stored = st
-        .library
-        .set_artwork(id, kind, jpg, corrent_library::meta::FRAME, corrent_library::meta::Replace::Always, lock)
-        .await
-        .map_err(lib_err)?;
+    use corrent_library::meta::{FRAME, Replace};
+    // A movie without a real poster shows the chosen frame there too (providers may replace it).
+    if kind == "thumb" && d.item.kind == ItemKind::Movie {
+        let _ = st.library.set_artwork(id, "poster", jpg.clone(), FRAME, Replace::IfMissingOrFrame, false).await;
+    }
+    let stored = st.library.set_artwork(id, kind, jpg, FRAME, Replace::Always, lock).await.map_err(lib_err)?;
     Ok(Json(serde_json::json!({ "stored": stored })))
 }
 

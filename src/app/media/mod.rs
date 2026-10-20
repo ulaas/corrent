@@ -353,6 +353,16 @@ impl CorrentApp {
             }
             self.media.invalidate();
         }
+        // CORRENT_DEV_PAUSE=<seconds>: pause the hooked playback after that long (the controls
+        // stay up for a screenshot).
+        if let Some(secs) = std::env::var("CORRENT_DEV_PAUSE").ok().and_then(|v| v.parse::<f64>().ok())
+            && !self.media_dev_paused
+            && let Some(pl) = &mut self.media.player
+            && self.media_dev_started.is_some_and(|t| t.elapsed().as_secs_f64() > secs)
+        {
+            self.media_dev_paused = true;
+            pl.toggle_pause();
+        }
         if std::env::var("CORRENT_DEV_SERVER_FS").is_ok()
             && self.server.as_ref().is_some_and(|s| s.connected())
             && !self.media_dev_profiles
@@ -572,6 +582,14 @@ impl CorrentApp {
         self.ensure_media_server();
         if self.media.player.as_ref().is_some_and(|pl| !pl.audio_only) {
             let action = self.media.player.as_mut().map(|pl| pl.show(ui, p)).unwrap_or(PlayerAction::None);
+            if let Some((kind, text)) = self.media.player.as_mut().and_then(|pl| pl.notice.take()) {
+                let ok = kind == crate::engine::ToastKind::Success;
+                self.toasts.push(kind, text);
+                if ok {
+                    // The new picture on the cards.
+                    self.media.invalidate();
+                }
+            }
             match action {
                 PlayerAction::Close => {
                     self.media.player = None;
