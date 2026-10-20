@@ -7,12 +7,14 @@ pub mod cast;
 pub mod client;
 pub mod downloads;
 mod grid;
+mod identify;
 pub mod images;
 pub mod libraries;
 pub mod lists;
 pub mod offline;
 pub mod player;
 pub mod profiles;
+pub mod providers;
 pub mod subtitles;
 pub mod syncplay;
 
@@ -92,6 +94,9 @@ pub struct MediaState {
     pub profiles: profiles::Profiles,
     pub library_form: Option<libraries::LibraryForm>,
     sub_finder: Option<subtitles::SubFinder>,
+    identify: Option<identify::Identify>,
+    /// Settings → Metadata.
+    pub providers: providers::ProvidersUi,
     remove_library: Option<(i64, String)>,
     /// The user's client preferences on the server (home row order and hidden rows).
     user_prefs: Option<Slot<serde_json::Value>>,
@@ -149,6 +154,12 @@ impl MediaState {
     pub fn reset(&mut self) {
         let gl = self.gl.take();
         *self = MediaState { gl, ..Default::default() };
+    }
+
+    /// Tests: show an item's page.
+    #[cfg(test)]
+    pub(crate) fn dev_open_item(&mut self, id: i64) {
+        self.page = Some(Page::Item(id));
     }
 
     /// Tests: a library grid with these items already loaded.
@@ -634,6 +645,7 @@ impl CorrentApp {
         let ctx = self.ctx.clone();
         self.profiles_window(&ctx, p);
         self.subtitle_finder_window(&ctx, p);
+        self.identify_window(&ctx, p);
         egui::ScrollArea::vertical().id_salt(("media", format!("{page:?}"))).auto_shrink([false, false]).show(
             ui,
             |ui| {
@@ -1494,6 +1506,26 @@ impl CorrentApp {
                 && ui.button(format!("{}  {}", icons::CLOSED_CAPTIONING, t!("Find subtitles"))).clicked()
             {
                 self.open_subtitle_finder(it.id);
+            }
+            if matches!(it.kind, ItemKind::Movie | ItemKind::Show | ItemKind::Video)
+                && ui
+                    .button(format!("{}  {}", icons::MAGNIFYING_GLASS, t!("Identify…")))
+                    .on_hover_text(t!("Choose what this is from the metadata providers"))
+                    .clicked()
+            {
+                self.open_identify(it.id, &it.title, it.year);
+            }
+            // Pages about it elsewhere (ids the providers gave).
+            let tmdb_kind = if it.kind == ItemKind::Show { "tv" } else { "movie" };
+            for (label, url) in [
+                ("IMDb", d.provider_ids.get("imdb").map(|id| format!("https://www.imdb.com/title/{id}/"))),
+                ("TMDB", d.provider_ids.get("tmdb").map(|id| format!("https://www.themoviedb.org/{tmdb_kind}/{id}"))),
+            ] {
+                if let Some(url) = url
+                    && ui.button(format!("{}  {label}", icons::ARROW_SQUARE_OUT)).on_hover_text(&url).clicked()
+                {
+                    let _ = open::that_detached(&url);
+                }
             }
             self.download_button(ui, client, &it, &siblings);
             if it.kind.playable() || matches!(it.kind, ItemKind::Season | ItemKind::Album) {

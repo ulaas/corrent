@@ -27,13 +27,14 @@ pub enum Page {
     Feeds,
     Search,
     Remote,
+    Metadata,
     Appearance,
     Playback,
     Advanced,
 }
 
 impl Page {
-    const ALL: [Page; 13] = [
+    const ALL: [Page; 14] = [
         Page::Behavior,
         Page::Downloads,
         Page::Connection,
@@ -44,6 +45,7 @@ impl Page {
         Page::Feeds,
         Page::Search,
         Page::Remote,
+        Page::Metadata,
         Page::Appearance,
         Page::Playback,
         Page::Advanced,
@@ -61,6 +63,7 @@ impl Page {
             Page::Feeds => t!("Feeds"),
             Page::Search => t!("Search"),
             Page::Remote => t!("Remote control"),
+            Page::Metadata => t!("Metadata"),
             Page::Appearance => t!("Appearance"),
             Page::Playback => t!("Playback"),
             Page::Advanced => t!("Advanced"),
@@ -79,6 +82,7 @@ impl Page {
             Page::Feeds => icons::RSS,
             Page::Search => icons::MAGNIFYING_GLASS,
             Page::Remote => icons::PLUGS,
+            Page::Metadata => icons::FILM_SLATE,
             Page::Appearance => icons::PALETTE,
             Page::Playback => icons::SPEAKER_HIGH,
             Page::Advanced => icons::WRENCH,
@@ -97,6 +101,8 @@ impl Page {
             Page::Seeding => a.seeding != b.seeding,
             Page::Search => a.search != b.search,
             Page::Remote => a.web_api != b.web_api,
+            // Saved on the server right away, provider by provider.
+            Page::Metadata => false,
             Page::Feeds => {
                 (a.rss.auto_download, a.rss.refresh_minutes, a.rss.max_articles)
                     != (b.rss.auto_download, b.rss.refresh_minutes, b.rss.max_articles)
@@ -133,6 +139,9 @@ impl Page {
                 t!("remote control web api qbittorrent sonarr radarr lidarr prowlarr port password username lan")
             }
             Page::Search => t!("search torznab jackett prowlarr indexer provider api key"),
+            Page::Metadata => {
+                t!("metadata tmdb imdb omdb tvdb fanart musicbrainz opensubtitles posters api key scrape identify")
+            }
             Page::Feeds => t!("rss atom feeds refresh interval articles auto download rules automatic episodes"),
             Page::Appearance => {
                 t!(
@@ -1337,6 +1346,7 @@ impl CorrentApp {
                     });
                 });
             }
+            Page::Metadata => self.metadata_settings(ui, p),
             Page::Remote => {
                 let status = self.remote.status.clone();
                 card(p).show(ui, |ui| {

@@ -761,3 +761,63 @@ fn add_to_library_dialog_offers_the_ways_in() {
         Some(super::dialogs::Modal::AddToLibrary(d)) if d.action == corrent_proto::library::ImportAction::MoveDownload
     ));
 }
+
+/// Settings → Metadata lists the providers of the app's own server, says which need a key and
+/// saves one there.
+#[test]
+fn metadata_settings_list_providers_and_save_a_key() {
+    let (_f, mut app) = app("metadata-settings", vec![]);
+    app.main_view = super::feeds::MainView::Media;
+    let mut h = harness(app);
+    step_until(&mut h, "the in-process server", |h| h.state().media.client.is_some());
+    h.state_mut().open_settings_at(super::settings_window::Page::Metadata);
+    step_until(&mut h, "the providers", |h| h.query_by_label_contains("The Movie Database").is_some());
+    assert!(h.query_all_by_label("Needs an API key").count() >= 1, "TMDB has no key yet");
+    assert!(h.query_by_label_contains("Example").is_none(), "test plugins aren't listed");
+    // Type a key for TMDB and save it: TMDB is then ready.
+    h.state_mut().media.providers.dev_type("tmdb", "api_key", "0123456789abcdef");
+    h.run_steps(2);
+    // (Below the settings window's fold: clicked the way a screen reader would.)
+    h.get_by_label("Save").click_accesskit();
+    step_until(&mut h, "the saved key", |h| h.query_by_label_contains("looked up again").is_some());
+    step_until(&mut h, "TMDB ready", |h| {
+        h.query_all_by_label("Needs an API key").count() == 0 || h.query_by_label("Ready").is_some()
+    });
+}
+
+/// Identify… searches the providers for the item; without any (no keys) it says how to get one.
+#[test]
+fn identify_dialog_searches_and_explains_missing_keys() {
+    let (f, mut app) = app("identify", vec![]);
+    let movies = f.dir.join("Movies/Sintel (2010)");
+    std::fs::create_dir_all(&movies).unwrap();
+    std::fs::write(movies.join("Sintel.2010.mkv"), b"not really a movie").unwrap();
+    app.main_view = super::feeds::MainView::Media;
+    let mut h = harness(app);
+    step_until(&mut h, "the in-process server", |h| h.state().media.client.is_some());
+    let client = h.state().media.client.clone().unwrap();
+    let rt = f.rt.as_ref().unwrap();
+    let lib: corrent_proto::library::Library = rt
+        .block_on(client.send(
+            reqwest::Method::POST,
+            "/api/v1/libraries",
+            &serde_json::json!({ "name": "Films", "kind": "movies", "folders": [f.dir.join("Movies")] }),
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let id = loop {
+        let page: serde_json::Value = rt.block_on(client.get(&format!("/api/v1/items?library_id={}", lib.id))).unwrap();
+        if let Some(id) = page["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline, "scan: {page}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    h.state_mut().media.dev_open_item(id);
+    step_until(&mut h, "the item page", |h| h.query_by_label_contains("Identify…").is_some());
+    h.get_by_label_contains("Identify…").click();
+    step_until(&mut h, "the search", |h| h.query_by_label_contains("Nothing found").is_some());
+    h.get_by_label("Close").click();
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("Nothing found").is_none());
+}
