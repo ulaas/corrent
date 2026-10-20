@@ -201,6 +201,7 @@ impl Actor {
         snapshot: Arc<ArcSwap<Snapshot>>,
         self_tx: mpsc::UnboundedSender<EngineCommand>,
     ) -> Self {
+        let generation = snapshot.load().generation;
         let (internal_tx, internal_rx) = mpsc::unbounded_channel();
         let store = Store::load(paths.store_file());
         let mut rss = crate::rss::Rss::load(paths.rss_file());
@@ -238,7 +239,8 @@ impl Actor {
             unrecorded: HashSet::new(),
             last_down_active: HashMap::new(),
             seed_carry_ms: HashMap::new(),
-            generation: 0,
+            // Continue after a restart: the UI caches rows per generation (STABILITY.md D12).
+            generation,
             tick_count: 0,
             last_tick: Instant::now(),
             free_space: None,

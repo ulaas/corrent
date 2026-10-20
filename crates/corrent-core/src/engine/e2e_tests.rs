@@ -761,7 +761,19 @@ async fn engine_panic_stops_the_old_session() {
         assert!(Instant::now() < deadline, "the dead engine's session still listens on {port}");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // The new engine continues the generation (STABILITY.md D12): the UI caches rows by it.
+    let before = l.engine.snapshot().generation;
     l.engine.restart(settings(&dir));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let first = loop {
+        let g = l.engine.snapshot().generation;
+        if g != before {
+            break g;
+        }
+        assert!(Instant::now() < deadline, "no snapshot from the new engine");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    };
+    assert!(first > before, "generation went from {before} to {first}");
     wait_for(&l, "a new session", 30, |sn| sn.session.listen_port.is_some()).await;
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);

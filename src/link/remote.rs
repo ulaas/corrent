@@ -179,8 +179,10 @@ impl Shared {
 }
 
 async fn run(server: ServerEntry, status: Arc<RemoteStatus>, mut io: BackendIo) {
+    // Continue the generation after a restart: the UI caches rows per generation.
+    let mirror = Mirror { generation: io.snapshot.load().generation, ..Default::default() };
     let shared = Arc::new(Shared {
-        mirror: Mutex::default(),
+        mirror: Mutex::new(mirror),
         up: tokio::sync::Notify::new(),
         snapshot: io.snapshot.clone(),
         wake: io.wake.clone(),
