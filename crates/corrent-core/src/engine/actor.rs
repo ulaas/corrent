@@ -74,6 +74,8 @@ struct UndoEntry {
 }
 
 const UNDO_WINDOW: Duration = Duration::from_secs(120);
+/// Results of background tasks waiting for the actor, at most.
+const INTERNAL_QUEUE: usize = 4096;
 
 struct PendingAdd {
     name: String,
@@ -104,8 +106,8 @@ pub struct Actor {
     wake: Wake,
     events: std::sync::mpsc::Sender<EngineEvent>,
     snapshot: Arc<ArcSwap<Snapshot>>,
-    internal_tx: mpsc::UnboundedSender<Internal>,
-    internal_rx: Option<mpsc::UnboundedReceiver<Internal>>,
+    internal_tx: mpsc::Sender<Internal>,
+    internal_rx: Option<mpsc::Receiver<Internal>>,
     self_tx: mpsc::Sender<EngineCommand>,
 
     session: Option<Arc<Session>>,
@@ -202,7 +204,8 @@ impl Actor {
         self_tx: mpsc::Sender<EngineCommand>,
     ) -> Self {
         let generation = snapshot.load().generation;
-        let (internal_tx, internal_rx) = mpsc::unbounded_channel();
+        // Bounded (STABILITY.md F11): tasks wait for room rather than queue without end.
+        let (internal_tx, internal_rx) = mpsc::channel(INTERNAL_QUEUE);
         let store = Store::load(paths.store_file());
         let mut rss = crate::rss::Rss::load(paths.rss_file());
         rss.rebuild(&settings.rss);
@@ -413,7 +416,7 @@ impl Actor {
         stopped
     }
 
-    async fn shutdown(&mut self, internal: &mut mpsc::UnboundedReceiver<Internal>) {
+    async fn shutdown(&mut self, internal: &mut mpsc::Receiver<Internal>) {
         tracing::info!("engine shutting down");
         self.stopping = true;
         // Let moves/rechecks finish (bounded): a torrent is out of the session while it is
@@ -578,7 +581,7 @@ impl Actor {
                             Ok(AddTorrentResponse::ListOnly(_)) => Err("unexpected response from engine".to_string()),
                             Err(err) => Err(format!("{err:#}")),
                         };
-                        let _ = tx.send(Internal::UndoFinished { hash, entry: Box::new(e), result });
+                        let _ = tx.send(Internal::UndoFinished { hash, entry: Box::new(e), result }).await;
                     });
                 }
             }
@@ -893,7 +896,7 @@ impl Actor {
             let (tx, client, wake) = (self.internal_tx.clone(), client.clone(), self.wake.clone());
             tokio::spawn(async move {
                 let result = crate::rss::feed::fetch(&client, &url).await;
-                let _ = tx.send(Internal::RssFetched { url, result });
+                let _ = tx.send(Internal::RssFetched { url, result }).await;
                 wake.wake();
             });
         }
@@ -1033,7 +1036,7 @@ impl Actor {
         tokio::spawn(async move {
             let result =
                 sess.delete(TorrentIdOrHash::Hash(Id20::new(hash.0)), with_data).await.map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Internal::Deleted { hash, result });
+            let _ = tx.send(Internal::Deleted { hash, result }).await;
         });
     }
 
@@ -1050,7 +1053,7 @@ impl Actor {
         let handle = tokio::spawn(async move {
             let result = preview(&sess, &source).await.map(Box::new).map_err(|e| format!("{e:#}"));
             let _ = events.send(EngineEvent::PreviewReady { req, result });
-            let _ = tx.send(Internal::PreviewFinished { req });
+            let _ = tx.send(Internal::PreviewFinished { req }).await;
             wake.wake();
         });
         self.previews.insert(req, handle);
@@ -1086,7 +1089,7 @@ impl Actor {
         let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
         let task = tokio::spawn(async move {
             let result = add_torrent(&sess, &req, peer_limit).await.map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Internal::AddFinished { pending, req, result });
+            let _ = tx.send(Internal::AddFinished { pending, req, result }).await;
         });
         if let Some(p) = self.pending.get_mut(&pending) {
             p.task = Some(task);
@@ -1118,7 +1121,7 @@ impl Actor {
         tokio::spawn(async move {
             let result =
                 readd(&sess, h, multi, move_to, trackers, backup_dir, peer_limit).await.map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Internal::OpFinished { hash, what, result });
+            let _ = tx.send(Internal::OpFinished { hash, what, result }).await;
         });
     }
 
@@ -1164,7 +1167,7 @@ impl Actor {
                         Ok(x) => x,
                         Err(e) => {
                             let result = Err(format!("{e:#}"));
-                            let _ = tx.send(Internal::OpFinished { hash, what: "recover", result });
+                            let _ = tx.send(Internal::OpFinished { hash, what: "recover", result }).await;
                             return;
                         }
                     };
@@ -1185,11 +1188,12 @@ impl Actor {
                             new = info.new_output.display(),
                             e = format!("{e:#}")
                         ));
-                        let _ = tx.send(Internal::OpFinished { hash, what: "recover", result });
+                        let _ = tx.send(Internal::OpFinished { hash, what: "recover", result }).await;
                         return;
                     }
                     Err(e) => {
-                        let _ = tx.send(Internal::OpFinished { hash, what: "recover", result: Err(e.to_string()) });
+                        let _ =
+                            tx.send(Internal::OpFinished { hash, what: "recover", result: Err(e.to_string()) }).await;
                         return;
                     }
                 };
@@ -1210,7 +1214,7 @@ impl Actor {
                     let _ = std::fs::remove_file(&p);
                     let _ = std::fs::remove_file(&note);
                 }
-                let _ = tx.send(Internal::OpFinished { hash, what: "recover", result });
+                let _ = tx.send(Internal::OpFinished { hash, what: "recover", result }).await;
             });
         }
     }
@@ -1303,7 +1307,7 @@ impl Actor {
                     }
                 }
             }
-            let _ = tx.send(Internal::RestoreReport(failed));
+            let _ = tx.send(Internal::RestoreReport(failed)).await;
         });
     }
 
@@ -1319,7 +1323,7 @@ impl Actor {
         let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
         tokio::spawn(async move {
             let result = super::restore::retry(&sess, &dir, &f, peer_limit).await;
-            let _ = tx.send(Internal::RestoreRetried { hash, result, quiet });
+            let _ = tx.send(Internal::RestoreRetried { hash, result, quiet }).await;
         });
     }
 
@@ -1718,7 +1722,7 @@ impl Actor {
             self.free_space_running = Some(Instant::now());
             let (path, tx) = (self.settings.downloads.save_path.clone(), self.internal_tx.clone());
             tokio::task::spawn_blocking(move || {
-                let _ = tx.send(Internal::FreeSpace(free_space(&path)));
+                let _ = tx.blocking_send(Internal::FreeSpace(free_space(&path)));
             });
         }
         if self.tick_count % 6 == 3
@@ -1731,7 +1735,7 @@ impl Actor {
                 // A scan that panics must still hand the state back, or watching would stop.
                 let scan = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::automation::scan(input)))
                     .unwrap_or_else(|_| super::automation::Scan::empty());
-                let _ = tx.send(Internal::WatchScanned(scan));
+                let _ = tx.blocking_send(Internal::WatchScanned(scan));
             });
         }
 
@@ -1795,7 +1799,7 @@ impl Actor {
         let tx = self.internal_tx.clone();
         tokio::task::spawn_blocking(move || {
             super::automation::WatchState::finish_file(&path, after, added);
-            let _ = tx.send(Internal::WatchFileSettled(path));
+            let _ = tx.blocking_send(Internal::WatchFileSettled(path));
         });
     }
 
