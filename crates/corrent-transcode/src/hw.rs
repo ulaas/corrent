@@ -16,7 +16,11 @@ async fn run_job(worker: Option<&Path>, job: EncodeJob, dir: &Path) -> bool {
             if std::fs::write(&file, serde_json::to_vec(&job).unwrap_or_default()).is_err() {
                 return false;
             }
-            let cmd = tokio::process::Command::new(w)
+            let mut cmd = tokio::process::Command::new(w);
+            // No console window flashing up (the worker is a console program).
+            #[cfg(windows)]
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            let cmd = cmd
                 .arg("encode")
                 .arg(&file)
                 .stdout(std::process::Stdio::null())

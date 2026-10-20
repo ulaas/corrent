@@ -88,6 +88,7 @@ fn restrict(dir: &std::path::Path, account: Option<&str>) -> anyhow::Result<()> 
         args.push("/grant:r".into());
         args.push(format!("{a}:(OI)(CI)M"));
     }
+    // NO_WINDOW_OK: correntd is a console program; icacls shares its console.
     let out = std::process::Command::new("icacls").args(&args).output()?;
     if !out.status.success() {
         anyhow::bail!("icacls: {}", String::from_utf8_lossy(&out.stderr).trim());

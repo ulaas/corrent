@@ -34,6 +34,9 @@ impl Prober {
         match &self.worker {
             Some(w) => {
                 let mut cmd = tokio::process::Command::new(w);
+                // No console window flashing up (the worker is a console program).
+                #[cfg(windows)]
+                cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
                 cmd.arg("probe").arg(path).kill_on_drop(true).stdin(std::process::Stdio::null());
                 let out = tokio::time::timeout(self.timeout, cmd.output())
                     .await
@@ -66,6 +69,9 @@ impl Prober {
     async fn ffprobe(&self, path: &Path) -> Result<ProbeResult, String> {
         let bin = ffprobe_path().ok_or("ffprobe isn't installed")?;
         let mut cmd = tokio::process::Command::new(bin);
+        // No console window flashing up (ffprobe is a console program).
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         cmd.args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters"])
             .arg(path)
             .kill_on_drop(true)

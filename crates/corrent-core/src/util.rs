@@ -408,6 +408,7 @@ pub fn local_offset_secs() -> i64 {
 #[cfg(not(windows))]
 fn unix_offset() -> Option<i64> {
     // `date +%z` is available on Linux and macOS and avoids pulling a tz database.
+    // NO_WINDOW_OK: not on Windows.
     let out = std::process::Command::new("date").arg("+%z").output().ok()?;
     let s = String::from_utf8(out.stdout).ok()?;
     let s = s.trim();

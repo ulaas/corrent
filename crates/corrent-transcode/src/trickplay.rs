@@ -43,7 +43,11 @@ pub async fn generate(
         Some(w) => {
             let file = out.join("job.json");
             std::fs::write(&file, serde_json::to_vec(&job).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-            let status = tokio::process::Command::new(w)
+            let mut cmd = tokio::process::Command::new(w);
+            // No console window flashing up (the worker is a console program).
+            #[cfg(windows)]
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            let status = cmd
                 .arg("encode")
                 .arg(&file)
                 .stdout(std::process::Stdio::null())

@@ -117,11 +117,13 @@ mod imp {
              StartupWMClass=corrent\nKeywords=torrent;magnet;download;p2p;\n"
         );
         std::fs::write(desktop_file(), content)?;
+        // NO_WINDOW_OK: Linux only (no console windows there).
         let _ = Command::new("update-desktop-database").arg(&apps).status();
         Ok(())
     }
 
     fn xdg_default(mime: &str) -> anyhow::Result<()> {
+        // NO_WINDOW_OK: Linux only.
         let st = Command::new("xdg-mime").args(["default", DESKTOP, mime]).status()?;
         anyhow::ensure!(st.success(), "xdg-mime failed for {mime}");
         Ok(())
@@ -142,6 +144,7 @@ mod imp {
     pub fn unregister(magnet: bool, torrent: bool) -> anyhow::Result<()> {
         if magnet && torrent {
             let _ = std::fs::remove_file(desktop_file());
+            // NO_WINDOW_OK: Linux only.
             let _ = Command::new("update-desktop-database").arg(data_home().join("applications")).status();
         }
         Ok(())
@@ -151,6 +154,7 @@ mod imp {
         if sandboxed() {
             return HandlerState::Managed;
         }
+        // NO_WINDOW_OK: Linux only.
         let out = Command::new("xdg-mime").args(["query", "default", mime]).output();
         let current = out.ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
         let ours_exists = desktop_file().exists();
@@ -193,6 +197,7 @@ mod imp {
         let bundle = exe.ancestors().nth(3).map(|p| p.to_path_buf()).ok_or_else(|| anyhow::anyhow!("no bundle"))?;
         let lsregister =
             "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+        // NO_WINDOW_OK: macOS only.
         let _ = std::process::Command::new(lsregister).arg("-f").arg(&bundle).status();
         Ok(())
     }

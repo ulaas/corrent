@@ -461,7 +461,11 @@ fn start_encoder(cfg: &HlsConfig, s: &Session, start: u64) -> Result<Running, St
             let job_file = s.dir.join(format!("job-{start}.json"));
             std::fs::write(&job_file, serde_json::to_vec(&job).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
-            let mut child = tokio::process::Command::new(w)
+            let mut cmd = tokio::process::Command::new(w);
+            // No console window flashing up (the worker is a console program).
+            #[cfg(windows)]
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            let mut child = cmd
                 .arg("encode")
                 .arg(&job_file)
                 .stdin(std::process::Stdio::null())

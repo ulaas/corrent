@@ -52,6 +52,9 @@ impl ProcessPlugin {
     fn spawn(&self) -> Result<Proc, String> {
         let program = self.dir.join(self.command.first().ok_or("no command")?);
         let mut cmd = tokio::process::Command::new(&program);
+        // No console window flashing up (plugins are console programs).
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         cmd.args(&self.command[1..])
             .current_dir(&self.dir)
             .env_clear()
