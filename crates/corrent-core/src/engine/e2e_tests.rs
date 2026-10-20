@@ -1482,3 +1482,62 @@ async fn a_backup_restored_elsewhere_keeps_its_torrents() {
     stop(b).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// `flush_blocking` off the runtime's threads.
+async fn flush(l: &Leecher) {
+    let engine = l.engine.clone();
+    assert!(tokio::task::spawn_blocking(move || engine.flush_blocking(Duration::from_secs(5))).await.unwrap());
+}
+
+/// D7: the store keeps a copy of where each torrent's data is, its file selection and whether it
+/// is paused, and follows a selection change and a move.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_store_mirrors_where_the_engine_keeps_data() {
+    let dir = temp_dir("mirror");
+    let data = content();
+    let (a, b) = (data[..65536].to_vec(), data[65536..131072].to_vec());
+    let s = seeder_files(&dir, "pack", &[("a.bin", a), ("b.bin", b)]).await;
+    let l = start(&dir);
+    let tiny = add_tiny_torrents(&l, &dir, 1).await[0];
+    l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        source: AddSource::Bytes { name: "pack.torrent".into(), bytes: s.bytes.clone() },
+        torrent_bytes: None,
+        save_path: dir.join("dl"),
+        create_subfolder: true,
+        category: None,
+        tags: Vec::new(),
+        paused: false,
+        only_files: Some(vec![0]),
+        add_to_top: false,
+        initial_peers: Some(vec![s.addr]),
+        added_by: None,
+    })));
+    wait_for(&l, "the first file", 60, |sn| complete(sn, s.hash) && find(sn, s.hash).is_some_and(|t| t.size == 65536))
+        .await;
+    flush(&l).await;
+    let store = read_store(&l.paths);
+    let (m, t) = (&store.torrents[&s.hash], &store.torrents[&tiny]);
+    assert_eq!(m.output_folder.as_deref(), Some(dir.join("dl").join("pack").as_path()), "a folder torrent");
+    assert_eq!((m.only_files.clone(), m.paused), (Some(vec![0]), false));
+    assert_eq!(t.output_folder.as_deref(), Some(dir.join("dl").as_path()), "a single file");
+    assert_eq!((t.only_files.clone(), t.paused), (None, true));
+
+    l.engine.send(EngineCommand::SetFiles { hash: s.hash, included: vec![0, 1] });
+    wait_for(&l, "both files", 60, |sn| complete(sn, s.hash) && find(sn, s.hash).is_some_and(|t| t.size == 131072))
+        .await;
+    flush(&l).await;
+    let only = read_store(&l.paths).torrents[&s.hash].only_files.clone();
+    assert!(only.as_ref().is_none_or(|o| *o == vec![0, 1]), "{only:?}");
+
+    let dest = dir.join("dl2");
+    l.engine.send(EngineCommand::MoveStorage { hashes: vec![s.hash], to: dest.clone() });
+    wait_for(&l, "the move", 60, |sn| {
+        find(sn, s.hash).is_some_and(|t| t.save_path == dest && t.busy.is_none() && t.state == TorrentState::Seeding)
+    })
+    .await;
+    flush(&l).await;
+    let m = &read_store(&l.paths).torrents[&s.hash];
+    assert_eq!(m.output_folder.as_deref(), Some(dest.join("pack").as_path()), "follows the move");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

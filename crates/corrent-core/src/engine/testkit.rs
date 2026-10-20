@@ -54,6 +54,20 @@ pub async fn seeder_with(dir: &Path, name: &str, data: Vec<u8>) -> Seeder {
     let seed_dir = dir.join("seed");
     std::fs::create_dir_all(&seed_dir).unwrap();
     std::fs::write(seed_dir.join(name), &data).unwrap();
+    serve(seed_dir, name, data).await
+}
+
+/// A seeder for a folder `name` holding `files` (its `content` is the files joined in order).
+pub async fn seeder_files(dir: &Path, name: &str, files: &[(&str, Vec<u8>)]) -> Seeder {
+    let seed_dir = dir.join("seed");
+    std::fs::create_dir_all(seed_dir.join(name)).unwrap();
+    for (f, data) in files {
+        std::fs::write(seed_dir.join(name).join(f), data).unwrap();
+    }
+    serve(seed_dir, name, files.iter().flat_map(|(_, d)| d.iter().copied()).collect()).await
+}
+
+async fn serve(seed_dir: PathBuf, name: &str, data: Vec<u8>) -> Seeder {
     let opts = SessionOptions {
         dht: None,
         persistence: None,

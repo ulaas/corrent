@@ -1,5 +1,6 @@
 //! App-side per-torrent metadata that librqbit does not persist: categories, tags, dates,
-//! queue positions, pause reasons and cumulative transfer counters.
+//! queue positions, pause reasons and cumulative transfer counters, plus a copy of where the engine
+//! keeps each torrent's data (to rebuild its list if that is lost).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -50,6 +51,13 @@ pub struct TorrentMeta {
     pub up_limit_kib: u32,
     /// Per-file download priority (1 high, -1 low); files not listed are normal.
     pub file_priority: BTreeMap<usize, i8>,
+    /// Copies of what the engine persists in `session.json` (schema v2), refreshed by the actor:
+    /// its output folder (the content folder of a multi-file torrent, the file's folder for one
+    /// file; None until first seen), its file selection (None = every file) and its paused flag
+    /// (librqbit's `is_paused`, the intent, not the live state). Only used to rebuild a lost list.
+    pub output_folder: Option<PathBuf>,
+    pub only_files: Option<Vec<usize>>,
+    pub paused: bool,
 }
 
 impl TorrentMeta {
@@ -542,10 +550,17 @@ mod more_tests {
     fn save_and_reload() {
         let p = tmp("s");
         let mut s = Store::load(p.clone());
-        s.meta_mut(InfoHash([9; 20])).category = Some("Movies".into());
+        let m = s.meta_mut(InfoHash([9; 20]));
+        m.category = Some("Movies".into());
+        m.output_folder = Some(std::path::Path::new("D:").join("Media").join("Show"));
+        m.only_files = Some(vec![0, 2]);
+        m.paused = true;
         s.flush();
         let back = Store::load(p.clone());
-        assert_eq!(back.get(&InfoHash([9; 20])).unwrap().category.as_deref(), Some("Movies"));
+        let m = back.get(&InfoHash([9; 20])).unwrap();
+        assert_eq!(m.category.as_deref(), Some("Movies"));
+        assert_eq!(m.output_folder, Some(std::path::Path::new("D:").join("Media").join("Show")));
+        assert_eq!((m.only_files.clone(), m.paused), (Some(vec![0, 2]), true));
         assert!(back.warning.is_none());
         drop((s, back));
         assert_eq!(crate::util::generations(&p, "daily").len(), 1, "the day's first save is kept");

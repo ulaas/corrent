@@ -11,7 +11,7 @@ use crate::config::{Settings, default_download_dir, os_download_dir};
 use crate::store::StoreData;
 
 pub const SETTINGS_VERSION: u32 = 1;
-pub const STORE_VERSION: u32 = 1;
+pub const STORE_VERSION: u32 = 2;
 
 /// Set when settings.toml comes from a newer version: saving is disabled.
 pub static SETTINGS_READ_ONLY: AtomicBool = AtomicBool::new(false);
@@ -61,6 +61,11 @@ pub fn migrate_store(d: &mut StoreData, from: u32) -> bool {
     let mut changed = false;
     if from < 1 {
         // v0 → v1: no shape change; queue positions are normalized by the store after loading.
+        changed = true;
+    }
+    if from < 2 {
+        // v1 → v2: where the engine keeps the data (output folder, file selection, paused); new
+        // optional fields, filled in by the engine on its first ticks.
         changed = true;
     }
     d.schema_version = STORE_VERSION;
@@ -135,6 +140,25 @@ download_limit = 512
         assert_eq!(d.tags, vec!["a".to_string()]);
         assert_eq!(d.stats.all_time_uploaded, 5);
         assert_eq!(json_version(&serde_json::to_vec(&d).unwrap()), STORE_VERSION);
+    }
+
+    #[test]
+    fn v1_store_migrates_to_v2_without_losing_fields() {
+        let v1 = r#"{"schema_version":1,"torrents":{"0101010101010101010101010101010101010101":{"name":"x","category":"Movies","tags":["t"],"queue_pos":2,"pause_reason":"User","downloaded_total":7,"file_priority":{"1":1}}}}"#;
+        assert_eq!(json_version(v1.as_bytes()), 1);
+        let mut d: StoreData = serde_json::from_str(v1).unwrap();
+        assert!(migrate_store(&mut d, 1));
+        assert_eq!(d.schema_version, 2);
+        let m = d.torrents.values().next().unwrap();
+        assert_eq!((m.category.as_deref(), m.queue_pos, m.downloaded_total), (Some("Movies"), 2, 7));
+        assert_eq!(m.pause_reason, Some(crate::store::PauseReason::User));
+        assert_eq!(m.file_priority.get(&1), Some(&1));
+        // Not known yet: the engine fills them in.
+        assert_eq!((m.output_folder.as_ref(), m.only_files.as_ref(), m.paused), (None, None, false));
+        let out = serde_json::to_vec(&d).unwrap();
+        assert_eq!(json_version(&out), 2);
+        let back: StoreData = serde_json::from_slice(&out).unwrap();
+        assert_eq!(back.torrents.values().next().unwrap().tags, vec!["t".to_string()]);
     }
 
     #[test]

@@ -127,6 +127,9 @@ pub struct Actor {
     remote_prev: HashMap<InfoHash, (Instant, PeerCounters)>,
     pieces_cache: Option<(Instant, InfoHash, (Vec<u8>, u32))>,
     static_info: HashMap<InfoHash, StaticInfo>,
+    /// The engine's selected size when its file selection was last copied to the store: a
+    /// change means the selection may have changed (D7).
+    mirrored_size: HashMap<InfoHash, u64>,
     previews: HashMap<u64, JoinHandle<()>>,
     pending: HashMap<u64, PendingAdd>,
     next_pending: u64,
@@ -234,6 +237,7 @@ impl Actor {
             remote_prev: HashMap::new(),
             pieces_cache: None,
             static_info: HashMap::new(),
+            mirrored_size: HashMap::new(),
             previews: HashMap::new(),
             pending: HashMap::new(),
             next_pending: 1,
@@ -1428,6 +1432,7 @@ impl Actor {
     fn forget_hash(&mut self, hash: &InfoHash) {
         self.store.remove(hash);
         self.static_info.remove(hash);
+        self.mirrored_size.remove(hash);
         self.torrent_history.remove(hash);
         self.seen_unfinished.remove(hash);
         self.last_down_active.remove(hash);
@@ -1544,6 +1549,7 @@ impl Actor {
             Internal::OpFinished { hash, what, result } => {
                 self.busy.remove(&hash);
                 self.static_info.remove(&hash);
+                self.mirrored_size.remove(&hash);
                 self.maybe_apply_deferred();
                 match result {
                     Ok(()) => {
@@ -1672,6 +1678,7 @@ impl Actor {
             ("prev_peer", self.prev_peer.len()),
             ("remote_prev", self.remote_prev.len()),
             ("static_info", self.static_info.len()),
+            ("mirrored_size", self.mirrored_size.len()),
             ("previews", self.previews.len()),
             ("pending", self.pending.len()),
             ("busy", self.busy.len()),
@@ -2057,6 +2064,34 @@ impl Actor {
         {
             m.name = n.clone();
             structural = true;
+        }
+        // D7: where the engine keeps the data, for a rebuild of its list. The folder and the
+        // paused flag are cheap to compare; the file selection is a Vec under a lock, so it is
+        // copied when first seen, when the selected size changes, and every 20 ticks.
+        let output = h.output_folder();
+        if m.output_folder.as_deref() != Some(output) {
+            m.output_folder = Some(output.to_path_buf());
+            structural = true;
+        }
+        let paused = h.is_paused();
+        if m.paused != paused {
+            m.paused = paused;
+            structural = true;
+        }
+        if has_metadata
+            && (self.mirrored_size.get(&hash) != Some(&stats.total_bytes)
+                || self.tick_count % 20 == u64::from(hash.0[0]) % 20)
+        {
+            self.mirrored_size.insert(hash, stats.total_bytes);
+            // Sorted: the engine keeps the selection in no particular order.
+            let only = h.only_files().map(|mut v| {
+                v.sort_unstable();
+                v
+            });
+            if m.only_files != only {
+                m.only_files = only;
+                structural = true;
+            }
         }
         if down_bps > 0 || up_bps > 0 {
             m.last_activity = now;
