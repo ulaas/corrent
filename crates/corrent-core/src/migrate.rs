@@ -12,6 +12,9 @@ use crate::store::StoreData;
 
 pub const SETTINGS_VERSION: u32 = 1;
 pub const STORE_VERSION: u32 = 2;
+/// Names the profile fixtures (`tests/fixtures/profile-v<n>`): bumped whenever any file format
+/// changes (settings, store, feed history), so each release that changes one adds a fixture.
+pub const PROFILE_VERSION: u32 = 2;
 
 /// Set when settings.toml comes from a newer version: saving is disabled.
 pub static SETTINGS_READ_ONLY: AtomicBool = AtomicBool::new(false);
@@ -159,6 +162,12 @@ download_limit = 512
         assert_eq!(json_version(&out), 2);
         let back: StoreData = serde_json::from_slice(&out).unwrap();
         assert_eq!(back.torrents.values().next().unwrap().tags, vec!["t".to_string()]);
+    }
+
+    #[test]
+    fn profile_version_covers_every_file_format() {
+        let newest = SETTINGS_VERSION.max(STORE_VERSION).max(crate::rss::STATE_VERSION);
+        assert!(PROFILE_VERSION >= newest, "bump PROFILE_VERSION and add a fixture");
     }
 
     #[test]

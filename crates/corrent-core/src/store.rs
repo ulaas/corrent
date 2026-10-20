@@ -142,7 +142,7 @@ const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 impl Store {
     /// Tests: drop without flushing to disk.
     #[cfg(test)]
-    fn discard(mut self) {
+    pub(crate) fn discard(mut self) {
         self.dirty = false;
         self.soft_dirty = false;
         crate::writer::global().cancel(&self.path);

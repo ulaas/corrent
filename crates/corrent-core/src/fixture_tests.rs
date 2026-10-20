@@ -57,9 +57,20 @@ fn tiny(i: u8) -> Vec<u8> {
     b
 }
 
-/// Writes `profile-v<SETTINGS_VERSION>` from a real run: non-default settings, a category with
-/// its own folder, three torrents with categories, tags and one paused, a feed with a rule and a
-/// downloaded article.
+/// Two 16 KiB files in a folder (made-up piece hashes).
+fn tiny_multi(i: u8) -> Vec<u8> {
+    let name = format!("fixture-pack-{i}");
+    let mut b = b"d4:infod5:filesld6:lengthi16384e4:pathl5:a.bineed6:lengthi16384e4:pathl5:b.bineee4:name".to_vec();
+    b.extend_from_slice(format!("{}:{name}", name.len()).as_bytes());
+    b.extend_from_slice(b"12:piece lengthi16384e6:pieces40:");
+    b.extend_from_slice(&[i.wrapping_add(40); 40]);
+    b.extend_from_slice(b"ee");
+    b
+}
+
+/// Writes `profile-v<PROFILE_VERSION>` from a real run: non-default settings, a category with
+/// its own folder, three torrents with categories, tags and two paused, a paused folder torrent
+/// with one file selected, a feed with a rule and a downloaded article.
 #[test]
 #[ignore = "writes tests/fixtures; run by hand when a format changes"]
 fn write_current_fixture() {
@@ -109,11 +120,31 @@ fn write_current_fixture() {
                 added_by: None,
             })));
         }
+        l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+            source: AddSource::Bytes { name: "pack.torrent".into(), bytes: tiny_multi(3) },
+            torrent_bytes: None,
+            save_path: dl.clone(),
+            create_subfolder: true,
+            category: None,
+            tags: Vec::new(),
+            paused: true,
+            only_files: Some(vec![1]),
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        })));
         wait_for(&l, "the fixture torrents", 30, |sn| {
-            sn.torrents.len() == 3 && sn.torrents.iter().all(|t| !t.pending && t.category.is_some())
+            sn.torrents.len() == 4
+                && sn.torrents.iter().all(|t| !t.pending)
+                && sn.torrents.iter().filter(|t| t.category.is_some()).count() == 3
         })
         .await;
         testkit::stop(l).await;
+        // The store has the engine's side of every torrent (schema 2).
+        let store = crate::store::Store::load(paths.store_file());
+        assert!(store.data.torrents.values().all(|m| m.output_folder.is_some()));
+        assert!(store.data.torrents.values().any(|m| m.only_files == Some(vec![1])));
+        store.discard();
     });
     // Feed history: a fetched feed and an article marked downloaded.
     {
@@ -133,7 +164,7 @@ fn write_current_fixture() {
         rss.mark_downloaded("https://feeds.example/tv.xml", "show-s01e01", &s.rss);
         rss.flush();
     }
-    let out = fixtures().join(format!("profile-v{}", crate::migrate::SETTINGS_VERSION));
+    let out = fixtures().join(format!("profile-v{}", crate::migrate::PROFILE_VERSION));
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(out.join("session")).unwrap();
     let dl_text = slashes(&dl);
@@ -203,7 +234,7 @@ fn every_fixture_loads_losslessly() {
         .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("profile-v")))
         .collect();
     dirs.sort();
-    assert!(dirs.len() >= 2, "fixtures: {dirs:?}");
+    assert!(dirs.len() >= 3, "fixtures: {dirs:?}");
     let rt = tokio::runtime::Runtime::new().unwrap();
     for fixture in dirs {
         let name = fixture.file_name().unwrap().to_string_lossy().into_owned();
@@ -215,6 +246,9 @@ fn every_fixture_loads_losslessly() {
         let settings_in: Value = serde_json::to_value(read("settings.toml").parse::<toml::Table>().unwrap()).unwrap();
         let store_in: Value = serde_json::from_str(&read("store.json")).unwrap();
         let rss_in: Value = serde_json::from_str(&read("rss.json")).unwrap();
+        // As written, before anything migrates them.
+        let settings_from = crate::migrate::toml_version(&read("settings.toml"));
+        let store_from = crate::migrate::json_version(read("store.json").as_bytes());
 
         let (settings, _, warning) = Settings::load(&paths);
         assert_eq!(settings.schema_version, crate::migrate::SETTINGS_VERSION, "{name}");
@@ -237,15 +271,18 @@ fn every_fixture_loads_losslessly() {
         assert!(article.is_some_and(|a| a.downloaded), "{name}: the downloaded article");
         drop(rss);
         assert!(rss_in.get("feeds").is_some(), "{name}: rss.json has feeds");
-        if name == "profile-v0" {
-            let names: Vec<String> = std::fs::read_dir(&paths.data_dir)
-                .unwrap()
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            for f in ["settings.toml.v0-", "store.json.v0-"] {
-                assert!(names.iter().any(|n| n.starts_with(f)), "{name}: a {f}* backup in {names:?}");
-            }
+        // A dated copy of every file that was migrated, none of the others.
+        let names: Vec<String> = std::fs::read_dir(&paths.data_dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        for (file, from, now) in [
+            ("settings.toml", settings_from, crate::migrate::SETTINGS_VERSION),
+            ("store.json", store_from, crate::migrate::STORE_VERSION),
+        ] {
+            let backup = names.iter().any(|n| n.starts_with(&format!("{file}.v{from}-")));
+            assert_eq!(backup, from < now, "{name}: a {file}.v{from}-* backup in {names:?}");
         }
 
         // The engine has every torrent of the store back, with its category.
@@ -259,8 +296,23 @@ fn every_fixture_loads_losslessly() {
             .await;
             for t in &snap.torrents {
                 assert_ne!(t.state, crate::engine::types::TorrentState::Error, "{name}: {} {:?}", t.name, t.error);
-                let want = store_in["torrents"][t.hash.to_hex()]["category"].as_str();
-                assert_eq!(t.category.as_deref(), want, "{name}: {}", t.name);
+                let rec = &store_in["torrents"][t.hash.to_hex()];
+                assert_eq!(t.category.as_deref(), rec["category"].as_str(), "{name}: {}", t.name);
+                // Schema 2: the store's copy of the engine's side matches what the engine loaded.
+                if store_from >= 2 {
+                    let folder = if t.file_count > 1 { &t.content_path } else { &t.save_path };
+                    assert_eq!(rec["output_folder"].as_str(), Some(slashes(folder).as_str()), "{name}: {}", t.name);
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    l.engine.send(EngineCommand::FileList { hash: t.hash, reply: tx });
+                    let files = rx.await.unwrap().unwrap();
+                    let included: Vec<usize> =
+                        files.iter().enumerate().filter(|(_, f)| f.included).map(|(i, _)| i).collect();
+                    let want: Vec<usize> = match rec["only_files"].as_array() {
+                        Some(a) => a.iter().filter_map(|v| v.as_u64()).map(|v| v as usize).collect(),
+                        None => (0..files.len()).collect(),
+                    };
+                    assert_eq!(included, want, "{name}: {}", t.name);
+                }
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
             testkit::stop(l).await;

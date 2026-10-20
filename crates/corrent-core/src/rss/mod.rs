@@ -66,7 +66,7 @@ pub fn rule_applies_to(r: &RssRule, feed_url: &str) -> bool {
     r.feeds.is_empty() || r.feeds.iter().any(|f| f == feed_url)
 }
 
-const STATE_VERSION: u32 = 1;
+pub(crate) const STATE_VERSION: u32 = 1;
 const MAX_REMEMBERED: usize = 10_000;
 const MIN_REFRESH: Duration = Duration::from_secs(5 * 60);
 
