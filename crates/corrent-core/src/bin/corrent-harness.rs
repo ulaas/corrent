@@ -178,13 +178,54 @@ fn age_bak(paths: &Paths) {
     }
 }
 
+/// Copy `from` into `to`, with the fixtures' `{{DL}}` replaced by `dl`.
+fn copy_fixture(from: &Path, to: &Path, dl: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().flatten() {
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        let ext = src.extension().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+        if src.is_dir() {
+            copy_fixture(&src, &dst, dl);
+        } else if ext == "json" || ext == "toml" {
+            let text = std::fs::read_to_string(&src).unwrap();
+            std::fs::write(&dst, text.replace("{{DL}}", &dl.display().to_string().replace('\\', "/"))).unwrap();
+        } else if ext != "md" {
+            std::fs::copy(&src, &dst).unwrap();
+        }
+    }
+}
+
+/// The profile starts as the v1 fixture with a backup of the v0 fixture staged over it: the
+/// run first restores (renames into place) and migrates (dated copies) before anything else.
+fn stage_old_profile(scratch: &Path, j: &mut Journal) {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let dl = scratch.join("fixture-dl");
+    let live = paths(scratch);
+    copy_fixture(&fixtures.join("profile-v1"), &live.data_dir, &dl);
+    let old = Paths { data_dir: scratch.join("v0/data"), portable: true };
+    copy_fixture(&fixtures.join("profile-v0"), &old.data_dir, &dl);
+    let zip = scratch.join("v0.zip");
+    corrent_core::backup::export(&old, &zip).unwrap();
+    corrent_core::backup::stage_import(&live, &zip).unwrap();
+    let store: serde_json::Value = serde_json::from_slice(&std::fs::read(old.store_file()).unwrap()).unwrap();
+    j.engine.extend(store["torrents"].as_object().unwrap().keys().cloned());
+}
+
+/// No network: the fixtures' feeds point at a made-up host.
+fn offline(mut s: Settings) -> Settings {
+    s.rss.feeds.clear();
+    s
+}
+
 async fn run(scratch: &Path) {
     let seeder: Seeder = testkit::seeder(&scratch.join("seed")).await;
-    let (_lock, paths, mut settings, first_run, _) = open_profile(scratch);
-    if first_run {
-        settings = testkit::settings(scratch);
-    }
     let mut j = Journal::default();
+    if !scratch.join("data").exists() {
+        stage_old_profile(scratch, &mut j);
+        save_journal(scratch, &j);
+    }
+    let (_lock, paths, settings, _, _) = open_profile(scratch);
+    let settings = offline(settings);
     // Settings: first save, then one that refreshes the .bak.
     let s = settings_with_marker(settings.clone(), 3);
     j.settings_saving = Some(3);
@@ -310,7 +351,7 @@ async fn verify(scratch: &Path) {
     {
         problem!("settings marker {got}, expected {m} or {:?}", j.settings_saving);
     }
-    let (engine, events) = start(&paths, settings);
+    let (engine, events) = start(&paths, offline(settings));
     // Every journaled torrent comes back (re-adds interrupted by the kill are recovered from their
     // backup in the background, so this waits).
     let wanted: Vec<String> = j.engine.iter().filter(|h| Some(*h) != j.deleting.as_ref()).cloned().collect();

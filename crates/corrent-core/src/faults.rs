@@ -279,6 +279,37 @@ pub fn init_kill_points() {
     librqbit::corrent_hooks::set_kill_hook(kill::reached);
 }
 
+/// STABILITY.md D10: a step that a test can make fail (on this thread, see [`fail_nth`]).
+pub fn fail_point(op: &str) -> std::io::Result<()> {
+    #[cfg(any(test, feature = "testkit"))]
+    if FAIL.with(|f| {
+        let mut f = f.borrow_mut();
+        match f.as_mut() {
+            Some((o, n)) if o == op => {
+                *n -= 1;
+                *n == 0
+            }
+            _ => false,
+        }
+    }) {
+        return Err(std::io::Error::other("injected failure"));
+    }
+    #[cfg(not(any(test, feature = "testkit")))]
+    let _ = op;
+    Ok(())
+}
+
+#[cfg(any(test, feature = "testkit"))]
+thread_local! {
+    static FAIL: std::cell::RefCell<Option<(String, u32)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Tests: the `n`-th [`fail_point`] `op` on this thread fails (once); 0 disarms.
+#[cfg(any(test, feature = "testkit"))]
+pub fn fail_nth(op: &str, n: u32) {
+    FAIL.with(|f| *f.borrow_mut() = (n > 0).then(|| (op.to_string(), n)));
+}
+
 /// The exit code of a process ended at a kill point (Windows; Unix ends with SIGABRT).
 #[cfg(any(test, feature = "testkit"))]
 pub const KILLED_EXIT_CODE: u32 = 75;

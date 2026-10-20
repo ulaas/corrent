@@ -1454,3 +1454,31 @@ async fn a_pause_right_before_quitting_is_saved_by_the_engine() {
     assert_eq!(entry["is_paused"], true, "{entry}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// STABILITY.md D10: a backup restored into a profile at another path (a new machine, a moved
+/// portable folder) keeps its torrents; their data is found where it was, nothing downloads again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_backup_restored_elsewhere_keeps_its_torrents() {
+    let dir = temp_dir("restore-elsewhere");
+    let s = seeder(&dir).await;
+    let a = start(&dir.join("a"));
+    let t = download(&a, &s, &dir).await;
+    let a_paths = stop(a).await;
+    let zip = dir.join("backup.zip");
+    crate::backup::export(&a_paths, &zip).unwrap();
+    drop(s); // no peer from here on
+
+    let b_dir = dir.join("b");
+    let b_paths = crate::config::Paths { data_dir: b_dir.join("data"), portable: true };
+    crate::backup::stage_import(&b_paths, &zip).unwrap();
+    let note = crate::backup::apply_pending(&b_paths).unwrap();
+    assert!(note.starts_with("Restored"), "{note}");
+    // Offline test settings (the backup has no settings.toml: the engine doesn't write one).
+    let b = start_with(&b_dir, settings(&b_dir));
+    let snap = wait_for(&b, "the restored torrent, complete", 60, |sn| complete(sn, t.hash)).await;
+    let got = find(&snap, t.hash).unwrap();
+    assert_eq!(got.save_path, t.save_path, "its data stays where it was");
+    assert_eq!(got.category, t.category);
+    stop(b).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

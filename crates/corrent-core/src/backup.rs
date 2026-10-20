@@ -151,13 +151,16 @@ pub fn apply_pending(paths: &Paths) -> Option<String> {
             let cur = paths.data_dir.join(name);
             if cur.exists() {
                 std::fs::create_dir_all(&keep)?;
+                crate::faults::fail_point("restore")?;
                 std::fs::rename(&cur, keep.join(name))?;
                 crate::faults::kill_point("restore", "after_keep");
             }
+            crate::faults::fail_point("restore")?;
             std::fs::rename(&staged, &cur)?;
             crate::faults::kill_point("restore", "after_apply");
             applied += 1;
         }
+        crate::faults::fail_point("restore")?;
         std::fs::remove_dir_all(&stage)
     })();
     let kept = if keep.exists() {
@@ -194,6 +197,71 @@ mod tests {
         assert_eq!(std::fs::read_to_string(paths.settings_file()).unwrap(), "[speed]\ndownload_limit = 5\n");
         assert!(apply_pending(&paths).is_none());
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// A profile with every component, each file holding `tag`.
+    fn profile(paths: &Paths, tag: &str) {
+        std::fs::create_dir_all(paths.session_dir()).unwrap();
+        std::fs::create_dir_all(paths.torrents_dir()).unwrap();
+        std::fs::write(
+            paths.settings_file(),
+            format!(
+                "# {tag}
+"
+            ),
+        )
+        .unwrap();
+        std::fs::write(paths.store_file(), format!("{{\"t\":\"{tag}\"}}")).unwrap();
+        std::fs::write(paths.rss_file(), format!("{{\"t\":\"{tag}\"}}")).unwrap();
+        std::fs::write(paths.session_dir().join("session.json"), format!("{{\"t\":\"{tag}\"}}")).unwrap();
+        std::fs::write(paths.torrents_dir().join("a.torrent"), tag).unwrap();
+    }
+
+    fn files(dir: &Path) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for f in ["settings.toml", "store.json", "rss.json", "session/session.json", "torrents/a.torrent"] {
+            out.push((f.to_string(), std::fs::read_to_string(dir.join(f)).unwrap_or_default()));
+        }
+        out
+    }
+
+    #[test]
+    fn restore_converges_after_a_failure_at_every_step() {
+        // STABILITY.md D10: 5 components x (keep + apply) + removing the stage = 11 steps.
+        for k in 1..=11 {
+            let base = std::env::temp_dir().join(format!("corrent-backup-drill-{k}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            let paths = Paths { data_dir: base.join("data"), portable: true };
+            profile(&paths, "backup");
+            let want = files(&paths.data_dir);
+            let zip = base.join("b.zip");
+            assert_eq!(export(&paths, &zip).unwrap(), 5);
+            let _ = std::fs::remove_dir_all(&paths.data_dir);
+            profile(&paths, "current");
+            stage_import(&paths, &zip).unwrap();
+
+            crate::faults::fail_nth("restore", k);
+            let first = apply_pending(&paths).unwrap();
+            crate::faults::fail_nth("restore", 0);
+            assert!(first.contains("interrupted"), "step {k}: {first}");
+            let second = apply_pending(&paths).unwrap();
+            assert!(second.starts_with("Restored"), "step {k}: {second}");
+            assert!(apply_pending(&paths).is_none(), "step {k}: the stage is gone");
+            assert_eq!(files(&paths.data_dir), want, "step {k}");
+            // The data it replaced is kept, in one of the pre-restore folders.
+            let kept: Vec<PathBuf> = std::fs::read_dir(&paths.data_dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("pre-restore-")))
+                .collect();
+            for (f, _) in files(&paths.data_dir) {
+                let found =
+                    kept.iter().any(|d| std::fs::read_to_string(d.join(&f)).is_ok_and(|t| t.contains("current")));
+                assert!(found, "step {k}: the current {f} is kept in {kept:?}");
+            }
+            let _ = std::fs::remove_dir_all(base);
+        }
     }
 
     #[test]
