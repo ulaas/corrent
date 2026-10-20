@@ -179,9 +179,45 @@ pub fn downloads_active(torrents: &[TorrentView]) -> bool {
     })
 }
 
+/// Feed articles whose add failed but may be retried, at most (STABILITY.md F12).
+pub const RSS_FAILURES_MAX: usize = 1024;
+
+/// Count a failed feed add of `key`: true if it should be retried on a later refresh (fewer
+/// than 3 failures). An article that gives up stays marked downloaded in `rss.json`, so its
+/// count isn't needed any more; past the cap the oldest failures are forgotten.
+pub fn rss_failed(failures: &mut std::collections::HashMap<String, (u32, std::time::Instant)>, key: &str) -> bool {
+    let now = std::time::Instant::now();
+    let n = {
+        let e = failures.entry(key.to_string()).or_insert((0, now));
+        *e = (e.0 + 1, now);
+        e.0
+    };
+    if n >= 3 {
+        failures.remove(key);
+    }
+    while failures.len() > RSS_FAILURES_MAX {
+        let Some(oldest) = failures.iter().min_by_key(|(_, (_, at))| *at).map(|(k, _)| k.clone()) else { break };
+        failures.remove(&oldest);
+    }
+    n < 3
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn rss_failures_are_bounded() {
+        let mut f = std::collections::HashMap::new();
+        assert!(rss_failed(&mut f, "a"));
+        assert!(rss_failed(&mut f, "a"));
+        assert!(!rss_failed(&mut f, "a"), "the third failure gives up");
+        assert!(f.is_empty(), "and isn't remembered");
+        for i in 0..5000 {
+            rss_failed(&mut f, &format!("k{i}"));
+        }
+        assert_eq!(f.len(), RSS_FAILURES_MAX);
+    }
 
     pub fn view(n: u8, state: TorrentState) -> TorrentView {
         TorrentView {

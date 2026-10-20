@@ -186,7 +186,7 @@ pub struct Actor {
     session_cancel: tokio_util::sync::DropGuard,
     /// Watch-folder files behind pending adds, with their folder's after-add action.
     watch_adds: HashMap<u64, (PathBuf, crate::config::AfterAdd)>,
-    rss_failures: HashMap<String, u32>,
+    rss_failures: HashMap<String, (u32, Instant)>,
     /// Shared limiters for categories with speed limits.
     category_limits: HashMap<String, Arc<librqbit::limits::Limits>>,
     rss_client: Option<(Option<String>, reqwest::Client)>,
@@ -1468,9 +1468,7 @@ impl Actor {
                     && !is_duplicate_error(e)
                 {
                     // Retry on a later refresh, but give up on links that keep failing.
-                    let n = self.rss_failures.entry(d.key.clone()).or_default();
-                    *n += 1;
-                    if *n < 3 {
+                    if super::logic::rss_failed(&mut self.rss_failures, &d.key) {
                         let rss = self.settings.rss.clone();
                         self.rss.forget(&d, &rss);
                     }
@@ -1657,6 +1655,37 @@ impl Actor {
         self.tick_ms.push_back(started.elapsed().as_millis().min(u32::MAX as u128) as u32);
     }
 
+    /// Every map and set the actor keeps (keep in sync with the fields).
+    #[cfg(debug_assertions)]
+    fn map_sizes(&self) -> Vec<(&'static str, usize)> {
+        vec![
+            ("torrent_history", self.torrent_history.len()),
+            ("row_history", self.row_history.len()),
+            ("prev_peer", self.prev_peer.len()),
+            ("remote_prev", self.remote_prev.len()),
+            ("static_info", self.static_info.len()),
+            ("previews", self.previews.len()),
+            ("pending", self.pending.len()),
+            ("busy", self.busy.len()),
+            ("seen_unfinished", self.seen_unfinished.len()),
+            ("unrecorded", self.unrecorded.len()),
+            ("last_down_active", self.last_down_active.len()),
+            ("seed_carry_ms", self.seed_carry_ms.len()),
+            ("slow_since", self.slow_since.len()),
+            ("resumed_at", self.resumed_at.len()),
+            ("failed", self.failed.len()),
+            ("undo_pending", self.undo_pending.len()),
+            ("undo", self.undo.len()),
+            ("pause_sent", self.pause_sent.len()),
+            ("stream_rates", self.stream_rates.len()),
+            ("stream_haves", self.stream_haves.len()),
+            ("rss_adds", self.rss_adds.len()),
+            ("watch_adds", self.watch_adds.len()),
+            ("rss_failures", self.rss_failures.len()),
+            ("category_limits", self.category_limits.len()),
+        ]
+    }
+
     fn tick_inner(&mut self) {
         let elapsed = self.last_tick.elapsed();
         self.last_tick = Instant::now();
@@ -1666,6 +1695,11 @@ impl Actor {
         self.poll_feeds();
         if self.tick_count % 20 == 5 {
             self.undo.retain(|_, e| e.at.elapsed() <= UNDO_WINDOW);
+        }
+        // Debug builds: the size of every map, to spot one that keeps growing (STABILITY.md F12).
+        #[cfg(debug_assertions)]
+        if self.tick_count % 600 == 300 {
+            tracing::debug!(target: "corrent::sizes", "actor maps: {:?}", self.map_sizes());
         }
         // Files blocked by antivirus or another program are often released later.
         if self.tick_count % 120 == 60 && !self.failed.is_empty() {
