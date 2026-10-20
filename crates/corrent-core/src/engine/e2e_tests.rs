@@ -779,6 +779,11 @@ async fn engine_panic_stops_the_old_session() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// For the fault tests.
+pub(super) async fn add_tiny_torrents_pub(l: &Leecher, dir: &Path, n: u8) -> Vec<InfoHash> {
+    add_tiny_torrents(l, dir, n).await
+}
+
 /// Add `n` tiny paused torrents (made-up piece hashes; nothing to download) and wait for them.
 async fn add_tiny_torrents(l: &Leecher, dir: &Path, n: u8) -> Vec<InfoHash> {
     for i in 0..n {

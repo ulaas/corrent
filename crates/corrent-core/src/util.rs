@@ -16,6 +16,9 @@ const BAK_MAX_AGE: Duration = Duration::from_secs(3600);
 /// mid-write never loses data. A rename refused because another program (antivirus, indexer,
 /// sync client) holds the target is retried for about 1.5 s.
 pub fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    if let Some(e) = crate::faults::file_error(path) {
+        return Err(e.into());
+    }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -78,6 +81,9 @@ fn refresh_bak(path: &Path) {
 /// Like `write_atomic`, but without a `.bak` (for short-lived files rewritten often, such as a
 /// move's progress note).
 pub fn write_replace(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    if let Some(e) = crate::faults::file_error(path) {
+        return Err(e.into());
+    }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

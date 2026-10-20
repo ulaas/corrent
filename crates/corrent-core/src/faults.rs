@@ -54,6 +54,31 @@ mod imp {
         v.iter().find(|(h, _)| *h == hash).map(|(_, d)| *d)
     }
 
+    /// Write errors for profile files by path prefix: (prefix, Windows/Unix error codes, times
+    /// left; None = until cleared).
+    /// (prefix, (Windows code, Unix code), times left).
+    type FileError = (PathBuf, (i32, i32), Option<u32>);
+    static FILE_ERROR: Mutex<Vec<FileError>> = Mutex::new(Vec::new());
+
+    pub fn set_file_error(prefix: &Path, codes: (i32, i32), times: Option<u32>) {
+        let mut v = FILE_ERROR.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        v.retain(|(p, _, _)| p != prefix);
+        v.push((prefix.to_path_buf(), codes, times));
+    }
+
+    pub fn clear_file_errors(prefix: &Path) {
+        FILE_ERROR.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(p, _, _)| !p.starts_with(prefix));
+    }
+
+    pub fn file_error(path: &Path) -> Option<std::io::Error> {
+        let mut v = FILE_ERROR.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_, (win, unix), times) = v.iter_mut().find(|(p, _, t)| path.starts_with(p.as_path()) && *t != Some(0))?;
+        if let Some(n) = times {
+            *n -= 1;
+        }
+        Some(std::io::Error::from_raw_os_error(if cfg!(windows) { *win } else { *unix }))
+    }
+
     /// Storage faults by profile folder, with the bytes written since each was set.
     static STORAGE: Mutex<Vec<(PathBuf, super::StorageFault, u64)>> = Mutex::new(Vec::new());
 
@@ -98,6 +123,35 @@ mod imp {
 
 #[cfg(any(test, feature = "testkit"))]
 pub use imp::{clear_call_delay, clear_storage_faults, set_call_delay, set_storage_fault, storage_check};
+
+/// Tests: writes of profile files under `prefix` (store.json, settings, feeds…) fail with a full
+/// disk, `times` times (None: until cleared).
+#[cfg(any(test, feature = "testkit"))]
+pub fn set_disk_full(prefix: &Path, times: Option<u32>) {
+    imp::set_file_error(prefix, (112, 28), times);
+}
+
+/// Tests: the same with access denied.
+#[cfg(any(test, feature = "testkit"))]
+pub fn set_access_denied(prefix: &Path, times: Option<u32>) {
+    imp::set_file_error(prefix, (5, 13), times);
+}
+
+#[cfg(any(test, feature = "testkit"))]
+pub fn clear_file_errors(prefix: &Path) {
+    imp::clear_file_errors(prefix);
+}
+
+/// An injected error for writing `path` (test builds; never in release).
+pub fn file_error(path: &Path) -> Option<std::io::Error> {
+    #[cfg(any(test, feature = "testkit"))]
+    return imp::file_error(path);
+    #[cfg(not(any(test, feature = "testkit")))]
+    {
+        let _ = path;
+        None
+    }
+}
 
 /// Where in the engine's storage a fault strikes (S8, tests only).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -138,3 +138,40 @@ async fn fm_read_errors_never_serve_short_data() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A full disk under the profile: saving Corrent's records fails with a warning that says the
+/// disk is full, the file on disk stays the last good one, and the next save after room comes
+/// back writes everything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_disk_full_under_the_profile_keeps_the_saved_records() {
+    let dir = temp_dir("fm-profile-full");
+    let l = start(&dir);
+    // A tiny paused torrent with a category, saved.
+    let hashes = super::e2e_tests::add_tiny_torrents_pub(&l, &dir, 1).await;
+    let engine = l.engine.clone();
+    assert!(tokio::task::spawn_blocking(move || engine.flush_blocking(Duration::from_secs(5))).await.unwrap());
+    let store_file = l.paths.store_file();
+    let before = std::fs::read(&store_file).unwrap();
+    crate::faults::set_disk_full(&store_file, None);
+    l.engine.send(EngineCommand::SetCategory { hashes: hashes.clone(), category: Some("Changed".into()) });
+    let mut warned = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while warned.is_none() {
+        assert!(std::time::Instant::now() < deadline, "no warning about the failed save");
+        match l.events.try_recv() {
+            Ok(super::EngineEvent::DataWarning(w)) => warned = Some(w),
+            Ok(_) => {}
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    let w = warned.unwrap();
+    assert_eq!(classify_io(&w), IoKind::DiskFull, "{w}");
+    assert_eq!(std::fs::read(&store_file).unwrap(), before, "the last good file stays");
+    crate::faults::clear_file_errors(&store_file);
+    let engine = l.engine.clone();
+    assert!(tokio::task::spawn_blocking(move || engine.flush_blocking(Duration::from_secs(5))).await.unwrap());
+    let saved: crate::store::StoreData = serde_json::from_slice(&std::fs::read(&store_file).unwrap()).unwrap();
+    assert_eq!(saved.torrents[&hashes[0]].category.as_deref(), Some("Changed"), "saved once there is room");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
