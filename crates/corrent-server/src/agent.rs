@@ -224,16 +224,19 @@ pub async fn call(st: &Arc<AppState>, who: &Principal, name: &str, a: &Value) ->
                 .torrents
                 .iter()
                 .filter(|t| !t.pending && (!finished || t.progress >= 1.0))
+                .filter(|t| crate::v1::torrents::may_manage_as(st, who, &[t.hash]).is_ok())
                 .map(|t| json!({ "hash": t.hash.to_hex(), "name": t.name, "progress": t.progress, "state": format!("{:?}", t.state), "category": t.category, "save_path": t.save_path, "content_path": t.content_path }))
                 .collect::<Vec<_>>()))
         }
         "plan_import" => {
+            let hash = hash_of(a)?;
+            crate::v1::torrents::may_manage_as(st, who, &[hash]).map_err(|e| e.0.message)?;
             let req = TorrentImport { library_id: need_i(a, "library_id")?, action: action_of(a)?, dry_run: true };
-            let plan = crate::integrate::import_torrent(st, hash_of(a)?, &req).await.map_err(|e| e.0.message)?;
+            let plan = crate::integrate::import_torrent(st, hash, &req).await.map_err(|e| e.0.message)?;
             Ok(json!(plan))
         }
         "propose_identification" | "propose_details" | "propose_import" | "propose_thumbnail" => {
-            let summary = summarize(st, user, name, a).await?;
+            let summary = summarize(st, who, name, a).await?;
             let id = propose(st, user, name, a, &summary).await.map_err(|e| e.to_string())?;
             Ok(json!({
                 "proposal": id,
@@ -248,7 +251,8 @@ pub async fn call(st: &Arc<AppState>, who: &Principal, name: &str, a: &Value) ->
 
 /// What a proposal would do, for the person who decides (checked against the library now, so a
 /// proposal about something that isn't there is refused right away).
-async fn summarize(st: &Arc<AppState>, user: i64, tool: &str, a: &Value) -> Result<String, String> {
+async fn summarize(st: &Arc<AppState>, who: &Principal, tool: &str, a: &Value) -> Result<String, String> {
+    let user = who.user.id;
     let lib = |e: corrent_library::LibError| e.to_string();
     let title_of = |d: &corrent_proto::library::ItemDetail| match d.item.year {
         Some(y) => format!("{} ({y})", d.item.title),
@@ -270,8 +274,13 @@ async fn summarize(st: &Arc<AppState>, user: i64, tool: &str, a: &Value) -> Resu
             if let Some(y) = int(a, "year") {
                 changes.push(y.to_string());
             }
-            if text(a, "overview").is_some() {
-                changes.push(t!("a new plot").to_string());
+            if let Some(o) = text(a, "overview") {
+                // The text itself: the person approving it should read what goes in.
+                let mut short: String = o.chars().take(160).collect();
+                if short.len() < o.len() {
+                    short.push('…');
+                }
+                changes.push(t!("the plot “{plot}”", plot = short));
             }
             if changes.is_empty() {
                 return Err("nothing to change".into());
@@ -280,6 +289,8 @@ async fn summarize(st: &Arc<AppState>, user: i64, tool: &str, a: &Value) -> Resu
         }
         "propose_import" => {
             let hash = hash_of(a)?;
+            // Only someone's own downloads (unless they may manage all).
+            crate::v1::torrents::may_manage_as(st, who, &[hash]).map_err(|e| e.0.message)?;
             let name = st
                 .engine
                 .snapshot()
@@ -367,22 +378,29 @@ pub async fn decide(
     if !who.can(Perms::LIBRARY_MANAGE) {
         return Err("permission denied".into());
     }
-    let row: Option<(String, String, String)> = st
+    // Claimed in one step: two approvals at once (a double click, the agent and the app) run it
+    // once.
+    let now = corrent_core::util::now_unix();
+    let row: Option<(String, String)> = st
         .identity
         .db()
-        .read(move |c| {
+        .write(move |t| {
             use corrent_db::rusqlite::OptionalExtension;
-            c.query_row("SELECT tool, input, status FROM agent_proposals WHERE id = ?1", [id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
-            .optional()
+            let n = t.execute(
+                "UPDATE agent_proposals SET status = 'running', decided_at = ?1 WHERE id = ?2 AND status = 'pending'",
+                corrent_db::rusqlite::params![now, id],
+            )?;
+            if n == 0 {
+                return Ok(None);
+            }
+            t.query_row("SELECT tool, input FROM agent_proposals WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()
         })
         .await
         .map_err(|e| e.to_string())?;
-    let (tool, input, status) = row.ok_or("no such proposal")?;
-    if status != "pending" {
+    let Some((tool, input)) = row else {
         return Err(t!("That proposal was already decided.").to_string());
-    }
+    };
     let (status, result) = if approve {
         let a: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
         match execute(st, who, &tool, &a).await {
@@ -444,8 +462,10 @@ async fn execute(st: &Arc<AppState>, who: &Principal, tool: &str, a: &Value) -> 
             Ok(String::new())
         }
         "propose_import" => {
+            let hash = hash_of(a)?;
+            crate::v1::torrents::may_manage_as(st, who, &[hash]).map_err(|e| e.0.message)?;
             let req = TorrentImport { library_id: need_i(a, "library_id")?, action: action_of(a)?, dry_run: false };
-            let plan = crate::integrate::import_torrent(st, hash_of(a)?, &req).await.map_err(|e| e.0.message)?;
+            let plan = crate::integrate::import_torrent(st, hash, &req).await.map_err(|e| e.0.message)?;
             Ok(plan.warnings.join(" "))
         }
         "propose_thumbnail" => {

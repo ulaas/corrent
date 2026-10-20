@@ -70,6 +70,7 @@ pub(crate) struct Call<'a> {
     pub(crate) bearer: Option<&'a str>,
     pub(crate) cookie: Option<&'a str>,
     pub(crate) csrf: Option<&'a str>,
+    pub(crate) origin: Option<&'a str>,
     pub(crate) body: Option<Value>,
 }
 
@@ -84,6 +85,9 @@ pub(crate) async fn call(app: &Router, method: Method, uri: &str, c: Call<'_>) -
     }
     if let Some(t) = c.csrf {
         b = b.header("x-corrent-csrf", t);
+    }
+    if let Some(o) = c.origin {
+        b = b.header(header::ORIGIN, o);
     }
     let body = match c.body {
         Some(v) => {
@@ -3050,6 +3054,48 @@ async fn an_agent_proposes_and_a_person_decides() {
     // Without a token: nothing.
     let (s, _, _) = call_anon(app, Method::POST, "/api/v1/mcp", rpc(9, "tools/list", json!({}))).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // The desktop app's agent key: the MCP endpoint takes it, nothing else does.
+    let owner = h.st.identity.users().await.unwrap().into_iter().next().unwrap().id;
+    *h.st.agent_key.lock().unwrap() = Some(("cm_test-key".into(), owner));
+    let (s, r, _) = send(app, Method::POST, "/api/v1/mcp", "cm_test-key", call(10, "list_libraries", json!({}))).await;
+    assert_eq!((s, &r["result"]["isError"]), (StatusCode::OK, &json!(false)), "{r}");
+    let (s, _, _) = get(app, "/api/v1/libraries", "cm_test-key").await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "only the MCP endpoint");
+    let (s, _, _) = send(app, Method::POST, "/api/v1/mcp", "cm_wrong", call(11, "list_libraries", json!({}))).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // Two approvals at once: it runs once.
+    let (_, r, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/mcp",
+        "cm_test-key",
+        call(12, "propose_details", json!({ "item_id": item, "overview": "A girl and a dragon." })),
+    )
+    .await;
+    let id =
+        serde_json::from_str::<Value>(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap()["proposal"].clone();
+    let url = format!("/api/v1/agent/proposals/{id}/approve");
+    let (a, b) = tokio::join!(
+        send(app, Method::POST, &url, &admin, json!({})),
+        send(app, Method::POST, &url, &admin, json!({}))
+    );
+    let mut codes = [a.0, b.0];
+    codes.sort();
+    assert_eq!(codes, [StatusCode::OK, StatusCode::CONFLICT]);
+    // A page from another site may not drive it.
+    let (s, _, _) = crate::api_tests::call(
+        app,
+        Method::POST,
+        "/api/v1/mcp",
+        Call {
+            bearer: Some(&admin),
+            body: Some(rpc(13, "tools/list", json!({}))),
+            origin: Some("http://localhost.evil.example"),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
     h.stop().await;
 }
 

@@ -328,14 +328,14 @@ pub async fn refresh_library(st: Arc<AppState>, library_id: i64) {
     let mut done = 0;
     // Each pending item once per run: one no provider could answer stays pending (for the next
     // run), so asking for "what is pending" again would return it forever.
-    let mut tried = std::collections::HashSet::new();
+    let mut tried: Vec<i64> = Vec::new();
     loop {
-        let batch = st.library.items_needing_metadata(library_id, 200).await.unwrap_or_default();
-        let fresh: Vec<_> = batch.into_iter().filter(|p| tried.insert(p.id)).collect();
-        if fresh.is_empty() {
+        let batch = st.library.items_needing_metadata_except(library_id, &tried, 200).await.unwrap_or_default();
+        if batch.is_empty() {
             break;
         }
-        for p in fresh {
+        tried.extend(batch.iter().map(|p| p.id));
+        for p in batch {
             if *st.stopping.borrow() {
                 return;
             }

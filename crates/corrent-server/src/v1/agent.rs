@@ -13,7 +13,7 @@ use corrent_proto::auth::Perms;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{ApiResult, Auth, err};
+use super::{ApiResult, Auth, ClientIp, err};
 use crate::state::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -24,15 +24,52 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/agent/proposals/{id}/reject", post(reject))
 }
 
+/// Who an MCP request acts for: the desktop app's agent key (library rights only), or an
+/// account's own token (bearer only: a browser's cookie never drives an agent endpoint).
+async fn mcp_principal(st: &AppState, headers: &HeaderMap, ip: &str) -> Option<crate::identity::Principal> {
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)?;
+    let key = st.agent_key.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some((secret, user)) = key
+        && aws_lc_rs::constant_time::verify_slices_are_equal(secret.as_bytes(), bearer.as_bytes()).is_ok()
+    {
+        let mut u = st.identity.user(user).await.ok()?;
+        // Proposals only (a person approves each one), and only through this endpoint: the
+        // library and every download may be looked at and proposed for.
+        u.perms = Perms::LIBRARY_MANAGE | Perms::TORRENTS_MANAGE_ALL;
+        return Some(crate::identity::Principal {
+            user: u,
+            session_id: 0,
+            device_id: None,
+            kind: crate::identity::SessionKind::Device,
+            csrf: String::new(),
+        });
+    }
+    st.identity.verify_token(bearer, ip).await.ok().flatten()
+}
+
+/// Browsers may not drive it from other sites (DNS rebinding): no Origin, or a loopback one.
+fn origin_ok(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else { return true };
+    url::Url::parse(origin)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|h| h == "localhost" || h == "127.0.0.1" || h == "[::1]")
+}
+
 /// One JSON-RPC message (or a batch) per request; answers are plain JSON. Notifications and
 /// responses from the client get 202 with no body.
-async fn mcp(State(st): State<Arc<AppState>>, auth: Auth, headers: HeaderMap, body: axum::body::Bytes) -> Response {
-    // Browsers may not drive it from other sites (DNS rebinding): only local or same-origin.
-    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok())
-        && !(origin.starts_with("http://127.0.0.1") || origin.starts_with("http://localhost") || origin == "null")
-    {
+async fn mcp(State(st): State<Arc<AppState>>, ip: ClientIp, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    if !origin_ok(&headers) {
         return (StatusCode::FORBIDDEN, "cross-origin MCP requests are refused").into_response();
     }
+    let Some(who) = mcp_principal(&st, &headers, &ip.0.to_string()).await else {
+        return (StatusCode::UNAUTHORIZED, "not signed in").into_response();
+    };
+    let auth = Auth(who);
     let Ok(msg) = serde_json::from_slice::<Value>(&body) else {
         let e =
             serde_json::json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": "parse error" } });

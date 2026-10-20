@@ -82,16 +82,47 @@ pub struct Pending {
 impl Library {
     /// Movies, shows, albums and artists never checked against providers (or asked again).
     pub async fn items_needing_metadata(&self, library_id: i64, limit: i64) -> Result<Vec<Pending>> {
+        self.pending(Some(library_id), None, &[], limit).await
+    }
+
+    /// Like `items_needing_metadata`, leaving out `tried` (items asked this run that no provider
+    /// answered: they stay pending for the next run).
+    pub async fn items_needing_metadata_except(
+        &self,
+        library_id: i64,
+        tried: &[i64],
+        limit: i64,
+    ) -> Result<Vec<Pending>> {
+        self.pending(Some(library_id), None, tried, limit).await
+    }
+
+    /// One item as a metadata search sees it (whether it was checked or not; nothing changes).
+    pub async fn pending_item(&self, id: i64) -> Result<Pending> {
+        self.pending(None, Some(id), &[], 1).await?.into_iter().next().ok_or(crate::LibError::NotFound)
+    }
+
+    async fn pending(
+        &self,
+        library_id: Option<i64>,
+        only: Option<i64>,
+        except: &[i64],
+        limit: i64,
+    ) -> Result<Vec<Pending>> {
+        let except = serde_json::to_string(except).unwrap_or_else(|_| "[]".into());
         Ok(self
             .db()
             .read(move |c| {
                 let mut st = c.prepare(
                     "SELECT i.id, i.library_id, i.kind, i.title, i.year, i.provider_ids, p.title FROM items i \
                      LEFT JOIN items p ON p.id = i.parent_id \
-                     WHERE i.library_id = ?1 AND i.kind IN ('movie','show','album','artist') \
-                     AND json_extract(i.extra, '$.meta_checked') IS NULL ORDER BY i.added_at DESC LIMIT ?2",
+                     WHERE (?1 IS NULL OR i.library_id = ?1) \
+                     AND (?2 IS NOT NULL AND i.id = ?2 \
+                          OR ?2 IS NULL AND i.kind IN ('movie','show','album','artist') \
+                             AND json_extract(i.extra, '$.meta_checked') IS NULL) \
+                     AND i.id NOT IN (SELECT value FROM json_each(?3)) \
+                     ORDER BY i.added_at DESC LIMIT ?4",
                 )?;
-                st.query_map(params![library_id, limit], |r| {
+                st.query_map(params![library_id, only, except, limit], |r| {
                     let kind: String = r.get(2)?;
                     let kind = ItemKind::parse(&kind).unwrap_or(ItemKind::Movie);
                     Ok(Pending {
@@ -108,26 +139,9 @@ impl Library {
                         artist: (kind == ItemKind::Album).then(|| r.get::<_, Option<String>>(6)).transpose()?.flatten(),
                     })
                 })?
-                .collect()
+                .collect::<rusqlite::Result<Vec<_>>>()
             })
             .await?)
-    }
-
-    pub async fn pending_item(&self, id: i64) -> Result<Pending> {
-        let lib = self
-            .db()
-            .read(move |c| {
-                c.query_row("SELECT library_id FROM items WHERE id = ?1", [id], |r| r.get::<_, i64>(0)).optional()
-            })
-            .await?;
-        let lib = lib.ok_or(crate::LibError::NotFound)?;
-        // Reset the checked flag so the item is listed, then fetch it.
-        self.mark_meta_checked(id, None).await?;
-        self.items_needing_metadata(lib, 100_000)
-            .await?
-            .into_iter()
-            .find(|p| p.id == id)
-            .ok_or(crate::LibError::NotFound)
     }
 
     /// Remembers that an item was checked (`Some(provider)`), or asks for a new check (`None`).
@@ -291,6 +305,8 @@ impl Library {
                      JOIN files f ON f.id = x.file_id AND f.missing_since IS NULL \
                      WHERE i.kind IN ('movie', 'episode', 'video') \
                        AND json_extract(i.extra, '$.thumb_tried') IS NULL \
+                       AND NOT (i.kind = 'movie' AND EXISTS (SELECT 1 FROM images b WHERE b.owner_kind = 'item' \
+                                AND b.owner_id = i.id AND b.kind = 'backdrop')) \
                        AND NOT EXISTS (SELECT 1 FROM images m WHERE m.owner_kind = 'item' AND m.owner_id = i.id AND m.kind = 'thumb') \
                      GROUP BY i.id ORDER BY i.added_at DESC, i.id DESC LIMIT ?1",
                 )?;

@@ -751,6 +751,7 @@ impl CorrentApp {
                     .as_ref()
                     .and_then(ready)
                     .and_then(|r| r.ok())
+                    .or_else(|| self.media.home_shown.clone())
                     .and_then(|rows| rows.into_iter().find(|r| r.id == *id).map(|r| r.title))
                     .unwrap_or_default(),
             };
@@ -1036,14 +1037,17 @@ impl CorrentApp {
     }
 
     /// Every item of one home row ("See all").
+    /// The home rows: the fresh ones, else the ones shown before a refresh (fetched when needed).
+    fn home_rows(&mut self, client: &MediaClient) -> Option<Vec<HomeRow>> {
+        if self.media.home.is_none() {
+            let c = client.clone();
+            self.media.home = Some(fetch(&self.rt, &self.ctx, async move { c.get("/api/v1/home").await }));
+        }
+        self.media.home.as_ref().and_then(ready).and_then(Result::ok).or_else(|| self.media.home_shown.clone())
+    }
+
     fn row_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, id: &str) {
-        let row = self
-            .media
-            .home
-            .as_ref()
-            .and_then(ready)
-            .and_then(|r| r.ok())
-            .and_then(|rows| rows.into_iter().find(|r| r.id == id));
+        let row = self.home_rows(client).and_then(|rows| rows.into_iter().find(|r| r.id == id));
         match row {
             Some(r) => self.card_section(ui, p, client, &r.title, &r.items, None, None),
             None => {
@@ -1397,6 +1401,12 @@ impl CorrentApp {
                         break;
                     }
                     let item = self.media.grids.get(&id).and_then(|g| g.items.get(&idx).cloned());
+                    // Every visible page is asked for (once; again after a refresh): what is
+                    // shown stays until the fresh page replaces it.
+                    let off = idx / PAGE * PAGE;
+                    if let Some(g) = self.media.grids.get_mut(&id) {
+                        request(g, off, &self.rt, &self.ctx);
+                    }
                     match item {
                         Some(it) => {
                             if self.card(ui, p, client, &it, card_w).clicked() {
@@ -1404,10 +1414,6 @@ impl CorrentApp {
                             }
                         }
                         None => {
-                            let off = idx / PAGE * PAGE;
-                            if let Some(g) = self.media.grids.get_mut(&id) {
-                                request(g, off, &self.rt, &self.ctx);
-                            }
                             let (rect, _) =
                                 ui.allocate_exact_size(vec2(card_w, card_w / aspect + 44.0), Sense::hover());
                             ui.painter().rect_filled(

@@ -53,6 +53,8 @@ pub struct AppState {
     pub trickplay_slot: tokio::sync::Mutex<()>,
     /// Frame thumbnails are made one at a time.
     pub thumb_slot: tokio::sync::Mutex<()>,
+    /// Asked for a pass while one was running: it goes round once more.
+    pub thumb_again: std::sync::atomic::AtomicBool,
     /// Plugin host (None when wasmtime couldn't start).
     pub plugins: Option<Arc<corrent_plugins::PluginHost>>,
     /// One metadata refresh at a time.
@@ -76,6 +78,9 @@ pub struct AppState {
     pub stopping: tokio::sync::watch::Sender<bool>,
     /// Bumped when an AI agent proposes something or a proposal is decided.
     pub agent_changed: tokio::sync::watch::Sender<u64>,
+    /// The desktop app's key for `corrent --mcp` (secret, the account it acts for): accepted by
+    /// the MCP endpoint only, with library rights only. New at every start.
+    pub agent_key: std::sync::Mutex<Option<(String, i64)>>,
 }
 
 impl AppState {

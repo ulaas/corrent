@@ -85,7 +85,9 @@ impl CorrentApp {
         if item(ui, icons::FOLDER_SIMPLE_DASHED, t!("Move to…")) {
             self.open_move_dialog(hashes.clone());
         }
+        // This computer's libraries (the media pages show a connected server's instead).
         if single
+            && local
             && first.has_metadata
             && !first.restore_failed
             && self.media.client.is_some()

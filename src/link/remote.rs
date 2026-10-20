@@ -277,6 +277,7 @@ fn queueable(c: &EngineCommand) -> bool {
             | EngineCommand::PauseAll
             | EngineCommand::ResumeAll
             | EngineCommand::Delete { .. }
+            | EngineCommand::Forget(_)
             | EngineCommand::SetFiles { .. }
             | EngineCommand::SetCategory { .. }
             | EngineCommand::SetTags { .. }
@@ -407,6 +408,7 @@ impl Ctx {
             EngineCommand::Delete { hashes, with_data } => {
                 self.action(if with_data { "remove_with_data" } else { "remove" }, &hashes)
             }
+            EngineCommand::Forget(hashes) => self.action("remove", &hashes),
             EngineCommand::QueueMove { hashes, mv } => {
                 let a = match mv {
                     QueueMove::Top => "queue_top",

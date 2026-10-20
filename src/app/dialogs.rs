@@ -223,6 +223,12 @@ impl CorrentApp {
         use corrent_proto::library::{ImportAction, LibraryKind, TorrentImport};
         ui.set_width(560.0);
         title(ui, p, icons::FILM_SLATE, t!("Add to library"));
+        // A download that finishes while the dialog is open gets every way in.
+        let finished = self.snap.torrents.iter().find(|t| t.hash == d.hash).is_some_and(|t| t.progress >= 1.0);
+        if finished != d.finished {
+            d.finished = finished;
+            d.preview = None;
+        }
         let libs: Vec<_> = self
             .media
             .libraries()

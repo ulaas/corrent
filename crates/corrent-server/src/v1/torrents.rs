@@ -54,14 +54,23 @@ fn parse_hash(s: &str) -> Result<InfoHash, ApiErr> {
 
 /// Users who may only manage their own torrents see every torrent but act only on theirs.
 fn may_manage(st: &AppState, auth: &Auth, hashes: &[InfoHash]) -> Result<(), ApiErr> {
-    if auth.0.can(Perms::TORRENTS_MANAGE_ALL) {
+    may_manage_as(st, &auth.0, hashes)
+}
+
+/// The same check for any principal (AI agents act for a person).
+pub(crate) fn may_manage_as(
+    st: &AppState,
+    who: &crate::identity::Principal,
+    hashes: &[InfoHash],
+) -> Result<(), ApiErr> {
+    if who.can(Perms::TORRENTS_MANAGE_ALL) {
         return Ok(());
     }
-    if !auth.0.can(Perms::TORRENTS_MANAGE_OWN) {
+    if !who.can(Perms::TORRENTS_MANAGE_OWN) {
         return Err(err(ErrorCode::Forbidden, "permission denied"));
     }
     let snap = st.engine.snapshot();
-    let me = auth.name();
+    let me = who.user.name.as_str();
     for h in hashes {
         let owned = snap.torrents.iter().find(|t| t.hash == *h).is_some_and(|t| t.added_by.as_deref() == Some(me));
         if !owned {

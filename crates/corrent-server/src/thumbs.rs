@@ -39,24 +39,46 @@ pub async fn frame_as_image(
     let d = st.library.item(user, item).await.map_err(|e| e.to_string())?;
     let episode = d.item.kind == corrent_proto::library::ItemKind::Episode;
     let at = at.unwrap_or_else(|| corrent_transcode::frame::position_secs(d.item.runtime_ms, episode));
-    let img = frame(st, &path, at).await?;
+    let img = match frame(st, &path, at).await {
+        Err(_) if d.item.runtime_ms.is_none() => frame(st, &path, 1.0).await,
+        r => r,
+    }?;
     if kind == "thumb" && d.item.kind == corrent_proto::library::ItemKind::Movie {
         let _ = st.library.set_artwork(item, "poster", img.clone(), FRAME, Replace::IfMissingOrFrame, false).await;
     }
     st.library.set_artwork(item, kind, img, FRAME, Replace::Always, lock).await.map_err(|e| e.to_string())
 }
 
-/// One pass over the videos that have no thumbnail yet (one at a time, server-wide).
+/// Passes over the videos that have no thumbnail yet (one at a time, server-wide), until none
+/// is left.
 pub async fn run(st: &Arc<AppState>) -> Result<String, String> {
     let _one = st.thumb_slot.lock().await;
-    let wanted = st.library.items_needing_thumbs(PER_RUN).await.map_err(|e| e.to_string())?;
     let (mut made, mut failed) = (0, 0);
+    loop {
+        st.thumb_again.store(false, std::sync::atomic::Ordering::Relaxed);
+        let wanted = st.library.items_needing_thumbs(PER_RUN).await.map_err(|e| e.to_string())?;
+        let full = wanted.len() as i64 == PER_RUN;
+        pass(st, wanted, &mut made, &mut failed).await;
+        let again = st.thumb_again.load(std::sync::atomic::Ordering::Relaxed);
+        if *st.stopping.borrow() || !(full || again) {
+            break;
+        }
+    }
+    Ok(format!("{made} thumbnails, {failed} failed"))
+}
+
+async fn pass(st: &Arc<AppState>, wanted: Vec<corrent_library::meta::ThumbWanted>, made: &mut u32, failed: &mut u32) {
     for w in wanted {
         if *st.stopping.borrow() {
             break;
         }
         let at = corrent_transcode::frame::position_secs(w.runtime_ms, w.kind == "episode");
-        match frame(st, &w.path, at).await {
+        // Length unknown (a probe that failed): a short clip has no frame at 30 s, try 1 s in.
+        let got = match frame(st, &w.path, at).await {
+            Err(_) if w.runtime_ms.is_none() => frame(st, &w.path, 1.0).await,
+            r => r,
+        };
+        match got {
             Ok(jpg) => {
                 // A movie without a poster shows the frame there too (cropped to a poster).
                 if w.kind == "movie" && !w.has_poster {
@@ -66,27 +88,30 @@ pub async fn run(st: &Arc<AppState>) -> Result<String, String> {
                         .await;
                 }
                 match st.library.set_artwork(w.item, "thumb", jpg, FRAME, Replace::IfMissingOrFrame, false).await {
-                    Ok(_) => made += 1,
+                    Ok(_) => *made += 1,
                     Err(e) => {
                         tracing::debug!("thumbnail of item {}: {e}", w.item);
-                        failed += 1;
+                        *failed += 1;
                     }
                 }
             }
             Err(e) => {
                 tracing::debug!("thumbnail of item {} ({}): {e}", w.item, w.path);
-                failed += 1;
+                *failed += 1;
             }
         }
         // Tried either way: a file without a picture isn't decoded again on every run.
         let _ = st.library.mark_thumb_tried(w.item).await;
     }
-    Ok(format!("{made} thumbnails, {failed} failed"))
 }
 
-/// Runs a pass in the background (after a scan); a pass already running picks up new items next
-/// time.
+/// Runs passes in the background (after a scan). When one is running already, it is asked to
+/// go round once more instead of a second one queueing up.
 pub fn start(st: &Arc<AppState>) {
+    if st.thumb_slot.try_lock().is_err() {
+        st.thumb_again.store(true, std::sync::atomic::Ordering::Relaxed);
+        return;
+    }
     let st = st.clone();
     tokio::spawn(async move {
         if let Err(e) = run(&st).await {

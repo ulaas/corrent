@@ -63,7 +63,9 @@ async fn settings(
 /// A metadata provider that is ready now: what it couldn't match before (or never saw) is
 /// identified again.
 fn retry_if_ready(st: &Arc<AppState>, h: &corrent_plugins::PluginHost, id: &str) {
-    if h.ready(corrent_plugins::Kind::Metadata).iter().any(|r| r == id) {
+    // A supplement (fanart.tv, OMDb) adds to what another provider found: nothing new to match.
+    let supplement = h.list().iter().any(|p| p.manifest.id == id && p.manifest.supplements);
+    if !supplement && h.ready(corrent_plugins::Kind::Metadata).iter().any(|r| r == id) {
         tokio::spawn(crate::metadata::retry_unmatched(st.clone()));
     }
 }

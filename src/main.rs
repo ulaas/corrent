@@ -267,7 +267,8 @@ fn mcp_bridge(paths: &Paths) -> i32 {
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
             .and_then(|v| Some((v.get("url")?.as_str()?.to_string(), v.get("token")?.as_str()?.to_string())));
         let answer = rt.block_on(async {
-            let (url, token) = target.ok_or("Corrent isn't running (start it, then try again)")?;
+            let down = || "Corrent isn't running (start it, then try again)".to_string();
+            let (url, token) = target.ok_or_else(down)?;
             let res = http
                 .post(format!("{url}/api/v1/mcp"))
                 .bearer_auth(token)
@@ -275,12 +276,18 @@ fn mcp_bridge(paths: &Paths) -> i32 {
                 .json(&msg)
                 .send()
                 .await
-                .map_err(|_| "Corrent isn't running (start it, then try again)")?;
+                .map_err(|_| down())?;
             if res.status() == reqwest::StatusCode::ACCEPTED {
                 return Ok(None);
             }
-            let v: serde_json::Value = res.json().await.map_err(|_| "Corrent's answer wasn't JSON")?;
-            Ok::<_, &str>(Some(v))
+            let ok = res.status().is_success();
+            let v: serde_json::Value = res.json().await.map_err(|_| "Corrent's answer wasn't JSON".to_string())?;
+            if ok {
+                Ok(Some(v))
+            } else {
+                // A refusal (the key changed, a server error) in the client's protocol.
+                Err(v.get("message").and_then(|m| m.as_str()).unwrap_or("Corrent refused the request").to_string())
+            }
         });
         let reply = match answer {
             Ok(v) => v,

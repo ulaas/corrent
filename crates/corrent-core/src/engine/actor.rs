@@ -506,6 +506,7 @@ impl Actor {
             EngineCommand::Delete { hashes, with_data } => {
                 EngineCommand::Delete { hashes: self.not_busy(hashes), with_data }
             }
+            EngineCommand::Forget(hashes) => EngineCommand::Forget(self.not_busy(hashes)),
             EngineCommand::MoveStorage { hashes, to } => {
                 EngineCommand::MoveStorage { hashes: self.not_busy(hashes), to }
             }
@@ -658,6 +659,11 @@ impl Actor {
                 let all: Vec<InfoHash> = self.store.data.torrents.keys().copied().collect();
                 for h in all {
                     self.resume(h, false);
+                }
+            }
+            EngineCommand::Forget(hashes) => {
+                for hash in hashes {
+                    self.delete_with(hash, false, false);
                 }
             }
             EngineCommand::Delete { hashes, with_data } => {
@@ -1030,8 +1036,14 @@ impl Actor {
     }
 
     fn delete(&mut self, hash: InfoHash, with_data: bool) {
+        self.delete_with(hash, with_data, true);
+    }
+
+    /// `undo`: keep what Undo needs (removals that keep the files).
+    fn delete_with(&mut self, hash: InfoHash, with_data: bool, undo: bool) {
         let Some(sess) = self.session.clone() else { return };
         if !with_data
+            && undo
             && let Some(h) = self.handle_for(&hash)
             && let Ok(bytes) = h.with_metadata(|m| m.torrent_bytes.to_vec())
         {

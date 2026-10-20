@@ -147,6 +147,9 @@ pub enum EngineCommand {
         hashes: Vec<InfoHash>,
         with_data: bool,
     },
+    /// Removed from the list for good, its files left alone and no Undo offered: the files have
+    /// a new home (moved into a library), so re-adding them would download again.
+    Forget(Vec<InfoHash>),
     SetFiles {
         hash: InfoHash,
         included: Vec<usize>,

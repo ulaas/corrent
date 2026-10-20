@@ -74,6 +74,15 @@ never exit); an `ffprobe.exe` from a Python package may be on `PATH` and isn't t
 
 ## Recent work worth knowing
 
+- **Media round MS18 (2026-10-21, `023e519`..):** wrapping Home/library pages, frame thumbnails,
+  Add to library…, "use this frame", provider keys in Settings → Metadata, Identify…, OMDb
+  ratings, and an MCP server for AI agents whose changes are approved in Media → AI agent
+  (`corrent --mcp` for stdio clients). Test media: `scripts/dev-media.ps1`; screenshots with
+  `CORRENT_DEV_LIBRARY`/`CORRENT_DEV_PAGE`. Building plugins needs `rustup target add
+  wasm32-wasip2` (installed on this machine) and `scripts/build-plugins.sh`. Details in
+  `docs/MEDIASERVER.md` (MS18 row).
+- **Logins:** no bans or lockouts after wrong passwords any more (owner's choice); wrong pairing
+  codes and PINs are still limited per address.
 - **Direct stream (V4b), `3a857b1`:** Matroska with H.264/HEVC + AAC/AC-3/E-AC-3/Opus is copied into
   HLS/fMP4 in Rust instead of being transcoded (`method: "remux"`, `/api/v1/remux/...`).
   - Checked with mpv against the Matroska test suite files, and in Chrome (AAC and Opus, seeking, no

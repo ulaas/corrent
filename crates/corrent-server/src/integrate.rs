@@ -128,6 +128,11 @@ pub async fn import_torrent(st: &Arc<AppState>, hash: InfoHash, req: &TorrentImp
     let multi = list.len() > 1 || list.first().is_some_and(|f| f.components.len() > 1);
     let source = |rel: &Path| if multi { t.content_path.join(rel) } else { t.content_path.clone() };
     let files: Vec<PathBuf> = list.iter().filter(|f| f.included).map(|f| f.components.iter().collect()).collect();
+    // Plain names only: a drive prefix or a parent step in a torrent's file names (`C:` is a
+    // valid component for librqbit) would make a path outside the library.
+    if files.iter().any(|f| f.components().any(|c| !matches!(c, std::path::Component::Normal(_)))) {
+        return Err(err(ErrorCode::BadRequest, t!("This download's file names can't be placed safely.")));
+    }
     let done = list.iter().filter(|f| f.included).all(|f| f.done >= f.len);
     let mut plan = ImportPlan { folder: folder.display().to_string(), ..Default::default() };
 
@@ -152,10 +157,11 @@ pub async fn import_torrent(st: &Arc<AppState>, hash: InfoHash, req: &TorrentImp
                 to: to.display().to_string(),
             });
         }
-        if t.save_path == target {
+        let already = t.save_path == target;
+        if already {
             plan.warnings.push(t!("It is already in that library.").to_string());
         }
-        if !req.dry_run {
+        if !req.dry_run && !already {
             st.engine.send(EngineCommand::MoveStorage { hashes: vec![hash], to: target.clone() });
             // Scan once the move is done (it may take a while across drives).
             let st = st.clone();
@@ -192,7 +198,8 @@ pub async fn import_torrent(st: &Arc<AppState>, hash: InfoHash, req: &TorrentImp
     if plan.files.iter().any(|f| f.exists) {
         plan.warnings.push(t!("Some files are already in the library; they are left as they are.").to_string());
     }
-    if req.action == ImportAction::MoveOut && !done {
+    // A copy or link of a half-done file would look complete in the library.
+    if !done {
         return Err(err(
             ErrorCode::Conflict,
             t!("The download isn't finished yet; only moving the whole download is possible now."),
@@ -202,8 +209,15 @@ pub async fn import_torrent(st: &Arc<AppState>, hash: InfoHash, req: &TorrentImp
         return Ok(plan);
     }
     if req.action == ImportAction::MoveOut {
-        // The engine lets go of the files first (they stay on disk).
-        st.engine.send(EngineCommand::Delete { hashes: vec![hash], with_data: false });
+        // Before the torrent goes: every folder can be made and, across drives, everything fits.
+        let todo: Vec<(PathBuf, PathBuf)> =
+            plan.files.iter().filter(|f| !f.exists).map(|f| (PathBuf::from(&f.from), PathBuf::from(&f.to))).collect();
+        let check = tokio::task::spawn_blocking(move || preflight(&todo))
+            .await
+            .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+        check.map_err(|e| err(ErrorCode::Conflict, e))?;
+        // The engine lets go of the files first (they stay on disk); no Undo: they move.
+        st.engine.send(EngineCommand::Forget(vec![hash]));
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while st.engine.snapshot().torrents.iter().any(|x| x.hash == hash) {
             if std::time::Instant::now() > deadline {
@@ -241,6 +255,33 @@ pub async fn import_torrent(st: &Arc<AppState>, hash: InfoHash, req: &TorrentImp
     Ok(plan)
 }
 
+/// Can every file be placed? Folders are made (they'd be made anyway), and files that have to be
+/// copied (another drive) must fit in the free space.
+fn preflight(todo: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    let mut copied: std::collections::HashMap<PathBuf, u64> = std::collections::HashMap::new();
+    for (from, to) in todo {
+        let Some(dir) = to.parent() else { continue };
+        std::fs::create_dir_all(dir).map_err(|e| t!("Can't make {path}: {why}", path = dir.display(), why = e))?;
+        let same_drive = from.components().next() == to.components().next();
+        if !same_drive {
+            *copied.entry(dir.to_path_buf()).or_default() += std::fs::metadata(from).map(|m| m.len()).unwrap_or(0);
+        }
+    }
+    for (dir, need) in copied {
+        if let Some(free) = corrent_core::engine::free_space_for(&dir)
+            && need > free
+        {
+            return Err(t!(
+                "There isn't enough space in {path}: {need} needed, {free} free.",
+                path = dir.display(),
+                need = corrent_core::util::fmt_bytes(need),
+                free = corrent_core::util::fmt_bytes(free)
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// One file into the library: moved (a copy, then the original removed, across drives),
 /// hard-linked (a copy across drives) or copied. A copy goes through `<name>.part`, so a cut-off
 /// copy never looks like a whole file.
@@ -254,9 +295,14 @@ fn place_one(from: &Path, to: &Path, action: ImportAction) -> std::io::Result<()
     let copy = |from: &Path, to: &Path| -> std::io::Result<()> {
         let part =
             to.with_file_name(format!("{}.part", to.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
-        std::fs::copy(from, &part)?;
-        std::fs::File::open(&part)?.sync_all()?;
-        std::fs::rename(&part, to)
+        let r = std::fs::copy(from, &part)
+            .and_then(|_| std::fs::File::open(&part)?.sync_all())
+            .and_then(|_| std::fs::rename(&part, to));
+        // A cut-off copy never stays behind in the library.
+        if r.is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+        r
     };
     match action {
         ImportAction::MoveOut => {

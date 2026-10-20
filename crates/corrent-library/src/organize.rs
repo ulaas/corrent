@@ -23,7 +23,16 @@ pub fn clean(name: &str) -> String {
     }
     let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
     let out = out.trim_end_matches(['.', ' ']).to_string();
-    if out.is_empty() { "Untitled".into() } else { out }
+    if out.is_empty() {
+        return "Untitled".into();
+    }
+    // Windows device names (CON, NUL, COM1…, also with an extension) open the device.
+    let stem = out.split('.').next().unwrap_or_default().trim().to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.chars().last().is_some_and(|c| c.is_ascii_digit() && c != '0'));
+    if device { format!("_{out}") } else { out }
 }
 
 fn stem(p: &Path) -> String {
@@ -77,9 +86,28 @@ pub fn plan_names(kind: LibraryKind, torrent_name: &str, files: &[PathBuf]) -> V
                     _ => PathBuf::from(&show).join(clean(&stem(f))),
                 }
             }
-            // Home videos and the rest: the download's own names, in a folder of its name.
-            _ => PathBuf::from(clean(torrent_name)).join(f.with_extension("")),
+            // Home videos and the rest: the download's own names (each part made valid), in a
+            // folder of its name.
+            _ => {
+                let mut p = PathBuf::from(clean(torrent_name));
+                for c in f.with_extension("").components() {
+                    p.push(clean(&c.as_os_str().to_string_lossy()));
+                }
+                p
+            }
         };
+        // Two videos that clean up to the same name (Movie.mkv and Movie.1080p.mkv): the second
+        // gets " - 2".
+        let mut dest = dest;
+        let taken = |d: &Path, out: &[(PathBuf, PathBuf)]| out.iter().any(|(_, o)| o.with_extension("") == d);
+        if taken(&dest, &out) {
+            let base = file_name(&dest);
+            let mut n = 2;
+            while taken(&dest.with_file_name(format!("{base} - {n}")), &out) {
+                n += 1;
+            }
+            dest = dest.with_file_name(format!("{base} - {n}"));
+        }
         out.push(((*f).clone(), dest.with_file_name(format!("{}{}", file_name(&dest), ext(f)))));
         placed.push((f, dest));
     }
@@ -223,5 +251,26 @@ mod tests {
         assert_eq!(clean("A: B / C?*\"<>|"), "A - B - C-");
         assert_eq!(clean("  "), "Untitled");
         assert_eq!(clean("Title..."), "Title");
+        assert_eq!(clean("nul.mkv"), "_nul.mkv");
+        assert_eq!(clean("COM3"), "_COM3");
+        assert_eq!(clean("Console"), "Console");
+    }
+
+    #[test]
+    fn nothing_leaves_the_library_folder() {
+        // A Windows drive prefix or a parent step inside a torrent's names stays a plain name.
+        let p = plan(LibraryKind::Videos, "Trip", &["C:/x.mkv", "C:x.mkv", "../y.mkv"]);
+        for (_, to) in &p {
+            assert!(to.starts_with("Trip/"), "{to}");
+            assert!(!to.contains("..") && !to.contains(':'), "{to}");
+        }
+    }
+
+    #[test]
+    fn two_videos_with_the_same_clean_name_both_get_a_place() {
+        let p = plan(LibraryKind::Movies, "Sintel (2010)", &["Sintel.2010.mkv", "Sintel.2010.1080p.mkv"]);
+        let to: Vec<&str> = p.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(to.contains(&"Sintel (2010)/Sintel (2010).mkv"), "{to:?}");
+        assert!(to.contains(&"Sintel (2010)/Sintel (2010) - 2.mkv"), "{to:?}");
     }
 }
