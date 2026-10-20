@@ -92,6 +92,7 @@ src/app/                    eframe App: titlebar/toolbar, sidebar, table, detail
                             window, tray, window lifecycle, toasts, extras (about/log/stats)
 src/ui/                     theme (palettes, fonts), widgets (progress bar, sparkline, badges…), file tree
 vendor/librqbit-dht/        Patched DHT (keeps running on Windows WSAECONNRESET) — see CORRENT-PATCH.md
+vendor/librqbit-bencode/    librqbit-bencode 9.0.1 with bounded nesting and checked numbers — see CORRENT-PATCH.md
 vendor/librqbit/            librqbit 9.0.1 + runtime limits/group limiter/file order — see CORRENT-PATCH.md;
                             diffs for upstream PRs in docs/upstream/
 docs/                       research.md, PLAN.md, ROADMAP.md (with status), STABILITY.md, PACKAGING.md, PERFORMANCE.md,
@@ -133,7 +134,7 @@ MSI/portable zip/winget, AppImage/Flatpak, dmg; release workflow — see docs/PA
 translation + language setting, web interface, Mica spike (no-go) (M27).
 Fable reviews of every milestone range and a final roadmap audit were addressed. Default save folder: `Downloads/Corrent`.
 
-Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S3 done 2026-10-20, S4 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
+Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S4 done 2026-10-20, S5 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
 upstreaming the librqbit patches (docs/upstream/) and a first tagged release.
 
 Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.

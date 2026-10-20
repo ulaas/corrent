@@ -114,7 +114,8 @@ clusters, `?v=` + ETag on segments, and an 8 KiB index buffer. Checked with mpv 
 - crossfade, which mpv can't do because it plays one file at a time.
 
 **Desktop roadmap:** hardening per `docs/STABILITY.md`. S1 (profile data-loss guards), S2 (engine
-persistence durability) and S3 (no hangs) are done on Windows; see their Results rows. S4 is next. Then upstreaming the librqbit patches (`docs/upstream/`),
+persistence durability), S3 (no hangs) and S4 (untrusted input) are done on Windows; see their
+Results rows. S5 is next. Then upstreaming the librqbit patches (`docs/upstream/`),
 and a first tagged release.
 - S1 adds a lock that the desktop app and `correntd` share: `corrent.lock` in the data folder. It
   replaces `correntd.lock`, and a stale `correntd.lock` file is harmless.
@@ -128,6 +129,9 @@ and a first tagged release.
   - one engine-call worker in the actor;
   - `corrent_core::logfile`: `corrent.log` now rotates to `corrent.log.1` … `.5`;
   - a fourth librqbit patch (`docs/upstream/librqbit-http-timeouts.patch`).
+- S4 vendors a third crate, `librqbit-bencode` (bounded nesting and checked numbers), patched
+  like the other two (`[patch.crates-io]`). Its tests live in
+  `crates/corrent-core/src/engine/untrusted_tests.rs`.
 - Left open from the S1 review:
   - Closing the console window of a `correntd` started by hand on Windows, or logging off, still
     kills it before it saves. A fix needs a `SetConsoleCtrlHandler` callback that blocks until
