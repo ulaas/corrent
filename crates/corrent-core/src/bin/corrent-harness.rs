@@ -6,6 +6,8 @@
 //! ```text
 //! corrent-harness run <scratch>      the workload; exits 0, or 75 when killed
 //! corrent-harness verify <scratch>   starts like the app and checks <scratch>/expect.json
+//! corrent-harness damage <scratch> garbage|missing
+//!                                    loses the engine's list and its copies (D6b rebuild)
 //! ```
 //!
 //! `<scratch>/data` is the profile (portable layout), `<scratch>/expect.json` the journal: what the
@@ -25,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 /// What a restart must find.
 #[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
 struct Journal {
     /// `queue.max_active_downloads` of the last settings save that returned.
     settings_marker: Option<u32>,
@@ -42,6 +45,12 @@ struct Journal {
     deleting: Option<String>,
     /// The finished download is being moved here: it may be in either folder.
     moving_to: Option<PathBuf>,
+    /// A folder torrent added with only some files: its hash and the selected files.
+    selection: Option<(String, Vec<usize>)>,
+    /// The engine's list was lost (`damage`): it is rebuilt with every torrent paused.
+    rebuilt: bool,
+    /// A verify after the rebuild resumed everything (a kill may land after that).
+    resumed: bool,
 }
 
 fn journal_path(scratch: &Path) -> PathBuf {
@@ -49,7 +58,11 @@ fn journal_path(scratch: &Path) -> PathBuf {
 }
 
 fn load_journal(scratch: &Path) -> Journal {
-    std::fs::read(journal_path(scratch)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    // None yet (a fresh run); one that doesn't parse would make every check pass, so it fails.
+    match std::fs::read(journal_path(scratch)) {
+        Ok(b) => serde_json::from_slice(&b).expect("the journal parses"),
+        Err(_) => Journal::default(),
+    }
 }
 
 /// Atomically, without kill points (the harness's own bookkeeping isn't under test).
@@ -157,16 +170,39 @@ fn tiny(i: u8) -> Vec<u8> {
     bytes
 }
 
+/// A paused folder torrent with three 16 KiB files (made-up piece hashes).
+fn tiny_folder() -> Vec<u8> {
+    let mut b = b"d4:infod5:filesl".to_vec();
+    for f in ["a.bin", "b.bin", "c.bin"] {
+        b.extend_from_slice(format!("d6:lengthi16384e4:pathl5:{f}ee").as_bytes());
+    }
+    b.extend_from_slice(b"e4:name11:tiny-folder12:piece lengthi16384e6:pieces60:");
+    b.extend_from_slice(&[77; 60]);
+    b.extend_from_slice(b"ee");
+    b
+}
+
 fn add(engine: &EngineHandle, bytes: Vec<u8>, save: &Path, paused: bool, peers: Option<Vec<std::net::SocketAddr>>) {
+    add_files(engine, bytes, save, paused, peers, None);
+}
+
+fn add_files(
+    engine: &EngineHandle,
+    bytes: Vec<u8>,
+    save: &Path,
+    paused: bool,
+    peers: Option<Vec<std::net::SocketAddr>>,
+    only_files: Option<Vec<usize>>,
+) {
     engine.send(EngineCommand::Add(Box::new(AddRequest {
         source: AddSource::Bytes { name: "harness.torrent".into(), bytes },
         torrent_bytes: None,
         save_path: save.to_path_buf(),
-        create_subfolder: false,
+        create_subfolder: true,
         category: None,
         tags: Vec::new(),
         paused,
-        only_files: None,
+        only_files,
         add_to_top: false,
         initial_peers: peers,
         added_by: None,
@@ -287,8 +323,27 @@ async fn run(scratch: &Path) {
         save_journal(scratch, &j);
     }
 
+    // A folder torrent with a file selection.
+    add_files(&engine, tiny_folder(), &dl, true, None, Some(vec![0, 2]));
+    let snap = wait_for(&engine, "the folder torrent", 30, |sn| {
+        sn.torrents.iter().any(|t| !t.pending && t.name == "tiny-folder")
+    })
+    .await;
+    let folder = snap.torrents.iter().find(|t| !t.pending && t.name == "tiny-folder").map(|t| t.hash).unwrap();
+    wait_event(
+        &events,
+        "the folder torrent's event",
+        30,
+        |e| matches!(e, corrent_core::engine::EngineEvent::Added { hash: h, .. } if *h == folder),
+    )
+    .await;
+    j.selection = Some((folder.to_hex(), vec![0, 2]));
+    save_journal(scratch, &j);
+
     // Categories, saved by a flush.
     let hashes: Vec<InfoHash> = j.engine.iter().filter_map(|h| InfoHash::from_hex(h)).collect();
+    j.engine.push(folder.to_hex());
+    save_journal(scratch, &j);
     let (even, odd): (Vec<InfoHash>, Vec<InfoHash>) =
         hashes.iter().enumerate().fold((vec![], vec![]), |mut acc, (i, h)| {
             if i % 2 == 0 {
@@ -401,6 +456,31 @@ async fn verify(scratch: &Path) {
         if t.state == TorrentState::Error {
             problem!("{} errored: {:?}", t.name, t.error);
         }
+        // Rebuilt: every torrent stopped until the user looks (a finished one shows Completed).
+        if j.rebuilt
+            && !j.resumed
+            && !matches!(t.state, TorrentState::Paused | TorrentState::Completed | TorrentState::Checking)
+        {
+            problem!("{} came back {:?} after the rebuild", t.name, t.state);
+        }
+    }
+    if let Some((hex, files)) = &j.selection
+        && present(&snap, hex)
+    {
+        let h = InfoHash::from_hex(hex).unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        engine.send(EngineCommand::FileList { hash: h, reply: tx });
+        let list = rx.await.unwrap().unwrap_or_default();
+        let included: Vec<usize> = list.iter().enumerate().filter(|(_, f)| f.included).map(|(i, _)| i).collect();
+        if included != *files {
+            problem!("the file selection is {included:?}, expected {files:?}");
+        }
+    }
+    if j.rebuilt {
+        let mut j = load_journal(scratch);
+        j.resumed = true;
+        save_journal(scratch, &j);
+        engine.send(EngineCommand::ResumeAll);
     }
     for h in &j.deleted {
         if present(&snap, h) {
@@ -420,7 +500,11 @@ async fn verify(scratch: &Path) {
         // Complete again without any peer: nothing is downloaded again.
         let h = InfoHash::from_hex(hex).unwrap();
         let snap = wait_for(&engine, "the finished download", 120, |sn| {
-            sn.torrents.iter().any(|t| t.hash == h && t.busy.is_none() && t.state != TorrentState::Checking)
+            sn.torrents.iter().any(|t| {
+                // After a rebuild it was paused, then resumed above.
+                let resuming = j.rebuilt && t.state == TorrentState::Completed;
+                t.hash == h && t.busy.is_none() && t.state != TorrentState::Checking && !resuming
+            })
         })
         .await;
         let t = snap.torrents.iter().find(|t| t.hash == h).unwrap();
@@ -460,6 +544,26 @@ async fn verify(scratch: &Path) {
     println!("verify: ok");
 }
 
+/// Lose the engine's list and every good copy of it, without kill points (not under test).
+fn damage(scratch: &Path, how: Option<&str>) {
+    let db = paths(scratch).session_dir().join("session.json");
+    for (_, p) in corrent_core::util::generations(&db, "good") {
+        std::fs::remove_file(p).unwrap();
+    }
+    match how {
+        Some("garbage") => std::fs::write(&db, b"\x00garbage").unwrap(),
+        Some("missing") => std::fs::remove_file(&db).unwrap(),
+        _ => {
+            eprintln!("damage: garbage or missing");
+            std::process::exit(2);
+        }
+    }
+    let mut j = load_journal(scratch);
+    j.rebuilt = true;
+    j.resumed = false;
+    save_journal(scratch, &j);
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     if let Some(note) = corrent_core::faults::compiled_in() {
@@ -476,6 +580,7 @@ async fn main() {
     match mode.as_str() {
         "run" => run(&scratch).await,
         "verify" => verify(&scratch).await,
+        "damage" => damage(&scratch, args.get(3).map(String::as_str)),
         _ => {
             eprintln!("unknown mode {mode}");
             std::process::exit(2);

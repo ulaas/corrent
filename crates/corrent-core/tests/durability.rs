@@ -1,8 +1,9 @@
 //! STABILITY.md D8: end the harness (`src/bin/corrent-harness.rs`) at a write, start again and
 //! check that nothing it saw saved is lost and nothing downloads again.
 //!
-//! The gate runs a few kill points; the whole matrix (every reached point, up to 3 occurrences
-//! each) is ignored by default:
+//! The gate runs a few kill points and the D6b rebuild; the whole matrix (every reached point, up
+//! to 3 occurrences each, in the workload and in a start that rebuilds a lost list) is ignored by
+//! default:
 //! `cargo test -p corrent-core --features testkit --test durability -- --ignored --nocapture`.
 // Test tooling: failing loudly is the point.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -82,6 +83,35 @@ enum Result {
     Lost(String),
 }
 
+/// Lose the engine's list and its copies (`garbage` or `missing`).
+fn damage(dir: &Path, how: &str) {
+    let ok = Command::new(HARNESS).arg("damage").arg(dir).arg(how).output().unwrap().status.success();
+    assert!(ok, "damage {how}");
+}
+
+/// Run the workload, lose the list, kill the start that rebuilds it at the `n`-th `op:phase`,
+/// then verify.
+fn kill_rebuild_and_verify(name: &str, point: &str, n: u32) -> Result {
+    let dir = scratch(name);
+    let run = harness("run", &dir, &[]);
+    if !run.ok {
+        return Result::Lost(format!("the run failed:\n{}", run.log));
+    }
+    damage(&dir, "garbage");
+    let start = harness("verify", &dir, &[("CORRENT_DEV_KILL_AT", format!("{point}:{n}"))]);
+    if !start.killed {
+        let _ = std::fs::remove_dir_all(&dir);
+        return if start.ok { Result::Unreached } else { Result::Lost(format!("the start failed:\n{}", start.log)) };
+    }
+    let check = harness("verify", &dir, &[]);
+    if check.ok {
+        let _ = std::fs::remove_dir_all(&dir);
+        Result::Survived
+    } else {
+        Result::Lost(format!("rebuild killed at {point}:{n}; profile kept in {}\n{}", dir.display(), check.log))
+    }
+}
+
 /// Kill the run at the `n`-th `op:phase`, then verify.
 fn kill_and_verify(name: &str, point: &str, n: u32) -> Result {
     let dir = scratch(name);
@@ -119,37 +149,82 @@ fn a_few_kills_during_saves_lose_nothing() {
     }
 }
 
+/// D6b: a lost list is rebuilt with nothing lost, also when the rebuild itself is cut off.
 #[test]
-#[ignore = "the full kill matrix takes several minutes"]
-fn kills_at_every_write_point_lose_nothing() {
-    // Which points one run reaches, and how often.
-    let dir = scratch("count");
+fn a_rebuilt_session_database_loses_nothing() {
+    let dir = scratch("rebuild");
+    let run = harness("run", &dir, &[]);
+    assert!(run.ok, "the run failed:\n{}", run.log);
+    for how in ["garbage", "missing"] {
+        damage(&dir, how);
+        let check = harness("verify", &dir, &[]);
+        assert!(check.ok, "{how}:\n{}", check.log);
+        assert!(check.log.contains("rebuilt from the torrent files"), "{how}: no rebuild:\n{}", check.log);
+    }
+    for (how, point) in [("garbage", "session-recover:after_tmp:1"), ("missing", "session-recover:after_rename:1")] {
+        damage(&dir, how);
+        let killed = harness("verify", &dir, &[("CORRENT_DEV_KILL_AT", point.into())]);
+        assert!(killed.killed, "{point} not reached:\n{}", killed.log);
+        let check = harness("verify", &dir, &[]);
+        assert!(check.ok, "after a kill at {point}:\n{}", check.log);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Which points one pass reaches, and how often: `run` alone, or a start that rebuilds.
+fn count_points(rebuild: bool) -> BTreeMap<String, u32> {
+    let dir = scratch(if rebuild { "count-rebuild" } else { "count" });
     let log = dir.join("points.log");
-    let counted = harness("run", &dir.join("p"), &[("CORRENT_DEV_KILL_LOG", log.display().to_string())]);
-    assert!(counted.ok, "the counting run failed:\n{}", counted.log);
+    let p = dir.join("p");
+    let env = [("CORRENT_DEV_KILL_LOG", log.display().to_string())];
+    let counted = if rebuild {
+        let run = harness("run", &p, &[]);
+        assert!(run.ok, "the run failed:\n{}", run.log);
+        damage(&p, "garbage");
+        harness("verify", &p, &env)
+    } else {
+        harness("run", &p, &env)
+    };
+    assert!(counted.ok, "the counting pass failed:\n{}", counted.log);
     let mut counts: BTreeMap<String, u32> = BTreeMap::new();
     for l in std::fs::read_to_string(&log).unwrap().lines() {
         *counts.entry(l.to_string()).or_default() += 1;
     }
     let _ = std::fs::remove_dir_all(&dir);
+    counts
+}
+
+#[test]
+#[ignore = "the full kill matrix takes several minutes"]
+fn kills_at_every_write_point_lose_nothing() {
     let per_pair: u32 = std::env::var("CORRENT_KILL_MAX_PER_PAIR").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
     // First, middle and last occurrence (later ones may not recur: saves are debounced).
-    let mut jobs: Vec<(String, u32)> = Vec::new();
-    for (point, &max) in &counts {
-        let mut ns = vec![1, max.div_ceil(2), max];
-        ns.dedup();
-        ns.truncate(per_pair as usize);
-        jobs.extend(ns.into_iter().map(|n| (point.clone(), n)));
+    let mut jobs: Vec<(bool, String, u32)> = Vec::new();
+    let mut points = 0;
+    for rebuild in [false, true] {
+        let counts = count_points(rebuild);
+        points += counts.len();
+        for (point, &max) in &counts {
+            let mut ns = vec![1, max.div_ceil(2), max];
+            ns.dedup();
+            ns.truncate(per_pair as usize);
+            jobs.extend(ns.into_iter().map(|n| (rebuild, point.clone(), n)));
+        }
     }
-    eprintln!("{} points, {} kills", counts.len(), jobs.len());
+    eprintln!("{points} points, {} kills", jobs.len());
     let jobs = std::sync::Mutex::new(jobs.into_iter().enumerate().collect::<Vec<_>>());
     let results = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for _ in 0..4 {
             s.spawn(|| {
                 loop {
-                    let Some((i, (point, n))) = jobs.lock().unwrap().pop() else { break };
-                    let r = kill_and_verify(&format!("m{i}"), &point, n);
+                    let Some((i, (rebuild, point, n))) = jobs.lock().unwrap().pop() else { break };
+                    let r = if rebuild {
+                        kill_rebuild_and_verify(&format!("r{i}"), &point, n)
+                    } else {
+                        kill_and_verify(&format!("m{i}"), &point, n)
+                    };
+                    let point = if rebuild { format!("rebuild/{point}") } else { point };
                     eprintln!(
                         "{point}:{n} -> {}",
                         match &r {
