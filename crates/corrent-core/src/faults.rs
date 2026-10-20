@@ -284,13 +284,17 @@ pub fn fail_point(op: &str) -> std::io::Result<()> {
     #[cfg(any(test, feature = "testkit"))]
     if FAIL.with(|f| {
         let mut f = f.borrow_mut();
-        match f.as_mut() {
+        let fire = match f.as_mut() {
             Some((o, n)) if o == op => {
-                *n -= 1;
+                *n = n.saturating_sub(1);
                 *n == 0
             }
             _ => false,
+        };
+        if fire {
+            *f = None; // once
         }
+        fire
     }) {
         return Err(std::io::Error::other("injected failure"));
     }

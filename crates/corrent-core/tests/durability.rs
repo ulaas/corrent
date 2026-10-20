@@ -31,7 +31,12 @@ struct Outcome {
 /// gate's output), at most 3 minutes.
 fn harness(mode: &str, dir: &Path, env: &[(&str, String)]) -> Outcome {
     let mut cmd = Command::new(HARNESS);
-    cmd.arg(mode).arg(dir).stdout(Stdio::piped()).stderr(Stdio::piped()).env_remove("CORRENT_DEV_KILL_AT");
+    cmd.arg(mode)
+        .arg(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_remove("CORRENT_DEV_KILL_AT")
+        .env_remove("CORRENT_DEV_KILL_LOG");
     for (k, v) in env {
         cmd.env(k, v);
     }

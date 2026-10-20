@@ -143,6 +143,8 @@ fn write_current_fixture() {
         if is_text(&src) {
             let t = std::fs::read_to_string(&src).unwrap();
             let t = t.replace(&dl_escaped, DL).replace(&dl.display().to_string(), DL).replace(&dl_text, DL);
+            // Paths under the folder in the fixtures' form (forward slashes, valid on every OS).
+            let t = t.replace(&format!("{DL}\\\\"), &format!("{DL}/")).replace(&format!("{DL}\\"), &format!("{DL}/"));
             std::fs::write(out.join(rel), t).unwrap();
         } else {
             std::fs::copy(&src, out.join(rel)).unwrap();

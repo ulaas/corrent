@@ -90,7 +90,7 @@
   },
   "categories": {
     "Movies": {
-      "save_path": "{{DL}}\\movies",
+      "save_path": "{{DL}}/movies",
       "down_limit_kib": 300,
       "up_limit_kib": 0
     },

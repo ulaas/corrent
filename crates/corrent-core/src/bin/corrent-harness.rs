@@ -63,14 +63,14 @@ fn paths(scratch: &Path) -> Paths {
     Paths { data_dir: scratch.join("data"), portable: true }
 }
 
-/// The app's start order (src/main.rs): lock, temp sweep, restore, settings.
+/// The app's start order (src/main.rs): lock, restore, temp sweep, settings.
 fn open_profile(scratch: &Path) -> (corrent_core::lock::DataLock, Paths, Settings, bool, Option<String>) {
     let paths = paths(scratch);
     let lock = corrent_core::lock::lock_data_dir(&paths.data_dir).expect("lock the profile");
-    corrent_core::retention::sweep_temp_files(&paths);
     if let Some(note) = corrent_core::backup::apply_pending(&paths) {
         eprintln!("restore: {note}");
     }
+    corrent_core::retention::sweep_temp_files(&paths);
     let (settings, first_run, warning) = Settings::load(&paths);
     (lock, paths, settings, first_run, warning)
 }
@@ -103,6 +103,29 @@ async fn wait_for(
             std::process::exit(1);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Wait for an engine event. `Added` and `Removed` come after librqbit saved its database; the
+/// snapshot can show a change before that.
+async fn wait_event(
+    events: &std::sync::mpsc::Receiver<corrent_core::engine::EngineEvent>,
+    what: &str,
+    secs: u64,
+    pred: impl Fn(&corrent_core::engine::EngineEvent) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        while let Ok(e) = events.try_recv() {
+            if pred(&e) {
+                return;
+            }
+        }
+        if Instant::now() >= deadline {
+            eprintln!("timed out waiting for: {what}");
+            std::process::exit(1);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
@@ -241,7 +264,7 @@ async fn run(scratch: &Path) {
     j.settings_marker = Some(4);
     save_journal(scratch, &j);
 
-    let (engine, _events) = start(&paths, s.clone());
+    let (engine, events) = start(&paths, s.clone());
     wait_for(&engine, "the engine", 60, |sn| sn.session.listen_port.is_some()).await;
     let dl = scratch.join("dl");
 
@@ -252,8 +275,15 @@ async fn run(scratch: &Path) {
         let snap =
             wait_for(&engine, "a tiny torrent", 30, |sn| sn.torrents.iter().any(|t| !t.pending && t.name == name))
                 .await;
-        let hex = snap.torrents.iter().find(|t| !t.pending && t.name == name).map(|t| t.hash.to_hex()).unwrap();
-        j.engine.push(hex);
+        let hash = snap.torrents.iter().find(|t| !t.pending && t.name == name).map(|t| t.hash).unwrap();
+        wait_event(
+            &events,
+            "the add's event",
+            30,
+            |e| matches!(e, corrent_core::engine::EngineEvent::Added { hash: h, .. } if *h == hash),
+        )
+        .await;
+        j.engine.push(hash.to_hex());
         save_journal(scratch, &j);
     }
 
@@ -309,7 +339,14 @@ async fn run(scratch: &Path) {
     j.deleting = Some(hashes[3].to_hex());
     save_journal(scratch, &j);
     engine.send(EngineCommand::Delete { hashes: vec![hashes[3]], with_data: false });
-    wait_for(&engine, "the delete", 30, |sn| !sn.torrents.iter().any(|t| t.hash == hashes[3])).await;
+    let gone = hashes[3];
+    wait_event(
+        &events,
+        "the delete's event",
+        30,
+        |e| matches!(e, corrent_core::engine::EngineEvent::Removed { hash, .. } if *hash == gone),
+    )
+    .await;
     j.engine.retain(|h| *h != hashes[3].to_hex());
     j.category.remove(&hashes[3].to_hex());
     j.deleted.push(hashes[3].to_hex());

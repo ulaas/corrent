@@ -147,8 +147,9 @@ and a first tagged release.
   - the durability harness `corrent-harness`, a test-only binary in corrent-core, and
     `crates/corrent-core/tests/durability.rs`. The full kill matrix runs with
     `cargo test -p corrent-core --features testkit --test durability -- --ignored --nocapture`.
-  - kill points (`faults::kill_point`) in every durable write, plus a test-only hook in the
-    vendored librqbit (`src/corrent_hooks.rs`).
+  - kill points (`faults::kill_point`) in every durable write of the profile (not `servers.toml`
+    or the server's TLS files and databases), plus a test-only hook in the vendored librqbit
+    (`src/corrent_hooks.rs`).
   - a start-up sweep of `*.tmp` files left by a crash.
   - profile fixtures in `crates/corrent-core/tests/fixtures/`. Add one when a format changes
     (`write_current_fixture`).

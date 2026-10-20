@@ -28,7 +28,11 @@ pub fn backup_before_migration(file: &Path, from: u32) -> Option<PathBuf> {
     let prefix = format!("{}.{ext}.v{from}-", file.file_stem()?.to_string_lossy());
     if let Some(dir) = file.parent()
         && let Ok(rd) = std::fs::read_dir(dir)
-        && let Some(existing) = rd.flatten().find(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        && let Some(existing) = rd.flatten().find(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            // Not a temp file a crash left: that one may be cut off.
+            n.starts_with(&prefix) && !n.ends_with(".tmp")
+        })
     {
         return Some(existing.path());
     }
