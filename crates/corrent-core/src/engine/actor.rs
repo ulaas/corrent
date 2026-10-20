@@ -155,7 +155,9 @@ pub struct Actor {
     /// While the session starts: what it is doing (published in the snapshot).
     start_phase: Option<StartPhase>,
     /// The engine-call worker (see `engine_call`), started with the first call.
-    calls: Option<mpsc::UnboundedSender<EngineCall>>,
+    calls: Option<mpsc::UnboundedSender<Job>>,
+    /// When `enforce_pauses` last asked to pause a torrent (so a slow engine isn't flooded).
+    pause_sent: HashMap<InfoHash, Instant>,
     /// Size of the last refused prune (see `logic::prune_allowed`), so it is reported once.
     prune_refused: Option<usize>,
     /// The engine's list was restored from an older copy this run: torrents added since are
@@ -163,7 +165,10 @@ pub struct Actor {
     prune_suspended: bool,
     /// The first session start of this process (D14 runs only then).
     first_start: bool,
-    free_space_running: bool,
+    /// A free-space measurement is running (since when; one that hangs is retried after a minute).
+    free_space_running: Option<Instant>,
+    /// Shutting down: no new adds (watch-folder hits that arrive now are left for the next start).
+    stopping: bool,
     /// Durations of the last 60 ticks (ms), for `SessionView::tick_max_ms`.
     tick_ms: std::collections::VecDeque<u32>,
     last_heartbeat: Option<Instant>,
@@ -250,10 +255,12 @@ impl Actor {
             restore_checked: false,
             prune_refused: None,
             calls: None,
+            pause_sent: HashMap::new(),
             start_phase: None,
             prune_suspended: false,
             first_start: true,
-            free_space_running: false,
+            free_space_running: None,
+            stopping: false,
             tick_ms: std::collections::VecDeque::with_capacity(60),
             last_heartbeat: None,
             low_space_warned: false,
@@ -328,7 +335,8 @@ impl Actor {
         let n = super::session_db::torrent_count(&self.paths.session_dir());
         let deadline = crate::faults::start_deadline(&self.paths.data_dir)
             .unwrap_or(START_DEADLINE + Duration::from_millis(100) * n as u32);
-        // The phase is shown while `create` runs, so it goes straight to the published snapshot.
+        // The phase is shown while `create` runs, so it goes straight to the published snapshot
+        // (safe: the actor is waiting on `create`, so nothing else publishes meanwhile).
         let on_phase = {
             let (snapshot, wake) = (self.snapshot.clone(), self.wake.clone());
             move |phase: StartPhase| {
@@ -340,16 +348,7 @@ impl Actor {
         };
         for attempt in 0..3 {
             let cancel = tokio_util::sync::CancellationToken::new();
-            let created = tokio::time::timeout(
-                deadline,
-                session::create(&self.paths, &self.settings, self.alt, &cancel, &on_phase),
-            )
-            .await
-            .unwrap_or_else(|_| {
-                // Stop what the half-built session started (DHT, listeners) before a retry.
-                cancel.cancel();
-                Err(anyhow::anyhow!(t!("the engine didn't start within {secs} seconds", secs = deadline.as_secs())))
-            });
+            let created = session::create(&self.paths, &self.settings, self.alt, &cancel, &on_phase, deadline).await;
             match created {
                 Ok((sess, warning)) => {
                     self.start_phase = None;
@@ -394,6 +393,9 @@ impl Actor {
             st.set_session(None);
         }
         let mut stopped = true;
+        if self.session.is_some() {
+            self.drain_engine_calls().await;
+        }
         if let Some(sess) = self.session.take() {
             if tokio::time::timeout(Duration::from_secs(6), sess.stop()).await.is_err() {
                 tracing::warn!("session stop timed out");
@@ -408,6 +410,7 @@ impl Actor {
 
     async fn shutdown(&mut self, internal: &mut mpsc::UnboundedReceiver<Internal>) {
         tracing::info!("engine shutting down");
+        self.stopping = true;
         // Let moves/rechecks finish (bounded): a torrent is out of the session while it is
         // re-added. Anything still running is recovered from its backup at the next start.
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -966,18 +969,34 @@ impl Actor {
     /// Hand a librqbit call to the engine-call worker: it never blocks the actor, calls run in the
     /// order they were made, and each has a deadline.
     fn engine_call(&mut self, sess: Arc<Session>, h: Arc<ManagedTorrent>, kind: CallKind) {
-        let call = EngineCall { sess, h, kind };
-        let call = match &self.calls {
-            Some(tx) => match tx.send(call) {
+        self.send_job(Job::Call(EngineCall { sess, h, kind }));
+    }
+
+    fn send_job(&mut self, job: Job) {
+        let job = match &self.calls {
+            Some(tx) => match tx.send(job) {
                 Ok(()) => return,
                 Err(e) => e.0,
             },
-            None => call,
+            None => job,
         };
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(run_engine_calls(rx, self.events.clone(), self.wake.clone()));
-        let _ = tx.send(call);
+        let _ = tx.send(job);
         self.calls = Some(tx);
+    }
+
+    /// Wait (bounded) until the calls made so far have run: a pause the user just asked for is
+    /// persisted by librqbit before its session stops.
+    async fn drain_engine_calls(&mut self) {
+        if self.calls.is_none() {
+            return;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.send_job(Job::Barrier(tx));
+        if tokio::time::timeout(ENGINE_CALL_TIMEOUT, rx).await.is_err() {
+            tracing::warn!("engine calls were still running when the session stopped");
+        }
     }
 
     fn delete(&mut self, hash: InfoHash, with_data: bool) {
@@ -1361,21 +1380,16 @@ impl Actor {
             .filter(|v| self.store.get(&v.hash).is_some_and(|m| m.pause_reason.is_some() && !m.force_started))
             .filter_map(|v| handles.iter().find(|(_, h)| h.info_hash().0 == v.hash.0).map(|(_, h)| h.clone()))
             .collect();
-        if to_pause.is_empty() {
-            return;
-        }
-        let epoch = self.resume_epoch.clone();
-        let started = epoch.load(std::sync::atomic::Ordering::SeqCst);
-        tokio::spawn(async move {
-            for h in to_pause {
-                if epoch.load(std::sync::atomic::Ordering::SeqCst) != started {
-                    return; // something was resumed meanwhile; the next tick re-evaluates
-                }
-                if matches!(h.stats().state, TorrentStatsState::Live) {
-                    let _ = sess.pause(&h).await;
-                }
+        // In order with the user's own pauses and resumes (the worker checks the state right
+        // before it calls); at most every 5 s per torrent, so a slow engine isn't flooded.
+        self.pause_sent.retain(|_, t| t.elapsed() < Duration::from_secs(5));
+        for h in to_pause {
+            let hash = InfoHash(h.info_hash().0);
+            if let std::collections::hash_map::Entry::Vacant(e) = self.pause_sent.entry(hash) {
+                e.insert(Instant::now());
+                self.engine_call(sess.clone(), h, CallKind::Pause);
             }
-        });
+        }
     }
 
     /// Warn once when the default download folder runs low while something is downloading.
@@ -1419,7 +1433,7 @@ impl Actor {
     fn handle_internal(&mut self, msg: Internal) {
         match msg {
             Internal::FreeSpace(free) => {
-                self.free_space_running = false;
+                self.free_space_running = None;
                 self.free_space = free;
             }
             Internal::WatchScanned(scan) => {
@@ -1647,8 +1661,8 @@ impl Actor {
         }
 
         // Disk work off the engine's thread: a sleeping disk or an offline share must not stall it.
-        if self.tick_count % 20 == 1 && !self.free_space_running {
-            self.free_space_running = true;
+        if self.tick_count % 20 == 1 && self.free_space_running.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+            self.free_space_running = Some(Instant::now());
             let (path, tx) = (self.settings.downloads.save_path.clone(), self.internal_tx.clone());
             tokio::task::spawn_blocking(move || {
                 let _ = tx.send(Internal::FreeSpace(free_space(&path)));
@@ -1661,7 +1675,10 @@ impl Actor {
         {
             let tx = self.internal_tx.clone();
             tokio::task::spawn_blocking(move || {
-                let _ = tx.send(Internal::WatchScanned(super::automation::scan(input)));
+                // A scan that panics must still hand the state back, or watching would stop.
+                let scan = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::automation::scan(input)))
+                    .unwrap_or_else(|_| super::automation::Scan::empty());
+                let _ = tx.send(Internal::WatchScanned(scan));
             });
         }
 
@@ -1676,7 +1693,7 @@ impl Actor {
     fn add_watch_hit(&mut self, hit: super::automation::WatchHit) {
         // The folder was turned off, or the engine stopped, while the scan ran: pick it up later.
         let enabled = self.settings.watch.iter().any(|f| f.enabled && f.path == hit.folder.path);
-        if !enabled || self.session.is_none() {
+        if !enabled || self.session.is_none() || self.stopping {
             self.watch.release(&hit.path);
             return;
         }
@@ -2843,6 +2860,7 @@ async fn readd(
 }
 
 pub(super) fn free_space(path: &Path) -> Option<u64> {
+    crate::faults::fs_delay(path);
     let mut p = path.to_path_buf();
     loop {
         if p.exists() {
@@ -2932,6 +2950,12 @@ struct EngineCall {
     kind: CallKind,
 }
 
+enum Job {
+    Call(EngineCall),
+    /// Answered once every call before it has run (before a session stops).
+    Barrier(tokio::sync::oneshot::Sender<()>),
+}
+
 /// How long the engine may take to start, plus 100 ms per torrent in its list.
 const START_DEADLINE: Duration = Duration::from_secs(60);
 
@@ -2941,11 +2965,23 @@ const ENGINE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Runs engine calls one at a time, in order (a pause, resume, pause from the user ends paused).
 /// Whether a torrent is paused is checked right before each call, not when it was made.
 async fn run_engine_calls(
-    mut rx: mpsc::UnboundedReceiver<EngineCall>,
+    mut rx: mpsc::UnboundedReceiver<Job>,
     events: std::sync::mpsc::Sender<EngineEvent>,
     wake: Wake,
 ) {
-    while let Some(EngineCall { sess, h, kind }) = rx.recv().await {
+    while let Some(job) = rx.recv().await {
+        let EngineCall { sess, h, kind } = match job {
+            Job::Call(c) => c,
+            Job::Barrier(done) => {
+                let _ = done.send(());
+                continue;
+            }
+        };
+        // Made for a session that has stopped since (a restart): running it would act on the old
+        // session, which could even write session.json next to the new one.
+        if sess.cancellation_token().is_cancelled() {
+            continue;
+        }
         let hash = h.info_hash().0;
         let work = async {
             if let Some(d) = crate::faults::call_delay(hash) {

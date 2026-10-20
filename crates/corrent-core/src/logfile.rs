@@ -115,19 +115,27 @@ fn start(sink: Sink) -> Option<Writer> {
 }
 
 fn run(rx: Receiver<Msg>, mut sink: Sink, dropped: Arc<AtomicU64>) {
-    while let Ok(msg) = rx.recv() {
-        match msg {
-            Msg::Line(b) => sink.write(&b),
-            Msg::Flush(done) => {
-                sink.flush();
-                let _ = done.send(());
+    while let Ok(first) = rx.recv() {
+        // A burst at a time, then onto the disk: the file is never more than a burst behind
+        // (a crash, or someone reading the log while Corrent runs).
+        let mut next = Some(first);
+        while let Some(msg) = next.take() {
+            match msg {
+                Msg::Line(b) => sink.write(&b),
+                Msg::Flush(done) => {
+                    sink.flush();
+                    let _ = done.send(());
+                }
             }
+            // Where the lines went missing, not after the whole burst.
+            let n = dropped.swap(0, Ordering::Relaxed);
+            if n > 0 {
+                // English, like every other log line.
+                sink.write(format!("[corrent-log] {n} {LOST}\n").as_bytes());
+            }
+            next = rx.try_recv().ok();
         }
-        let n = dropped.swap(0, Ordering::Relaxed);
-        if n > 0 {
-            // English, like every other log line.
-            sink.write(format!("[corrent-log] {n} {LOST}\n").as_bytes());
-        }
+        sink.flush();
     }
     sink.flush();
 }
@@ -182,7 +190,11 @@ impl Sink {
                 self.out = Box::new(std::io::BufWriter::new(f));
                 self.size = 0;
             }
-            Err(e) => eprintln!("the log file couldn't be reopened: {e}"),
+            Err(e) => {
+                eprintln!("the log file couldn't be reopened: {e}");
+                // Don't try again with every line.
+                self.size = 0;
+            }
         }
     }
 }

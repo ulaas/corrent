@@ -175,11 +175,18 @@ pub fn serve(
                 let (tx, ctx, slot) = (tx.clone(), ctx.clone(), count.clone());
                 // One thread per client so a stalled client cannot block later launches.
                 let spawned = std::thread::Builder::new().name("corrent-ipc-client".into()).spawn(move || {
+                    // Frees the slot however the client ends (also if handling it panics).
+                    struct Slot(Arc<AtomicUsize>);
+                    impl Drop for Slot {
+                        fn drop(&mut self) {
+                            self.0.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    }
+                    let _slot = Slot(slot);
                     handle_client(&conn, &tx);
                     if let Some(c) = ctx.get() {
                         c.request_repaint();
                     }
-                    slot.fetch_sub(1, Ordering::SeqCst);
                 });
                 if spawned.is_err() {
                     count.fetch_sub(1, Ordering::SeqCst);

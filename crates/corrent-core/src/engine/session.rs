@@ -110,25 +110,27 @@ pub async fn create(
     alt: bool,
     cancel: &CancellationToken,
     on_phase: &(dyn Fn(super::types::StartPhase) + Send + Sync),
+    deadline: Duration,
 ) -> anyhow::Result<(Arc<Session>, Option<String>)> {
     std::fs::create_dir_all(paths.session_dir())?;
     let out = s.downloads.save_path.clone();
     let _ = std::fs::create_dir_all(&out);
-    if let Some(d) = crate::faults::start_delay(&paths.data_dir) {
-        tokio::time::sleep(d).await;
-    }
     on_phase(super::types::StartPhase::IpFilter);
+    // Outside the deadline: each list download has its own timeouts, and a first start with a
+    // dead list URL (nothing cached yet) must still start once they have given up.
     let lists = super::ipfilter::prepare(paths, &s.connection).await;
     on_phase(super::types::StartPhase::Torrents);
     let list_warning = (!lists.warnings.is_empty()).then(|| lists.warnings.join(" "));
-    match Session::new_with_opts(out.clone(), options(paths, s, None, alt, &lists, cancel)).await {
+    let delay = crate::faults::start_delay(&paths.data_dir);
+    let start = |opts| new_session(out.clone(), opts, deadline, cancel, delay);
+    match start(options(paths, s, None, alt, &lists, cancel)).await {
         Ok(sess) => Ok((sess, list_warning)),
         Err(e) if !s.connection.random_port && is_port_error(&e) => {
             tracing::warn!(
                 "could not start session on port {}: {e:#}; retrying on a random port",
                 s.connection.listen_port
             );
-            let sess = Session::new_with_opts(out, options(paths, s, Some(0), alt, &lists, cancel)).await?;
+            let sess = start(options(paths, s, Some(0), alt, &lists, cancel)).await?;
             Ok((
                 sess,
                 Some(t!(
@@ -139,6 +141,30 @@ pub async fn create(
             ))
         }
         Err(e) => Err(e),
+    }
+}
+
+/// librqbit's own start (listeners, persistence, every torrent), at most `deadline`. On timeout
+/// the half-built session's tasks are cancelled, so a retry finds its ports and files free.
+async fn new_session(
+    out: std::path::PathBuf,
+    opts: SessionOptions,
+    deadline: Duration,
+    cancel: &CancellationToken,
+    test_delay: Option<Duration>,
+) -> anyhow::Result<Arc<Session>> {
+    let start = async {
+        if let Some(d) = test_delay {
+            tokio::time::sleep(d).await;
+        }
+        Session::new_with_opts(out, opts).await
+    };
+    match tokio::time::timeout(deadline, start).await {
+        Ok(r) => r,
+        Err(_) => {
+            cancel.cancel();
+            Err(anyhow::anyhow!(t!("the engine didn't start within {secs} seconds", secs = deadline.as_secs())))
+        }
     }
 }
 

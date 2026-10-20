@@ -40,8 +40,10 @@ impl Notifier {
         }
         if let Some(sender) = tx.as_ref()
             && let Err(TrySendError::Full(_)) = sender.try_send((title.to_string(), body.to_string()))
+            && self.dropped.fetch_add(1, Ordering::Relaxed) == 0
         {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            // Explains silence in the log when the notification service hangs.
+            tracing::debug!("notifications are queued up; the rest are counted");
         }
     }
 }

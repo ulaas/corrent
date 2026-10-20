@@ -36,7 +36,7 @@ fn end() -> ! {
     tracing::info!("the session is ending; stopping");
     // A settings save may still be queued on the writer thread.
     if let Some(p) = PATHS.get() {
-        corrent_core::writer::global().flush(&p.settings_file(), Duration::from_secs(1));
+        corrent_core::writer::global().flush(&p.settings_file(), Duration::from_millis(500));
     }
     if let Some(e) = current() {
         e.shutdown_blocking(Duration::from_secs(3));

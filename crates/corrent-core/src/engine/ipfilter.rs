@@ -129,7 +129,13 @@ const REFRESH_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 3
 /// the merged list. Without a copy the list is fetched now.
 async fn load(client: &reqwest::Client, source: &str, cache: &Path, allow: bool, warnings: &mut Vec<String>) -> String {
     let remote = source.trim().starts_with("http://") || source.trim().starts_with("https://");
-    if remote && let Ok(b) = std::fs::read(cache) {
+    // The copy is of this URL (a changed URL fetches the new list now, not a day later).
+    let url_file = cache.with_extension("url");
+    let same_url = std::fs::read_to_string(&url_file).is_ok_and(|u| u.trim() == source.trim());
+    if remote
+        && same_url
+        && let Ok(b) = std::fs::read(cache)
+    {
         let age = std::fs::metadata(cache).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
         if age.is_none_or(|a| a > REFRESH_AFTER) {
             let (client, source, cache) = (client.clone(), source.to_string(), cache.to_path_buf());
@@ -140,6 +146,7 @@ async fn load(client: &reqwest::Client, source: &str, cache: &Path, allow: bool,
                             tracing::warn!("could not keep the refreshed IP filter list: {e:#}");
                         }
                     }
+                    // Unchanged URL: its file is already right.
                     Err(e) => tracing::warn!("the IP filter list couldn't be refreshed: {e}"),
                 }
             });
@@ -148,7 +155,9 @@ async fn load(client: &reqwest::Client, source: &str, cache: &Path, allow: bool,
     }
     match fetch(client, source).await {
         Ok(bytes) => {
-            let _ = crate::util::write_atomic(cache, &bytes);
+            if crate::util::write_atomic(cache, &bytes).is_ok() {
+                let _ = crate::util::write_replace(&url_file, source.trim().as_bytes());
+            }
             String::from_utf8_lossy(&bytes).into_owned()
         }
         Err(e) => match std::fs::read(cache) {
@@ -268,6 +277,7 @@ mod tests {
         let text = std::fs::read_to_string(p.blocklist.unwrap()).unwrap();
         assert_eq!(text, "corrent:10.0.0.0-10.255.255.255\n", "custom entries still apply");
         std::fs::write(dir.join("ipfilter/blocklist-download.txt"), "old:1.1.1.1-1.1.1.2\n").unwrap();
+        std::fs::write(dir.join("ipfilter/blocklist-download.url"), &c.blocklist_url).unwrap();
         // A copy from an earlier start is used at once, without asking the (dead) server.
         let p = prepare(&paths, &c).await;
         assert!(p.warnings.is_empty(), "{:?}", p.warnings);

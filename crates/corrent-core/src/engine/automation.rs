@@ -31,6 +31,13 @@ pub struct Scan {
     hits: Vec<WatchHit>,
 }
 
+impl Scan {
+    /// A scan that found nothing (one that failed): sizes start over.
+    pub fn empty() -> Scan {
+        Scan { sizes: HashMap::new(), hits: Vec::new() }
+    }
+}
+
 pub struct WatchHit {
     pub source: AddSource,
     pub folder: WatchFolder,
