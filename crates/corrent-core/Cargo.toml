@@ -14,6 +14,15 @@ workspace = true
 # Loopback seeder/leecher helpers for integration tests in other crates.
 testkit = []
 
+# The durability harness (STABILITY.md D8): test tooling, built only with the test kit.
+[[bin]]
+name = "corrent-harness"
+required-features = ["testkit"]
+
+[[test]]
+name = "durability"
+required-features = ["testkit"]
+
 [dependencies]
 corrent-i18n = { path = "../corrent-i18n" }
 corrent-proto = { path = "../corrent-proto" }
