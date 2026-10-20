@@ -31,9 +31,8 @@ impl CorrentApp {
                     st = os_handler::status();
                 }
             }
-            if let Ok(mut s) = slot.lock() {
-                *s = Some(st);
-            }
+            let mut s = crate::util::lock(&slot);
+            *s = Some(st);
         });
     }
 
@@ -62,9 +61,8 @@ impl CorrentApp {
                 t!("Another app is still the default for magnet links. Confirm Corrent in system settings."),
             );
         }
-        if let Ok(mut s) = self.handler_status.lock() {
-            *s = Some(st);
-        }
+        let mut s = crate::util::lock(&self.handler_status);
+        *s = Some(st);
     }
 
     pub(super) fn drain_ipc(&mut self, ctx: &Context) {
@@ -97,7 +95,7 @@ impl CorrentApp {
         if self.settings.behavior.handler_prompt_dismissed || self.onboarding.is_some() {
             return;
         }
-        let st = self.handler_status.lock().ok().and_then(|g| g.clone());
+        let st = crate::util::with_lock(&self.handler_status, |g| g.clone());
         let Some(st) = st else { return };
         let needs = |s: &HandlerState| {
             matches!(s, HandlerState::NotRegistered | HandlerState::OtherDefault(_) | HandlerState::OtherPath)

@@ -1683,7 +1683,7 @@ impl CorrentApp {
 
     /// Status pills and buttons for the magnet / .torrent handler registration.
     fn handler_card(&mut self, ui: &mut Ui, p: &Palette) {
-        let st = self.handler_status.lock().ok().and_then(|g| g.clone());
+        let st = crate::util::with_lock(&self.handler_status, |g| g.clone());
         let pill = |ui: &mut Ui, label: &str, state: Option<&HandlerState>| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(label).color(p.text));

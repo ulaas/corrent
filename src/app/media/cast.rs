@@ -36,13 +36,15 @@ impl CastCtl {
     /// Looks for devices (the answer arrives in `devices`).
     pub fn find(&self, ctx: &egui::Context, refresh: bool) {
         let (c, s, ctx) = (self.client.clone(), self.shared.clone(), ctx.clone());
-        if let Ok(mut g) = s.lock() {
+        {
+            let mut g = crate::util::lock(&s);
             g.devices = None;
         }
         self.rt.spawn(async move {
             let path = if refresh { "/api/v1/cast/devices?refresh=true" } else { "/api/v1/cast/devices" };
             let r = c.get::<Vec<CastDevice>>(path).await;
-            if let Ok(mut g) = s.lock() {
+            {
+                let mut g = crate::util::lock(&s);
                 g.devices = Some(r);
             }
             ctx.request_repaint();
@@ -51,16 +53,17 @@ impl CastCtl {
 
     /// None while looking.
     pub fn devices(&self) -> Option<Result<Vec<CastDevice>, String>> {
-        self.shared.lock().ok()?.devices.clone()
+        crate::util::lock(&self.shared).devices.clone()
     }
 
     pub fn status(&self) -> Option<CastStatus> {
-        self.shared.lock().ok()?.status.clone()
+        crate::util::lock(&self.shared).status.clone()
     }
 
     pub fn start(&self, device: CastDevice, item_id: i64, pos: f64) -> Casting {
         let (c, s) = (self.client.clone(), self.shared.clone());
-        if let Ok(mut g) = s.lock() {
+        {
+            let mut g = crate::util::lock(&s);
             g.status = None;
         }
         let id = device.id.clone();
@@ -68,13 +71,9 @@ impl CastCtl {
             let body = serde_json::json!({ "item_id": item_id, "position_ms": (pos * 1000.0) as i64 });
             let path = format!("/api/v1/cast/{id}/play");
             let r = c.send::<CastStatus, _>(reqwest::Method::POST, &path, &body).await;
-            if let Ok(mut g) = s.lock() {
-                g.status = Some(r.unwrap_or_else(|e| CastStatus {
-                    state: "error".into(),
-                    error: Some(e),
-                    ..Default::default()
-                }));
-            }
+            let mut g = crate::util::lock(&s);
+            g.status =
+                Some(r.unwrap_or_else(|e| CastStatus { state: "error".into(), error: Some(e), ..Default::default() }));
         });
         Casting { device, last_poll: Instant::now() }
     }
@@ -85,7 +84,7 @@ impl CastCtl {
             return;
         }
         {
-            let Ok(mut g) = self.shared.lock() else { return };
+            let mut g = crate::util::lock(&self.shared);
             if g.polling {
                 return;
             }
@@ -95,11 +94,10 @@ impl CastCtl {
         let (c, s, id) = (self.client.clone(), self.shared.clone(), casting.device.id.clone());
         self.rt.spawn(async move {
             let r = c.get::<CastStatus>(&format!("/api/v1/cast/{id}")).await;
-            if let Ok(mut g) = s.lock() {
-                g.polling = false;
-                if let Ok(st) = r {
-                    g.status = Some(st);
-                }
+            let mut g = crate::util::lock(&s);
+            g.polling = false;
+            if let Ok(st) = r {
+                g.status = Some(st);
             }
         });
     }

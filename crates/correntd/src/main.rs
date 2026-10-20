@@ -383,7 +383,7 @@ fn service(s: Service, args: Args) -> anyhow::Result<()> {
             let _ = ARGS.set(std::sync::Mutex::new(Some(args)));
             winservice::run(winservice::Hooks {
                 run: || {
-                    let args = ARGS.get().and_then(|a| a.lock().ok()?.take());
+                    let args = ARGS.get().and_then(|a| corrent_core::util::lock(a).take());
                     run(args.ok_or_else(|| anyhow::anyhow!("started twice"))?)
                 },
                 stop: || STOP.notify_one(),

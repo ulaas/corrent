@@ -477,7 +477,8 @@ impl Player {
             return;
         }
         if let Some(path) = &e.local {
-            if let Ok(mut t) = self.trick.lock() {
+            {
+                let mut t = crate::util::lock(&self.trick);
                 t.clear();
             }
             self.sheets.clear();
@@ -486,7 +487,8 @@ impl Player {
             let _ = self
                 .mpv
                 .command_async(0, &["loadfile", &path.to_string_lossy(), "replace", "-1", &format!("{start},{title}")]);
-            if let Ok(mut s) = self.status.lock() {
+            {
+                let mut s = crate::util::lock(&self.status);
                 s.pos = e.resume_ms as f64 / 1000.0;
                 s.ended = false;
             }
@@ -496,11 +498,13 @@ impl Player {
         let client = self.client.clone();
         let mpv = self.mpv.clone();
         let trick = self.trick.clone();
-        if let Ok(mut t) = trick.lock() {
+        {
+            let mut t = crate::util::lock(&trick);
             t.clear();
         }
         let status = self.status.clone();
-        if let Ok(mut s) = status.lock() {
+        {
+            let mut s = crate::util::lock(&status);
             s.segments.clear();
         }
         self.sheets.clear();
@@ -514,16 +518,15 @@ impl Player {
                 .await;
             match info {
                 Ok(info) => {
-                    if let Ok(mut s) = status.lock() {
+                    {
+                        let mut s = crate::util::lock(&status);
                         s.segments = info.segments.clone();
                     }
                     if let Some(tp) = info.trickplay.clone() {
                         let (client, trick) = (client.clone(), trick.clone());
                         tokio::spawn(async move {
-                            if let Ok(vtt) = client.text(&tp).await
-                                && let Ok(mut t) = trick.lock()
-                            {
-                                *t = parse_trickplay(&vtt, &tp);
+                            if let Ok(vtt) = client.text(&tp).await {
+                                *crate::util::lock(&trick) = parse_trickplay(&vtt, &tp);
                             }
                         });
                     }
@@ -544,10 +547,9 @@ impl Player {
                 Err(e) => tracing::warn!("playback: {e}"),
             }
         });
-        if let Ok(mut s) = self.status.lock() {
-            s.pos = e.resume_ms as f64 / 1000.0;
-            s.ended = false;
-        }
+        let mut s = crate::util::lock(&self.status);
+        s.pos = e.resume_ms as f64 / 1000.0;
+        s.ended = false;
     }
 
     /// Commands from the UI thread are asynchronous: the UI never waits for mpv's core.
@@ -570,7 +572,7 @@ impl Player {
         }
         self.cmd(&["cycle", "pause"]);
         if let Some(room) = &mut self.room {
-            let (pos, _, paused) = self.status.lock().map(|s| (s.pos, s.duration, s.paused)).unwrap_or_default();
+            let (pos, _, paused) = crate::util::with_lock(&self.status, |s| (s.pos, s.duration, s.paused));
             let position_ms = (pos * 1000.0) as i64;
             room.send(if paused { RoomCommand::Play { position_ms } } else { RoomCommand::Pause { position_ms } });
         }
@@ -585,7 +587,7 @@ impl Player {
         }
         self.cmd(&["seek", &format!("{secs}"), if relative { "relative" } else { "absolute" }]);
         if let Some(room) = &mut self.room {
-            let pos = self.status.lock().map(|s| s.pos).unwrap_or_default();
+            let pos = crate::util::with_lock(&self.status, |s| s.pos);
             let to = if relative { pos + secs } else { secs };
             room.send(RoomCommand::Seek { position_ms: (to.max(0.0) * 1000.0) as i64 });
         }
@@ -596,7 +598,7 @@ impl Player {
         let Some(item) = self.current().map(|e| e.item_id) else { return };
         let Some(room) = &mut self.room else { return };
         room.poll(ctx);
-        let (pos, paused, buffering) = self.status.lock().map(|s| (s.pos, s.paused, s.buffering)).unwrap_or_default();
+        let (pos, paused, buffering) = crate::util::with_lock(&self.status, |s| (s.pos, s.paused, s.buffering));
         let c = room.correction(item, pos, paused, buffering);
         if let Some(to) = c.seek_to {
             self.cmd(&["seek", &format!("{to}"), "absolute"]);
@@ -618,7 +620,7 @@ impl Player {
     }
 
     pub fn previous(&mut self) {
-        if self.status.lock().map(|s| s.pos > 5.0).unwrap_or(false) || self.index == 0 {
+        if crate::util::with_lock(&self.status, |s| s.pos > 5.0) || self.index == 0 {
             self.seek(0.0, false);
         } else {
             self.report(true);
@@ -633,7 +635,7 @@ impl Player {
         if e.stream.is_some() {
             return;
         }
-        let (pos, dur, ended) = self.status.lock().map(|s| (s.pos, s.duration, s.ended)).unwrap_or_default();
+        let (pos, dur, ended) = crate::util::with_lock(&self.status, |s| (s.pos, s.duration, s.ended));
         let body = if ended || (done && dur > 0.0 && pos / dur > 0.9) {
             serde_json::json!({ "played": true })
         } else {
@@ -657,10 +659,11 @@ impl Player {
         if self.last_report.elapsed() > Duration::from_secs(10) {
             self.report(false);
         }
-        let ended = self.status.lock().map(|s| s.ended).unwrap_or(false);
+        let ended = crate::util::with_lock(&self.status, |s| s.ended);
         if ended {
             self.report(true);
-            if let Ok(mut s) = self.status.lock() {
+            {
+                let mut s = crate::util::lock(&self.status);
                 s.ended = false;
             }
             // "Cancel" on the countdown: stay at the end.
@@ -675,14 +678,14 @@ impl Player {
             && let Some(s) = self.cast.status()
         {
             let dur = s.duration_ms.map(|d| d as f64 / 1000.0);
-            let local = self.status.lock().map(|s| s.duration).unwrap_or_default();
+            let local = crate::util::with_lock(&self.status, |s| s.duration);
             return (
                 s.position_ms as f64 / 1000.0,
                 dur.unwrap_or(local),
                 !(s.state == "playing" || s.state == "buffering"),
             );
         }
-        self.status.lock().map(|s| (s.pos, s.duration, s.paused)).unwrap_or_default()
+        crate::util::with_lock(&self.status, |s| (s.pos, s.duration, s.paused))
     }
 
     /// The full-window player (video).
@@ -692,7 +695,7 @@ impl Player {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
         // Never ask mpv synchronously from the render thread: properties arrive as events.
-        let aspect = self.status.lock().map(|s| s.aspect).unwrap_or(0.0);
+        let aspect = crate::util::with_lock(&self.status, |s| s.aspect);
         let aspect = if aspect > 0.0 { aspect as f32 } else { 16.0 / 9.0 };
         let mut vr = rect;
         if rect.width() / rect.height() > aspect {
@@ -764,14 +767,14 @@ impl Player {
         } else {
             ctx.request_repaint_after(self.controls_until.saturating_duration_since(Instant::now()));
         }
-        let buffering = self.status.lock().map(|s| s.buffering).unwrap_or(false);
+        let buffering = crate::util::with_lock(&self.status, |s| s.buffering);
         if buffering {
             ui.put(
                 Rect::from_center_size(rect.center(), vec2(48.0, 48.0)),
                 egui::Spinner::new().size(40.0).color(Color32::WHITE),
             );
         }
-        if let Some(err) = self.status.lock().ok().and_then(|s| s.error.clone()) {
+        if let Some(err) = crate::util::with_lock(&self.status, |s| s.error.clone()) {
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -995,7 +998,8 @@ impl Player {
             CornerRadius::same(3),
             p.accent.gamma_multiply(k),
         );
-        if let Ok(s) = self.status.lock() {
+        {
+            let s = crate::util::lock(&self.status);
             for (c, _) in &s.chapters {
                 if dur > 0.0 {
                     let x = line.left() + line.width() * (*c / dur) as f32;
@@ -1010,7 +1014,7 @@ impl Player {
         painter.circle_filled(pos2(line.left() + line.width() * frac.clamp(0.0, 1.0), line.center().y), h + 2.0, white);
         if let Some(hp) = r.hover_pos().filter(|_| dur > 0.0) {
             let t = frac_at(hp.x) as f64 * dur;
-            let cue = self.trick.lock().ok().and_then(|c| cue_at(&c, t).cloned());
+            let cue = crate::util::with_lock(&self.trick, |c| cue_at(c, t).cloned());
             if let Some(cue) = cue
                 && let Some(tex) = self.sheet(ui.ctx(), &cue.sheet)
             {
@@ -1056,7 +1060,7 @@ impl Player {
         if !tiny && button(ui, pf::SKIP_FORWARD, 22.0, "next") {
             self.next();
         }
-        let (vol, muted) = self.status.lock().map(|s| (s.volume, s.muted)).unwrap_or((100.0, false));
+        let (vol, muted) = crate::util::with_lock(&self.status, |s| (s.volume, s.muted));
         if button(ui, if muted { pr::SPEAKER_X } else { pr::SPEAKER_HIGH }, 22.0, "mute") {
             self.cmd(&["cycle", "mute"]);
         }
@@ -1159,7 +1163,7 @@ impl Player {
                 );
             }
         }
-        let tracks = self.status.lock().map(|s| s.tracks.clone()).unwrap_or_default();
+        let tracks = crate::util::with_lock(&self.status, |s| s.tracks.clone());
         let mpv = self.mpv.clone();
         crate::ui::widgets::popup(egui::Popup::from_toggle_button_response(&r), |ui| {
             ui.set_min_width(260.0);
@@ -1272,11 +1276,7 @@ impl Player {
             egui::FontId::proportional(22.0),
             white,
         );
-        let s = self
-            .status
-            .lock()
-            .map(|s| (s.speed, s.sub_delay, s.audio_delay, s.sub_scale))
-            .unwrap_or((1.0, 0.0, 0.0, 1.0));
+        let s = crate::util::with_lock(&self.status, |s| (s.speed, s.sub_delay, s.audio_delay, s.sub_scale));
         let mut cmds: Vec<Vec<String>> = Vec::new();
         let mut shot = false;
         crate::ui::widgets::popup(
@@ -1381,7 +1381,7 @@ impl Player {
 
     /// "Stats for nerds": what is playing and how.
     fn stats_overlay(&self, ui: &mut Ui, rect: Rect) {
-        let Ok(s) = self.status.lock() else { return };
+        let s = crate::util::lock(&self.status);
         let st = &s.stats;
         let text = format!(
             "{} {}×{}  {:.2} fps  {}\n{}\n{} {} · {} {:.1} s · {} {}",
@@ -1729,8 +1729,7 @@ impl Player {
     /// hidden; above them when they are up).
     fn skip_button(&mut self, ui: &mut Ui, p: &Palette, rect: Rect, pos: f64, dur: f64, k: f32) -> PlayerAction {
         use corrent_proto::library::SkipKind;
-        let (chapters, segments) =
-            self.status.lock().map(|s| (s.chapters.clone(), s.segments.clone())).unwrap_or_default();
+        let (chapters, segments) = crate::util::with_lock(&self.status, |s| (s.chapters.clone(), s.segments.clone()));
         let skip = corrent_proto::library::skip_at(&chapters, pos, dur)
             .or_else(|| corrent_proto::library::segment_at(&segments, pos));
         let Some((kind, end)) = skip else { return PlayerAction::None };

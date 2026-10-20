@@ -51,7 +51,8 @@ impl Room {
         let c = client.clone();
         rt.spawn(async move {
             let r = c.send::<RoomState, _>(reqwest::Method::POST, &path, &body).await;
-            if let Ok(mut s) = s.lock() {
+            {
+                let mut s = crate::util::lock(&s);
                 match r {
                     Ok(st) => s.state = Some((st, Instant::now())),
                     Err(e) => s.error = Some(e),
@@ -81,11 +82,11 @@ impl Room {
     }
 
     pub fn state(&self) -> Option<RoomState> {
-        self.shared.lock().ok()?.state.as_ref().map(|(s, _)| s.clone())
+        crate::util::lock(&self.shared).state.as_ref().map(|(s, _)| s.clone())
     }
 
     pub fn error(&self) -> Option<String> {
-        self.shared.lock().ok()?.error.clone()
+        crate::util::lock(&self.shared).error.clone()
     }
 
     /// The web client's link to this room.
@@ -102,7 +103,7 @@ impl Room {
         }
         let Some(id) = self.state().map(|s| s.id) else { return };
         {
-            let Ok(mut s) = self.shared.lock() else { return };
+            let mut s = crate::util::lock(&self.shared);
             if s.polling {
                 return;
             }
@@ -112,22 +113,21 @@ impl Room {
         let (c, shared) = (self.client.clone(), self.shared.clone());
         self.rt.spawn(async move {
             let r = c.get::<RoomState>(&format!("/api/v1/syncplay/{id}")).await;
-            if let Ok(mut s) = shared.lock() {
-                s.polling = false;
-                match r {
-                    Ok(st) => {
-                        s.state = Some((st, Instant::now()));
-                        s.error = None;
-                    }
-                    Err(e) => s.error = Some(e),
+            let mut s = crate::util::lock(&shared);
+            s.polling = false;
+            match r {
+                Ok(st) => {
+                    s.state = Some((st, Instant::now()));
+                    s.error = None;
                 }
+                Err(e) => s.error = Some(e),
             }
         });
     }
 
     /// Where the room is now (seconds), and whether it's paused.
     fn target(&self) -> Option<(i64, f64, bool)> {
-        let s = self.shared.lock().ok()?;
+        let s = crate::util::lock(&self.shared);
         let (st, at) = s.state.as_ref()?;
         let since = at.elapsed().as_millis() as i64;
         let pos = st.position_at(st.server_now_ms + since);
@@ -157,8 +157,8 @@ impl Room {
             RoomCommand::Pause { position_ms } => (Some(true), position_ms),
             RoomCommand::Seek { position_ms } => (None, position_ms),
         };
-        let Some(id) = (match self.shared.lock() {
-            Ok(mut s) => s.state.as_mut().map(|(st, at)| {
+        let Some(id) = crate::util::with_lock(&self.shared, |s| {
+            s.state.as_mut().map(|(st, at)| {
                 if let Some(p) = paused {
                     st.paused = p;
                 }
@@ -166,8 +166,7 @@ impl Room {
                 st.at_ms = st.server_now_ms;
                 *at = Instant::now();
                 st.id.clone()
-            }),
-            Err(_) => None,
+            })
         }) else {
             return;
         };
@@ -176,9 +175,8 @@ impl Room {
         self.rt.spawn(async move {
             match cl.send::<RoomState, _>(reqwest::Method::POST, &format!("/api/v1/syncplay/{id}/command"), &c).await {
                 Ok(st) => {
-                    if let Ok(mut s) = shared.lock() {
-                        s.state = Some((st, Instant::now()));
-                    }
+                    let mut s = crate::util::lock(&shared);
+                    s.state = Some((st, Instant::now()));
                 }
                 Err(e) => tracing::warn!("syncplay: {e}"),
             }

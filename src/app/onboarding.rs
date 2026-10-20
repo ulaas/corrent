@@ -114,7 +114,7 @@ impl CorrentApp {
                 _ => {
                     ui.label(RichText::new(t!("Open magnet links with Corrent?")).font(theme::title()).color(p.text));
                     ui.add_space(6.0);
-                    let st = self.handler_status.lock().ok().and_then(|g| g.clone());
+                    let st = crate::util::with_lock(&self.handler_status, |g| g.clone());
                     let current = match st.as_ref().map(|s| &s.magnet) {
                         Some(HandlerState::Ours) => t!("Corrent already opens magnet links.").to_string(),
                         Some(HandlerState::OtherDefault(app)) => t!("Right now they open with {app}.", app = app),

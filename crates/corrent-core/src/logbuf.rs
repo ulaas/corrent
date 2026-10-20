@@ -58,11 +58,10 @@ impl<S: tracing::Subscriber> Layer<S> for LogCapture {
             target: meta.target().to_string(),
             message: v.0,
         };
-        if let Ok(mut l) = LINES.lock() {
-            if l.len() >= MAX_LINES {
-                l.pop_front();
-            }
-            l.push_back(line);
+        let mut l = crate::util::lock(&LINES);
+        if l.len() >= MAX_LINES {
+            l.pop_front();
         }
+        l.push_back(line);
     }
 }

@@ -175,7 +175,7 @@ impl Store {
     #[cfg(test)]
     fn wait_saved(&self) {
         let (tx, rx) = std::sync::mpsc::channel();
-        let _ = self.writer.lock().unwrap().send(Write::Barrier(tx));
+        let _ = crate::util::lock(&self.writer).send(Write::Barrier(tx));
         let _ = rx.recv();
     }
 

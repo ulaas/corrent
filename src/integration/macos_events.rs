@@ -75,7 +75,8 @@ define_class!(
 impl AppleEventHandler {
     fn deliver(&self, src: Option<AddSource>) {
         let Some(src) = src else { return };
-        if let Ok(tx) = self.ivars().tx.lock() {
+        {
+            let tx = crate::util::lock(&self.ivars().tx);
             let _ = tx.send(IpcMessage::Add(src));
             let _ = tx.send(IpcMessage::Focus);
         }

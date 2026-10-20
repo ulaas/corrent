@@ -490,6 +490,28 @@ pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     out
 }
 
+/// Lock `m` even after a thread panicked while holding it (STABILITY.md F18). The data may be
+/// half-updated, but every lock in Corrent guards state that stays usable (caches, queues,
+/// status); a lock that silently stops working once poisoned is worse.
+pub fn lock<T: ?Sized>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Run `f` on the data behind `m` ([`lock`]).
+pub fn with_lock<T: ?Sized, R>(m: &std::sync::Mutex<T>, f: impl FnOnce(&mut T) -> R) -> R {
+    f(&mut lock(m))
+}
+
+/// [`lock`] for reading an `RwLock`.
+pub fn read<T: ?Sized>(l: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    l.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// [`lock`] for writing an `RwLock`.
+pub fn write<T: ?Sized>(l: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    l.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,5 +730,84 @@ mod more_tests {
         write_atomic(&dir.join("f.txt"), b"x").unwrap();
         assert_eq!(std::fs::read(dir.join("f.txt")).unwrap(), b"x");
         let _ = std::fs::remove_dir_all(dir.parent().unwrap().parent().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn lock_recovers_after_a_panicking_holder() {
+        let m = std::sync::Arc::new(std::sync::Mutex::new(vec![1]));
+        let m2 = m.clone();
+        let _ = std::thread::spawn(move || {
+            let mut g = m2.lock().unwrap();
+            g.push(2);
+            panic!("while holding the lock");
+        })
+        .join();
+        assert!(m.is_poisoned());
+        assert_eq!(*lock(&m), vec![1, 2]);
+        let l = std::sync::RwLock::new(1);
+        *write(&l) += 1;
+        assert_eq!(*read(&l), 2);
+    }
+
+    /// Every std `lock()`, `read()` or `write()` in shipped code recovers from poisoning
+    /// (`util::lock` or `.unwrap_or_else(..)`), or is a tokio lock (`.await`). `.ok()`,
+    /// `if let Ok(..) = m.lock()` and `.map(..)` silently stop working once a thread panicked
+    /// while holding the lock (STABILITY.md F18).
+    #[test]
+    fn locks_never_go_silent_when_poisoned() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        let mut stack = vec![root.join("src")];
+        for c in std::fs::read_dir(root.join("crates")).unwrap().flatten() {
+            stack.push(c.path().join("src"));
+        }
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    files.push(p);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        for p in files {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.ends_with("_tests.rs") || name == "tests.rs" || name == "testkit.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).unwrap().replace("\r\n", "\n");
+            let code = match text.find("#[cfg(test)]\nmod tests {") {
+                Some(i) => &text[..i],
+                None => text.as_str(),
+            };
+            for (n, line) in code.lines().enumerate() {
+                // Chains continue on the next lines: look at what follows, without whitespace.
+                let rest: String = code.lines().skip(n).take(3).collect::<Vec<_>>().join("");
+                let rest: String = rest.chars().filter(|c| !c.is_whitespace()).collect();
+                let skip = line.chars().filter(|c| !c.is_whitespace()).count();
+                let here = rest.get(..skip).unwrap_or(&rest);
+                for call in [".lock()", ".read()", ".write()"] {
+                    let mut from = 0;
+                    while let Some(i) = here.get(from..).and_then(|h| h.find(call)) {
+                        let after = rest.get(from + i + call.len()..).unwrap_or("");
+                        // `self.lock()`: a type's own helper (it recovers, or this test finds it).
+                        let own = here.get(..from + i).is_some_and(|b| b.ends_with("self"));
+                        let ok = own || after.starts_with(".await") || after.starts_with(".unwrap_or_else(");
+                        if !ok {
+                            found.push(format!("{}:{}: {}", p.display(), n + 1, line.trim()));
+                        }
+                        from += i + call.len();
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "use corrent_core::util::lock (or read/write) for these:\n{}", found.join("\n"));
     }
 }

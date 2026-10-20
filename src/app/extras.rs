@@ -239,29 +239,24 @@ impl CorrentApp {
                     ui.selectable_value(&mut self.extras.log_level, 2, t!("Errors"));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.button(format!("{}  {}", icons::COPY, t!("Copy"))).clicked() {
-                            let text = super::log::LINES
-                                .lock()
-                                .map(|l| {
-                                    l.iter()
-                                        .map(|x| {
-                                            format!(
-                                                "{} {} {}: {}",
-                                                crate::util::fmt_date(x.time),
-                                                x.level,
-                                                x.target,
-                                                x.message
-                                            )
-                                        })
-                                        .collect::<Vec<_>>()
-                                        .join("\n")
-                                })
-                                .unwrap_or_default();
+                            let text = crate::util::with_lock(&super::log::LINES, |l| {
+                                l.iter()
+                                    .map(|x| {
+                                        format!(
+                                            "{} {} {}: {}",
+                                            crate::util::fmt_date(x.time),
+                                            x.level,
+                                            x.target,
+                                            x.message
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            });
                             self.copy(text);
                         }
-                        if ui.button(format!("{}  {}", icons::TRASH, t!("Clear"))).clicked()
-                            && let Ok(mut l) = super::log::LINES.lock()
-                        {
-                            l.clear();
+                        if ui.button(format!("{}  {}", icons::TRASH, t!("Clear"))).clicked() {
+                            crate::util::lock(&super::log::LINES).clear();
                         }
                     });
                 });
@@ -272,20 +267,17 @@ impl CorrentApp {
                     1 => Level::WARN,
                     _ => Level::INFO,
                 };
-                let lines: Vec<super::log::LogLine> = super::log::LINES
-                    .lock()
-                    .map(|l| {
-                        l.iter()
-                            .filter(|x| x.level <= min)
-                            .filter(|x| {
-                                filter.is_empty()
-                                    || x.message.to_lowercase().contains(&filter)
-                                    || x.target.contains(&filter)
-                            })
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let lines: Vec<super::log::LogLine> = crate::util::with_lock(&super::log::LINES, |l| {
+                    l.iter()
+                        .filter(|x| x.level <= min)
+                        .filter(|x| {
+                            filter.is_empty()
+                                || x.message.to_lowercase().contains(&filter)
+                                || x.target.contains(&filter)
+                        })
+                        .cloned()
+                        .collect()
+                });
                 if lines.is_empty() {
                     crate::ui::widgets::empty_compact(
                         ui,
