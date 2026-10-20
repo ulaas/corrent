@@ -311,11 +311,11 @@ pub fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
+    while let Some(&b) = bytes.get(i) {
+        match b {
             b'+' => out.push(b' '),
             b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                let hex = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).unwrap_or("");
                 if let Ok(v) = u8::from_str_radix(hex, 16) {
                     out.push(v);
                     i += 2;

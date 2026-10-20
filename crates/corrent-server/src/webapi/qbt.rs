@@ -352,9 +352,10 @@ async fn info(State(st): St, req: Request) -> Response {
         .filter(|t| wanted.as_ref().is_none_or(|w| w.contains(&t.hash)))
         .collect();
     if let Some(key) = f.get("sort") {
+        static NULL: Value = Value::Null;
         list.sort_by(|a, b| {
             let (x, y) = (torrent_json(a), torrent_json(b));
-            let (x, y) = (&x[key.as_str()], &y[key.as_str()]);
+            let (x, y) = (x.get(key.as_str()).unwrap_or(&NULL), y.get(key.as_str()).unwrap_or(&NULL));
             match (x.as_f64(), y.as_f64()) {
                 (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
                 _ => x.as_str().unwrap_or("").cmp(y.as_str().unwrap_or("")),

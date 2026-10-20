@@ -161,7 +161,7 @@ pub fn seed_limit_reason(v: &TorrentView, m: &TorrentMeta, s: &Seeding) -> Optio
 /// low-priority files last (stable within a priority).
 pub fn file_order(names: &[std::path::PathBuf], priority: &std::collections::BTreeMap<usize, i8>) -> Vec<usize> {
     let mut order: Vec<usize> = (0..names.len()).collect();
-    order.sort_by(|a, b| names[*a].cmp(&names[*b]));
+    order.sort_by(|a, b| names.get(*a).cmp(&names.get(*b)));
     order.sort_by_key(|i| std::cmp::Reverse(priority.get(i).copied().unwrap_or(0)));
     order
 }

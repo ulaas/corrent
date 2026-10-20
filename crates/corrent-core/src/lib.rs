@@ -2,6 +2,9 @@
 //! Torznab search, import from other clients, backups, migrations, crash reports and the
 //! in-memory log. No UI code: the GUI, the server and the headless daemon all build on this.
 
+// STABILITY.md F17: shipped code doesn't index (tests may; clippy.toml).
+#![deny(clippy::indexing_slicing)]
+
 #[macro_use]
 extern crate corrent_i18n;
 

@@ -289,12 +289,13 @@ pub fn fmt_bytes(b: u64) -> String {
         v /= 1024.0;
         i += 1;
     }
+    let unit = UNITS.get(i).copied().unwrap_or_default();
     if v >= 100.0 {
-        format!("{v:.0} {}", UNITS[i])
+        format!("{v:.0} {unit}")
     } else if v >= 10.0 {
-        format!("{v:.1} {}", UNITS[i])
+        format!("{v:.1} {unit}")
     } else {
-        format!("{v:.2} {}", UNITS[i])
+        format!("{v:.2} {unit}")
     }
 }
 
@@ -313,7 +314,8 @@ pub fn fmt_speed(bps: u64, units: SpeedUnits) -> String {
         v /= base;
         i += 1;
     }
-    if i == 0 || v >= 100.0 { format!("{v:.0} {}", names[i]) } else { format!("{v:.1} {}", names[i]) }
+    let unit = names.get(i).copied().unwrap_or_default();
+    if i == 0 || v >= 100.0 { format!("{v:.0} {unit}") } else { format!("{v:.1} {unit}") }
 }
 
 pub fn fmt_duration(d: Duration) -> String {
@@ -458,7 +460,7 @@ pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     let mut raw = Vec::with_capacity((width * height * 4 + height) as usize);
     for y in 0..height as usize {
         raw.push(0); // filter: none
-        raw.extend_from_slice(&rgba[y * width as usize * 4..(y + 1) * width as usize * 4]);
+        raw.extend_from_slice(rgba.get(y * width as usize * 4..(y + 1) * width as usize * 4).unwrap_or_default());
     }
     // zlib stream with stored blocks
     let mut z = vec![0x78, 0x01];

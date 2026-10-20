@@ -5,6 +5,9 @@
 //! (stored as a PBKDF2 hash). Cookie sessions as in qBittorrent, failed-login throttling, and
 //! Host/Origin checks against DNS rebinding and cross-site requests.
 
+// STABILITY.md F17: request handling doesn't index (tests may; clippy.toml).
+#![deny(clippy::indexing_slicing)]
+
 pub(crate) mod auth;
 mod qbt;
 

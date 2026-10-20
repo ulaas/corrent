@@ -144,10 +144,11 @@ impl Registry {
     /// player is blocked after a Stop.
     fn session_for(&mut self, key: &Key, file_name: &str, file_len: u64, now: Instant) -> Option<&mut StreamSession> {
         self.prune(now);
-        let i = match self.sessions.iter().position(|s| &s.key == key) {
-            Some(i) => {
-                if let Some(at) = self.sessions[i].stopped_at {
-                    if now.duration_since(at) < STOP_BLOCK || !self.sessions[i].conns.is_empty() {
+        let found = self.sessions.iter().enumerate().find(|(_, s)| &s.key == key);
+        let i = match found {
+            Some((i, s)) => {
+                if let Some(at) = s.stopped_at {
+                    if now.duration_since(at) < STOP_BLOCK || !s.conns.is_empty() {
                         return None;
                     }
                     self.sessions.remove(i);
@@ -158,7 +159,7 @@ impl Registry {
             }
             None => self.insert(key, file_name, file_len, now),
         };
-        let s = &mut self.sessions[i];
+        let s = self.sessions.get_mut(i)?;
         s.last_seen = now;
         Some(s)
     }
@@ -566,7 +567,7 @@ impl StreamServer {
                 break;
             }
             set_phase(PHASE_WRITE);
-            for piece in buf[..n].chunks(PIECE) {
+            for piece in buf.get(..n).unwrap_or_default().chunks(PIECE) {
                 tokio::select! {
                     r = tokio::time::timeout(write_timeout(), conn.write_all(piece)) => {
                         r.map_err(|_| anyhow::anyhow!("the player stopped reading"))??
@@ -595,7 +596,7 @@ async fn read_head(conn: &mut TcpStream) -> anyhow::Result<String> {
     loop {
         let n = conn.read(&mut byte).await?;
         anyhow::ensure!(n > 0, "connection closed");
-        buf.extend_from_slice(&byte[..n]);
+        buf.extend_from_slice(byte.get(..n).unwrap_or_default());
         if buf.windows(4).any(|w| w == b"\r\n\r\n") {
             break;
         }
