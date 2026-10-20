@@ -1022,13 +1022,14 @@ async fn a_damaged_session_database_is_not_blamed_on_the_port() {
     cfg.connection.listen_port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let session = dir.join("data").join("session");
     std::fs::create_dir_all(&session).unwrap();
-    std::fs::write(session.join("session.json"), b"this is not json").unwrap();
+    // One that can't be read (a damaged one is rebuilt): librqbit fails to open it.
+    std::fs::create_dir_all(session.join("session.json").join("x")).unwrap();
     let l = start_with(&dir, cfg);
     let notices = notices_until(&l, 30, |sn| matches!(sn.engine_state, super::types::EngineState::Failed(_))).await;
     let super::types::EngineState::Failed(why) = l.engine.snapshot().engine_state.clone() else {
         panic!("the engine should not start: {notices:?}")
     };
-    assert!(why.contains("session database"), "{why}");
+    assert!(why.contains("session"), "{why}");
     assert!(!notices.iter().any(|n| n.contains("Port ")), "{notices:?}");
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
@@ -1538,6 +1539,149 @@ async fn the_store_mirrors_where_the_engine_keeps_data() {
     flush(&l).await;
     let m = &read_store(&l.paths).torrents[&s.hash];
     assert_eq!(m.output_folder.as_deref(), Some(dest.join("pack").as_path()), "follows the move");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Remove the engine's list and every good copy of it (`damaged`: garbage in its place).
+fn lose_session_db(paths: &Paths, damaged: bool) {
+    let db = paths.session_dir().join("session.json");
+    for (_, p) in crate::util::generations(&db, "good") {
+        std::fs::remove_file(p).unwrap();
+    }
+    if damaged {
+        std::fs::write(&db, b"\x00\x00garbage").unwrap();
+    } else {
+        std::fs::remove_file(&db).unwrap();
+    }
+}
+
+/// D6b: with the list and every copy of it gone, it is rebuilt from the metainfo and the store:
+/// every torrent comes back paused, in its folder, with its file selection and records, and its
+/// data is verified, never downloaded again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_session_database_is_rebuilt_from_the_torrent_files_and_the_store() {
+    let dir = temp_dir("db-rebuild");
+    let s = seeder(&dir).await;
+    let data = content();
+    let files = [("a.bin", data[..65536].to_vec()), ("b.bin", data[65536..131072].to_vec())];
+    let pack = seeder_files(&dir, "pack", &files).await;
+    let l = start(&dir);
+    let tiny = add_tiny_torrents(&l, &dir, 1).await[0];
+    download(&l, &s, &dir).await;
+    l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        source: AddSource::Bytes { name: "pack.torrent".into(), bytes: pack.bytes.clone() },
+        torrent_bytes: None,
+        save_path: dir.join("dl"),
+        create_subfolder: true,
+        category: Some("Packs".into()),
+        tags: vec!["two".into()],
+        paused: false,
+        only_files: Some(vec![0]),
+        add_to_top: false,
+        initial_peers: Some(vec![pack.addr]),
+        added_by: None,
+    })));
+    wait_for(&l, "the first file", 60, |sn| {
+        complete(sn, pack.hash) && find(sn, pack.hash).is_some_and(|t| t.size == 65536)
+    })
+    .await;
+    let dl2 = dir.join("dl2");
+    l.engine.send(EngineCommand::MoveStorage { hashes: vec![pack.hash], to: dl2.clone() });
+    wait_for(&l, "the move", 60, |sn| {
+        find(sn, pack.hash).is_some_and(|t| t.save_path == dl2 && t.busy.is_none() && t.state == TorrentState::Seeding)
+    })
+    .await;
+    let paths = stop(l).await;
+    // Nothing to download from from now on.
+    s._session.stop().await;
+    pack._session.stop().await;
+    let before = read_store(&paths);
+    let hashes = [tiny, s.hash, pack.hash];
+    for damaged in [true, false] {
+        lose_session_db(&paths, damaged);
+        let l = start(&dir);
+        let notices = notices_until(&l, 30, |sn| {
+            hashes.iter().all(|h| find(sn, *h).is_some_and(|t| t.busy.is_none() && t.state != TorrentState::Checking))
+        })
+        .await;
+        assert!(notices.iter().any(|n| n.contains("rebuilt from the torrent files")), "{damaged}: {notices:?}");
+        let snap = l.engine.snapshot();
+        for h in &hashes {
+            let t = find(&snap, *h).unwrap();
+            assert!(matches!(t.state, TorrentState::Paused | TorrentState::Completed), "{damaged}: {:?}", t.state);
+            assert_eq!(t.category, before.torrents[h].category, "{damaged}: records kept");
+            assert_eq!(t.tags, before.torrents[h].tags);
+        }
+        l.engine.send(EngineCommand::ResumeAll);
+        let snap = wait_for(&l, "seeding again", 60, |sn| complete(sn, s.hash) && complete(sn, pack.hash)).await;
+        assert_eq!(find(&snap, s.hash).unwrap().save_path, dir.join("dl"));
+        assert_eq!(find(&snap, pack.hash).unwrap().save_path, dl2, "where it was moved to");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        l.engine.send(EngineCommand::FileList { hash: pack.hash, reply: tx });
+        let included: Vec<bool> = rx.await.unwrap().unwrap().iter().map(|f| f.included).collect();
+        assert_eq!(included, vec![true, false], "{damaged}: the file selection");
+        let paths = stop(l).await;
+        let after = read_store(&paths);
+        for h in [s.hash, pack.hash] {
+            assert_eq!(after.torrents[&h].downloaded_total, before.torrents[&h].downloaded_total, "nothing downloaded");
+        }
+    }
+    assert!(!crate::util::generations(&paths.session_dir().join("session.json"), "bad").is_empty());
+    // The next start is an ordinary one.
+    let l = start(&dir);
+    let notices =
+        notices_until(&l, 10, |sn| hashes.iter().all(|h| find(sn, *h).is_some_and(|t| t.busy.is_none()))).await;
+    assert!(!notices.iter().any(|n| n.contains("torrent list")), "{notices:?}");
+    let paths = stop(l).await;
+    assert!(!crate::util::generations(&paths.session_dir().join("session.json"), "good").is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// D6b without Corrent's records: metainfo alone comes back paused in the download folder; a
+/// record whose metainfo is gone shows as a failed load and keeps its record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuild_without_records_or_metainfo_loses_nothing_it_can_keep() {
+    let dir = temp_dir("db-rebuild-partial");
+    let l = start(&dir);
+    let hashes = add_tiny_torrents(&l, &dir, 2).await;
+    let paths = stop(l).await;
+    let (kept, gone) = (hashes[0], hashes[1]);
+    std::fs::remove_file(paths.session_dir().join(format!("{}.torrent", gone.to_hex()))).unwrap();
+    lose_session_db(&paths, false);
+    let l = start(&dir);
+    let notices = notices_until(&l, 30, |sn| {
+        find(sn, kept).is_some_and(|t| t.busy.is_none()) && find(sn, gone).is_some_and(|t| t.restore_failed)
+    })
+    .await;
+    assert!(notices.iter().any(|n| n.contains("file is missing")), "{notices:?}");
+    let snap = l.engine.snapshot();
+    let row = find(&snap, gone).unwrap();
+    assert_eq!(row.state, TorrentState::Error);
+    assert!(row.error.as_deref().is_some_and(|e| e.contains("torrent file is missing")), "{:?}", row.error);
+    assert_eq!(row.category.as_deref(), Some("Kept"));
+    // Pruning runs every 20 ticks (4 s here): the record of the failed one stays.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let paths = stop(l).await;
+    assert!(read_store(&paths).torrents.contains_key(&gone), "record kept");
+
+    // Now without the store as well.
+    for e in std::fs::read_dir(&paths.data_dir).unwrap().flatten() {
+        if e.file_name().to_string_lossy().starts_with("store.json") {
+            std::fs::remove_file(e.path()).unwrap();
+        }
+    }
+    lose_session_db(&paths, true);
+    let l = start(&dir);
+    // Checked in full: its saved piece state was for a folder that is only a guess.
+    let notices = notices_until(&l, 30, |sn| {
+        find(sn, kept).is_some_and(|t| t.busy.is_none() && t.state != TorrentState::Checking)
+    })
+    .await;
+    assert!(notices.iter().any(|n| n.contains("no recorded folder")), "{notices:?}");
+    let t = find(&l.engine.snapshot(), kept).unwrap().clone();
+    assert_eq!(t.state, TorrentState::Paused);
+    assert_eq!(t.save_path, dir.join("dl"), "the download folder");
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -13,6 +13,9 @@ use librqbit::{AddTorrent, AddTorrentOptions, Session};
 
 use super::types::InfoHash;
 
+/// `FailedRestore::id` of a torrent that is not in the engine's list (D6b: its metainfo is gone).
+pub const NOT_LISTED: usize = usize::MAX;
+
 #[derive(Clone, Debug)]
 pub struct FailedRestore {
     pub id: usize,

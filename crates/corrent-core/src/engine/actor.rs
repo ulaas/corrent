@@ -336,12 +336,15 @@ impl Actor {
         self.engine_state = if self.session.is_some() { EngineState::Restarting } else { EngineState::Starting };
         self.start_phase = Some(StartPhase::TorrentList);
         self.publish();
-        self.recover_session_db();
+        let rebuilt = self.recover_session_db();
         self.purge_pending();
         if std::mem::take(&mut self.first_start) {
             self.check_after_power_loss();
         }
-        super::session_db::snapshot(&self.paths.session_dir());
+        // A rebuilt list (guessed folders, maybe) is not a good copy until the engine rewrites it.
+        if !rebuilt {
+            super::session_db::snapshot(&self.paths.session_dir());
+        }
         let mut last_err = String::new();
         // A big library takes longer to load (librqbit adds every torrent before it returns).
         let n = super::session_db::torrent_count(&self.paths.session_dir());
@@ -1225,37 +1228,135 @@ impl Actor {
 
     /// D6a: a damaged (or lost) `session.json` comes back from its newest good copy, before
     /// librqbit reads it.
-    fn recover_session_db(&mut self) {
-        let known: HashSet<InfoHash> = self.store.data.torrents.keys().copied().collect();
-        let gone: HashSet<InfoHash> = self.store.data.purge.iter().copied().collect();
-        match super::session_db::recover(&self.paths.session_dir(), &known, &gone) {
-            None => {}
-            Some(Ok(r)) => {
-                self.prune_suspended = true;
-                // Paused by the user as far as Corrent is concerned: the queue must not resume
-                // them into folders that may have changed since the copy.
-                for h in &r.torrents {
-                    if let Some(m) = self.store.data.torrents.get_mut(h) {
-                        m.pause_reason = Some(PauseReason::User);
-                        m.force_started = false;
-                    }
-                }
-                self.store.mark_dirty();
-                self.emit(EngineEvent::DataWarning(t!(
-                    "The engine's torrent list was damaged and was restored from a copy saved {date}. Its {n} \
-                     torrents were stopped (paused), because their folders may have changed since; resume them after a look. \
-                     Torrents added after that copy are missing, but their categories and tags were kept. The \
-                     damaged file was kept next to it.",
-                    date = crate::util::fmt_date(r.saved_at),
-                    n = r.torrents.len()
-                )));
-            }
+    /// D6a/D6b: put back a damaged or lost engine list. Returns true when the list was rebuilt
+    /// (not a copy worth keeping as a good one).
+    fn recover_session_db(&mut self) -> bool {
+        let dir = self.paths.session_dir();
+        // Being removed, or being re-added (their recovery brings them back with the right folder).
+        let mut skip: HashSet<InfoHash> = self.store.data.purge.iter().copied().collect();
+        if let Ok(rd) = std::fs::read_dir(self.paths.torrents_dir()) {
+            skip.extend(rd.flatten().filter_map(|e| {
+                let p = e.path();
+                p.extension().is_some_and(|x| x == "json").then_some(())?;
+                p.file_stem().and_then(|s| s.to_str()).and_then(InfoHash::from_hex)
+            }));
+        }
+        let (downloads, cats) = (&self.settings.downloads, &self.store.data.categories);
+        let fallback = |category: Option<&str>, name: &str, multi: bool| {
+            let base = category
+                .and_then(|c| cats.get(c))
+                .and_then(|c| c.save_path.clone())
+                .unwrap_or_else(|| downloads.save_path.clone());
+            if multi && downloads.create_subfolder { base.join(sanitize_name(name)) } else { base }
+        };
+        let plan = match super::session_db::plan(&dir, &self.store.data, &skip, &fallback) {
+            None => return false,
+            Some(Ok(p)) => p,
             Some(Err(path)) => {
                 self.emit(EngineEvent::DataWarning(t!(
                     "The engine's torrent list ({path}) is damaged and no usable copy was found. The torrent \
                      engine can't start until the file is repaired or removed.",
                     path = path
                 )));
+                return false;
+            }
+        };
+        // Paused by the user as far as Corrent is concerned: the queue must not resume them into
+        // folders that may have changed. Saved before the list is written (see `plan`). A record
+        // is made for torrents the store doesn't know, or the queue would start them.
+        let missing = plan.missing.iter().map(|m| m.hash);
+        for h in plan.torrents.iter().copied().chain(missing) {
+            let m = self.store.meta_mut(h);
+            m.pause_reason = Some(PauseReason::User);
+            m.force_started = false;
+        }
+        self.store.mark_dirty();
+        self.store.flush();
+        if let Err(path) = super::session_db::commit(&dir, &plan) {
+            self.emit(EngineEvent::DataWarning(t!(
+                "The engine's torrent list ({path}) is damaged and could not be replaced. The torrent \
+                 engine can't start until the file is repaired or removed.",
+                path = path
+            )));
+            return false;
+        }
+        self.prune_suspended = true;
+        let n = plan.torrents.len();
+        match plan.how {
+            super::session_db::How::Restored { saved_at } => {
+                self.emit(EngineEvent::DataWarning(t!(
+                    "The engine's torrent list was damaged and was restored from a copy saved {date}. Its {n} \
+                     torrents were stopped (paused), because their folders may have changed since; resume them after a look. \
+                     Torrents added after that copy are missing, but their categories and tags were kept. The \
+                     damaged file was kept next to it.",
+                    date = crate::util::fmt_date(saved_at),
+                    n = n
+                )));
+                false
+            }
+            super::session_db::How::Rebuilt => {
+                // Metainfo gone: shown as failed loads (Retry looks for it), never retried alone.
+                for m in &plan.missing {
+                    let trackers = self
+                        .store
+                        .get(&m.hash)
+                        .and_then(|r| r.source_magnet.as_deref())
+                        .and_then(|l| librqbit::Magnet::parse(l).ok())
+                        .map(|l| l.trackers)
+                        .unwrap_or_default();
+                    let error = t!("Its torrent file is missing. Retry looks for it on the network.").to_string();
+                    let f = super::restore::FailedRestore {
+                        id: super::restore::NOT_LISTED,
+                        hash: m.hash,
+                        output_folder: m.output_folder.clone(),
+                        only_files: m.only_files.clone(),
+                        paused: true,
+                        trackers,
+                        error,
+                    };
+                    self.failed.insert(m.hash, f);
+                }
+                let mut text = if n == 0 {
+                    t!("The engine's torrent list was lost and no saved copy was usable, and no torrent files \
+                         were left to rebuild it from: the engine starts with an empty list.")
+                    .to_string()
+                } else if n == 1 {
+                    t!("The engine's torrent list was lost and no saved copy was usable, so it was rebuilt from \
+                         the torrent files and Corrent's records. Its torrent was stopped (paused): when resumed, it \
+                         checks its data and downloads only what is missing.")
+                    .to_string()
+                } else {
+                    t!(
+                        "The engine's torrent list was lost and no saved copy was usable, so it was rebuilt from \
+                         the torrent files and Corrent's records. Its {n} torrents were stopped (paused): when \
+                         resumed, they check their data and download only what is missing.",
+                        n = n
+                    )
+                };
+                let guessed = match plan.guessed.len() {
+                    0 => None,
+                    1 => Some(
+                        t!("One of them had no recorded folder and was put in the download folder: move it to \
+                             its data before resuming it.")
+                        .to_string(),
+                    ),
+                    k => Some(t!(
+                        "{k} of them had no recorded folder and were put in the download folder: move them to \
+                         their data before resuming them.",
+                        k = k
+                    )),
+                };
+                let missing = match plan.missing.len() {
+                    0 => None,
+                    1 => Some(t!("One torrent's file is missing; it shows as an error with Retry.").to_string()),
+                    k => Some(t!("{k} torrents' files are missing; they show as errors with Retry.", k = k)),
+                };
+                for extra in [guessed, missing].into_iter().flatten() {
+                    text.push(' ');
+                    text.push_str(&extra);
+                }
+                self.emit(EngineEvent::DataWarning(text));
+                true
             }
         }
     }
@@ -1603,7 +1704,9 @@ impl Actor {
                         },
                     );
                 }
-                self.failed = list.into_iter().map(|f| (f.hash, f)).collect();
+                // Those without metainfo are not in the engine's list, so not in this report.
+                self.failed.retain(|_, f| f.id == super::restore::NOT_LISTED);
+                self.failed.extend(list.into_iter().map(|f| (f.hash, f)));
                 self.restore_checked = true;
             }
             Internal::RestoreRetried { hash, result, quiet } => {
@@ -1718,7 +1821,13 @@ impl Actor {
         }
         // Files blocked by antivirus or another program are often released later.
         if self.tick_count % 120 == 60 && !self.failed.is_empty() {
-            let hashes: Vec<InfoHash> = self.failed.keys().filter(|h| !self.busy.contains_key(h)).copied().collect();
+            // Not those without metainfo: their retry waits for the network, maybe forever.
+            let hashes: Vec<InfoHash> = self
+                .failed
+                .values()
+                .filter(|f| f.id != super::restore::NOT_LISTED && !self.busy.contains_key(&f.hash))
+                .map(|f| f.hash)
+                .collect();
             for h in hashes {
                 self.retry_failed_inner(h, true);
             }
