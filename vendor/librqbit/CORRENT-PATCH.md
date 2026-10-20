@@ -34,6 +34,13 @@ used by the `webui`/`http-api` features Corrent doesn't enable), plus runtime co
 
   Diff: `docs/upstream/librqbit-http-timeouts.patch`.
 
+- Test-only kill points (`src/corrent_hooks.rs`, call sites marked `CORRENT PATCH (D8)` in
+  `src/session_persistence/json.rs` and `src/bitv.rs`): after the temp file and after the rename
+  of `session.json`, `<hash>.torrent` and the initial `.bitv`, and after each write and sync of
+  the `.bitv` flusher. They call a hook only when one is set (`set_kill_hook`), which only
+  Corrent's durability harness does, to end the process there (STABILITY.md D8). No upstream
+  diff: it exists for Corrent's tests.
+
 librqbit rebuilds these from the add-time options whenever a torrent goes live again, so Corrent
 stores them itself and re-applies them (`Actor::apply_torrent_limits`).
 

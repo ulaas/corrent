@@ -119,10 +119,12 @@ impl JsonSessionPersistenceStore {
             .with_context(|| format!("error syncing {tmp_filename:?}"))?;
         drop(tmp);
         trace!(?tmp_filename, "wrote to temp file");
+        crate::corrent_hooks::kill_point("engine-session", "after_tmp"); // CORRENT PATCH (D8)
 
         rename_retrying(&tmp_filename, &self.db_filename)
             .await
             .context("error renaming persistence file")?;
+        crate::corrent_hooks::kill_point("engine-session", "after_rename"); // CORRENT PATCH (D8)
         trace!(filename=?self.db_filename, "wrote persistence");
         Ok(())
     }
@@ -187,7 +189,10 @@ impl JsonSessionPersistenceStore {
                 f.flush().await?;
                 f.sync_all().await?;
                 drop(f);
-                rename_retrying(&tmp, &torrent_bytes_file).await
+                crate::corrent_hooks::kill_point("engine-torrent", "after_tmp"); // CORRENT PATCH (D8)
+                rename_retrying(&tmp, &torrent_bytes_file).await?;
+                crate::corrent_hooks::kill_point("engine-torrent", "after_rename"); // CORRENT PATCH (D8)
+                std::io::Result::Ok(())
             }
             .await;
             if let Err(e) = written {
@@ -275,9 +280,11 @@ impl BitVFactory for JsonSessionPersistenceStore {
             .await
             .with_context(|| format!("error syncing {tmp_filename:?}"))?;
         drop(dst);
+        crate::corrent_hooks::kill_point("engine-bitv-init", "after_tmp"); // CORRENT PATCH (D8)
         rename_retrying(&tmp_filename, &filename)
             .await
             .with_context(|| format!("error renaming {tmp_filename:?} to {filename:?}"))?;
+        crate::corrent_hooks::kill_point("engine-bitv-init", "after_rename"); // CORRENT PATCH (D8)
         trace!(?filename, "stored initial check bitfield");
         Ok(DiskBackedBitV::new(filename.clone(), self.spawner.clone())
             .await

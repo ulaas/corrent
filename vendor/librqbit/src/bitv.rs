@@ -86,6 +86,7 @@ impl DiskBackedBitV {
                         }
                         break;
                     }
+                    crate::corrent_hooks::kill_point("engine-bitv", "after_pwrite"); // CORRENT PATCH (D8)
 
                     if let Err(e) = spawner
                         .block_in_place_with_semaphore(|| file.sync_all())
@@ -93,6 +94,7 @@ impl DiskBackedBitV {
                     {
                         tracing::error!(?filename, "error fsyncing bitv: {e:#}");
                     }
+                    crate::corrent_hooks::kill_point("engine-bitv", "after_sync"); // CORRENT PATCH (D8)
                 }
 
                 Ok::<_, anyhow::Error>(())

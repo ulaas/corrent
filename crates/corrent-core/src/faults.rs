@@ -273,6 +273,12 @@ mod kill {
     }
 }
 
+/// Also stop at librqbit's kill points (its persistence writes). Call before starting an engine.
+#[cfg(any(test, feature = "testkit"))]
+pub fn init_kill_points() {
+    librqbit::corrent_hooks::set_kill_hook(kill::reached);
+}
+
 /// The exit code of a process ended at a kill point (Windows; Unix ends with SIGABRT).
 #[cfg(any(test, feature = "testkit"))]
 pub const KILLED_EXIT_CODE: u32 = 75;

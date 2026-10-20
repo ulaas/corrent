@@ -47,6 +47,8 @@ mod bitv;
 mod bitv_factory;
 mod chunk_tracker;
 mod create_torrent_file;
+// CORRENT PATCH (D8): test-only kill points in the persistence writes.
+pub mod corrent_hooks;
 mod dht_utils;
 mod error;
 pub mod file_info;
