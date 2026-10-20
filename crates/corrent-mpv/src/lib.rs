@@ -72,6 +72,9 @@ impl std::fmt::Debug for Library {
     }
 }
 
+/// The folder next to the executable that may hold libmpv (see `Library::open`).
+pub const LIB_DIR: &str = "corrent-lib";
+
 /// File names tried, in order, when no explicit path is configured.
 pub fn candidate_names() -> &'static [&'static str] {
     if cfg!(windows) {
@@ -98,7 +101,19 @@ impl Library {
     pub fn open(path: Option<&Path>) -> Result<Library> {
         let tries: Vec<PathBuf> = match path {
             Some(p) => vec![p.to_path_buf()],
-            None => candidate_names().iter().map(PathBuf::from).collect(),
+            None => {
+                // Next to the executable, then in its `corrent-lib` folder (an install into a
+                // folder on PATH keeps the library there, out of other programs' search), then
+                // the platform's search.
+                let dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+                let local = dir.into_iter().flat_map(|d| {
+                    candidate_names()
+                        .iter()
+                        .filter(|n| !n.contains('/'))
+                        .flat_map(move |n| [d.join(n), d.join(LIB_DIR).join(n)])
+                });
+                local.chain(candidate_names().iter().map(PathBuf::from)).collect()
+            }
         };
         let mut errors = Vec::new();
         for p in tries {

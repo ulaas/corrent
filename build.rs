@@ -1,6 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=assets/icon/corrent.ico");
     copy_libmpv();
+    git_sha();
     // Embed the icon and version info so Explorer, the taskbar and file associations show it.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();
@@ -39,5 +40,30 @@ fn copy_libmpv() {
     let same = std::fs::metadata(&dst).ok().map(|m| m.len()) == std::fs::metadata(src).ok().map(|m| m.len());
     if !same && let Err(e) = std::fs::copy(src, &dst) {
         println!("cargo:warning=could not copy libmpv-2.dll to {}: {e}", dst.display());
+    }
+}
+
+/// The commit the build is made from, as `CORRENT_GIT_SHA` (shown in About and `--version`):
+/// `CORRENT_BUILD_SHA` if set (a release script that knows about uncommitted changes), else
+/// `git rev-parse --short=9 HEAD`. Nothing when neither is available (a source archive).
+fn git_sha() {
+    println!("cargo:rerun-if-env-changed=CORRENT_BUILD_SHA");
+    // Rerun on a new commit or a branch switch (HEAD, the branch's ref, packed refs).
+    let git = std::path::Path::new(".git");
+    if git.is_dir() {
+        println!("cargo:rerun-if-changed=.git/HEAD");
+        println!("cargo:rerun-if-changed=.git/packed-refs");
+        if let Ok(head) = std::fs::read_to_string(git.join("HEAD"))
+            && let Some(r) = head.trim().strip_prefix("ref: ")
+        {
+            println!("cargo:rerun-if-changed=.git/{r}");
+        }
+    }
+    let sha = std::env::var("CORRENT_BUILD_SHA").ok().filter(|s| !s.trim().is_empty()).or_else(|| {
+        let out = std::process::Command::new("git").args(["rev-parse", "--short=9", "HEAD"]).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    });
+    if let Some(sha) = sha.filter(|s| !s.is_empty()) {
+        println!("cargo:rustc-env=CORRENT_GIT_SHA={}", sha.trim());
     }
 }

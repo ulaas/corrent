@@ -151,6 +151,10 @@ impl CorrentApp {
                 ui.add_space(8.0);
                 ui.label(RichText::new(t!("Corrent")).font(theme::bold(theme::type_scale::DISPLAY)).color(p.text));
                 ui.label(RichText::new(t!("Version {v}", v = env!("CARGO_PKG_VERSION"))).color(p.text_dim));
+                if let Some(sha) = crate::BUILD_SHA {
+                    ui.label(RichText::new(t!("Build {sha}", sha = sha)).monospace().small().color(p.text_dim))
+                        .on_hover_text(t!("The commit this build was made from (+: with uncommitted changes)"));
+                }
                 ui.add_space(8.0);
                 ui.label(RichText::new(t!("A beautiful, stable BitTorrent client.")).color(p.text));
                 ui.add_space(8.0);

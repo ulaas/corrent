@@ -19,9 +19,27 @@ use std::sync::Arc;
 use config::{Paths, Settings};
 use engine::types::AddSource;
 
+/// The commit this build is made from (clipped; a `+` marks uncommitted changes), if known.
+pub const BUILD_SHA: Option<&str> = option_env!("CORRENT_GIT_SHA");
+
+/// "0.1.0 (abc123def)", or the bare version without a commit.
+pub fn version_text() -> String {
+    match BUILD_SHA {
+        Some(sha) => format!("{} ({sha})", env!("CARGO_PKG_VERSION")),
+        None => env!("CARGO_PKG_VERSION").to_string(),
+    }
+}
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
+    // Before anything touches the profile.
+    if flag("--version") || flag("-V") {
+        #[cfg(windows)]
+        attach_console();
+        println!("Corrent {}", version_text());
+        return Ok(());
+    }
     let paths = Paths::resolve(flag("--portable"));
     let _ = std::fs::create_dir_all(&paths.data_dir);
     #[cfg(unix)]
@@ -34,7 +52,7 @@ fn main() -> eframe::Result {
     if flag("--help") || flag("-h") {
         #[cfg(windows)]
         attach_console();
-        println!("Corrent {}\n", env!("CARGO_PKG_VERSION"));
+        println!("Corrent {}\n", version_text());
         println!("Usage: corrent [OPTIONS] [MAGNET | URL | FILE.torrent]...\n");
         println!("Options:");
         println!("  --portable     keep all data next to the executable");
@@ -44,6 +62,7 @@ fn main() -> eframe::Result {
         println!("  --unregister   remove the handler registration");
         println!("  --status       print handler registration status");
         println!("  --write-icons <dir>  write the app icon set to a folder");
+        println!("  --version      print the version and the commit it was built from");
         println!("  -h, --help     show this help");
         return Ok(());
     }
