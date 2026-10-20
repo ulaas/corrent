@@ -141,6 +141,11 @@ pub async fn stop(l: Leecher) -> Paths {
 }
 
 pub fn add(l: &Leecher, s: &Seeder, dir: &Path) {
+    add_via(l, s, dir, s.addr);
+}
+
+/// `add`, with the seeder reached at `peer` (a fault proxy in front of it).
+pub fn add_via(l: &Leecher, s: &Seeder, dir: &Path, peer: SocketAddr) {
     l.engine.send(EngineCommand::Add(Box::new(AddRequest {
         source: AddSource::Bytes { name: "data.torrent".into(), bytes: s.bytes.clone() },
         torrent_bytes: None,
@@ -151,7 +156,7 @@ pub fn add(l: &Leecher, s: &Seeder, dir: &Path) {
         paused: false,
         only_files: None,
         add_to_top: false,
-        initial_peers: Some(vec![s.addr]),
+        initial_peers: Some(vec![peer]),
         added_by: None,
     })));
 }

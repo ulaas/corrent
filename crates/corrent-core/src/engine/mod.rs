@@ -13,6 +13,8 @@ pub(crate) mod faulty_storage;
 pub mod ipfilter;
 pub mod logic;
 mod moves;
+#[cfg(any(test, feature = "testkit"))]
+pub mod netproxy;
 pub mod paths;
 mod restore;
 mod session;

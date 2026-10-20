@@ -175,3 +175,82 @@ async fn fm_disk_full_under_the_profile_keeps_the_saved_records() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A slow, far-away peer (100 ms per chunk each way): the download still completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_net_latency_still_completes() {
+    let dir = temp_dir("fm-latency");
+    let s = seeder(&dir).await;
+    let proxy = super::netproxy::start(s.addr).await;
+    proxy.set(super::netproxy::Mode::Latency(Duration::from_millis(100)));
+    let l = start(&dir);
+    add_via(&l, &s, &dir, proxy.addr);
+    let snap = wait_for(&l, "the download through a slow link", 120, |sn| complete(sn, s.hash)).await;
+    assert_eq!(std::fs::read(&find(&snap, s.hash).unwrap().content_path).unwrap(), s.content);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The connection is reset in the middle of the download: the engine connects again and
+/// finishes, with the data whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_net_reset_mid_download_recovers() {
+    let dir = temp_dir("fm-reset");
+    let s = seeder(&dir).await;
+    let proxy = super::netproxy::start(s.addr).await;
+    proxy.set(super::netproxy::Mode::ResetAfter(1 << 20));
+    let l = start(&dir);
+    add_via(&l, &s, &dir, proxy.addr);
+    let snap = wait_for(&l, "the download after a reset", 120, |sn| complete(sn, s.hash)).await;
+    assert_eq!(proxy.resets(), 1, "the connection was cut once");
+    assert!(proxy.accepted() >= 2, "and made again");
+    assert_eq!(std::fs::read(&find(&snap, s.hash).unwrap().content_path).unwrap(), s.content);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Traffic stops without the connection closing (a black hole), then flows again: the engine
+/// stays responsive meanwhile and the download finishes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_net_blackhole_then_clear_recovers() {
+    let dir = temp_dir("fm-blackhole");
+    let s = seeder(&dir).await;
+    let proxy = super::netproxy::start(s.addr).await;
+    let l = start(&dir);
+    proxy.set(super::netproxy::Mode::Blackhole);
+    add_via(&l, &s, &dir, proxy.addr);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let snap = l.engine.snapshot();
+    assert!(!complete(&snap, s.hash), "nothing passed");
+    assert!(snap.session.tick_max_ms < 500, "slowest tick {} ms", snap.session.tick_max_ms);
+    proxy.set(super::netproxy::Mode::Transparent);
+    wait_for(&l, "the download after the black hole", 120, |sn| complete(sn, s.hash)).await;
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The network goes down (connections cut, new ones refused) and comes back: the download
+/// resumes and finishes without a pile of error messages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_net_down_and_back_resumes() {
+    let dir = temp_dir("fm-down");
+    let s = seeder(&dir).await;
+    let proxy = super::netproxy::start(s.addr).await;
+    proxy.set(super::netproxy::Mode::Bandwidth(256 << 10));
+    let l = start(&dir);
+    add_via(&l, &s, &dir, proxy.addr);
+    wait_for(&l, "some progress", 60, |sn| find(sn, s.hash).is_some_and(|t| t.done > 0)).await;
+    proxy.set(super::netproxy::Mode::Down);
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    proxy.set(super::netproxy::Mode::Transparent);
+    wait_for(&l, "the download after the outage", 120, |sn| complete(sn, s.hash)).await;
+    let mut errors = 0;
+    while let Ok(ev) = l.events.try_recv() {
+        if let super::EngineEvent::Toast(super::ToastKind::Error, _) = ev {
+            errors += 1;
+        }
+    }
+    assert!(errors <= 1, "{errors} error messages for one outage");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
