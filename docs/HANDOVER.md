@@ -115,7 +115,7 @@ clusters, `?v=` + ETag on segments, and an 8 KiB index buffer. Checked with mpv 
 
 **Desktop roadmap:** hardening per `docs/STABILITY.md`. S1 (profile data-loss guards), S2 (engine
 persistence durability), S3 (no hangs) and S4 (untrusted input) are done on Windows; see their
-Results rows. S5 (panic-free gate) and S6 (durability tests) are done too. Then upstreaming the librqbit patches (`docs/upstream/`),
+Results rows. S5 (panic-free gate), S6 (durability tests) and S7 (store schema v2, session.json rebuild) are done too. Then upstreaming the librqbit patches (`docs/upstream/`),
 and a first tagged release.
 - S1 adds a lock that the desktop app and `correntd` share: `corrent.lock` in the data folder. It
   replaces `correntd.lock`, and a stale `correntd.lock` file is harmless.
@@ -153,6 +153,12 @@ and a first tagged release.
   - a start-up sweep of `*.tmp` files left by a crash.
   - profile fixtures in `crates/corrent-core/tests/fixtures/`. Add one when a format changes
     (`write_current_fixture`).
+- S7 adds:
+  - store schema 2: `TorrentMeta::{output_folder, only_files, paused}`, copies of the engine's
+    side, and `metainfo_missing`. `migrate::PROFILE_VERSION` names the fixtures (`profile-v2`).
+  - `session_db::plan`/`commit`: restore from a good copy (D6a) or rebuild from
+    `session/*.torrent` + the store (D6b); the store is saved before the list is written.
+  - `corrent-harness damage <scratch> garbage|missing` for the rebuild in the kill test.
 - Left open from the S1 review:
   - Closing the console window of a `correntd` started by hand on Windows, or logging off, still
     kills it before it saves. A fix needs a `SetConsoleCtrlHandler` callback that blocks until

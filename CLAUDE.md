@@ -75,7 +75,8 @@ crates/corrent-core/src/    Everything without UI (the GUI and the server both u
   import.rs, updates.rs     Import from other clients; opt-in GitHub release check
   backup.rs, crash.rs, migrate.rs, logbuf.rs
                             Backup/restore, panic hook + crash reports, schema migrations, in-memory log
-  store.rs                  Per-torrent data (categories, tags, dates, queue, pause reasons, counters)
+  store.rs                  Per-torrent data (categories, tags, dates, queue, pause reasons, counters,
+                            a copy of each torrent's folder/file selection to rebuild the engine's list)
   config.rs                 Settings (TOML, serde defaults), paths (portable vs OS dirs)
 crates/corrent-i18n + assets/i18n/
                             Translations: t!("English text", name = x) / tk! in consts; tr.toml catalog
@@ -135,7 +136,7 @@ MSI/portable zip/winget, AppImage/Flatpak, dmg; release workflow — see docs/PA
 translation + language setting, web interface, Mica spike (no-go) (M27).
 Fable reviews of every milestone range and a final roadmap audit were addressed. Default save folder: `Downloads/Corrent`.
 
-Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S6 done 2026-10-20, S7 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
+Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S7 done 2026-10-20, S8 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
 upstreaming the librqbit patches (docs/upstream/) and a first tagged release.
 
 Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.
