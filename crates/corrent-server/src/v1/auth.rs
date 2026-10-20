@@ -41,7 +41,7 @@ async fn switch_profile(
     ip: ClientIp,
     Json(req): Json<corrent_proto::auth::ProfileSwitch>,
 ) -> Result<Response, ApiErr> {
-    limited(&st, ip)?;
+    limited(&st)?;
     if !st.limiter.lock().unwrap_or_else(|e| e.into_inner()).may_pair(ip.0) {
         return Err(err(ErrorCode::TooManyRequests, "too many wrong PINs"));
     }
@@ -83,8 +83,8 @@ fn user_agent(h: &HeaderMap) -> String {
     h.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
 }
 
-fn limited(st: &AppState, ip: ClientIp) -> Result<(), ApiErr> {
-    if st.limiter.lock().unwrap_or_else(|e| e.into_inner()).allow(ip.0) {
+fn limited(st: &AppState) -> Result<(), ApiErr> {
+    if st.limiter.lock().unwrap_or_else(|e| e.into_inner()).allow() {
         Ok(())
     } else {
         Err(err(ErrorCode::TooManyRequests, "too many attempts"))
@@ -118,10 +118,9 @@ async fn login(
     headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, ApiErr> {
-    limited(&st, ip)?;
+    limited(&st)?;
     match st.identity.authenticate(&req.username, &req.password).await {
         Ok(user) => {
-            st.limiter.lock().unwrap_or_else(|e| e.into_inner()).succeeded(ip.0);
             let device = req.device.is_some();
             let issued = st.identity.issue(user.id, req.device, ip.0.to_string(), user_agent(&headers)).await?;
             st.identity
@@ -130,9 +129,6 @@ async fn login(
             Ok(session_response(&st, user, issued, device))
         }
         Err(e) => {
-            if e.code == ErrorCode::InvalidCredentials {
-                st.limiter.lock().unwrap_or_else(|e| e.into_inner()).failed(ip.0);
-            }
             st.identity
                 .audit(Some(req.username.trim()), &ip.0.to_string(), "login", "", false, &format!("{:?}", e.code))
                 .await;
@@ -166,7 +162,7 @@ async fn setup(
     auth: Result<Auth, ApiErr>,
     Json(mut req): Json<NewUser>,
 ) -> Result<Response, ApiErr> {
-    limited(&st, ip)?;
+    limited(&st)?;
     if !ip.0.is_loopback() {
         return Err(err(ErrorCode::Forbidden, "setup is only possible on the server itself"));
     }
@@ -235,18 +231,14 @@ async fn pair(
     headers: HeaderMap,
     Json(req): Json<PairRequest>,
 ) -> Result<Response, ApiErr> {
-    limited(&st, ip)?;
+    limited(&st)?;
     if !st.limiter.lock().unwrap_or_else(|e| e.into_inner()).may_pair(ip.0) {
         return Err(err(ErrorCode::TooManyRequests, "too many wrong pairing codes"));
     }
     let user = match st.identity.redeem_pairing(&req.code).await {
         Ok(u) => u,
         Err(e) => {
-            {
-                let mut l = st.limiter.lock().unwrap_or_else(|e| e.into_inner());
-                l.failed(ip.0);
-                l.pair_failed(ip.0);
-            }
+            st.limiter.lock().unwrap_or_else(|e| e.into_inner()).pair_failed(ip.0);
             st.identity.audit(None, &ip.0.to_string(), "pair", "", false, "").await;
             return Err(e.into());
         }

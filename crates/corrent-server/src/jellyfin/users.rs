@@ -8,7 +8,6 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use axum::routing::{delete, get, post};
-use corrent_proto::ErrorCode;
 use corrent_proto::auth::{DeviceInfo, Perms};
 use serde_json::{Value, json};
 
@@ -55,27 +54,18 @@ async fn authenticate(State(st): State<Arc<AppState>>, ip: ClientIp, headers: He
     let b = body_json(&body);
     let name = field(&b, "Username").and_then(Value::as_str).unwrap_or("").to_string();
     let pw = field(&b, "Pw").or_else(|| field(&b, "Password")).and_then(Value::as_str).unwrap_or("").to_string();
-    if !st.limiter.lock().unwrap_or_else(|e| e.into_inner()).allow(ip.0) {
+    if !st.limiter.lock().unwrap_or_else(|e| e.into_inner()).allow() {
         return fail(StatusCode::TOO_MANY_REQUESTS, "Too many attempts");
     }
     let user = match st.identity.authenticate(&name, &pw).await {
         Ok(u) => u,
         Err(e) => {
-            if e.code == ErrorCode::InvalidCredentials {
-                st.limiter.lock().unwrap_or_else(|e| e.into_inner()).failed(ip.0);
-            }
             st.identity
                 .audit(Some(name.trim()), &ip.0.to_string(), "login", "jellyfin", false, &format!("{:?}", e.code))
                 .await;
-            let status = if e.code == ErrorCode::AccountLocked {
-                StatusCode::TOO_MANY_REQUESTS
-            } else {
-                StatusCode::UNAUTHORIZED
-            };
-            return fail(status, "Invalid user or password entered.");
+            return fail(StatusCode::UNAUTHORIZED, "Invalid user or password entered.");
         }
     };
-    st.limiter.lock().unwrap_or_else(|e| e.into_inner()).succeeded(ip.0);
     // Jellyfin refuses logins without device information; we make one up instead.
     if dev.device_id.is_empty() {
         dev.device_id = format!("corrent-{}", corrent_core::util::random_hex(8));

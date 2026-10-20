@@ -111,17 +111,15 @@ impl Nets {
     }
 }
 
-/// Failed sign-ins per address (10 in 15 minutes → refused) and a global token bucket for the
-/// unauthenticated endpoints (sign-in, pairing, setup), so a flood can't keep argon2 busy.
+/// A global token bucket for the unauthenticated endpoints (sign-in, pairing, setup), so a flood
+/// can't keep argon2 busy. Wrong passwords block no address (the owner's choice).
 pub struct Limiter {
-    fails: HashMap<IpAddr, (u32, Instant)>,
     /// Wrong pairing codes per address: five lock that address out of pairing for a while.
     pair_fails: HashMap<IpAddr, (u32, Instant)>,
     tokens: f64,
     last: Instant,
 }
 
-const IP_FAILS: u32 = 10;
 const PAIR_FAILS: u32 = 5;
 const IP_WINDOW: Duration = Duration::from_secs(15 * 60);
 const BUCKET: f64 = 30.0;
@@ -129,28 +127,21 @@ const REFILL_PER_SEC: f64 = 1.0;
 
 impl Default for Limiter {
     fn default() -> Self {
-        Limiter { fails: HashMap::new(), pair_fails: HashMap::new(), tokens: BUCKET, last: Instant::now() }
+        Limiter { pair_fails: HashMap::new(), tokens: BUCKET, last: Instant::now() }
     }
 }
 
 impl Limiter {
-    /// May this address try to authenticate now? Takes a token from the global bucket.
-    pub fn allow(&mut self, ip: IpAddr) -> bool {
+    /// May anyone try to authenticate now? Takes a token from the global bucket.
+    pub fn allow(&mut self) -> bool {
         let now = Instant::now();
         self.tokens = (self.tokens + now.duration_since(self.last).as_secs_f64() * REFILL_PER_SEC).min(BUCKET);
         self.last = now;
-        self.fails.retain(|_, (_, t)| now.duration_since(*t) < IP_WINDOW);
-        if self.fails.get(&ip).is_some_and(|(n, _)| *n >= IP_FAILS) || self.tokens < 1.0 {
+        if self.tokens < 1.0 {
             return false;
         }
         self.tokens -= 1.0;
         true
-    }
-
-    pub fn failed(&mut self, ip: IpAddr) {
-        let e = self.fails.entry(ip).or_insert((0, Instant::now()));
-        e.0 += 1;
-        e.1 = Instant::now();
     }
 
     pub fn may_pair(&mut self, ip: IpAddr) -> bool {
@@ -164,10 +155,6 @@ impl Limiter {
         e.0 += 1;
         e.1 = Instant::now();
     }
-
-    pub fn succeeded(&mut self, ip: IpAddr) {
-        self.fails.remove(&ip);
-    }
 }
 
 #[cfg(test)]
@@ -177,22 +164,16 @@ mod tests {
     #[test]
     fn limiter() {
         let mut l = Limiter::default();
-        let a: IpAddr = "10.0.0.1".parse().unwrap();
-        for _ in 0..10 {
-            assert!(l.allow(a));
-            l.failed(a);
-        }
-        assert!(!l.allow(a), "address blocked after 10 failures");
-        let b: IpAddr = "10.0.0.2".parse().unwrap();
-        assert!(l.allow(b));
-        l.succeeded(a);
-        // The global bucket empties under a flood from many addresses.
-        let mut refused = 0;
-        for i in 0..100u8 {
-            if !l.allow(IpAddr::from([10, 1, 0, i])) {
-                refused += 1;
-            }
-        }
+        // The global bucket empties under a flood.
+        let refused = (0..100).filter(|_| !l.allow()).count();
         assert!(refused > 50);
+        // Wrong pairing codes do block an address (six digits are quick to guess otherwise).
+        let a: IpAddr = "10.0.0.1".parse().unwrap();
+        for _ in 0..PAIR_FAILS {
+            assert!(l.may_pair(a));
+            l.pair_failed(a);
+        }
+        assert!(!l.may_pair(a));
+        assert!(l.may_pair("10.0.0.2".parse().unwrap()));
     }
 }

@@ -92,8 +92,8 @@ built with this by default (feature `acme`).
 Users have a role (`admin`, `user`, `guest`, `kids`) with default permissions that an admin can
 override. Passwords are argon2id; changing your own password needs the current one. Browsers get a 12-hour sliding session cookie (HttpOnly,
 SameSite=Strict) and must echo a CSRF token on changes; apps get a 90-day sliding device token.
-Ten wrong passwords lock an account for 15 minutes; ten failures from one address block it for
-15 minutes; a global limit slows floods. Every sign-in, account change, settings change and
+Wrong passwords lock nothing out (neither the account nor the address); a global limit slows
+floods. Every sign-in, account change, settings change and
 removal with data is in the audit log (`GET /api/v1/server/audit`).
 
 A signed-in user creates a 6-digit pairing code (`POST /api/v1/auth/pair/code`, valid 10 minutes,
