@@ -126,6 +126,9 @@ fn main() -> eframe::Result {
     }
     let log_dir = paths.log_dir();
     std::thread::spawn(util::local_offset_secs);
+    if let Some(note) = corrent_core::faults::compiled_in() {
+        tracing::warn!("{note}");
+    }
     let restore_note = backup::apply_pending(&paths);
     corrent_core::retention::prune_in_background(&paths);
     // A media-server restore staged from the web interface replaces settings.toml too, so it goes

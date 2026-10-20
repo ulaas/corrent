@@ -196,8 +196,10 @@ async fn add_answers_503_when_the_engine_is_busy() {
         assert_eq!(add().await.unwrap().status(), 200);
     }
     assert_eq!(add().await.unwrap().status(), 503);
+    assert_eq!(engine.queued_adds(), API_ADD_QUEUE);
     // Other commands still fill the queue up to its end, then are refused too.
     while engine.send(EngineCommand::PauseAll) {}
     assert!(engine.refused() >= 1);
+    assert_eq!(add().await.unwrap().status(), 503);
     let _ = std::fs::remove_dir_all(dir);
 }

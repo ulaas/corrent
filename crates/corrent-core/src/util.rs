@@ -457,6 +457,7 @@ pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
         out.extend_from_slice(&c);
         out.extend_from_slice(&crc32(&c).to_be_bytes());
     }
+    debug_assert_eq!(rgba.len(), (width * height * 4) as usize, "one RGBA pixel per point");
     let mut raw = Vec::with_capacity((width * height * 4 + height) as usize);
     for y in 0..height as usize {
         raw.push(0); // filter: none
@@ -754,6 +755,9 @@ mod lock_tests {
         assert_eq!(*read(&l), 2);
     }
 
+    /// (`try_lock` isn't checked: tokio has one too, without poisoning; the std one is used only
+    /// in the panic hook, `crash.rs`.)
+    ///
     /// Every std `lock()`, `read()` or `write()` in shipped code recovers from poisoning
     /// (`util::lock` or `.unwrap_or_else(..)`), or is a tokio lock (`.await`). `.ok()`,
     /// `if let Ok(..) = m.lock()` and `.map(..)` silently stop working once a thread panicked

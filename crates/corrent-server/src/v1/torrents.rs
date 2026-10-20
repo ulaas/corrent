@@ -196,12 +196,12 @@ async fn add(State(st): State<Arc<AppState>>, auth: Auth, ip: ClientIp, req: Req
     let count = sources.len();
     // A stuck or flooded engine: refuse instead of queueing more (STABILITY.md F11).
     let busy = || err(ErrorCode::EngineUnavailable, "the engine is busy; try again later");
-    if st.engine.queued() >= corrent_core::engine::API_ADD_QUEUE {
+    if st.engine.queued_adds() >= corrent_core::engine::API_ADD_QUEUE {
         return Err(busy());
     }
     for source in sources {
         tracing::info!("API: {} adds {}", auth.name(), source.describe());
-        let queued = st.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        let queued = st.engine.send_from_api(EngineCommand::Add(Box::new(AddRequest {
             source,
             torrent_bytes: None,
             save_path: save_path.clone(),

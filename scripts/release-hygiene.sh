@@ -4,15 +4,19 @@
 # "RELEASE HYGIENE OK" or what was found (exit code 1). Same check as release-hygiene.ps1.
 set -u
 cd "$(dirname "$0")/.."
-markers=(CORRENT_DEV_ CORRENT_FAULTS_COMPILED_IN CORRENT_TESTKIT_COMPILED_IN CORRENT_FUZZ_ITERS corrent_fuzz
+markers=(CORRENT_DEV_ CORRENT_FAULTS_COMPILED_IN CORRENT_FUZZ_ITERS corrent_fuzz
   console_subscriber tokio_unstable)
 ext=""
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) ext=".exe" ;; esac
 
-# The scan must be able to see a marker: a debug build has the hooks compiled in.
-cargo build -p corrent >/dev/null 2>&1 || { echo "RELEASE HYGIENE FAIL: debug build"; exit 1; }
-grep -qa CORRENT_DEV_ "target/debug/corrent$ext" ||
-  { echo "RELEASE HYGIENE FAIL: the scan finds nothing in a debug build (broken check)"; exit 1; }
+# The scan must be able to see the markers: a debug build with the test kit has them compiled in
+# (built into its own target folder, so the normal debug build stays as it is).
+cargo build -p corrent --features corrent-core/testkit --target-dir target/hygiene >/dev/null 2>&1 ||
+  { echo "RELEASE HYGIENE FAIL: control build"; exit 1; }
+for m in CORRENT_DEV_ CORRENT_FAULTS_COMPILED_IN; do
+  grep -qa "$m" "target/hygiene/debug/corrent$ext" ||
+    { echo "RELEASE HYGIENE FAIL: the scan can't see $m in a control build (broken check)"; exit 1; }
+done
 
 cargo build --release --locked -p corrent -p correntd >/dev/null 2>&1 ||
   { echo "RELEASE HYGIENE FAIL: release build"; exit 1; }

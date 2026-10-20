@@ -282,7 +282,7 @@ impl Actor {
         }
     }
 
-    pub async fn run(mut self, mut rx: mpsc::Receiver<EngineCommand>) {
+    pub async fn run(mut self, mut rx: super::CommandReceiver) {
         let Some(mut internal_rx) = self.internal_rx.take() else {
             tracing::error!("engine actor started twice");
             return;

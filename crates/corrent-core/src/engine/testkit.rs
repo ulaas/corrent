@@ -113,8 +113,6 @@ pub fn start(dir: &Path) -> Leecher {
 
 /// Like `start`, with other settings (start from `settings(dir)`).
 pub fn start_with(dir: &Path, settings: Settings) -> Leecher {
-    // Found by `scripts/release-hygiene.ps1` if the test kit ever reaches a shipped binary.
-    tracing::debug!("CORRENT_TESTKIT_COMPILED_IN: leecher in {}", dir.display());
     let paths = Paths { data_dir: dir.join("data"), portable: true };
     let (tx, events) = std::sync::mpsc::channel();
     let engine =

@@ -492,6 +492,9 @@ fn run(args: Args) -> anyhow::Result<()> {
     if previous.unclean {
         tracing::warn!("the previous run did not shut down cleanly (computer restarted since: {})", previous.rebooted);
     }
+    if let Some(note) = corrent_core::faults::compiled_in() {
+        tracing::warn!("{note}");
+    }
     if let Some(note) = corrent_core::backup::apply_pending(&paths) {
         tracing::info!("{note}");
     }

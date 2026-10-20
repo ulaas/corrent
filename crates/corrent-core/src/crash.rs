@@ -187,8 +187,14 @@ fn write_report(log_dir: &Path, info: &std::panic::PanicHookInfo<'_>) -> std::io
         writeln!(f, "location: {}:{}:{}", loc.file(), loc.line(), loc.column())?;
     }
     writeln!(f, "\nbacktrace:\n{}", std::backtrace::Backtrace::force_capture())?;
-    // Never block inside a panic: skip the log tail if the lock is held.
-    if let Ok(lines) = crate::logbuf::LINES.try_lock() {
+    // Never block inside a panic: skip the log tail if the lock is held. A poisoned buffer (a
+    // panic while logging) is still worth reading.
+    let lines = match crate::logbuf::LINES.try_lock() {
+        Ok(g) => Some(g),
+        Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    };
+    if let Some(lines) = lines {
         writeln!(f, "\nrecent log:")?;
         let skip = lines.len().saturating_sub(200);
         for l in lines.iter().skip(skip) {

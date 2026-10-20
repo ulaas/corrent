@@ -23,6 +23,7 @@ mod untrusted_tests;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
@@ -250,12 +251,44 @@ const BACKLOG_CAP: usize = 256;
 /// memory without end (the GUI shows a "busy" toast, the APIs answer 503).
 pub const COMMAND_QUEUE: usize = 1024;
 
-/// Adds from the APIs are refused once this many commands wait (each can carry a 32 MiB
-/// .torrent).
+/// Adds from the APIs are refused once this many adds wait (each can carry a 32 MiB .torrent).
 pub const API_ADD_QUEUE: usize = 16;
+
+/// The engine's end of the command queue. It counts the adds that leave it, for
+/// [`EngineHandle::queued_adds`].
+pub struct CommandReceiver {
+    rx: mpsc::Receiver<EngineCommand>,
+    adds: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl CommandReceiver {
+    pub async fn recv(&mut self) -> Option<EngineCommand> {
+        let cmd = self.rx.recv().await;
+        if matches!(cmd, Some(EngineCommand::Add(_))) {
+            // Saturating: the actor also queues adds for itself, which aren't counted.
+            let mut n = self.adds.load(Ordering::Relaxed);
+            while n > 0 {
+                match self.adds.compare_exchange_weak(n, n - 1, Ordering::Relaxed, Ordering::Relaxed) {
+                    Ok(_) => break,
+                    Err(now) => n = now,
+                }
+            }
+        }
+        cmd
+    }
+}
+
+/// A fresh command queue: the sender, the engine's end and the shared count of queued adds.
+fn command_queue() -> (mpsc::Sender<EngineCommand>, CommandReceiver, Arc<std::sync::atomic::AtomicUsize>) {
+    let (tx, rx) = mpsc::channel(COMMAND_QUEUE);
+    let adds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    (tx, CommandReceiver { rx, adds: adds.clone() }, adds)
+}
 
 struct Inner {
     tx: mpsc::Sender<EngineCommand>,
+    /// Adds waiting in `tx`'s queue.
+    adds: Arc<std::sync::atomic::AtomicUsize>,
     task: tokio::task::JoinHandle<()>,
     backlog: std::collections::VecDeque<EngineCommand>,
     stopping: bool,
@@ -281,7 +314,7 @@ impl Wake {
 /// What an engine backend gets: its commands, where to publish snapshots, how to wake the
 /// reader, and where to send events.
 pub struct BackendIo {
-    pub commands: mpsc::Receiver<EngineCommand>,
+    pub commands: CommandReceiver,
     pub snapshot: Arc<ArcSwap<Snapshot>>,
     pub wake: Wake,
     pub events: std::sync::mpsc::Sender<EngineEvent>,
@@ -315,9 +348,15 @@ impl EngineHandle {
         events: std::sync::mpsc::Sender<EngineEvent>,
     ) -> EngineHandle {
         let snapshot = Arc::new(ArcSwap::from_pointee(Snapshot::default()));
-        let (tx, task) = Self::spawn(rt, &paths, settings, &wake, &events, &snapshot);
+        let (tx, adds, task) = Self::spawn(rt, &paths, settings, &wake, &events, &snapshot);
         EngineHandle {
-            inner: Arc::new(std::sync::Mutex::new(Inner { tx, task, backlog: Default::default(), stopping: false })),
+            inner: Arc::new(std::sync::Mutex::new(Inner {
+                tx,
+                adds,
+                task,
+                backlog: Default::default(),
+                stopping: false,
+            })),
             snapshot,
             rt: rt.clone(),
             paths,
@@ -337,9 +376,15 @@ impl EngineHandle {
         backend: Backend,
     ) -> EngineHandle {
         let snapshot = Arc::new(ArcSwap::from_pointee(Snapshot::default()));
-        let (tx, task) = Self::spawn_backend(rt, &backend, &wake, &events, &snapshot);
+        let (tx, adds, task) = Self::spawn_backend(rt, &backend, &wake, &events, &snapshot);
         EngineHandle {
-            inner: Arc::new(std::sync::Mutex::new(Inner { tx, task, backlog: Default::default(), stopping: false })),
+            inner: Arc::new(std::sync::Mutex::new(Inner {
+                tx,
+                adds,
+                task,
+                backlog: Default::default(),
+                stopping: false,
+            })),
             snapshot,
             rt: rt.clone(),
             paths,
@@ -361,10 +406,10 @@ impl EngineHandle {
         wake: &Wake,
         events: &std::sync::mpsc::Sender<EngineEvent>,
         snapshot: &Arc<ArcSwap<Snapshot>>,
-    ) -> (mpsc::Sender<EngineCommand>, tokio::task::JoinHandle<()>) {
-        let (tx, rx) = mpsc::channel(COMMAND_QUEUE);
+    ) -> (mpsc::Sender<EngineCommand>, Arc<std::sync::atomic::AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let (tx, rx, adds) = command_queue();
         let io = BackendIo { commands: rx, snapshot: snapshot.clone(), wake: wake.clone(), events: events.clone() };
-        (tx, rt.spawn(backend(io)))
+        (tx, adds, rt.spawn(backend(io)))
     }
 
     fn spawn(
@@ -374,8 +419,8 @@ impl EngineHandle {
         wake: &Wake,
         events: &std::sync::mpsc::Sender<EngineEvent>,
         snapshot: &Arc<ArcSwap<Snapshot>>,
-    ) -> (mpsc::Sender<EngineCommand>, tokio::task::JoinHandle<()>) {
-        let (tx, rx) = mpsc::channel(COMMAND_QUEUE);
+    ) -> (mpsc::Sender<EngineCommand>, Arc<std::sync::atomic::AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let (tx, rx, adds) = command_queue();
         let (paths, wake, events, snapshot, self_tx) =
             (paths.clone(), wake.clone(), events.clone(), snapshot.clone(), tx.clone());
         // Loading the store and feed history does file I/O (with retries): not on the UI thread.
@@ -389,7 +434,7 @@ impl EngineHandle {
                 Err(e) => std::panic::resume_unwind(e.into_panic()),
             }
         });
-        (tx, task)
+        (tx, adds, task)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -406,14 +451,30 @@ impl EngineHandle {
     /// ([`COMMAND_QUEUE`], counted in [`Self::refused`]) or the engine is down with a full
     /// backlog. Shutdown and Flush are never refused: they wait for room.
     pub fn send(&self, cmd: EngineCommand) -> bool {
+        self.send_counted(cmd, true)
+    }
+
+    /// [`Self::send`] for commands from the APIs: a refusal is answered there (503), so it isn't
+    /// counted in [`Self::refused`] (which the GUI reports as its own).
+    pub fn send_from_api(&self, cmd: EngineCommand) -> bool {
+        self.send_counted(cmd, false)
+    }
+
+    fn send_counted(&self, cmd: EngineCommand, count: bool) -> bool {
         use mpsc::error::TrySendError;
+        let add = matches!(cmd, EngineCommand::Add(_));
         let mut inner = self.lock();
         if matches!(cmd, EngineCommand::Shutdown(_)) {
             inner.stopping = true;
         }
         let dead = inner.task.is_finished();
         let cmd = match if dead { Err(TrySendError::Closed(cmd)) } else { inner.tx.try_send(cmd) } {
-            Ok(()) => return true,
+            Ok(()) => {
+                if add {
+                    inner.adds.fetch_add(1, Ordering::Relaxed);
+                }
+                return true;
+            }
             Err(TrySendError::Full(cmd)) => {
                 if matches!(cmd, EngineCommand::Shutdown(_) | EngineCommand::Flush(_)) {
                     let tx = inner.tx.clone();
@@ -422,9 +483,13 @@ impl EngineHandle {
                     });
                     return true;
                 }
-                let n = self.refused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if n.is_power_of_two() {
-                    tracing::warn!("the engine's command queue is full; {} command(s) refused so far", n + 1);
+                if count {
+                    let n = self.refused.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n.is_power_of_two() {
+                        tracing::warn!("the engine's command queue is full; {n} command(s) refused so far");
+                    }
+                } else {
+                    tracing::warn!("the engine's command queue is full; an API command was refused");
                 }
                 return false;
             }
@@ -453,21 +518,30 @@ impl EngineHandle {
         inner.tx.max_capacity() - inner.tx.capacity()
     }
 
+    /// Adds waiting for the engine now (the APIs refuse more at [`API_ADD_QUEUE`]).
+    pub fn queued_adds(&self) -> usize {
+        self.lock().adds.load(Ordering::Relaxed)
+    }
+
     /// Start a fresh engine (after a crash) and replay commands queued meanwhile.
     pub fn restart(&self, settings: Settings) {
         let mut inner = self.lock();
         if !inner.task.is_finished() {
             return;
         }
-        let (tx, task) = match &self.backend {
+        let (tx, adds, task) = match &self.backend {
             Some(b) => Self::spawn_backend(&self.rt, b, &self.wake, &self.events, &self.snapshot),
             None => Self::spawn(&self.rt, &self.paths, settings, &self.wake, &self.events, &self.snapshot),
         };
         // The backlog (at most BACKLOG_CAP) fits the fresh queue.
         for cmd in inner.backlog.drain(..) {
-            let _ = tx.try_send(cmd);
+            let add = matches!(cmd, EngineCommand::Add(_));
+            if tx.try_send(cmd).is_ok() && add {
+                adds.fetch_add(1, Ordering::Relaxed);
+            }
         }
         inner.tx = tx;
+        inner.adds = adds;
         inner.task = task;
         tracing::info!("engine restarted");
     }
@@ -520,6 +594,9 @@ mod queue_tests {
         assert_eq!(e.queued(), COMMAND_QUEUE);
         assert!(!e.send(EngineCommand::PauseAll), "refused when full");
         assert!(!e.send(EngineCommand::ResumeAll));
+        assert_eq!(e.refused(), 2);
+        // Refusals of API commands are answered by the API, not counted for the GUI.
+        assert!(!e.send_from_api(EngineCommand::PauseAll));
         assert_eq!(e.refused(), 2);
         // Shutdown and Flush wait for room instead of being lost.
         let (tx, _rx) = std::sync::mpsc::channel();

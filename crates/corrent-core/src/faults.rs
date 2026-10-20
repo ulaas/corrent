@@ -12,9 +12,6 @@ mod imp {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    /// Found by `scripts/release-hygiene.ps1` if this module ever reaches a shipped binary.
-    pub const MARKER: &str = "CORRENT_FAULTS_COMPILED_IN";
-
     /// Rules by path prefix.
     pub struct Rules(Mutex<Vec<(PathBuf, Duration)>>);
 
@@ -23,7 +20,6 @@ mod imp {
             Rules(Mutex::new(Vec::new()))
         }
         pub fn set(&self, prefix: &Path, d: Duration) {
-            tracing::debug!("{MARKER}: {d:?} under {}", prefix.display());
             let mut v = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             v.retain(|(p, _)| p != prefix);
             v.push((prefix.to_path_buf(), d));
@@ -61,6 +57,16 @@ mod imp {
 
 #[cfg(any(test, feature = "testkit"))]
 pub use imp::{clear_call_delay, set_call_delay};
+
+/// A note when fault injection is compiled in (only test builds and the `testkit` feature).
+/// The binaries log it at start, so `scripts/release-hygiene.ps1` finds the text in a binary
+/// that got the feature by mistake.
+pub fn compiled_in() -> Option<&'static str> {
+    #[cfg(any(test, feature = "testkit"))]
+    return Some("CORRENT_FAULTS_COMPILED_IN: fault injection and the test kit are in this build");
+    #[cfg(not(any(test, feature = "testkit")))]
+    None
+}
 
 /// Tests: file system work under `prefix` waits `d` first.
 #[cfg(any(test, feature = "testkit"))]
