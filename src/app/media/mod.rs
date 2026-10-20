@@ -6,6 +6,7 @@
 pub mod cast;
 pub mod client;
 pub mod downloads;
+mod grid;
 pub mod images;
 pub mod libraries;
 pub mod lists;
@@ -48,6 +49,8 @@ pub enum Page {
     Playlists,
     /// A playlist (or, with `true`, a collection).
     Playlist(i64, bool),
+    /// Every item of a home row ("See all"), by the row's id.
+    Row(String),
 }
 
 const PAGE: i64 = 120;
@@ -99,6 +102,8 @@ pub struct MediaState {
     route: String,
     /// A focused card outside the view: the page scrolls to it.
     focus_rect: Option<Rect>,
+    /// How library pages are sorted (and reversed).
+    sort: (corrent_proto::library::SortBy, bool),
     offline: Option<Arc<offline::Store>>,
     offline_loading: Option<Slot<Arc<offline::Store>>>,
     radio: Option<Slot<Vec<corrent_server::radio::Station>>>,
@@ -216,6 +221,15 @@ impl CorrentApp {
             if std::env::var("CORRENT_DEV_VIEW").as_deref() == Ok("libraries") {
                 self.main_view = super::feeds::MainView::Media;
                 self.open(Page::Libraries);
+            }
+            // CORRENT_DEV_PAGE=library:<id> or row:<id> (a home row, "See all").
+            if let Ok(page) = std::env::var("CORRENT_DEV_PAGE") {
+                self.main_view = super::feeds::MainView::Media;
+                if let Some(id) = page.strip_prefix("library:").and_then(|v| v.parse().ok()) {
+                    self.open(Page::Library(id));
+                } else if let Some(row) = page.strip_prefix("row:") {
+                    self.open(Page::Row(row.to_string()));
+                }
             }
             if let Some(id) = std::env::var("CORRENT_DEV_ITEM").ok().and_then(|v| v.parse().ok()) {
                 self.main_view = super::feeds::MainView::Media;
@@ -585,6 +599,7 @@ impl CorrentApp {
                     Page::Radio => self.radio_page(ui, p, &client),
                     Page::Playlists => self.playlists_page(ui, p, &client),
                     Page::Playlist(id, col) => self.playlist_page(ui, p, &client, id, col),
+                    Page::Row(ref row) => self.row_page(ui, p, &client, row),
                 }
                 ui.add_space(24.0);
                 if let Some(r) = self.media.focus_rect.take() {
@@ -651,6 +666,14 @@ impl CorrentApp {
                 Page::Radio => t!("Radio").to_string(),
                 Page::Playlists => t!("Playlists").to_string(),
                 Page::Playlist(..) => String::new(),
+                Page::Row(id) => self
+                    .media
+                    .home
+                    .as_ref()
+                    .and_then(ready)
+                    .and_then(|r| r.ok())
+                    .and_then(|rows| rows.into_iter().find(|r| r.id == *id).map(|r| r.title))
+                    .unwrap_or_default(),
             };
             ui.label(RichText::new(title).size(20.0).strong().color(p.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -754,20 +777,42 @@ impl CorrentApp {
             }
         }
         if !drawn {
-            painter.rect_filled(img_rect, radius, p.bg2);
+            // No picture (yet): the title's initials over a soft gradient, and the kind's icon.
+            let mut mesh = egui::Mesh::default();
+            let (top, bottom) = (p.bg3, p.bg2);
+            mesh.colored_vertex(img_rect.left_top(), top);
+            mesh.colored_vertex(img_rect.right_top(), top);
+            mesh.colored_vertex(img_rect.left_bottom(), bottom);
+            mesh.colored_vertex(img_rect.right_bottom(), bottom);
+            mesh.add_triangle(0, 1, 2);
+            mesh.add_triangle(1, 2, 3);
+            painter.add(egui::Shape::Rect(egui::epaint::RectShape::filled(img_rect, radius, p.bg2)));
+            painter.with_clip_rect(img_rect.shrink(2.0)).add(mesh);
             let icon = match item.kind {
                 ItemKind::Album | ItemKind::Track | ItemKind::Artist => icons::MUSIC_NOTES,
                 ItemKind::Photo => icons::IMAGE,
                 ItemKind::Book => icons::BOOK_OPEN,
+                ItemKind::Show | ItemKind::Season | ItemKind::Episode => icons::TELEVISION_SIMPLE,
                 _ => icons::FILM_STRIP,
             };
+            let short = img_rect.width().min(img_rect.height());
             painter.text(
                 img_rect.center(),
                 egui::Align2::CENTER_CENTER,
+                grid::initials(&item.title),
+                crate::ui::theme::bold(short / 3.2),
+                p.text_dim,
+            );
+            painter.text(
+                img_rect.left_bottom() + vec2(10.0, -8.0),
+                egui::Align2::LEFT_BOTTOM,
                 icon,
-                egui::FontId::proportional(width / 4.0),
+                egui::FontId::proportional((short / 7.0).clamp(14.0, 22.0)),
                 p.text_mute,
             );
+        }
+        if p.high_contrast {
+            painter.rect_stroke(img_rect, radius, egui::Stroke::new(1.5, p.border_hi), egui::StrokeKind::Inside);
         }
         // Progress and played badge.
         if item.state.position_ms > 0 && !item.state.played && item.runtime_ms.unwrap_or(0) > 0 {
@@ -825,70 +870,128 @@ impl CorrentApp {
             );
         }
         let text_top = rect.top() + h + 6.0;
-        let clip = Rect::from_min_size(pos2(rect.left(), text_top), vec2(width, 40.0));
-        let p2 = painter.with_clip_rect(clip);
-        p2.text(
-            pos2(rect.left() + 2.0, text_top),
-            egui::Align2::LEFT_TOP,
-            &item.title,
-            egui::FontId::proportional(13.5),
-            p.text,
-        );
-        p2.text(
+        // One line each, cut with "…" (the full title is in the tooltip).
+        let line = |text: String, size: f32, color: Color32, strong: bool| {
+            let font = if strong { crate::ui::theme::bold(size) } else { egui::FontId::proportional(size) };
+            let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
+            job.wrap = egui::text::TextWrapping {
+                max_width: (width - 4.0).max(10.0),
+                max_rows: 1,
+                break_anywhere: true,
+                overflow_character: Some('…'),
+            };
+            painter.layout_job(job)
+        };
+        painter.galley(pos2(rect.left() + 2.0, text_top), line(item.title.clone(), 13.5, p.text, true), p.text);
+        painter.galley(
             pos2(rect.left() + 2.0, text_top + 19.0),
-            egui::Align2::LEFT_TOP,
-            subtitle_of(item),
-            egui::FontId::proportional(12.0),
+            line(subtitle_of(item), 12.0, p.text_dim, false),
             p.text_dim,
         );
         if self.tv.on { resp } else { resp.on_hover_text(&item.title) }
     }
 
-    fn row_of_cards(
+    /// A titled section of cards that fills the width and wraps onto further rows (at most
+    /// `max_rows`; "See all" then opens `more`). Nothing ever scrolls sideways.
+    #[allow(clippy::too_many_arguments)]
+    fn card_section(
         &mut self,
         ui: &mut Ui,
         p: &Palette,
         client: &MediaClient,
         title: &str,
         items: &[Item],
-        width: f32,
+        max_rows: Option<usize>,
+        more: Option<Page>,
     ) {
+        let avail = ui.available_width() - 40.0;
+        let landscape = items.first().is_some_and(|i| kind_aspect(i.kind) > 1.0);
+        let (min, max) = grid::limits(landscape, avail);
+        let g = grid::spec(avail, min, max, 16.0);
+        let shown = max_rows.map_or(items.len(), |r| (r * g.cols).min(items.len()));
+        let mut open: Option<Page> = None;
         ui.horizontal(|ui| {
             ui.add_space(20.0);
             ui.label(RichText::new(title).size(17.0).strong().color(p.text));
+            if items.len() > 1 {
+                ui.label(RichText::new(items.len().to_string()).size(13.0).color(p.text_mute));
+            }
+            if let Some(page) = more.filter(|_| shown < items.len()) {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(20.0);
+                    let label = RichText::new(format!("{}  {}", t!("See all"), icons::CARET_RIGHT)).color(p.accent);
+                    if ui.add(egui::Button::new(label).frame(false)).clicked() {
+                        open = Some(page);
+                    }
+                });
+            }
         });
-        ui.add_space(6.0);
-        egui::ScrollArea::horizontal().id_salt(("row", title)).auto_shrink([false, true]).show(ui, |ui| {
+        ui.add_space(8.0);
+        let visible: Vec<&Item> = items.iter().take(shown).collect();
+        let mut clicked: Option<usize> = None;
+        for (r, row) in visible.chunks(g.cols).enumerate() {
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
-                ui.spacing_mut().item_spacing.x = 16.0;
-                for (n, it) in items.iter().enumerate() {
-                    let w = if kind_aspect(it.kind) > 1.0 { width * 1.6 } else { width };
-                    if self.card(ui, p, client, it, w).clicked() {
-                        if it.kind.playable() && !matches!(it.kind, ItemKind::Track) {
-                            self.play_item(it, items.get(n..n + 1).unwrap_or_default());
-                        } else {
-                            self.open(Page::Item(it.id));
-                        }
+                ui.spacing_mut().item_spacing.x = g.gap;
+                for (c, it) in row.iter().enumerate() {
+                    if self.card(ui, p, client, it, g.card_w).clicked() {
+                        clicked = Some(r * g.cols + c);
                     }
                 }
-                ui.add_space(20.0);
             });
-        });
-        ui.add_space(18.0);
+            ui.add_space(g.gap);
+        }
+        ui.add_space(10.0);
+        if let Some(n) = clicked
+            && let Some(it) = items.get(n)
+        {
+            if it.kind.playable() && !matches!(it.kind, ItemKind::Track) {
+                self.play_item(it, items.get(n..n + 1).unwrap_or_default());
+            } else {
+                self.open(Page::Item(it.id));
+            }
+        }
+        if let Some(page) = open {
+            self.open(page);
+        }
     }
 
-    fn hero(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, item: &Item) {
+    /// Every item of one home row ("See all").
+    fn row_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, id: &str) {
+        let row = self
+            .media
+            .home
+            .as_ref()
+            .and_then(ready)
+            .and_then(|r| r.ok())
+            .and_then(|rows| rows.into_iter().find(|r| r.id == id));
+        match row {
+            Some(r) => self.card_section(ui, p, client, &r.title, &r.items, None, None),
+            None => {
+                ui.add_space(40.0);
+                ui.vertical_centered(|ui| ui.spinner());
+            }
+        }
+    }
+
+    /// The band at the top of Home: the item you were watching (or something with a backdrop),
+    /// large, with Resume/Play and More info. `buttons`: Some(resuming) on Home, None on the
+    /// item's own page (it has its own).
+    fn hero(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, item: &Item, buttons: Option<bool>) {
+        let resuming = buttons == Some(true);
         let width = ui.available_width();
-        let h = (width * 0.32).clamp(220.0, 420.0);
+        let narrow = width < grid::NARROW;
+        let h = (width * 0.36).clamp(190.0, 420.0);
         let (rect, resp) = ui.allocate_exact_size(vec2(width, h), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &item.title));
         let backdrop = item
             .images
             .iter()
             .find(|i| i.kind == "backdrop")
             .or_else(|| item.images.iter().find(|i| i.kind == "thumb"))
+            .or_else(|| item.images.first())
             .cloned();
-        let painter = ui.painter().clone();
+        let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, p.bg1);
         if let Some(im) = backdrop {
             let ppp = ui.ctx().pixels_per_point();
@@ -904,31 +1007,92 @@ impl CorrentApp {
                 ));
             }
         }
-        // Fade into the page.
-        let mut mesh = egui::Mesh::default();
-        let (top, bottom) = (Color32::TRANSPARENT, p.bg0);
-        mesh.colored_vertex(pos2(rect.left(), rect.top() + h * 0.35), top);
-        mesh.colored_vertex(pos2(rect.right(), rect.top() + h * 0.35), top);
-        mesh.colored_vertex(rect.left_bottom(), bottom);
-        mesh.colored_vertex(rect.right_bottom(), bottom);
-        mesh.add_triangle(0, 1, 2);
-        mesh.add_triangle(1, 2, 3);
-        painter.add(mesh);
+        // Darken towards the text (left) and fade into the page (bottom).
+        let gradient = |a: egui::Pos2, b: egui::Pos2, c: egui::Pos2, d: egui::Pos2, from: Color32, to: Color32| {
+            let mut mesh = egui::Mesh::default();
+            mesh.colored_vertex(a, from);
+            mesh.colored_vertex(b, to);
+            mesh.colored_vertex(c, from);
+            mesh.colored_vertex(d, to);
+            mesh.add_triangle(0, 1, 2);
+            mesh.add_triangle(1, 2, 3);
+            mesh
+        };
+        let shade = p.bg0.gamma_multiply(0.85);
+        let mid = rect.left() + rect.width() * if narrow { 0.95 } else { 0.62 };
+        painter.add(gradient(
+            rect.left_top(),
+            pos2(mid, rect.top()),
+            rect.left_bottom(),
+            pos2(mid, rect.bottom()),
+            shade,
+            Color32::TRANSPARENT,
+        ));
+        let fade_top = rect.top() + h * 0.55;
+        painter.add(gradient(
+            pos2(rect.left(), fade_top),
+            pos2(rect.left(), rect.bottom()),
+            pos2(rect.right(), fade_top),
+            pos2(rect.right(), rect.bottom()),
+            Color32::TRANSPARENT,
+            p.bg0,
+        ));
+        // Title, details, progress and buttons, bottom left.
+        let left = rect.left() + if narrow { 20.0 } else { 36.0 };
+        let title_size = (width / 30.0).clamp(22.0, 40.0);
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(item.title.clone(), crate::ui::theme::bold(title_size), p.text);
+        job.wrap = egui::text::TextWrapping {
+            max_width: (mid - left).max(120.0),
+            max_rows: 2,
+            break_anywhere: false,
+            overflow_character: Some('…'),
+        };
+        let title = painter.layout_job(job);
+        let buttons_y = if buttons.is_some() { rect.bottom() - 52.0 } else { rect.bottom() + 6.0 };
+        let mut y = buttons_y - 14.0;
+        let runtime = item.runtime_ms.unwrap_or(0);
+        if resuming && runtime > 0 {
+            let f = (item.state.position_ms as f32 / runtime as f32).clamp(0.0, 1.0);
+            let left_min = ((runtime - item.state.position_ms).max(0) / 60_000).max(1);
+            let bar = Rect::from_min_size(pos2(left, y - 4.0), vec2(160.0, 4.0));
+            painter.rect_filled(bar, CornerRadius::same(2), Color32::from_white_alpha(50));
+            painter.rect_filled(Rect::from_min_size(bar.min, vec2(160.0 * f, 4.0)), CornerRadius::same(2), p.accent);
+            painter.text(
+                pos2(bar.right() + 10.0, bar.center().y),
+                egui::Align2::LEFT_CENTER,
+                t!("{n} min left", n = left_min),
+                egui::FontId::proportional(13.0),
+                p.text_dim,
+            );
+            y -= 18.0;
+        }
         painter.text(
-            pos2(rect.left() + 32.0, rect.bottom() - 70.0),
-            egui::Align2::LEFT_BOTTOM,
-            &item.title,
-            egui::FontId::proportional(34.0),
-            p.text,
-        );
-        painter.text(
-            pos2(rect.left() + 34.0, rect.bottom() - 44.0),
+            pos2(left, y),
             egui::Align2::LEFT_BOTTOM,
             subtitle_of(item),
             egui::FontId::proportional(15.0),
             p.text_dim,
         );
-        if resp.clicked() {
+        y -= 24.0;
+        painter.galley(pos2(left, y - title.size().y), title, p.text);
+        let mut play = false;
+        let mut info = false;
+        let area = Rect::from_min_size(pos2(left, buttons_y), vec2(rect.right() - left, 40.0));
+        if buttons.is_some() {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    let label = if resuming { t!("Resume watching") } else { t!("Play") };
+                    play = crate::ui::widgets::primary_button(ui, p, &format!("{}  {label}", icons::PLAY)).clicked();
+                    info = crate::ui::widgets::secondary_button(ui, &format!("{}  {}", icons::INFO, t!("More info")))
+                        .clicked();
+                });
+            });
+        }
+        if play && item.kind.playable() {
+            self.play_item(item, std::slice::from_ref(item));
+        } else if buttons.is_some() && (play || info || resp.clicked()) {
             self.open(Page::Item(item.id));
         }
     }
@@ -971,17 +1135,42 @@ impl CorrentApp {
             }
             Some(Ok(rows)) => {
                 let rows = self.arrange_home(client, rows);
-                if let Some(first) = rows
+                // The hero: what you were watching, else something with a backdrop, else the
+                // newest thing with any picture.
+                let resume = rows
                     .iter()
-                    .flat_map(|r| r.items.iter())
-                    .find(|i| i.images.iter().any(|im| im.kind == "backdrop"))
-                    .cloned()
-                {
-                    self.hero(ui, p, client, &first);
-                    ui.add_space(8.0);
+                    .find(|r| r.id == "continue")
+                    .and_then(|r| r.items.iter().find(|i| !i.images.is_empty()))
+                    .cloned();
+                let backdrop = || {
+                    rows.iter()
+                        .flat_map(|r| r.items.iter())
+                        .find(|i| i.images.iter().any(|im| im.kind == "backdrop"))
+                        .or_else(|| {
+                            rows.iter()
+                                .flat_map(|r| r.items.iter())
+                                .find(|i| kind_aspect(i.kind) > 1.0 && !i.images.is_empty())
+                        })
+                        .cloned()
+                };
+                match resume {
+                    Some(it) => self.hero(ui, p, client, &it, Some(true)),
+                    None => {
+                        if let Some(it) = backdrop() {
+                            self.hero(ui, p, client, &it, Some(false));
+                        }
+                    }
                 }
+                ui.add_space(12.0);
                 for r in &rows {
-                    self.row_of_cards(ui, p, client, &r.title, &r.items, 150.0);
+                    let (max_rows, more) = match r.id.as_str() {
+                        "continue" | "next_up" => (Some(1), Some(Page::Row(r.id.clone()))),
+                        id => match id.strip_prefix("recent:").and_then(|n| n.parse().ok()) {
+                            Some(lib) => (Some(2), Some(Page::Library(lib))),
+                            None => (Some(2), Some(Page::Row(r.id.clone()))),
+                        },
+                    };
+                    self.card_section(ui, p, client, &r.title, &r.items, max_rows, more);
                 }
             }
         }
@@ -1010,17 +1199,24 @@ impl CorrentApp {
     }
 
     fn library_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, id: i64) {
+        use corrent_proto::library::{LibraryKind, SortBy};
         let width = ui.available_width() - 40.0;
-        let card_w = 160.0;
-        let gap = 18.0;
         let lib_kind = self.media.libraries().iter().find(|l| l.id == id).map(|l| l.kind);
         let top_kind = match lib_kind {
-            Some(corrent_proto::library::LibraryKind::Music) => Some(ItemKind::Album),
+            Some(LibraryKind::Music) => Some(ItemKind::Album),
             _ => None,
         };
-        let cols = ((width + gap) / (card_w + gap)).floor().max(1.0) as i64;
-        let aspect = top_kind.map(kind_aspect).unwrap_or(2.0 / 3.0);
+        // The shape of the cards: home videos and photos are landscape, the rest posters.
+        let aspect = match lib_kind {
+            Some(LibraryKind::Videos) => kind_aspect(ItemKind::Video),
+            Some(LibraryKind::Photos) => kind_aspect(ItemKind::Photo),
+            _ => top_kind.map(kind_aspect).unwrap_or(2.0 / 3.0),
+        };
+        let (min, max) = grid::limits(aspect > 1.0, width);
+        let spec = grid::spec(width, min, max, 18.0);
+        let (card_w, gap, cols) = (spec.card_w, spec.gap, spec.cols as i64);
         let row_h = card_w / aspect + 44.0 + gap;
+        let (sort, desc) = self.media.sort;
         // Load pages as they come into view.
         let g = self.media.grids.entry(id).or_default();
         let done: Vec<usize> =
@@ -1038,7 +1234,9 @@ impl CorrentApp {
             if g.requested.insert(off) {
                 let c = client.clone();
                 let kind = top_kind.map(|k| format!("&kind={}", k.as_str())).unwrap_or_default();
-                let path = format!("/api/v1/items?library_id={id}{kind}&offset={off}&limit={PAGE}");
+                let by = serde_json::to_value(sort).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+                let path =
+                    format!("/api/v1/items?library_id={id}{kind}&sort={by}&desc={desc}&offset={off}&limit={PAGE}");
                 g.pending.push((off, fetch(rt, ctx, async move { c.get(&path).await })));
             }
         };
@@ -1059,13 +1257,48 @@ impl CorrentApp {
             );
             return;
         }
+        let mut resort = None;
         ui.horizontal(|ui| {
             ui.add_space(20.0);
             ui.label(
                 RichText::new(if total == 1 { t!("1 item").to_string() } else { t!("{n} items", n = total) })
                     .color(p.text_dim),
             );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(20.0);
+                let arrow = if desc { icons::SORT_DESCENDING } else { icons::SORT_ASCENDING };
+                if ui
+                    .add(egui::Button::new(RichText::new(arrow).size(16.0)).frame(false))
+                    .on_hover_text(t!("Reverse order"))
+                    .clicked()
+                {
+                    resort = Some((sort, !desc));
+                }
+                let name = |s: SortBy| match s {
+                    SortBy::Title => t!("Title"),
+                    SortBy::Added => t!("Date added"),
+                    SortBy::Year => t!("Year"),
+                    SortBy::Played => t!("Last watched"),
+                    SortBy::Index => t!("Number"),
+                    SortBy::Random => t!("Shuffle"),
+                };
+                egui::ComboBox::from_id_salt(("lib-sort", id)).selected_text(name(sort)).show_ui(ui, |ui| {
+                    for s in [SortBy::Title, SortBy::Added, SortBy::Year, SortBy::Played, SortBy::Random] {
+                        if ui.selectable_label(s == sort, name(s)).clicked() {
+                            // Newest first is the useful order for dates.
+                            resort = Some((s, matches!(s, SortBy::Added | SortBy::Played | SortBy::Year)));
+                        }
+                    }
+                });
+                ui.label(RichText::new(t!("Sort")).color(p.text_dim));
+            });
         });
+        if let Some(s) = resort {
+            self.media.sort = s;
+            // Fetched again in the new order.
+            self.media.grids.remove(&id);
+            return;
+        }
         ui.add_space(8.0);
         let rows = (total + cols - 1) / cols;
         let first_row = ((ui.clip_rect().top() - ui.cursor().top()) / row_h).floor().max(0.0) as i64;
@@ -1144,7 +1377,7 @@ impl CorrentApp {
             Some(Ok(d)) => d,
         };
         let it = d.item.clone();
-        self.hero(ui, p, client, &it);
+        self.hero(ui, p, client, &it, None);
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add_space(32.0);
@@ -1269,7 +1502,7 @@ impl CorrentApp {
             }
             ItemKind::Artist => {
                 let albums = self.children(client, it.id).unwrap_or_default();
-                self.row_of_cards(ui, p, client, t!("Albums"), &albums, 160.0);
+                self.card_section(ui, p, client, t!("Albums"), &albums, None, None);
             }
             _ => {}
         }
@@ -1460,7 +1693,7 @@ impl CorrentApp {
                     }
                 }
                 if !r.items.is_empty() {
-                    self.row_of_cards(ui, p, client, t!("Results"), &r.items, 150.0);
+                    self.card_section(ui, p, client, t!("Results"), &r.items, None, None);
                 }
             }
         }

@@ -75,9 +75,11 @@ fn app(name: &str, torrents: Vec<TorrentView>) -> (Fixture, CorrentApp) {
 }
 
 fn harness(app: CorrentApp) -> Harness<'static, CorrentApp> {
-    let mut h = Harness::builder()
-        .with_size(egui::vec2(1280.0, 800.0))
-        .build_ui_state(|ui, app: &mut CorrentApp| app.frame_ui(ui), app);
+    harness_sized(app, egui::vec2(1280.0, 800.0))
+}
+
+fn harness_sized(app: CorrentApp, size: egui::Vec2) -> Harness<'static, CorrentApp> {
+    let mut h = Harness::builder().with_size(size).build_ui_state(|ui, app: &mut CorrentApp| app.frame_ui(ui), app);
     // The harness owns its own context; the app installs its fonts there on the first frame.
     h.state_mut().ctx = h.ctx.clone();
     h
@@ -495,6 +497,58 @@ fn step_until(
 
 /// The media pages against the in-process server: a photo library (no libmpv needed) shows on
 /// Home, a card opens its page, and in TV mode the arrow keys move the focus between cards.
+/// Home rows wrap instead of scrolling sideways: at any width every card is inside the window,
+/// and a long row offers "See all".
+#[test]
+fn home_rows_wrap_within_the_window() {
+    let (f, mut app) = app("media-wrap", vec![]);
+    let photos = f.dir.join("Photos/Lots");
+    std::fs::create_dir_all(&photos).unwrap();
+    let names: Vec<String> = (0..30).map(|i| format!("pic{i:02}")).collect();
+    for (i, name) in names.iter().enumerate() {
+        let c = [(i * 8) as u8, 100, 200 - (i * 5) as u8];
+        image::RgbImage::from_pixel(64, 36, image::Rgb(c)).save(photos.join(format!("{name}.png"))).unwrap();
+    }
+    app.main_view = super::feeds::MainView::Media;
+    let mut h = harness_sized(app, egui::vec2(700.0, 900.0));
+    step_until(&mut h, "the in-process server", |h| h.state().media.client.is_some());
+    let client = h.state().media.client.clone().unwrap();
+    let rt = f.rt.as_ref().unwrap();
+    let lib: corrent_proto::library::Library = rt
+        .block_on(client.send(
+            reqwest::Method::POST,
+            "/api/v1/libraries",
+            &serde_json::json!({ "name": "Photos", "kind": "photos", "folders": [f.dir.join("Photos")] }),
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let page: serde_json::Value = rt.block_on(client.get(&format!("/api/v1/items?library_id={}", lib.id))).unwrap();
+        if page["total"] == 30 {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "scan: {page}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    h.state_mut().media.invalidate();
+    step_until(&mut h, "the home rows", |h| h.query_by_label_contains("Recently added in Photos").is_some());
+    h.run_steps(3);
+    let width = h.ctx.content_rect().width();
+    let mut seen = 0;
+    // (The newest also heads the page, in the hero band.)
+    for name in &names {
+        for node in h.query_all_by_label(name) {
+            seen += 1;
+            assert!(node.rect().max.x <= width, "{name} at {:?} in a {width} wide window", node.rect());
+        }
+    }
+    assert!(seen >= 2, "cards shown: {seen}");
+    assert!(seen < names.len(), "a long row is cut to a couple of rows");
+    h.get_by_label_contains("See all").click();
+    h.run_steps(3);
+    assert!(matches!(h.state().media.page, Some(super::media::Page::Library(_))), "{:?}", h.state().media.page);
+}
+
 #[test]
 fn media_pages_browse_a_library_and_tv_mode_moves_focus() {
     let (f, mut app) = app("media", vec![]);
