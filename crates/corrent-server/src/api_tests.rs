@@ -2862,3 +2862,71 @@ async fn a_download_goes_into_a_library_with_clean_names() {
     assert!(linked_movie.exists(), "the earlier hard link is untouched");
     h.stop().await;
 }
+
+/// Items scanned while no provider could answer (no key yet) are identified as soon as one is
+/// ready, not left "checked" for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn items_wait_for_a_provider_and_are_identified_once_one_is_ready() {
+    let h = harness("meta-later", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let (s, _, _) =
+        send(app, Method::PUT, "/api/v1/plugins/musicbrainz/enabled", &admin, json!({ "enabled": false })).await;
+    assert_eq!(s, StatusCode::OK);
+    let movies = h.dir.join("dl/Movies");
+    std::fs::create_dir_all(movies.join("Sintel (2010)")).unwrap();
+    std::fs::write(movies.join("Sintel (2010)/Sintel.2010.mkv"), b"not really a movie").unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Movies", "kind": "movies", "folders": [movies] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let id = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if let Some(id) = v["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline, "scanned: {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    // No provider is ready (TMDB has no key): nothing to match against, yet.
+    run_task(app, &admin, "refresh_metadata").await;
+    // Then one is (here: installing the example provider).
+    let boundary = "plugin-boundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"manifest\"\r\n\r\n").as_bytes(),
+    );
+    body.extend_from_slice(include_bytes!("../../corrent-plugins/builtin/example.toml"));
+    body.extend_from_slice(
+        format!("\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"wasm\"; filename=\"plugin.wasm\"\r\n\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(include_bytes!("../../corrent-plugins/builtin/example.wasm"));
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/plugins")
+        .header(header::HOST, "127.0.0.1:8443")
+        .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+        .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+        .body(Body::from(body))
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
+        if d["provider_ids"]["example"].is_string() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "identified after the provider came: {d}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    h.stop().await;
+}

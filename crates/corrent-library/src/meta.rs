@@ -308,6 +308,21 @@ impl Library {
             .await?)
     }
 
+    /// Items no provider matched are asked again (after a provider became usable). Returns how
+    /// many.
+    pub async fn reset_unmatched(&self) -> Result<usize> {
+        Ok(self
+            .db()
+            .write(|t| {
+                t.execute(
+                    "UPDATE items SET extra = json_remove(extra, '$.meta_checked', '$.meta_provider') \
+                     WHERE json_extract(extra, '$.meta_provider') = ''",
+                    [],
+                )
+            })
+            .await?)
+    }
+
     /// A thumbnail was attempted for `item` (whatever came of it): not again on its own.
     pub async fn mark_thumb_tried(&self, item: i64) -> Result<()> {
         self.db()

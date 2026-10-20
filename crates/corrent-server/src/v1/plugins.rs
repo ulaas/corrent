@@ -52,11 +52,20 @@ async fn settings(
     h.set_settings(&id, s).map_err(|_| err(ErrorCode::NotFound, "no such plugin"))?;
     crate::plugins::persist(st.identity.db(), h, &id).await;
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "plugin_settings", &id, true, "").await;
+    retry_if_ready(&st, h, &id);
     h.list()
         .into_iter()
         .find(|p| p.manifest.id == id)
         .map(Json)
         .ok_or_else(|| err(ErrorCode::NotFound, "no such plugin"))
+}
+
+/// A metadata provider that is ready now: what it couldn't match before (or never saw) is
+/// identified again.
+fn retry_if_ready(st: &Arc<AppState>, h: &corrent_plugins::PluginHost, id: &str) {
+    if h.ready(corrent_plugins::Kind::Metadata).iter().any(|r| r == id) {
+        tokio::spawn(crate::metadata::retry_unmatched(st.clone()));
+    }
 }
 
 #[derive(Deserialize)]
@@ -75,6 +84,7 @@ async fn enabled(
     let h = host(&st)?;
     h.set_enabled(&id, e.enabled).map_err(|_| err(ErrorCode::NotFound, "no such plugin"))?;
     crate::plugins::persist(st.identity.db(), h, &id).await;
+    retry_if_ready(&st, h, &id);
     st.identity
         .audit(
             Some(auth.name()),
@@ -146,6 +156,7 @@ async fn install_files(
         .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
     crate::plugins::persist(st.identity.db(), h, &id).await;
     st.identity.audit(Some(by), ip, "plugin_install", &id, true, &m.version).await;
+    retry_if_ready(st, h, &id);
     h.list()
         .into_iter()
         .find(|p| p.manifest.id == id)

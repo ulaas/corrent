@@ -13,7 +13,9 @@ use crate::state::AppState;
 
 fn media_kind(k: ItemKind) -> Option<MediaKind> {
     match k {
-        ItemKind::Movie => Some(MediaKind::Movie),
+        // A home video is identified only by hand (it is never in the automatic list), as a
+        // movie.
+        ItemKind::Movie | ItemKind::Video => Some(MediaKind::Movie),
         ItemKind::Show => Some(MediaKind::Show),
         ItemKind::Album => Some(MediaKind::Album),
         ItemKind::Artist => Some(MediaKind::Artist),
@@ -267,6 +269,9 @@ pub async fn candidates(
 /// Identifies one item automatically: the first provider with a confident match wins.
 pub async fn identify(st: &AppState, host: &Arc<PluginHost>, p: &Pending, language: &str) -> bool {
     let Some(mk) = media_kind(p.kind) else { return false };
+    // Checked (not asked again on its own) only when a provider answered: without one (no key
+    // yet, offline) the item is tried again later.
+    let mut answered = false;
     for provider in providers_for(host, mk).await {
         let q = SearchQuery {
             kind: mk,
@@ -277,6 +282,7 @@ pub async fn identify(st: &AppState, host: &Arc<PluginHost>, p: &Pending, langua
             artist: p.artist.clone(),
         };
         let Ok(found) = host.metadata_search(&provider, q).await else { continue };
+        answered = true;
         if let Some(c) = confident(p, &found) {
             match apply(st, host, p.id, p.kind, &provider, &c.id, language).await {
                 Ok(()) => return true,
@@ -284,8 +290,23 @@ pub async fn identify(st: &AppState, host: &Arc<PluginHost>, p: &Pending, langua
             }
         }
     }
-    let _ = st.library.mark_meta_checked(p.id, Some(String::new())).await;
+    if answered {
+        let _ = st.library.mark_meta_checked(p.id, Some(String::new())).await;
+    }
     false
+}
+
+/// A provider became usable (a key entered, turned on): items no provider matched before are
+/// tried again, in every library.
+pub async fn retry_unmatched(st: Arc<AppState>) {
+    match st.library.reset_unmatched().await {
+        Ok(n) if n > 0 => tracing::info!("metadata: trying {n} unmatched items again"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("metadata: {e}"),
+    }
+    for l in st.library.list().await.unwrap_or_default() {
+        refresh_library(st.clone(), l.id).await;
+    }
 }
 
 /// Fetches metadata for a library's items that never had it (one at a time).
@@ -298,12 +319,19 @@ pub async fn refresh_library(st: Arc<AppState>, library_id: i64) {
     let language = if lib.settings.language.is_empty() { "en".to_string() } else { lib.settings.language.clone() };
     let _one = st.metadata_slot.lock().await;
     let mut done = 0;
+    // Each pending item once per run: one no provider could answer stays pending (for the next
+    // run), so asking for "what is pending" again would return it forever.
+    let mut tried = std::collections::HashSet::new();
     loop {
-        let batch = st.library.items_needing_metadata(library_id, 20).await.unwrap_or_default();
-        if batch.is_empty() {
+        let batch = st.library.items_needing_metadata(library_id, 200).await.unwrap_or_default();
+        let fresh: Vec<_> = batch.into_iter().filter(|p| tried.insert(p.id)).collect();
+        if fresh.is_empty() {
             break;
         }
-        for p in batch {
+        for p in fresh {
+            if *st.stopping.borrow() {
+                return;
+            }
             if identify(&st, &host, &p, &language).await {
                 done += 1;
             }
