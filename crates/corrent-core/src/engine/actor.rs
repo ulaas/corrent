@@ -1469,7 +1469,11 @@ impl Actor {
                     Ok((hash, name)) => {
                         self.unrecorded.remove(&hash);
                         let top = req.add_to_top;
-                        if let Some((path, after)) = self.watch_adds.remove(&pending) {
+                        // A watch-folder file follows its folder's after-add setting instead of the
+                        // general "delete the .torrent" one below.
+                        let from_watch = self.watch_adds.remove(&pending);
+                        let watched = from_watch.is_some();
+                        if let Some((path, after)) = from_watch {
                             self.settle_watch_file(path, after, true);
                         }
                         let m = self.store.meta_mut(hash);
@@ -1494,6 +1498,7 @@ impl Actor {
                         }
                         if let AddSource::File(p) = &req.source
                             && self.settings.downloads.delete_torrent_file_after_add
+                            && !watched
                         {
                             let _ = std::fs::remove_file(p);
                         }
@@ -2579,7 +2584,9 @@ fn static_info(h: &ManagedTorrent) -> StaticInfo {
 /// Turn any add source into .torrent bytes, resolving magnets and URLs via the session.
 async fn fetch_torrent_bytes(sess: &Arc<Session>, source: &AddSource) -> anyhow::Result<Vec<u8>> {
     match source {
-        AddSource::File(p) => tokio::fs::read(p).await.with_context(|| format!("reading {}", p.display())),
+        AddSource::File(p) => crate::util::read_capped_async(p, crate::util::MAX_TORRENT_BYTES)
+            .await
+            .with_context(|| format!("reading {}", p.display())),
         AddSource::Bytes { bytes, .. } => Ok(bytes.clone()),
         AddSource::Magnet(u) | AddSource::Url(u) => {
             let resp = sess

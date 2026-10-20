@@ -10,6 +10,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Resume data of other clients (about a byte per piece; bigger is not resume data).
+const MAX_RESUME_BYTES: u64 = 16 << 20;
+
 use librqbit_bencode::{BencodeValue, ByteBufOwned};
 
 use crate::engine::types::InfoHash;
@@ -167,9 +170,11 @@ pub fn scan(client: Client, dir: &Path) -> Result<Vec<ImportItem>, String> {
     match client {
         Client::QBittorrent => {
             for f in torrent_files(dir) {
-                let Ok(bytes) = std::fs::read(&f) else { continue };
+                let Ok(bytes) = crate::util::read_capped(&f, crate::util::MAX_TORRENT_BYTES) else { continue };
                 let Some(t) = parse_torrent(bytes) else { continue };
-                let resume = std::fs::read(f.with_extension("fastresume")).ok().and_then(|b| dict(&b));
+                let resume = crate::util::read_capped(&f.with_extension("fastresume"), MAX_RESUME_BYTES)
+                    .ok()
+                    .and_then(|b| dict(&b));
                 let r = resume.as_ref();
                 // qBittorrent keeps unfinished torrents in its "incomplete" folder when one is set.
                 let mut candidates: Vec<PathBuf> = Vec::new();
@@ -208,13 +213,13 @@ pub fn scan(client: Client, dir: &Path) -> Result<Vec<ImportItem>, String> {
             let rdir = ["resume", "Resume"].iter().map(|n| dir.join(n)).find(|p| p.is_dir());
             let Some(tdir) = tdir else { return Err(t!("no “torrents” folder found").into()) };
             for f in torrent_files(&tdir) {
-                let Ok(bytes) = std::fs::read(&f) else { continue };
+                let Ok(bytes) = crate::util::read_capped(&f, crate::util::MAX_TORRENT_BYTES) else { continue };
                 let Some(t) = parse_torrent(bytes) else { continue };
                 let stem = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 let resume = rdir.as_ref().and_then(|r| {
                     [format!("{stem}.resume"), format!("{}.resume", t.hash.to_hex())]
                         .iter()
-                        .find_map(|n| std::fs::read(r.join(n)).ok())
+                        .find_map(|n| crate::util::read_capped(&r.join(n), MAX_RESUME_BYTES).ok())
                         .and_then(|b| dict(&b))
                 });
                 // Unfinished torrents may sit in the "incomplete" folder.
@@ -242,7 +247,7 @@ pub fn scan(client: Client, dir: &Path) -> Result<Vec<ImportItem>, String> {
             // Deluge keeps download folders in a Python pickle Corrent doesn't read: the data is
             // looked for in Corrent's default folder.
             for f in torrent_files(dir) {
-                let Ok(bytes) = std::fs::read(&f) else { continue };
+                let Ok(bytes) = crate::util::read_capped(&f, crate::util::MAX_TORRENT_BYTES) else { continue };
                 let Some(t) = parse_torrent(bytes) else { continue };
                 out.push(ImportItem {
                     name: t.name,

@@ -151,6 +151,45 @@ pub fn generations(path: &Path, tag: &str) -> Vec<(i64, PathBuf)> {
     found
 }
 
+/// The largest .torrent file Corrent reads (real ones are a few MB at most).
+pub const MAX_TORRENT_BYTES: u64 = 64 << 20;
+
+/// Read a file of at most `max` bytes. A bigger one is refused before anything is read (a
+/// multi-gigabyte file named `.torrent` must not be loaded into memory).
+pub fn read_capped(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let len = std::fs::metadata(path)?.len();
+    too_large(path, len, max)?;
+    let mut buf = Vec::with_capacity(len as usize);
+    // The file may grow while it is read.
+    std::fs::File::open(path)?.take(max + 1).read_to_end(&mut buf)?;
+    too_large(path, buf.len() as u64, max)?;
+    Ok(buf)
+}
+
+/// `read_capped` for async code.
+pub async fn read_capped_async(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let len = tokio::fs::metadata(path).await?.len();
+    too_large(path, len, max)?;
+    let mut buf = Vec::with_capacity(len as usize);
+    tokio::fs::File::open(path).await?.take(max + 1).read_to_end(&mut buf).await?;
+    too_large(path, buf.len() as u64, max)?;
+    Ok(buf)
+}
+
+fn too_large(path: &Path, len: u64, max: u64) -> std::io::Result<()> {
+    if len <= max {
+        return Ok(());
+    }
+    Err(std::io::Error::other(t!(
+        "{path} is too large ({size}; at most {max} is read)",
+        path = path.display(),
+        size = fmt_bytes(len),
+        max = fmt_bytes(max)
+    )))
+}
+
 /// What kind of I/O problem an error message describes (works across OSes and wrappers).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IoKind {
@@ -553,6 +592,23 @@ mod tests {
         write_replace(&f, b"two").unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), b"two");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no .bak or .tmp left");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn big_files_are_refused_before_reading() {
+        let dir = scratch("capped");
+        let f = dir.join("huge.torrent");
+        // 65 MiB without writing it (sparse; instant).
+        std::fs::File::create(&f).unwrap().set_len(65 << 20).unwrap();
+        let t = std::time::Instant::now();
+        let err = read_capped(&f, MAX_TORRENT_BYTES).unwrap_err();
+        assert!(t.elapsed() < Duration::from_millis(500), "it was read: {:?}", t.elapsed());
+        assert!(err.to_string().contains("too large"), "{err}");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        assert!(rt.block_on(read_capped_async(&f, MAX_TORRENT_BYTES)).is_err());
+        std::fs::write(&f, b"d4:infoe").unwrap();
+        assert_eq!(read_capped(&f, MAX_TORRENT_BYTES).unwrap(), b"d4:infoe");
         let _ = std::fs::remove_dir_all(dir);
     }
 

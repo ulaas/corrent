@@ -901,6 +901,7 @@
 "{n} torrents selected" = "{n} torrent seçildi"
 "{n} trackers" = "{n} izleyici"
 "{path} doesn't exist" = "{path} yok"
+"{path} is too large ({size}; at most {max} is read)" = "{path} çok büyük ({size}; en fazla {max} okunur)"
 "{secs}s — this can take a while for rare torrents." = "{secs} sn — nadir torrentlerde bu biraz sürebilir."
 "{sel} of {total} files selected · {size}" = "{total} dosyadan {sel} tanesi seçili · {size}"
 "{size} in total" = "toplam {size}"

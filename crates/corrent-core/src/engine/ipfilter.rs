@@ -101,7 +101,9 @@ async fn fetch(client: &reqwest::Client, source: &str) -> Result<Vec<u8>, String
         Some(PathBuf::from(source))
     };
     let bytes = match path {
-        Some(p) => tokio::fs::read(&p).await.map_err(|e| format!("can't read {}: {e}", p.display()))?,
+        Some(p) => crate::util::read_capped_async(&p, MAX_LIST_BYTES as u64)
+            .await
+            .map_err(|e| format!("can't read {}: {e}", p.display()))?,
         None => {
             let mut resp = client.get(source).send().await.map_err(|e| e.without_url().to_string())?;
             if !resp.status().is_success() {

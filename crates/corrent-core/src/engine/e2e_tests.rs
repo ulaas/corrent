@@ -642,13 +642,18 @@ async fn watch_folder_keeps_files_until_their_add_finishes() {
     std::fs::create_dir_all(&watch).unwrap();
     std::fs::write(watch.join("good.torrent"), &s.bytes).unwrap();
     std::fs::write(watch.join("bad.torrent"), b"this is not a torrent").unwrap();
+    // Too large to be a torrent (65 MiB, sparse): refused unread, kept as .failed.
+    std::fs::File::create(watch.join("huge.torrent")).unwrap().set_len(65 << 20).unwrap();
     let mut cfg = settings(&dir);
     cfg.watch.push(crate::config::WatchFolder { path: watch.clone(), start_paused: true, ..Default::default() });
     let l = start(&dir);
     l.engine.send(EngineCommand::ApplySettings(Box::new(cfg)));
     wait_for(&l, "the watched torrent", 30, |sn| find(sn, s.hash).is_some_and(|t| !t.pending)).await;
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !(watch.join("good.torrent.added").exists() && watch.join("bad.torrent.failed").exists()) {
+    while !(watch.join("good.torrent.added").exists()
+        && watch.join("bad.torrent.failed").exists()
+        && watch.join("huge.torrent.failed").exists())
+    {
         assert!(
             Instant::now() < deadline,
             "files after their adds: {:?}",

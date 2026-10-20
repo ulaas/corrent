@@ -538,7 +538,12 @@ async fn add(api: MediaClient, r: AddRequest) -> Result<(), String> {
         (None, AddSource::Bytes { name, bytes }) => Some((name, bytes)),
         (None, AddSource::File(p)) => {
             let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file.torrent".into());
-            Some((name, tokio::fs::read(&p).await.map_err(|e| format!("{}: {e}", p.display()))?))
+            Some((
+                name,
+                corrent_core::util::read_capped_async(&p, corrent_core::util::MAX_TORRENT_BYTES)
+                    .await
+                    .map_err(|e| format!("{}: {e}", p.display()))?,
+            ))
         }
         (None, AddSource::Magnet(u) | AddSource::Url(u)) => {
             opts["urls"] = json!([u]);
@@ -562,7 +567,9 @@ async fn preview(api: &MediaClient, source: AddSource) -> Result<Preview, String
         AddSource::Magnet(u) | AddSource::Url(u) => json!({ "url": u }),
         AddSource::Bytes { bytes, .. } => json!({ "torrent": base64::engine::general_purpose::STANDARD.encode(bytes) }),
         AddSource::File(p) => {
-            let bytes = tokio::fs::read(p).await.map_err(|e| format!("{}: {e}", p.display()))?;
+            let bytes = corrent_core::util::read_capped_async(p, corrent_core::util::MAX_TORRENT_BYTES)
+                .await
+                .map_err(|e| format!("{}: {e}", p.display()))?;
             json!({ "torrent": base64::engine::general_purpose::STANDARD.encode(bytes) })
         }
     };

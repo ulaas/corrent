@@ -97,14 +97,10 @@ pub fn scan(input: ScanInput) -> Scan {
                 let stable = if prev == size && size > 0 { stable.saturating_add(1) } else { 0 };
                 seen.insert(path.clone(), (size, stable));
                 if stable >= 1 {
-                    match std::fs::read(&path) {
-                        Ok(bytes) => {
-                            seen.remove(&path);
-                            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                            hits.push(WatchHit { source: AddSource::Bytes { name, bytes }, folder: f.clone(), path });
-                        }
-                        Err(e) => tracing::warn!("watch folder: cannot read {}: {e}", path.display()),
-                    }
+                    // The add reads it (at most MAX_TORRENT_BYTES); one that fails, also for being
+                    // too large, is renamed to .failed (`finish_file`).
+                    seen.remove(&path);
+                    hits.push(WatchHit { source: AddSource::File(path.clone()), folder: f.clone(), path });
                 }
             }
         }
