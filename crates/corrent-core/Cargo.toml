@@ -41,3 +41,6 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [target."cfg(windows)".dependencies]
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
+
+[dev-dependencies]
+corrent-fuzz = { path = "../corrent-fuzz" }

@@ -67,9 +67,9 @@ pub struct ImportItem {
     pub data_found: bool,
 }
 
-type Dict = HashMap<ByteBufOwned, BencodeValue<ByteBufOwned>>;
+pub(crate) type Dict = HashMap<ByteBufOwned, BencodeValue<ByteBufOwned>>;
 
-fn dict(bytes: &[u8]) -> Option<Dict> {
+pub(crate) fn dict(bytes: &[u8]) -> Option<Dict> {
     match librqbit_bencode::dyn_from_bytes::<ByteBufOwned>(bytes).ok()? {
         BencodeValue::Dict(d) => Some(d),
         _ => None,
@@ -109,7 +109,7 @@ fn get_str_list(d: &Dict, key: &str) -> Vec<String> {
 }
 
 /// What the importer needs from a .torrent.
-struct Parsed {
+pub(crate) struct Parsed {
     hash: InfoHash,
     name: String,
     bytes: Vec<u8>,
@@ -117,7 +117,7 @@ struct Parsed {
     first_file: Option<PathBuf>,
 }
 
-fn parse_torrent(bytes: Vec<u8>) -> Option<Parsed> {
+pub(crate) fn parse_torrent(bytes: Vec<u8>) -> Option<Parsed> {
     let t = librqbit::torrent_from_bytes(&bytes).ok()?;
     let hash = InfoHash(t.info_hash.0);
     let name = t.info.data.name.as_ref().map(|n| String::from_utf8_lossy(n.as_ref()).into_owned());

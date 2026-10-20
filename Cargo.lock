@@ -1396,6 +1396,7 @@ dependencies = [
  "arc-swap",
  "aws-lc-rs",
  "chrono",
+ "corrent-fuzz",
  "corrent-i18n",
  "corrent-proto",
  "directories",
