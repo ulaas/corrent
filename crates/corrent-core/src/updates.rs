@@ -60,9 +60,13 @@ pub fn parse_release(json: &str) -> Result<Release, String> {
 
 /// The newest release if it is newer than this build.
 pub async fn check(proxy: Option<String>) -> Result<Option<Release>, String> {
-    let client = crate::rss::feed::client(proxy);
-    let resp = client
-        .get(RELEASES_API)
+    check_at(&crate::rss::feed::client(proxy), RELEASES_API).await
+}
+
+/// `check` against `url` (tests point it elsewhere).
+pub async fn check_at(client: &reqwest::Client, url: &str) -> Result<Option<Release>, String> {
+    let mut resp = client
+        .get(url)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
@@ -73,8 +77,15 @@ pub async fn check(proxy: Option<String>) -> Result<Option<Release>, String> {
     if !resp.status().is_success() {
         return Err(t!("GitHub answered {status}", status = resp.status()));
     }
-    let text = resp.text().await.map_err(|e| e.without_url().to_string())?;
-    let r = parse_release(&text)?;
+    // GitHub's answer is a few KiB: more is not GitHub.
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.without_url().to_string())? {
+        body.extend_from_slice(&chunk);
+        if body.len() > 1 << 20 {
+            return Err(t!("the answer is too large").into());
+        }
+    }
+    let r = parse_release(&String::from_utf8_lossy(&body))?;
     Ok(is_newer(&r.version, env!("CARGO_PKG_VERSION")).then_some(r))
 }
 

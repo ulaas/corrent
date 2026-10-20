@@ -1386,6 +1386,11 @@ async fn http_server(head: String, body: Vec<u8>, chunk: usize, pause: Duration)
     port
 }
 
+/// For the fault tests.
+pub(super) async fn add_url_error_pub(l: &Leecher, dir: &Path, url: String) -> String {
+    add_url_error(l, dir, url).await
+}
+
 async fn add_url_error(l: &Leecher, dir: &Path, url: String) -> String {
     l.engine.send(EngineCommand::Add(Box::new(AddRequest {
         source: AddSource::Url(url),

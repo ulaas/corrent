@@ -9,6 +9,8 @@ mod e2e_tests;
 #[cfg(test)]
 mod fault_tests;
 #[cfg(any(test, feature = "testkit"))]
+pub mod faultserver;
+#[cfg(any(test, feature = "testkit"))]
 pub(crate) mod faulty_storage;
 pub mod ipfilter;
 pub mod logic;

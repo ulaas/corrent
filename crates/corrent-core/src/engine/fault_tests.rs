@@ -254,3 +254,108 @@ async fn fm_net_down_and_back_resumes() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A client like the app's, with short timeouts so a server that hangs fails quickly here.
+fn quick_client() -> reqwest::Client {
+    reqwest::Client::builder().timeout(Duration::from_secs(2)).connect_timeout(Duration::from_secs(2)).build().unwrap()
+}
+
+const RSS: &str = "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><title>T</title><item><title>Show S01E01</title><guid>g1</guid><enclosure url=\"http://example.com/a.torrent\" type=\"application/x-bittorrent\" length=\"1\"/></item></channel></rss>";
+
+/// Feeds from a misbehaving server: every failure is an error with a message (no hang, no
+/// crash), within the client's timeout; a valid feed with a wrong content type still parses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_http_feeds_fail_cleanly() {
+    use super::faultserver::{Route, start};
+    let srv = start().await;
+    let rss = RSS.as_bytes().to_vec();
+    srv.route("/ok", Route::Answer { status: 200, content_type: "text/plain", body: rss.clone() });
+    srv.route("/500", Route::Answer { status: 500, content_type: "text/html", body: b"oops".to_vec() });
+    srv.route("/cut", Route::Truncated { body: rss.clone(), sent: 40 });
+    srv.route("/huge", Route::Huge { len: 9 << 20 });
+    srv.route("/loop", Route::RedirectLoop);
+    srv.route("/hang", Route::Hang);
+    srv.route("/reset", Route::Reset);
+    srv.route("/slow", Route::Slow { body: rss.clone(), chunk: 4, pause: Duration::from_millis(400) });
+    let c = quick_client();
+    let feed = crate::rss::feed::fetch(&c, &srv.url("/ok")).await.unwrap();
+    assert_eq!(feed.articles.len(), 1);
+    for path in ["/500", "/cut", "/huge", "/loop", "/hang", "/reset", "/slow"] {
+        let started = std::time::Instant::now();
+        let r = crate::rss::feed::fetch(&c, &srv.url(path)).await;
+        let e = r.err().unwrap_or_else(|| panic!("{path} should fail"));
+        assert!(!e.trim().is_empty(), "{path}: an empty message");
+        assert!(started.elapsed() < Duration::from_secs(6), "{path} took {:?}", started.elapsed());
+    }
+}
+
+/// Torznab search against the same server: errors, not hangs; an oversized answer is cut off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_http_search_fails_cleanly() {
+    use super::faultserver::{Route, start};
+    let srv = start().await;
+    let provider = |path: &str| crate::search::TorznabProvider {
+        name: "Test".into(),
+        url: srv.url(path),
+        api_key: "key".into(),
+        enabled: true,
+    };
+    srv.route(
+        "/500",
+        Route::Answer {
+            status: 500,
+            content_type: "text/xml",
+            body: b"<error code=\"100\" description=\"bad key\"/>".to_vec(),
+        },
+    );
+    srv.route("/huge", Route::Huge { len: 17 << 20 });
+    srv.route("/hang", Route::Hang);
+    srv.route("/cut", Route::Truncated { body: RSS.as_bytes().to_vec(), sent: 30 });
+    let c = quick_client();
+    for path in ["/500", "/huge", "/hang", "/cut"] {
+        let started = std::time::Instant::now();
+        let r = crate::search::search(&c, &provider(path), "sintel").await;
+        assert!(r.is_err(), "{path}: {r:?}");
+        assert!(started.elapsed() < Duration::from_secs(6), "{path} took {:?}", started.elapsed());
+    }
+}
+
+/// The update check: no release yet is not an error, the rest are, and an endless answer is
+/// cut off at a megabyte instead of filling memory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_http_update_check_fails_cleanly() {
+    use super::faultserver::{Route, start};
+    let srv = start().await;
+    srv.route("/500", Route::Answer { status: 500, content_type: "application/json", body: b"{}".to_vec() });
+    srv.route("/huge", Route::Huge { len: 50 << 20 });
+    srv.route("/hang", Route::Hang);
+    srv.route("/wrong", Route::Answer { status: 200, content_type: "text/html", body: b"<html>".to_vec() });
+    let c = quick_client();
+    assert_eq!(crate::updates::check_at(&c, &srv.url("/nothing-yet")).await, Ok(None), "404: no release");
+    for path in ["/500", "/huge", "/hang", "/wrong"] {
+        let r = crate::updates::check_at(&c, &srv.url(path)).await;
+        assert!(r.is_err(), "{path}: {r:?}");
+    }
+}
+
+/// Adding from a URL that redirects forever or resets: an error toast, the engine fine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_http_torrent_urls_fail_cleanly() {
+    use super::faultserver::{Route, start};
+    let dir = temp_dir("fm-url-add");
+    let srv = start().await;
+    srv.route("/loop.torrent", Route::RedirectLoop);
+    srv.route("/reset.torrent", Route::Reset);
+    let l = start_leecher(&dir);
+    for path in ["/loop.torrent", "/reset.torrent"] {
+        let err = super::e2e_tests::add_url_error_pub(&l, &dir, srv.url(path)).await;
+        assert!(!err.trim().is_empty(), "{path}");
+    }
+    assert!(l.engine.is_alive());
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn start_leecher(dir: &std::path::Path) -> Leecher {
+    super::testkit::start(dir)
+}
