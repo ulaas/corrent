@@ -2786,3 +2786,79 @@ async fn videos_without_artwork_get_a_frame() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     h.stop().await;
 }
+
+/// "Add to library…": a finished download goes into a movie library with clean names, hard-linked
+/// (still seeding) or moved out (the torrent is removed, its folder goes).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_download_goes_into_a_library_with_clean_names() {
+    let h = harness("add-to-library", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let release = "Sintel.2010.1080p.BluRay.x264-GRP";
+    let data = testkit::content();
+    let s = testkit::seeder_files(
+        &h.dir,
+        release,
+        &[
+            (&format!("{release}.mkv"), data[..200_000].to_vec()),
+            (&format!("{release}.en.srt"), b"1\n00:00:01,000 --> 00:00:02,000\nHi\n".to_vec()),
+        ],
+    )
+    .await;
+    testkit::add(&h.l, &s, &h.dir);
+    testkit::wait_for(&h.l, "the download", 60, |sn| testkit::complete(sn, s.hash)).await;
+    let mut libs = Vec::new();
+    for (name, kind) in [("Linked", "movies"), ("Moved", "movies"), ("Songs", "music")] {
+        let folder = h.dir.join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        let (st, v, _) = send(
+            app,
+            Method::POST,
+            "/api/v1/libraries",
+            &admin,
+            json!({ "name": name, "kind": kind, "folders": [folder], "settings": { "watch": false } }),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        libs.push((v["id"].as_i64().unwrap(), folder));
+    }
+    let url = format!("/api/v1/torrents/{}/import", s.hash.to_hex());
+    let movie = std::path::Path::new("Sintel (2010)");
+    // A dry run says where things would go and changes nothing.
+    let (st, plan, _) = send(
+        app,
+        Method::POST,
+        &url,
+        &admin,
+        json!({ "library_id": libs[0].0, "action": "hardlink", "dry_run": true }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{plan}");
+    let to: Vec<String> =
+        plan["files"].as_array().unwrap().iter().map(|f| f["to"].as_str().unwrap().to_string()).collect();
+    let linked_movie = libs[0].1.join(movie).join("Sintel (2010).mkv");
+    assert!(to.contains(&linked_movie.display().to_string()), "{plan}");
+    assert!(to.contains(&libs[0].1.join(movie).join("Sintel (2010).en.srt").display().to_string()), "{plan}");
+    assert!(!linked_movie.exists());
+    // Hard links: the files are there and the torrent keeps seeding.
+    let (st, plan, _) =
+        send(app, Method::POST, &url, &admin, json!({ "library_id": libs[0].0, "action": "hardlink" })).await;
+    assert_eq!(st, StatusCode::OK, "{plan}");
+    assert_eq!(std::fs::read(&linked_movie).unwrap(), data[..200_000]);
+    assert!(testkit::find(&h.l.engine.snapshot(), s.hash).is_some(), "still seeding");
+    // Not a video library.
+    let (st, _, _) = send(app, Method::POST, &url, &admin, json!({ "library_id": libs[2].0, "action": "copy" })).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    // Moved out: into the library, the torrent removed, its folder gone.
+    let content = testkit::find(&h.l.engine.snapshot(), s.hash).unwrap().content_path.clone();
+    let (st, plan, _) =
+        send(app, Method::POST, &url, &admin, json!({ "library_id": libs[1].0, "action": "move_out" })).await;
+    assert_eq!(st, StatusCode::OK, "{plan}");
+    let moved = libs[1].1.join(movie).join("Sintel (2010).mkv");
+    assert_eq!(std::fs::read(&moved).unwrap(), data[..200_000]);
+    assert!(libs[1].1.join(movie).join("Sintel (2010).en.srt").exists());
+    assert!(testkit::find(&h.l.engine.snapshot(), s.hash).is_none(), "no longer a torrent");
+    assert!(!content.exists(), "the download's folder is gone: {}", content.display());
+    assert!(linked_movie.exists(), "the earlier hard link is untouched");
+    h.stop().await;
+}

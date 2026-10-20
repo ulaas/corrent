@@ -85,6 +85,14 @@ impl CorrentApp {
         if item(ui, icons::FOLDER_SIMPLE_DASHED, t!("Move to…")) {
             self.open_move_dialog(hashes.clone());
         }
+        if single
+            && first.has_metadata
+            && !first.restore_failed
+            && self.media.client.is_some()
+            && item(ui, icons::FILM_SLATE, t!("Add to library…"))
+        {
+            self.open_add_to_library(first.hash);
+        }
         if single && item(ui, icons::PENCIL_SIMPLE, t!("Rename…  (F2)")) {
             self.open_rename_dialog(first.hash, first.name.clone());
         }

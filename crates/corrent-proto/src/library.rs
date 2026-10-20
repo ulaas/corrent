@@ -192,6 +192,53 @@ pub struct LibraryUpdate {
     pub settings: Option<LibrarySettings>,
 }
 
+/// How a download goes into a library (`POST /api/v1/torrents/{hash}/import`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportAction {
+    /// The files move into the library with clean names; the torrent is removed (no more
+    /// seeding). Only for a finished download.
+    #[default]
+    MoveOut,
+    /// The whole download moves into the library folder and keeps seeding from there (the
+    /// release's own names).
+    MoveDownload,
+    /// Hard links with clean names (a copy across drives); the download keeps seeding.
+    Hardlink,
+    /// Copies with clean names; the download keeps seeding.
+    Copy,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TorrentImport {
+    pub library_id: i64,
+    #[serde(default)]
+    pub action: ImportAction,
+    /// Only say what would happen.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// What an import does (or would do).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ImportPlan {
+    /// The library folder the files go into.
+    pub folder: String,
+    pub files: Vec<ImportFile>,
+    /// For people (translated).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ImportFile {
+    pub from: String,
+    pub to: String,
+    /// Something is already there: the file is left where it is.
+    #[serde(default)]
+    pub exists: bool,
+}
+
 /// An image attached to an item: the hash is the cache key (`/api/v1/images/{sha}?w=400`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ImageRef {

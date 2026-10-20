@@ -710,3 +710,54 @@ fn rows_from_an_older_snapshot_never_index_past_a_shorter_one() {
     h.run_steps(3);
     assert!(h.query_by_label("T1").is_some());
 }
+
+/// "Add to library…": the dialog lists the video libraries and the four ways; moving the files
+/// out is only offered once the download has finished.
+#[test]
+fn add_to_library_dialog_offers_the_ways_in() {
+    let (f, mut app) = app(
+        "add-to-lib",
+        vec![
+            torrent(1, "Sintel.2010.1080p", TorrentState::Seeding),
+            torrent(2, "Half.Done", TorrentState::Downloading),
+        ],
+    );
+    app.main_view = super::feeds::MainView::Torrents;
+    let mut h = harness(app);
+    step_until(&mut h, "the in-process server", |h| h.state().media.client.is_some());
+    let client = h.state().media.client.clone().unwrap();
+    let rt = f.rt.as_ref().unwrap();
+    let movies = f.dir.join("Movies");
+    std::fs::create_dir_all(&movies).unwrap();
+    let _: corrent_proto::library::Library = rt
+        .block_on(client.send(
+            reqwest::Method::POST,
+            "/api/v1/libraries",
+            &serde_json::json!({ "name": "Films", "kind": "movies", "folders": [movies] }),
+        ))
+        .unwrap();
+    h.state_mut().media.invalidate();
+    step_until(&mut h, "the libraries", |h| !h.state().media.libraries().is_empty());
+    // Finished: every way, moving the files out by default.
+    h.state_mut().open_add_to_library(InfoHash([1; 20]));
+    h.run_steps(3);
+    h.get_by_label_contains("Films  —");
+    for way in ["Move into the library", "Link into the library", "Copy into the library", "Move the whole download"] {
+        h.get_by_label(way);
+    }
+    assert!(matches!(
+        &h.state().modal,
+        Some(super::dialogs::Modal::AddToLibrary(d)) if d.action == corrent_proto::library::ImportAction::MoveOut
+    ));
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert!(h.state().modal.is_none());
+    // Still downloading: only the whole download can move.
+    h.state_mut().open_add_to_library(InfoHash([2; 20]));
+    h.run_steps(3);
+    assert_eq!(h.query_all_by_label_contains("Once the download has finished").count(), 3, "three ways wait");
+    assert!(matches!(
+        &h.state().modal,
+        Some(super::dialogs::Modal::AddToLibrary(d)) if d.action == corrent_proto::library::ImportAction::MoveDownload
+    ));
+}

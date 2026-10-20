@@ -10,7 +10,10 @@ use corrent_core::engine::types::AddSource;
 use corrent_core::engine::{AddRequest, EngineCommand, EngineEvent};
 use corrent_core::store::CategoryInfo;
 use corrent_library::wanted::{self, Candidate};
-use corrent_proto::library::{ImportMode, Library as LibraryInfo, Release, Wanted};
+use corrent_proto::library::{
+    ImportAction, ImportFile, ImportMode, ImportPlan, Library as LibraryInfo, LibraryKind, Release, TorrentImport,
+    Wanted,
+};
 use corrent_proto::{ErrorCode, InfoHash};
 
 use crate::state::AppState;
@@ -97,6 +100,187 @@ pub async fn import(st: &AppState, lib: &LibraryInfo, content: &Path) -> Result<
     }
     st.library.start_scan(lib.id);
     Ok(())
+}
+
+/// "Add to library…": puts a download's videos into a library (see [`ImportAction`]), then
+/// scans it. With `dry_run` only the plan comes back.
+pub async fn import_torrent(st: &Arc<AppState>, hash: InfoHash, req: &TorrentImport) -> Result<ImportPlan, ApiErr> {
+    let libs = st.library.list().await.map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+    let lib =
+        libs.into_iter().find(|l| l.id == req.library_id).ok_or_else(|| err(ErrorCode::NotFound, "no such library"))?;
+    if !matches!(lib.kind, LibraryKind::Movies | LibraryKind::Shows | LibraryKind::Videos) {
+        return Err(err(ErrorCode::BadRequest, t!("That library isn't for videos.")));
+    }
+    let folder =
+        PathBuf::from(lib.folders.first().ok_or_else(|| err(ErrorCode::BadRequest, "the library has no folder"))?);
+    let t = st
+        .engine
+        .snapshot()
+        .torrents
+        .iter()
+        .find(|t| t.hash == hash && !t.pending && !t.restore_failed)
+        .cloned()
+        .ok_or_else(|| err(ErrorCode::NotFound, "no such torrent"))?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    st.engine.send(EngineCommand::FileList { hash, reply: tx });
+    let list = rx.await.ok().flatten().ok_or_else(|| err(ErrorCode::NotFound, "no such torrent"))?;
+    // Relative to the content: a folder torrent's files are under it, a single file is it.
+    let multi = list.len() > 1 || list.first().is_some_and(|f| f.components.len() > 1);
+    let source = |rel: &Path| if multi { t.content_path.join(rel) } else { t.content_path.clone() };
+    let files: Vec<PathBuf> = list.iter().filter(|f| f.included).map(|f| f.components.iter().collect()).collect();
+    let done = list.iter().filter(|f| f.included).all(|f| f.done >= f.len);
+    let mut plan = ImportPlan { folder: folder.display().to_string(), ..Default::default() };
+
+    if req.action == ImportAction::MoveDownload {
+        // The whole download, as it is named; a single file gets a folder of its own.
+        let target = if multi {
+            folder.clone()
+        } else {
+            let p = corrent_library::parse::parse_name(&t.name);
+            let title = corrent_library::organize::clean(&p.title);
+            folder.join(match p.year {
+                Some(y) => format!("{title} ({y})"),
+                None => title,
+            })
+        };
+        let content_name = t.content_path.file_name().map(PathBuf::from).unwrap_or_default();
+        for rel in &files {
+            let to = if multi { target.join(&content_name).join(rel) } else { target.join(&content_name) };
+            plan.files.push(ImportFile {
+                from: source(rel).display().to_string(),
+                exists: to.exists(),
+                to: to.display().to_string(),
+            });
+        }
+        if t.save_path == target {
+            plan.warnings.push(t!("It is already in that library.").to_string());
+        }
+        if !req.dry_run {
+            st.engine.send(EngineCommand::MoveStorage { hashes: vec![hash], to: target.clone() });
+            // Scan once the move is done (it may take a while across drives).
+            let st = st.clone();
+            let lib_id = lib.id;
+            tokio::spawn(async move {
+                let deadline = std::time::Instant::now() + Duration::from_secs(6 * 3600);
+                while std::time::Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let snap = st.engine.snapshot();
+                    match snap.torrents.iter().find(|x| x.hash == hash) {
+                        Some(x) if x.save_path == target && x.busy.is_none() => break,
+                        Some(_) => {}
+                        None => return,
+                    }
+                }
+                st.library.start_scan(lib_id);
+            });
+        }
+        return Ok(plan);
+    }
+
+    let names = corrent_library::organize::plan_names(lib.kind, &t.name, &files);
+    if names.is_empty() {
+        return Err(err(ErrorCode::BadRequest, t!("There are no videos in this download.")));
+    }
+    for (rel, dest) in &names {
+        let to = folder.join(dest);
+        plan.files.push(ImportFile {
+            from: source(rel).display().to_string(),
+            exists: to.exists(),
+            to: to.display().to_string(),
+        });
+    }
+    if plan.files.iter().any(|f| f.exists) {
+        plan.warnings.push(t!("Some files are already in the library; they are left as they are.").to_string());
+    }
+    if req.action == ImportAction::MoveOut && !done {
+        return Err(err(
+            ErrorCode::Conflict,
+            t!("The download isn't finished yet; only moving the whole download is possible now."),
+        ));
+    }
+    if req.dry_run {
+        return Ok(plan);
+    }
+    if req.action == ImportAction::MoveOut {
+        // The engine lets go of the files first (they stay on disk).
+        st.engine.send(EngineCommand::Delete { hashes: vec![hash], with_data: false });
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while st.engine.snapshot().torrents.iter().any(|x| x.hash == hash) {
+            if std::time::Instant::now() > deadline {
+                return Err(err(ErrorCode::Internal, t!("The torrent couldn't be removed; nothing was moved.")));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    let action = req.action;
+    let todo: Vec<(PathBuf, PathBuf)> =
+        plan.files.iter().filter(|f| !f.exists).map(|f| (PathBuf::from(&f.from), PathBuf::from(&f.to))).collect();
+    let content = multi.then(|| t.content_path.clone());
+    let failed = tokio::task::spawn_blocking(move || {
+        let mut failed = Vec::new();
+        for (from, to) in todo {
+            if let Err(e) = place_one(&from, &to, action) {
+                failed.push(format!("{}: {e}", from.display()));
+            }
+        }
+        // A moved-out download's folder goes when nothing is left in it.
+        if action == ImportAction::MoveOut
+            && let Some(dir) = content
+        {
+            remove_empty_dirs(&dir);
+        }
+        failed
+    })
+    .await
+    .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+    if !failed.is_empty() {
+        tracing::warn!("import into {}: {}", lib.name, failed.join("; "));
+        plan.warnings.push(t!("{n} files couldn't be placed; see the log.", n = failed.len()));
+    }
+    st.library.start_scan(lib.id);
+    Ok(plan)
+}
+
+/// One file into the library: moved (a copy, then the original removed, across drives),
+/// hard-linked (a copy across drives) or copied. A copy goes through `<name>.part`, so a cut-off
+/// copy never looks like a whole file.
+fn place_one(from: &Path, to: &Path, action: ImportAction) -> std::io::Result<()> {
+    if let Some(p) = to.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    if to.exists() {
+        return Ok(());
+    }
+    let copy = |from: &Path, to: &Path| -> std::io::Result<()> {
+        let part =
+            to.with_file_name(format!("{}.part", to.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
+        std::fs::copy(from, &part)?;
+        std::fs::File::open(&part)?.sync_all()?;
+        std::fs::rename(&part, to)
+    };
+    match action {
+        ImportAction::MoveOut => {
+            if std::fs::rename(from, to).is_err() {
+                copy(from, to)?;
+                std::fs::remove_file(from)?;
+            }
+            Ok(())
+        }
+        ImportAction::Hardlink => std::fs::hard_link(from, to).or_else(|_| copy(from, to)),
+        ImportAction::Copy | ImportAction::MoveDownload => copy(from, to),
+    }
+}
+
+/// Removes `dir` and its subfolders where they are empty (never a file).
+fn remove_empty_dirs(dir: &Path) {
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                remove_empty_dirs(&e.path());
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
 }
 
 /// Hard-links (falling back to copying across volumes) or copies `src` (a file or folder) into

@@ -10,6 +10,7 @@ pub mod lists;
 pub mod lyrics;
 pub mod meta;
 pub mod nfo;
+pub mod organize;
 pub mod parse;
 pub mod probe;
 pub mod query;

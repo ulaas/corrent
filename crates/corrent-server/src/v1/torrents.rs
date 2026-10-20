@@ -35,6 +35,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/torrents/{hash}/detail", get(detail))
         .route("/torrents/{hash}/files", post(files))
         .route("/torrents/{hash}/trackers", post(trackers))
+        .route("/torrents/{hash}/import", post(import))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -536,6 +537,24 @@ async fn move_storage(
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "torrent_move", &r.to, true, "").await;
     st.engine.send(EngineCommand::MoveStorage { hashes: r.hashes, to });
     ok()
+}
+
+/// "Add to library…" (see `integrate::import_torrent`).
+async fn import(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    ip: ClientIp,
+    Path(hash): Path<String>,
+    Json(r): Json<corrent_proto::library::TorrentImport>,
+) -> ApiResult<corrent_proto::library::ImportPlan> {
+    let h = parse_hash(&hash)?;
+    may_manage(&st, &auth, &[h])?;
+    auth.require(Perms::LIBRARY_MANAGE)?;
+    let plan = crate::integrate::import_torrent(&st, h, &r).await?;
+    if !r.dry_run {
+        st.identity.audit(Some(auth.name()), &ip.0.to_string(), "torrent_import", &hash, true, &plan.folder).await;
+    }
+    Ok(Json(plan))
 }
 
 async fn set_categories(

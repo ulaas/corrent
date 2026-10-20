@@ -64,6 +64,23 @@ pub enum Modal {
         text: String,
     },
     ConfirmExit,
+    /// "Add to library…": a finished download into a movie, show or video library.
+    AddToLibrary(Box<AddToLibrary>),
+}
+
+pub struct AddToLibrary {
+    pub hash: InfoHash,
+    pub library: Option<i64>,
+    pub action: corrent_proto::library::ImportAction,
+    pub finished: bool,
+    /// Where the files would go, for the library and action it was asked for.
+    pub preview: Option<(
+        i64,
+        corrent_proto::library::ImportAction,
+        super::media::client::Slot<corrent_proto::library::ImportPlan>,
+    )>,
+    pub running: Option<super::media::client::Slot<corrent_proto::library::ImportPlan>>,
+    pub error: Option<String>,
 }
 
 pub struct AddDialog {
@@ -198,6 +215,164 @@ impl CorrentApp {
             .map(|t| t.save_path.display().to_string())
             .unwrap_or_default();
         self.modal = Some(Modal::Move { hashes, path });
+    }
+
+    /// The "Add to library" dialog. True when it is done (or cancelled).
+    fn add_to_library_body(&mut self, ui: &mut Ui, p: &Palette, d: &mut AddToLibrary) -> bool {
+        use super::media::client::{fetch, ready};
+        use corrent_proto::library::{ImportAction, LibraryKind, TorrentImport};
+        ui.set_width(560.0);
+        title(ui, p, icons::FILM_SLATE, t!("Add to library"));
+        let libs: Vec<_> = self
+            .media
+            .libraries()
+            .into_iter()
+            .filter(|l| matches!(l.kind, LibraryKind::Movies | LibraryKind::Shows | LibraryKind::Videos))
+            .collect();
+        let Some(client) = self.media.client.clone() else {
+            ui.label(RichText::new(t!("The media server isn't running.")).color(p.error));
+            return secondary_button(ui, t!("Close")).clicked();
+        };
+        if libs.is_empty() {
+            ui.label(
+                RichText::new(t!("There is no movie, show or video library yet: add one in Manage libraries."))
+                    .color(p.text_dim),
+            );
+            ui.add_space(10.0);
+            return secondary_button(ui, t!("Close")).clicked();
+        }
+        if d.library.is_none_or(|id| !libs.iter().any(|l| l.id == id)) {
+            d.library = libs.first().map(|l| l.id);
+        }
+        ui.label(RichText::new(t!("Library")).strong().color(p.text));
+        egui::ScrollArea::vertical().id_salt("add-to-lib-libs").max_height(120.0).show(ui, |ui| {
+            for l in &libs {
+                let folder = l.folders.first().cloned().unwrap_or_default();
+                ui.radio_value(&mut d.library, Some(l.id), format!("{}  —  {folder}", l.name));
+            }
+        });
+        ui.add_space(8.0);
+        ui.label(RichText::new(t!("How")).strong().color(p.text));
+        let choices = [
+            (
+                ImportAction::MoveOut,
+                t!("Move into the library"),
+                t!("Clean names. The torrent is removed and stops seeding."),
+            ),
+            (
+                ImportAction::Hardlink,
+                t!("Link into the library"),
+                t!("Clean names, no extra space on the same drive. Keeps seeding."),
+            ),
+            (ImportAction::Copy, t!("Copy into the library"), t!("Clean names. Keeps seeding; takes the space twice.")),
+            (
+                ImportAction::MoveDownload,
+                t!("Move the whole download"),
+                t!("Keeps seeding from the library, with the release's own names."),
+            ),
+        ];
+        for (a, name, help) in choices {
+            let allowed = d.finished || a == ImportAction::MoveDownload;
+            ui.add_enabled_ui(allowed, |ui| {
+                ui.radio_value(&mut d.action, a, name);
+                let help = if allowed { help } else { t!("Once the download has finished.") };
+                ui.label(RichText::new(help).small().color(p.text_dim));
+            });
+        }
+        // Where the files go (a dry run on the server, asked again when the choice changes).
+        let Some(lib) = d.library else { return false };
+        if d.preview.as_ref().is_none_or(|(l, a, _)| *l != lib || *a != d.action) {
+            let (c, hash, action) = (client.clone(), d.hash, d.action);
+            let body = TorrentImport { library_id: lib, action, dry_run: true };
+            let slot = fetch(&self.rt, &self.ctx, async move {
+                c.send(reqwest::Method::POST, &format!("/api/v1/torrents/{}/import", hash.to_hex()), &body).await
+            });
+            d.preview = Some((lib, action, slot));
+        }
+        ui.add_space(8.0);
+        ui.label(RichText::new(t!("Where the files go")).strong().color(p.text));
+        let preview = d.preview.as_ref().and_then(|(_, _, s)| ready(s));
+        let plan_ok = matches!(preview, Some(Ok(_)));
+        egui::ScrollArea::vertical().id_salt("add-to-lib-plan").max_height(160.0).show(ui, |ui| match &preview {
+            None => {
+                ui.spinner();
+            }
+            Some(Err(e)) => {
+                ui.label(RichText::new(e).color(p.error));
+            }
+            Some(Ok(plan)) => {
+                let base = std::path::Path::new(&plan.folder);
+                for f in &plan.files {
+                    let to = std::path::Path::new(&f.to);
+                    let shown = to.strip_prefix(base).unwrap_or(to).display().to_string();
+                    let color = if f.exists { p.text_mute } else { p.text };
+                    ui.label(
+                        RichText::new(format!("{}  {shown}", icons::ARROW_RIGHT)).monospace().small().color(color),
+                    );
+                }
+                for w in &plan.warnings {
+                    ui.label(RichText::new(format!("{}  {w}", icons::WARNING)).small().color(p.warn));
+                }
+            }
+        });
+        if let Some(e) = &d.error {
+            ui.label(RichText::new(e).color(p.error));
+        }
+        // The real thing.
+        let mut done = false;
+        if let Some(r) = d.running.as_ref().and_then(ready) {
+            d.running = None;
+            match r {
+                Ok(_) => {
+                    let name = libs.iter().find(|l| l.id == lib).map(|l| l.name.clone()).unwrap_or_default();
+                    self.toasts.push(ToastKind::Success, t!("Added to {library}.", library = name));
+                    if d.action == ImportAction::MoveOut {
+                        self.selected.remove(&d.hash);
+                    }
+                    self.media.invalidate();
+                    done = true;
+                }
+                Err(e) => d.error = Some(e),
+            }
+        }
+        ui.add_space(12.0);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let busy = d.running.is_some();
+            if busy {
+                ui.spinner();
+            }
+            let go = ui.add_enabled_ui(plan_ok && !busy, |ui| primary_button(ui, p, t!("Add to library"))).inner;
+            if go.clicked() {
+                let (c, hash) = (client.clone(), d.hash);
+                let body = TorrentImport { library_id: lib, action: d.action, dry_run: false };
+                d.error = None;
+                d.running = Some(fetch(&self.rt, &self.ctx, async move {
+                    c.send(reqwest::Method::POST, &format!("/api/v1/torrents/{}/import", hash.to_hex()), &body).await
+                }));
+            }
+            if !busy && secondary_button(ui, t!("Cancel")).clicked() {
+                done = true;
+            }
+        });
+        done
+    }
+
+    pub fn open_add_to_library(&mut self, hash: InfoHash) {
+        let finished = self.snap.torrents.iter().find(|t| t.hash == hash).is_some_and(|t| t.progress >= 1.0);
+        let action = if finished {
+            corrent_proto::library::ImportAction::MoveOut
+        } else {
+            corrent_proto::library::ImportAction::MoveDownload
+        };
+        self.modal = Some(Modal::AddToLibrary(Box::new(AddToLibrary {
+            hash,
+            library: None,
+            action,
+            finished,
+            preview: None,
+            running: None,
+            error: None,
+        })));
     }
 
     pub fn open_rename_dialog(&mut self, hash: InfoHash, name: String) {
@@ -452,6 +627,11 @@ impl CorrentApp {
                             keep = false;
                         }
                     });
+                }
+                Modal::AddToLibrary(d) => {
+                    if self.add_to_library_body(ui, p, d) {
+                        keep = false;
+                    }
                 }
                 Modal::Rename { hash, name } => {
                     ui.set_width(460.0);

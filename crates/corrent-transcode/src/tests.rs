@@ -110,7 +110,7 @@ async fn encoder_detection_and_trickplay() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_frame_comes_out_as_a_jpeg() {
+async fn a_frame_comes_out_as_a_png() {
     if !corrent_mpv::Library::available() {
         eprintln!("libmpv not found; skipping");
         return;
