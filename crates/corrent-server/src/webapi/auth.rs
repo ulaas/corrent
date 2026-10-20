@@ -70,6 +70,11 @@ impl Sessions {
 
     pub fn failed(&mut self, ip: IpAddr) {
         self.fails.retain(|_, (_, at)| at.elapsed() < BAN);
+        // Many addresses failing (a scan): forget the oldest rather than grow without end.
+        while self.fails.len() >= MAX_FAILS_TRACKED && !self.fails.contains_key(&ip) {
+            let Some(oldest) = self.fails.iter().min_by_key(|(_, (_, at))| *at).map(|(k, _)| *k) else { break };
+            self.fails.remove(&oldest);
+        }
         let e = self.fails.entry(ip).or_insert((0, Instant::now()));
         e.0 += 1;
         e.1 = Instant::now();
@@ -78,6 +83,11 @@ impl Sessions {
     pub fn create(&mut self, ip: IpAddr) -> String {
         self.fails.remove(&ip);
         self.sids.retain(|_, at| at.elapsed() < SESSION_TTL);
+        // Logins only add sessions; past the cap the least recently used one goes.
+        while self.sids.len() >= MAX_SESSIONS {
+            let Some(oldest) = self.sids.iter().min_by_key(|(_, at)| **at).map(|(k, _)| k.clone()) else { break };
+            self.sids.remove(&oldest);
+        }
         let sid = random_hex(16);
         self.sids.insert(sid.clone(), Instant::now());
         sid
@@ -85,6 +95,8 @@ impl Sessions {
 
     /// Valid sessions are refreshed on use.
     pub fn check(&mut self, sid: &str) -> bool {
+        // Expired sessions go here too, not only when someone logs in.
+        self.sids.retain(|_, at| at.elapsed() < SESSION_TTL);
         match self.sids.get_mut(sid) {
             Some(at) if at.elapsed() < SESSION_TTL => {
                 *at = Instant::now();
@@ -103,9 +115,35 @@ impl Sessions {
     }
 }
 
+/// Sessions kept at once (each login adds one; clients reuse theirs).
+const MAX_SESSIONS: usize = 256;
+/// Addresses with failed logins remembered at once.
+const MAX_FAILS_TRACKED: usize = 4096;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sessions_and_failures_are_bounded() {
+        let mut s = Sessions::default();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let first = s.create(ip);
+        let mut sids = vec![first.clone()];
+        for _ in 0..300 {
+            sids.push(s.create(ip));
+            // Keep the first one in use: it is recent, so it survives the cap.
+            assert!(s.check(&first));
+        }
+        assert!(s.sids.len() <= MAX_SESSIONS);
+        assert!(s.check(&first), "a session in use stays");
+        assert!(s.check(sids.last().unwrap()));
+        assert!(!s.check(&sids[1]), "the least recently used went");
+        for i in 0..5000u32 {
+            s.failed(IpAddr::from(i.to_be_bytes()));
+        }
+        assert!(s.fails.len() <= MAX_FAILS_TRACKED);
+    }
 
     #[test]
     fn password_roundtrip() {
