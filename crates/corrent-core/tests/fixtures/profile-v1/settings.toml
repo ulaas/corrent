@@ -1,0 +1,157 @@
+schema_version = 1
+watch = []
+
+[behavior]
+confirm_exit_while_active = true
+close_to_tray = false
+minimize_to_tray = false
+start_minimized = false
+show_tray_icon = true
+notify_on_complete = true
+notify_on_add = false
+confirm_delete = true
+skip_add_dialog = true
+run_on_complete = ""
+run_on_complete_enabled = false
+register_magnet_handler = false
+register_torrent_handler = false
+keep_handler_registration = true
+handler_prompt_dismissed = false
+
+[downloads]
+save_path = '{{DL}}'
+recent_paths = []
+remember_last_path = true
+start_paused = false
+delete_torrent_file_after_add = false
+create_subfolder = true
+
+[connection]
+listen_port = 6881
+random_port = true
+upnp = false
+listen_mode = "Tcp"
+ipv4_only = true
+bind_device = ""
+listen_address = "127.0.0.1"
+proxy_enabled = false
+proxy_host = ""
+proxy_port = 1080
+proxy_username = ""
+proxy_password = ""
+max_peers_global = 500
+max_peers_per_torrent = 0
+blocklist_url = ""
+allowlist_url = ""
+custom_blocklist = ""
+connect_timeout_secs = 10
+
+[speed]
+download_limit = 512
+upload_limit = 0
+alt_download_limit = 1024
+alt_upload_limit = 256
+alt_enabled = false
+
+[speed.schedule]
+enabled = false
+days = 31
+from_minutes = 480
+to_minutes = 1080
+
+[bittorrent]
+dht = false
+lsd = false
+trackers_enabled = false
+default_trackers = []
+fastresume = true
+
+[queue]
+enabled = false
+max_active_downloads = 4
+max_active_uploads = 10
+max_active_total = 15
+ignore_slow = true
+slow_down_kib = 2
+slow_up_kib = 2
+
+[seeding]
+ratio_enabled = false
+ratio = 2.0
+time_enabled = false
+time_minutes = 1440
+inactive_enabled = false
+inactive_minutes = 60
+action = "Pause"
+
+[rss]
+auto_download = true
+refresh_minutes = 30
+max_articles = 200
+
+[[rss.feeds]]
+url = "https://feeds.example/tv.xml"
+name = "TV"
+enabled = true
+
+[[rss.rules]]
+name = "Show"
+enabled = true
+feeds = []
+must_contain = "Show"
+must_not_contain = ""
+use_regex = false
+episode_filter = ""
+smart_episodes = true
+start_paused = false
+
+[search]
+providers = []
+
+[web_api]
+enabled = false
+port = 8080
+allow_lan = false
+username = "admin"
+password_hash = ""
+
+[updates]
+check_automatically = false
+last_check = 0
+skip_version = ""
+
+[appearance]
+theme = "System"
+accent = "Blue"
+custom_accent = [
+    79,
+    140,
+    255,
+]
+compact_rows = false
+zoom = 1.0
+speed_units = "Binary"
+animations = true
+show_sparklines = true
+state_colored_progress = true
+striped_rows = false
+preset = "Corrent"
+follow_os_high_contrast = true
+language = ""
+tv_scale = 1.5
+tv_screensaver_min = 5
+
+[playback]
+audio_device = "auto"
+exclusive = false
+channels = "auto-safe"
+passthrough = false
+normalize = false
+equalizer = "flat"
+replaygain = "album"
+gapless = true
+
+[advanced]
+log_level = "info"
+concurrent_init_limit = 3
+refresh_interval_ms = 200

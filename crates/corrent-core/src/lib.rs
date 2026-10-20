@@ -25,3 +25,6 @@ pub mod store;
 pub mod updates;
 pub mod util;
 pub mod writer;
+
+#[cfg(test)]
+mod fixture_tests;

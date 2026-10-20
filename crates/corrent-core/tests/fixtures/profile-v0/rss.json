@@ -1,0 +1,1 @@
+{"feeds":{"https://feeds.example/tv.xml":{"title":"TV","articles":[{"guid":"show-s01e01","title":"Show S01E01 1080p","torrent":"magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567","page":null,"published":1700000000,"size":1000000}],"last_ok":1792498483,"error":null}},"downloaded":["https://feeds.example/tv.xml\u001fshow-s01e01"],"episodes":{"Show":["S01E01"]}}
