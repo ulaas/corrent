@@ -292,7 +292,7 @@ async fn segment(
         .ok_or_else(|| err(ErrorCode::NotFound, "no such segment"))?;
     let path = st.hls.segment(&id, n).await.map_err(hls_err)?;
     let mut res = tower::ServiceExt::oneshot(
-        tower_http::services::ServeFile::new_with_mime(&path, &"video/mp2t".parse().expect("static")),
+        tower_http::services::ServeFile::new_with_mime(&path, &crate::static_mime("video/mp2t")),
         req,
     )
     .await
@@ -448,7 +448,7 @@ async fn trickplay(
     }
     let mime = if name.ends_with(".vtt") { "text/vtt" } else { "image/jpeg" };
     Ok(tower::ServiceExt::oneshot(
-        tower_http::services::ServeFile::new_with_mime(&path, &mime.parse().expect("static")),
+        tower_http::services::ServeFile::new_with_mime(&path, &crate::static_mime(mime)),
         req,
     )
     .await

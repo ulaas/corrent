@@ -1,5 +1,7 @@
 //! Writes a Matroska file's direct-stream HLS to a folder (for checking players by hand):
 //! `cargo run -p corrent-transcode --example remux -- <in.mkv> <out dir> [audio track | --index]`
+// A developer tool, not shipped.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

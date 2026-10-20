@@ -7,6 +7,9 @@ description = "Corrent's playback decisions, HLS transcoding sessions (libmpv), 
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 corrent-mpv = { path = "../corrent-mpv" }
 bytes = "1.12"

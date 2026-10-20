@@ -7,6 +7,9 @@ description = "Corrent's plugin host: WASM components (wasmtime) with a capabili
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 wasmtime = { version = "49", default-features = false, features = ["runtime", "cranelift", "component-model", "std", "anyhow", "async"] }
 wasmtime-wasi = { version = "49", default-features = false, features = ["p2"] }

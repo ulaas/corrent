@@ -7,6 +7,9 @@ description = "Corrent's engine (librqbit actor), settings, per-torrent store, R
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints]
+workspace = true
+
 [features]
 # Loopback seeder/leecher helpers for integration tests in other crates.
 testkit = []

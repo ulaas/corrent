@@ -110,8 +110,9 @@ impl Writer {
             let (path, job) = {
                 let mut st = self.lock();
                 loop {
-                    if let Some(path) = st.pending.keys().next().cloned() {
-                        let job = st.pending.remove(&path).expect("present");
+                    if let Some((path, job)) =
+                        st.pending.keys().next().cloned().and_then(|p| st.pending.remove_entry(&p))
+                    {
                         st.writing = Some(path.clone());
                         break (path, job);
                     }

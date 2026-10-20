@@ -250,6 +250,7 @@ pub fn explain_io(msg: &str) -> String {
 /// `bytes` random bytes from the OS generator, hex-encoded.
 pub fn random_hex(bytes: usize) -> String {
     let mut b = vec![0u8; bytes];
+    #[expect(clippy::expect_used, reason = "the OS generator doesn't fail; nothing is safe without it")]
     aws_lc_rs::rand::fill(&mut b).expect("OS random generator");
     b.iter().map(|x| format!("{x:02x}")).collect()
 }

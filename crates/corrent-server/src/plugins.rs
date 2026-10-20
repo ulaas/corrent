@@ -178,6 +178,7 @@ pub mod signing {
     /// A new key pair: (secret, public), both hex. Keep the secret offline.
     pub fn keygen() -> (String, String) {
         let secret = corrent_core::util::random_hex(32);
+        #[expect(clippy::expect_used, reason = "a fresh 32-byte hex secret is always a valid key")]
         let public = public_of(&secret).expect("fresh key");
         (secret, public)
     }

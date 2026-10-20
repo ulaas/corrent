@@ -7,6 +7,9 @@ description = "Corrent API v1 wire types"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 corrent-i18n = { path = "../corrent-i18n" }
 serde = { version = "1", features = ["derive"] }

@@ -122,15 +122,17 @@ impl ProcessPlugin {
         if slot.as_mut().is_some_and(|p| p.child.try_wait().ok().flatten().is_some()) {
             *slot = None;
         }
-        if slot.is_none() {
-            let mut p = self.spawn().map_err(CallError::Broken)?;
-            let id = self.next.fetch_add(1, Ordering::Relaxed);
-            tokio::time::timeout(timeout, Self::exchange(&mut p, id, "configure", json!({ "settings": settings })))
-                .await
-                .map_err(|_| CallError::Broken("no answer to configure".into()))??;
-            *slot = Some(p);
-        }
-        let p = slot.as_mut().expect("started above");
+        let p = match &mut *slot {
+            Some(p) => p,
+            None => {
+                let mut p = self.spawn().map_err(CallError::Broken)?;
+                let id = self.next.fetch_add(1, Ordering::Relaxed);
+                tokio::time::timeout(timeout, Self::exchange(&mut p, id, "configure", json!({ "settings": settings })))
+                    .await
+                    .map_err(|_| CallError::Broken("no answer to configure".into()))??;
+                slot.insert(p)
+            }
+        };
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         match tokio::time::timeout(timeout, Self::exchange(p, id, method, params)).await {
             Ok(Ok(v)) => Ok(v),

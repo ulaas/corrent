@@ -177,11 +177,11 @@ fn plan(h: &Header, cuts: &[(mkv::Pos, i64)]) -> Result<Vec<Segment>, MkvError> 
         duration_ns: 0,
     }];
     for &(pos, t) in cuts {
-        let cur = out.last().expect("one segment");
+        let Some(cur) = out.last_mut() else { break };
         if pos == (0, 0) || t.saturating_sub(cur.start_ns) < TARGET_NS {
             continue;
         }
-        out.last_mut().expect("one segment").to = pos;
+        cur.to = pos;
         out.push(Segment { from: pos, to: (0, 0), start_ns: t, duration_ns: 0 });
     }
     let n = out.len();
@@ -305,6 +305,7 @@ impl Cache {
     /// Waits for a turn at remux work; hold it (into the blocking task) while calling
     /// [`Cache::get`] and [`Remux::segment`].
     pub async fn slot(&self) -> tokio::sync::OwnedSemaphorePermit {
+        #[expect(clippy::expect_used, reason = "the semaphore is never closed")]
         self.slots.clone().acquire_owned().await.expect("never closed")
     }
 

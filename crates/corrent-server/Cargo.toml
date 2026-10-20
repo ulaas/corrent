@@ -7,6 +7,9 @@ description = "Corrent's HTTP server: qBittorrent-compatible API, API v1, web cl
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints]
+workspace = true
+
 [features]
 default = []
 # Corrent Connect: reachable from anywhere through iroh (hole punching, relays).

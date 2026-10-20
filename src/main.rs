@@ -143,11 +143,10 @@ fn main() -> eframe::Result {
     let start_minimized = flag("--minimized") || settings.behavior.start_minimized;
     let tv = flag("--tv");
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_name("corrent-rt")
-        .build()
-        .expect("failed to build tokio runtime");
+    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("corrent-rt").build() {
+        Ok(rt) => rt,
+        Err(e) => return Err(eframe::Error::AppCreation(Box::new(e))),
+    };
     let _guard = rt.enter();
     #[cfg(unix)]
     integration::end_session::install_signals(rt.handle());
@@ -159,7 +158,7 @@ fn main() -> eframe::Result {
         .with_app_id(std::env::var("FLATPAK_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "corrent".into()))
         .with_inner_size([1280.0, 800.0])
         // Mica spike (roadmap B5b): the window must be created transparent.
-        .with_transparent(cfg!(debug_assertions) && std::env::var_os("CORRENT_DEV_MICA").is_some())
+        .with_transparent(mica_spike())
         .with_min_inner_size([760.0, 480.0])
         .with_drag_and_drop(true)
         .with_decorations(cfg!(target_os = "macos"))
@@ -242,4 +241,16 @@ fn init_logging(paths: &Paths) -> Option<()> {
         .with(app::log::LogCapture)
         .try_init()
         .ok()
+}
+
+/// The Mica spike (roadmap B5b), debug builds only: no `CORRENT_DEV_` name may reach a release
+/// binary (STABILITY.md R7).
+#[cfg(debug_assertions)]
+fn mica_spike() -> bool {
+    std::env::var_os("CORRENT_DEV_MICA").is_some()
+}
+
+#[cfg(not(debug_assertions))]
+fn mica_spike() -> bool {
+    false
 }

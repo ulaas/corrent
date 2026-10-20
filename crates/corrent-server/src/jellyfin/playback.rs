@@ -498,7 +498,7 @@ async fn segment(
     let Some(n) = seg.strip_suffix(".ts").and_then(|n| n.parse::<u64>().ok()) else { return not_found() };
     let Ok(path) = st.hls.segment(&hls, n).await else { return not_found() };
     match tower::ServiceExt::oneshot(
-        tower_http::services::ServeFile::new_with_mime(&path, &"video/mp2t".parse().expect("static")),
+        tower_http::services::ServeFile::new_with_mime(&path, &crate::static_mime("video/mp2t")),
         req,
     )
     .await

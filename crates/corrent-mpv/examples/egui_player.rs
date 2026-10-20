@@ -6,6 +6,8 @@
 //! the texture is drawn as an ordinary egui image, so egui overlays compose on top of the video.
 //! SW path (`--sw`): mpv renders RGBA into a CPU buffer uploaded as an egui texture.
 //! `--shot` saves a screenshot after ~3 s (egui `ViewportCommand::Screenshot`) and exits.
+// A spike example, not shipped.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;

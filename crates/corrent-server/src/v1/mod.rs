@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, FromRequestParts, Request, State};
 use axum::http::request::Parts;
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
@@ -195,11 +195,11 @@ pub async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next
     req.extensions_mut().insert(RequestHost(host));
     let mut res = next.run(req).await;
     let h = res.headers_mut();
-    h.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().expect("static"));
-    h.insert(header::REFERRER_POLICY, "no-referrer".parse().expect("static"));
-    h.insert(header::X_FRAME_OPTIONS, "DENY".parse().expect("static"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     if !h.contains_key(header::CACHE_CONTROL) {
-        h.insert(header::CACHE_CONTROL, "no-store".parse().expect("static"));
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
     res
 }

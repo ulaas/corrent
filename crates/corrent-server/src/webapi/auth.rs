@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use aws_lc_rs::{pbkdf2, rand};
 
 const ITERATIONS: u32 = 100_000;
+const ITERS: NonZeroU32 = NonZeroU32::new(ITERATIONS).unwrap();
 const SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 const MAX_FAILS: u32 = 5;
 const BAN: Duration = Duration::from_secs(5 * 60);
@@ -28,10 +29,10 @@ use crate::util::random_hex;
 /// `pbkdf2-sha256$<iterations>$<salt>$<hash>` (hex).
 pub fn hash_password(password: &str) -> String {
     let mut salt = [0u8; 16];
+    #[expect(clippy::expect_used, reason = "the OS generator doesn't fail; nothing is safe without it")]
     rand::fill(&mut salt).expect("OS random generator");
     let mut out = [0u8; 32];
-    let iters = NonZeroU32::new(ITERATIONS).expect("non-zero");
-    pbkdf2::derive(pbkdf2::PBKDF2_HMAC_SHA256, iters, &salt, password.as_bytes(), &mut out);
+    pbkdf2::derive(pbkdf2::PBKDF2_HMAC_SHA256, ITERS, &salt, password.as_bytes(), &mut out);
     format!("pbkdf2-sha256${ITERATIONS}${}${}", hex(&salt), hex(&out))
 }
 

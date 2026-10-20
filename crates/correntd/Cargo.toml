@@ -7,6 +7,9 @@ description = "Corrent's headless media and torrent server"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints]
+workspace = true
+
 [features]
 default = ["acme"]
 # Let's Encrypt certificates for `acme_domains` in server.toml.

@@ -182,14 +182,16 @@ impl CorrentApp {
                 let ready = c.source.is_some() && c.output.is_some() && !c.name.trim().is_empty() && !c.busy;
                 let label =
                     if c.busy { t!("Hashing…").to_string() } else { format!("{}  {}", icons::CHECK, t!("Create")) };
-                if ui.add_enabled_ui(ready, |ui| primary_button(ui, p, &label)).inner.clicked() {
+                if ui.add_enabled_ui(ready, |ui| primary_button(ui, p, &label)).inner.clicked()
+                    && let (Some(source), Some(save_to)) = (c.source.clone(), c.output.clone())
+                {
                     c.busy = true;
                     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     c.request = Some(id);
                     let req = CreateRequest {
                         id,
-                        source: c.source.clone().unwrap(),
+                        source,
                         name: Some(c.name.trim().to_string()),
                         trackers: c
                             .trackers
@@ -206,7 +208,7 @@ impl CorrentApp {
                         }),
                         private: c.private,
                         comment: Some(c.comment.clone()),
-                        save_to: c.output.clone().unwrap(),
+                        save_to,
                         seed: c.seed,
                     };
                     self.engine.send(EngineCommand::CreateTorrent(Box::new(req)));

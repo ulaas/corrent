@@ -1,2 +1,8 @@
 # Panels and painters take several style parameters by design.
 too-many-arguments-threshold = 10
+
+# The F17 lint gate (Cargo.toml [workspace.lints]) is for shipped code; tests may panic.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

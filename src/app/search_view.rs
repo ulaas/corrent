@@ -101,10 +101,14 @@ impl CorrentApp {
         }
         let proxy = self.settings.connection.proxy_url();
         let s = &mut self.torznab;
-        if s.client.as_ref().is_none_or(|(p, _)| *p != proxy) {
-            s.client = Some((proxy.clone(), crate::rss::feed::client(proxy)));
-        }
-        let client = s.client.as_ref().map(|(_, c)| c.clone()).expect("client was just set");
+        let client = match &s.client {
+            Some((p, c)) if *p == proxy => c.clone(),
+            _ => {
+                let c = crate::rss::feed::client(proxy.clone());
+                s.client = Some((proxy, c.clone()));
+                c
+            }
+        };
         s.generation += 1;
         s.results.clear();
         s.errors.clear();

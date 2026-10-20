@@ -554,7 +554,7 @@ async fn hls(
         };
         let Ok(path) = d.st.hls.segment(&session, n).await else { return StatusCode::NOT_FOUND.into_response() };
         match tower::ServiceExt::oneshot(
-            tower_http::services::ServeFile::new_with_mime(&path, &"video/mp2t".parse().expect("static")),
+            tower_http::services::ServeFile::new_with_mime(&path, &crate::static_mime("video/mp2t")),
             req,
         )
         .await

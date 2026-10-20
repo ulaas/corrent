@@ -7,6 +7,9 @@ description = "Runtime-loaded libmpv bindings for Corrent (playback, probing, en
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 libloading = "0.9"
 serde = { version = "1", features = ["derive"] }

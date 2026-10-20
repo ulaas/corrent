@@ -2,6 +2,8 @@
 //! panic or hang, whatever they get. Each run starts from valid examples ("seeds") and mutates
 //! them, mixed with plain random text. Deterministic per seed; `CORRENT_FUZZ_ITERS` raises the
 //! number of cases (the default keeps `cargo test` fast; soak runs use millions).
+// A dev-dependency for tests: a failed case must panic with its seed.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 /// Cases per target: `CORRENT_FUZZ_ITERS` or `default`.
 pub fn iterations(default: usize) -> usize {

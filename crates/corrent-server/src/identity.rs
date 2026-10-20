@@ -62,6 +62,7 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
 
 fn random_bytes<const N: usize>() -> [u8; N] {
     let mut b = [0u8; N];
+    #[expect(clippy::expect_used, reason = "the OS generator doesn't fail; nothing is safe without it")]
     rand::fill(&mut b).expect("OS random generator");
     b
 }

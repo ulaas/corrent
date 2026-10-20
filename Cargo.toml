@@ -7,11 +7,21 @@ description = "A beautiful, stable, cross-platform BitTorrent client"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints]
+workspace = true
+
 [workspace]
 members = [".", "crates/*"]
 # WebAssembly plugins build for wasm32-wasip2 in their own workspace (scripts/build-plugins.sh).
 exclude = ["plugins"]
 resolver = "3"
+
+# STABILITY.md F17: no panicking calls outside tests (clippy.toml exempts test code). A site that
+# can't fail stays with #[expect(..., reason = "...")].
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
 
 [features]
 default = ["p2p", "gamepad"]

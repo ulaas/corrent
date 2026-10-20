@@ -1037,13 +1037,16 @@ impl CorrentApp {
             // Wait for the open add dialog; a batch modal would stack behind it.
             return;
         }
-        let sources: Vec<AddSource> = self.launch_queue.drain(..).collect();
+        let mut sources: Vec<AddSource> = self.launch_queue.drain(..).collect();
         if self.settings.behavior.skip_add_dialog {
             for src in sources {
                 self.add_source(src);
             }
-        } else if sources.len() == 1 && self.batch.is_none() {
-            self.begin_add(sources.into_iter().next().unwrap());
+        } else if let [_] = sources[..]
+            && self.batch.is_none()
+            && let Some(one) = sources.pop()
+        {
+            self.begin_add(one);
         } else {
             self.begin_batch(sources);
         }
@@ -1171,6 +1174,7 @@ impl CorrentApp {
             }
         }
         match std::env::var("CORRENT_DEV_PANIC").as_deref() {
+            #[expect(clippy::panic, reason = "debug-only hook that tests crash reports")]
             Ok("ui") => panic!("CORRENT_DEV_PANIC=ui"),
             Ok("engine") => self.engine.send(crate::engine::EngineCommand::DevPanic),
             _ => {}

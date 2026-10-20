@@ -7,6 +7,9 @@ description = "Corrent's media library: scanning, parsing, probing, tags, artwor
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 corrent-db = { path = "../corrent-db" }
 corrent-mpv = { path = "../corrent-mpv" }

@@ -291,3 +291,8 @@ pub(crate) async fn serve_https_config(
 
 #[cfg(test)]
 mod api_tests;
+
+/// A media type written in the code (an unparsable one would be a bug: served as bytes).
+pub(crate) fn static_mime(s: &'static str) -> mime_guess::mime::Mime {
+    s.parse().unwrap_or(mime_guess::mime::APPLICATION_OCTET_STREAM)
+}

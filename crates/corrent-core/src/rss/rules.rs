@@ -166,6 +166,7 @@ impl EpisodeFilter {
 pub fn episode_of(title: &str) -> Option<(u32, u32)> {
     use std::sync::OnceLock;
     static RE: OnceLock<Regex> = OnceLock::new();
+    #[expect(clippy::expect_used, reason = "a constant pattern; the tests compile it")]
     let re = RE.get_or_init(|| {
         Regex::new(r"(?i)(?:\bs(\d{1,3})[ ._-]?e(\d{1,4})|\b(\d{1,2})x(\d{1,3})\b)").expect("valid regex")
     });

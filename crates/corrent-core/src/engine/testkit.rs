@@ -1,6 +1,8 @@
 //! Loopback test kit: a plain librqbit seeder and a Corrent engine leecher.
 //! Offline, no DHT/trackers/UPnP; sockets bind to 127.0.0.1 only. Used by the engine's own
 //! integration tests and, through the `testkit` feature, by other crates' tests.
+// Test helpers (feature `testkit`, used only by tests): failing loudly is the point.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

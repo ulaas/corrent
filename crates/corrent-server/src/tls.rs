@@ -78,7 +78,8 @@ pub fn local_names(extra: &[String]) -> (Vec<String>, Vec<IpAddr>) {
     names.extend(extra.iter().cloned());
     names.sort();
     names.dedup();
-    let mut ips: Vec<IpAddr> = vec!["127.0.0.1".parse().expect("static"), "::1".parse().expect("static")];
+    let mut ips: Vec<IpAddr> =
+        vec![IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)];
     if let Ok(ifs) = if_addrs::get_if_addrs() {
         ips.extend(ifs.into_iter().map(|i| i.ip()).filter(|ip| !ip.is_loopback()));
     }

@@ -153,47 +153,49 @@ pub fn serve(
 ) -> Arc<AtomicUsize> {
     let live = Arc::new(AtomicUsize::new(0));
     let count = live.clone();
-    std::thread::Builder::new()
-        .name("corrent-ipc".into())
-        .spawn(move || {
-            for conn in listener.incoming() {
-                let conn = match conn {
-                    Ok(c) => c,
-                    Err(e) => {
-                        // Never a busy loop on a listener that keeps failing.
-                        tracing::debug!("single-instance accept failed: {e}");
-                        std::thread::sleep(Duration::from_millis(250));
-                        continue;
-                    }
-                };
-                // A flood of connections can't pile up threads: the launch that is turned away
-                // gets no `OK` and says so.
-                if count.fetch_add(1, Ordering::SeqCst) >= MAX_CLIENTS {
-                    count.fetch_sub(1, Ordering::SeqCst);
+    let spawned = std::thread::Builder::new().name("corrent-ipc".into()).spawn(move || {
+        for conn in listener.incoming() {
+            let conn = match conn {
+                Ok(c) => c,
+                Err(e) => {
+                    // Never a busy loop on a listener that keeps failing.
+                    tracing::debug!("single-instance accept failed: {e}");
+                    std::thread::sleep(Duration::from_millis(250));
                     continue;
                 }
-                let (tx, ctx, slot) = (tx.clone(), ctx.clone(), count.clone());
-                // One thread per client so a stalled client cannot block later launches.
-                let spawned = std::thread::Builder::new().name("corrent-ipc-client".into()).spawn(move || {
-                    // Frees the slot however the client ends (also if handling it panics).
-                    struct Slot(Arc<AtomicUsize>);
-                    impl Drop for Slot {
-                        fn drop(&mut self) {
-                            self.0.fetch_sub(1, Ordering::SeqCst);
-                        }
-                    }
-                    let _slot = Slot(slot);
-                    handle_client(&conn, &tx);
-                    if let Some(c) = ctx.get() {
-                        c.request_repaint();
-                    }
-                });
-                if spawned.is_err() {
-                    count.fetch_sub(1, Ordering::SeqCst);
-                }
+            };
+            // A flood of connections can't pile up threads: the launch that is turned away
+            // gets no `OK` and says so.
+            if count.fetch_add(1, Ordering::SeqCst) >= MAX_CLIENTS {
+                count.fetch_sub(1, Ordering::SeqCst);
+                continue;
             }
-        })
-        .expect("spawn ipc thread");
+            let (tx, ctx, slot) = (tx.clone(), ctx.clone(), count.clone());
+            // One thread per client so a stalled client cannot block later launches.
+            let spawned = std::thread::Builder::new().name("corrent-ipc-client".into()).spawn(move || {
+                // Frees the slot however the client ends (also if handling it panics).
+                struct Slot(Arc<AtomicUsize>);
+                impl Drop for Slot {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }
+                let _slot = Slot(slot);
+                handle_client(&conn, &tx);
+                if let Some(c) = ctx.get() {
+                    c.request_repaint();
+                }
+            });
+            if spawned.is_err() {
+                count.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    });
+    // Without the thread, later launches can't forward to this one; the data-folder lock still
+    // keeps them out.
+    if let Err(e) = spawned {
+        tracing::warn!("no IPC thread ({e}); running without single-instance forwarding");
+    }
     live
 }
 

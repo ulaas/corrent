@@ -278,7 +278,10 @@ impl Actor {
     }
 
     pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<EngineCommand>) {
-        let mut internal_rx = self.internal_rx.take().expect("run called once");
+        let Some(mut internal_rx) = self.internal_rx.take() else {
+            tracing::error!("engine actor started twice");
+            return;
+        };
         if let Some(w) = self.store.warning.take() {
             self.emit(EngineEvent::DataWarning(w));
         }
@@ -860,6 +863,7 @@ impl Actor {
                 let _ = done.send(());
             }
             #[cfg(debug_assertions)]
+            #[expect(clippy::panic, reason = "debug-only hook that tests crash reports")]
             EngineCommand::DevPanic => panic!("CORRENT_DEV_PANIC=engine"),
         }
     }
@@ -875,10 +879,14 @@ impl Actor {
             return;
         }
         let proxy = self.settings.connection.proxy_url();
-        if self.rss_client.as_ref().is_none_or(|(p, _)| *p != proxy) {
-            self.rss_client = Some((proxy.clone(), crate::rss::feed::client(proxy)));
-        }
-        let client = self.rss_client.as_ref().map(|(_, c)| c.clone()).expect("client was just set");
+        let client = match &self.rss_client {
+            Some((p, c)) if *p == proxy => c.clone(),
+            _ => {
+                let c = crate::rss::feed::client(proxy.clone());
+                self.rss_client = Some((proxy, c.clone()));
+                c
+            }
+        };
         for url in due {
             let (tx, client, wake) = (self.internal_tx.clone(), client.clone(), self.wake.clone());
             tokio::spawn(async move {

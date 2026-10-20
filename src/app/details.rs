@@ -30,7 +30,7 @@ impl CorrentApp {
         {
             return Some(f);
         }
-        (self.selected.len() == 1).then(|| *self.selected.iter().next().unwrap())
+        self.selected.iter().next().copied().filter(|_| self.selected.len() == 1)
     }
 
     pub(super) fn sync_detail_target(&mut self) {

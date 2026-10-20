@@ -152,6 +152,7 @@ impl Library {
     }
 
     pub(crate) async fn image_permit(&self) -> tokio::sync::SemaphorePermit<'_> {
+        #[expect(clippy::expect_used, reason = "the semaphore is never closed")]
         self.inner.images.acquire().await.expect("semaphore never closed")
     }
 
