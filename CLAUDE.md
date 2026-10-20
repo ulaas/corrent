@@ -45,7 +45,8 @@ Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_PANIC=ui|engine`, `CORRENT_DEV_HANG=ipc` (the primary takes forwarded launches but never confirms them), `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
 Media/server hooks (run without torrents): `CORRENT_DEV_VIEW=media|libraries`, `CORRENT_DEV_PROFILES=1`, `CORRENT_DEV_SERVER_FS=1` (with a paired server), `CORRENT_DEV_ITEM=<id>`, `CORRENT_DEV_PLAY=<id>`,
 `CORRENT_DEV_SHOT=<png>` (+ `CORRENT_DEV_SHOT_DELAY=<s>`, `CORRENT_DEV_EXIT=1`; works on Linux too),
-`CORRENT_DEV_CONNECT=<pairing link>` (fills the Connect dialog), `CORRENT_DEV_PAIR=<pairing link>` (pairs and switches —
+`CORRENT_DEV_LIBRARY=<folder>[;kind[;name]]|…` (adds those libraries to the profile; make test media with
+`powershell -File scripts/dev-media.ps1 -Out <scratch>`), `CORRENT_DEV_CONNECT=<pairing link>` (fills the Connect dialog), `CORRENT_DEV_PAIR=<pairing link>` (pairs and switches —
 writes `servers.toml` into the test profile; delete it afterwards). `CORRENT_DEV_OPEN` also takes `connect`. TV mode: `--tv`, and `CORRENT_DEV_KEYS=ArrowDown,ArrowRight,Enter` presses keys
 (one per 300 ms from 3 s) like a remote.
 To pre-configure the test profile, write `target/debug/corrent-data/settings.toml`

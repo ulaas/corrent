@@ -203,6 +203,9 @@ impl CorrentApp {
     /// Debug-only hooks: CORRENT_DEV_VIEW=media opens the media view, CORRENT_DEV_ITEM=<id>
     /// an item, CORRENT_DEV_PLAY=<id> plays one; CORRENT_DEV_SHOT=<png> saves a screenshot after
     /// CORRENT_DEV_SHOT_DELAY seconds (default 6) and CORRENT_DEV_EXIT=1 closes the app after it.
+    /// CORRENT_DEV_LIBRARY=<folder>[;kind[;name]] (several joined by `|`) adds those libraries
+    /// unless one already has the folder (kind: movies, shows, music, videos, photos; default
+    /// movies), then shows them.
     #[cfg(debug_assertions)]
     pub(crate) fn media_dev_hooks(&mut self, ctx: &egui::Context) {
         if !self.media_dev_done {
@@ -260,6 +263,52 @@ impl CorrentApp {
                 stream: None,
             };
             self.play_queue(vec![e], false);
+        }
+        if let Ok(spec) = std::env::var("CORRENT_DEV_LIBRARY")
+            && !self.media_dev_library_sent
+            && let Some(c) = self.media.client.clone()
+        {
+            self.media_dev_library_sent = true;
+            self.main_view = super::feeds::MainView::Media;
+            let wanted: Vec<corrent_proto::library::NewLibrary> = spec
+                .split('|')
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| {
+                    let mut parts = s.split(';');
+                    let folder = parts.next().unwrap_or_default().trim().to_string();
+                    let kind = parts.next().map(str::trim).unwrap_or("movies");
+                    let name = parts.next().map(str::trim).filter(|n| !n.is_empty()).map(String::from);
+                    let kind = serde_json::from_value(serde_json::Value::String(kind.into()))
+                        .unwrap_or(corrent_proto::library::LibraryKind::Movies);
+                    let name = name.unwrap_or_else(|| format!("{kind:?}"));
+                    corrent_proto::library::NewLibrary {
+                        name,
+                        kind,
+                        folders: vec![folder],
+                        settings: corrent_proto::library::LibrarySettings::defaults(),
+                    }
+                })
+                .collect();
+            self.media_dev_library = Some(fetch(&self.rt, ctx, async move {
+                let have: Vec<corrent_proto::library::Library> = c.get("/api/v1/libraries").await?;
+                let mut added = 0;
+                for lib in wanted {
+                    if have.iter().any(|h| h.folders.iter().any(|f| lib.folders.contains(f))) {
+                        continue;
+                    }
+                    let _: serde_json::Value = c.send(reqwest::Method::POST, "/api/v1/libraries", &lib).await?;
+                    added += 1;
+                }
+                Ok(added)
+            }));
+        }
+        if let Some(r) = self.media_dev_library.as_ref().and_then(ready) {
+            self.media_dev_library = None;
+            match r {
+                Ok(n) => tracing::info!("CORRENT_DEV_LIBRARY: {n} libraries added"),
+                Err(e) => tracing::warn!("CORRENT_DEV_LIBRARY: {e}"),
+            }
+            self.media.invalidate();
         }
         if std::env::var("CORRENT_DEV_SERVER_FS").is_ok()
             && self.server.as_ref().is_some_and(|s| s.connected())

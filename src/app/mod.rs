@@ -392,6 +392,11 @@ pub struct CorrentApp {
     media_dev_started: Option<std::time::Instant>,
     media_dev_pair: Option<media::client::Slot<crate::link::ServerEntry>>,
     media_dev_profiles: bool,
+    /// CORRENT_DEV_LIBRARY: libraries being set up, then shown.
+    #[cfg(debug_assertions)]
+    media_dev_library: Option<media::client::Slot<usize>>,
+    #[cfg(debug_assertions)]
+    media_dev_library_sent: bool,
     pub media: media::MediaState,
     pub tv: tv::TvState,
     pub web_account: Option<web_account::WebAccount>,
@@ -569,6 +574,10 @@ impl CorrentApp {
             connect: None,
             media_dev_pair: None,
             media_dev_profiles: false,
+            #[cfg(debug_assertions)]
+            media_dev_library: None,
+            #[cfg(debug_assertions)]
+            media_dev_library_sent: false,
             local_stopping: None,
         }
     }
