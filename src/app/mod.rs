@@ -846,7 +846,8 @@ impl CorrentApp {
             self.rows = table::compute_rows(&self.snap, &self.prefs, &self.search);
             self.rows_key = Some(key);
             // Never act on torrents the user can't see.
-            let visible: HashSet<InfoHash> = self.rows.iter().map(|&i| self.snap.torrents[i].hash).collect();
+            let visible: HashSet<InfoHash> =
+                self.rows.iter().filter_map(|&i| self.snap.torrents.get(i).map(|t| t.hash)).collect();
             self.selected.retain(|h| visible.contains(h));
             if self.anchor.is_some_and(|a| !visible.contains(&a)) {
                 self.anchor = None;
@@ -954,7 +955,7 @@ impl CorrentApp {
         // One toast (with Undo) per burst of removals.
         if !removed.is_empty() {
             let text = if removed.len() == 1 {
-                t!("Removed “{name}”", name = removed[0].1)
+                t!("Removed “{name}”", name = removed.first().map(|r| r.1.as_str()).unwrap_or_default())
             } else {
                 t!("Removed {n} torrents", n = removed.len())
             };
@@ -1132,8 +1133,7 @@ impl CorrentApp {
         self.dev_done = true;
         if let Ok(n) = std::env::var("CORRENT_DEV_SELECT").map(|v| v.parse::<usize>().unwrap_or(0)) {
             let rows = self.visible_rows().to_vec();
-            if let Some(&i) = rows.get(n) {
-                let h = self.snap.torrents[i].hash;
+            if let Some(h) = rows.get(n).and_then(|&i| self.snap.torrents.get(i)).map(|t| t.hash) {
                 self.selected.insert(h);
                 self.focus = Some(h);
             }
@@ -1167,8 +1167,10 @@ impl CorrentApp {
                 "stats" => self.extras.stats = true,
                 "streams" => self.extras.streams = true,
                 "remove" | "remove-undo" => {
-                    let h = self.snap.torrents[0].hash;
-                    self.engine.send(crate::engine::EngineCommand::Delete { hashes: vec![h], with_data: false });
+                    if let Some(t) = self.snap.torrents.first() {
+                        self.engine
+                            .send(crate::engine::EngineCommand::Delete { hashes: vec![t.hash], with_data: false });
+                    }
                 }
                 _ => {}
             }
@@ -1187,8 +1189,9 @@ impl CorrentApp {
         // Base stream URL of the first torrent, so a test can play it with curl.
         if let Ok(out) = std::env::var("CORRENT_DEV_STREAM_URL")
             && let Some((port, token)) = &self.snap.session.stream
+            && let Some(t) = self.snap.torrents.first()
         {
-            let base = format!("http://127.0.0.1:{port}/{token}/{}/", self.snap.torrents[0].hash.to_hex());
+            let base = format!("http://127.0.0.1:{port}/{token}/{}/", t.hash.to_hex());
             let _ = std::fs::write(out, base);
         }
         if std::env::var("CORRENT_DEV_LIGHT").is_ok() {

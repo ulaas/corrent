@@ -203,7 +203,7 @@ pub fn decode_blurhash(hash: &str, w: usize, h: usize) -> Option<ColorImage> {
                 for i in 0..nx {
                     let basis = (std::f32::consts::PI * x as f32 * i as f32 / w as f32).cos()
                         * (std::f32::consts::PI * y as f32 * j as f32 / h as f32).cos();
-                    let col = colors[i + j * nx];
+                    let Some(col) = colors.get(i + j * nx) else { continue };
                     c[0] += col[0] * basis;
                     c[1] += col[1] * basis;
                     c[2] += col[2] * basis;

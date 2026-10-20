@@ -409,7 +409,7 @@ impl CorrentApp {
             })
             .body(|body| {
                 body.rows(22.0, peers.len(), |mut row| {
-                    let peer = peers[row.index()];
+                    let Some(&peer) = peers.get(row.index()) else { return };
                     row.col(|ui| {
                         ui.label(RichText::new(&peer.addr).monospace().color(p.text));
                     });

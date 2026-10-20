@@ -41,10 +41,11 @@ struct Node {
 
 impl Node {
     fn insert(&mut self, comps: &[String], at: usize, entry_idx: usize) {
-        if comps.len() - at <= 1 || at >= MAX_TREE_DEPTH {
-            self.files.push((entry_idx, at));
-        } else {
-            self.dirs.entry(comps[at].clone()).or_default().insert(comps, at + 1, entry_idx);
+        match comps.get(at) {
+            Some(dir) if comps.len() - at > 1 && at < MAX_TREE_DEPTH => {
+                self.dirs.entry(dir.clone()).or_default().insert(comps, at + 1, entry_idx)
+            }
+            _ => self.files.push((entry_idx, at)),
         }
     }
 
@@ -131,10 +132,10 @@ fn show_node(
     for (name, dir) in &node.dirs {
         let mut all = Vec::new();
         dir.collect(&mut all);
-        let n_on = all.iter().filter(|&&i| checked(entries[i].index)).count();
-        let total: u64 = all.iter().map(|&i| entries[i].len).sum();
-        let done: Option<u64> =
-            entries.first().and_then(|e| e.done).map(|_| all.iter().filter_map(|&i| entries[i].done).sum());
+        let all: Vec<&Entry<'_>> = all.iter().filter_map(|&i| entries.get(i)).collect();
+        let n_on = all.iter().filter(|e| checked(e.index)).count();
+        let total: u64 = all.iter().map(|e| e.len).sum();
+        let done: Option<u64> = entries.first().and_then(|e| e.done).map(|_| all.iter().filter_map(|e| e.done).sum());
         let dir_id = id.with(name);
         let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), dir_id, true);
         if force_open {
@@ -146,8 +147,8 @@ fn show_node(
                 ui.add_enabled(editable, egui::Checkbox::new(&mut on, "").indeterminate(n_on > 0 && n_on < all.len()));
             if cb.changed() {
                 let target = n_on < all.len();
-                for &i in &all {
-                    change.set.push((entries[i].index, target));
+                for e in &all {
+                    change.set.push((e.index, target));
                 }
             }
             ui.label(RichText::new(icons::FOLDER).color(p.warn));
@@ -158,18 +159,18 @@ fn show_node(
             show_node(ui, p, dir_id, dir, entries, checked, editable, force_open, change);
         });
         if editable && entries.first().is_some_and(|e| e.priority.is_some()) {
-            let ids: Vec<usize> = all.iter().map(|&i| entries[i].index).collect();
-            let first = all.first().and_then(|&i| entries[i].priority);
-            let same = all.iter().all(|&i| entries[i].priority == first);
+            let ids: Vec<usize> = all.iter().map(|e| e.index).collect();
+            let first = all.first().and_then(|e| e.priority);
+            let same = all.iter().all(|e| e.priority == first);
             crate::ui::widgets::context_menu(&header_resp.response, |ui| {
                 priority_menu(ui, &ids, first.filter(|_| same), change)
             });
         }
     }
     for &(i, at) in &node.files {
-        let e = &entries[i];
+        let Some(e) = entries.get(i) else { continue };
         // The rest of the path for a file kept at MAX_TREE_DEPTH (usually just its name).
-        let name = e.components[at.min(e.components.len())..].join("/");
+        let name = e.components.get(at..).unwrap_or_default().join("/");
         let name = name.as_str();
         let row = ui.horizontal(|ui| {
             ui.add_space(18.0);

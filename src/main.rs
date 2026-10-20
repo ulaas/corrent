@@ -1,3 +1,6 @@
+// STABILITY.md F17: the UI doesn't index (a row list can be older than the snapshot it
+// indexes, D12); tests may (clippy.toml).
+#![deny(clippy::indexing_slicing)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![recursion_limit = "256"]
 

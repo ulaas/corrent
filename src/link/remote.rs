@@ -531,8 +531,10 @@ async fn add(api: MediaClient, r: AddRequest) -> Result<(), String> {
         "add_to_top": r.add_to_top,
         "only_files": r.only_files,
     });
-    if !save_path.is_empty() {
-        opts["save_path"] = json!(save_path);
+    if !save_path.is_empty()
+        && let Some(o) = opts.as_object_mut()
+    {
+        o.insert("save_path".into(), json!(save_path));
     }
     let file = match (r.torrent_bytes, r.source) {
         (Some(b), s) => Some((s.describe(), b)),
@@ -547,7 +549,9 @@ async fn add(api: MediaClient, r: AddRequest) -> Result<(), String> {
             ))
         }
         (None, AddSource::Magnet(u) | AddSource::Url(u)) => {
-            opts["urls"] = json!([u]);
+            if let Some(o) = opts.as_object_mut() {
+                o.insert("urls".into(), json!([u]));
+            }
             None
         }
     };

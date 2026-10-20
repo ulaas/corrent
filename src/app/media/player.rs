@@ -221,7 +221,7 @@ pub fn parse_trickplay(vtt: &str, index_path: &str) -> Vec<Cue> {
         let lines: Vec<&str> = block.lines().filter(|l| !l.trim().is_empty()).collect();
         let Some(ti) = lines.iter().position(|l| l.contains("-->")) else { continue };
         let Some(target) = lines.get(ti + 1) else { continue };
-        let Some((a, z)) = lines[ti].split_once("-->") else { continue };
+        let Some((a, z)) = lines.get(ti).and_then(|l| l.split_once("-->")) else { continue };
         let Some((file, xywh)) = target.trim().split_once("#xywh=") else { continue };
         let n: Vec<u32> = xywh.split(',').filter_map(|v| v.trim().parse().ok()).collect();
         let [x, y, w, h] = n[..] else { continue };

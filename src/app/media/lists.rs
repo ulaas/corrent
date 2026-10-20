@@ -151,9 +151,10 @@ impl CorrentApp {
                     order.swap(k, (seed % (k as u64 + 1)) as usize);
                 }
             }
-            let first = order[if shuffle { 0 } else { start }].clone();
-            let rest: Vec<Item> = if shuffle { order } else { order[start..].to_vec() };
-            self.play_item(&first, &rest);
+            if let Some(first) = order.get(if shuffle { 0 } else { start }).cloned() {
+                let rest: Vec<Item> = if shuffle { order } else { order.get(start..).unwrap_or_default().to_vec() };
+                self.play_item(&first, &rest);
+            }
         }
     }
 

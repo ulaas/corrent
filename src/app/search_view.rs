@@ -68,9 +68,9 @@ fn dedupe(results: &mut Vec<SearchResult>) {
     let mut out: Vec<SearchResult> = Vec::with_capacity(results.len());
     for r in results.drain(..) {
         let key = r.info_hash.clone().unwrap_or_else(|| format!("{}|{}", r.title.to_lowercase(), r.size.unwrap_or(0)));
-        match seen.get(&key) {
-            Some(&i) if out[i].seeders.unwrap_or(0) >= r.seeders.unwrap_or(0) => {}
-            Some(&i) => out[i] = r,
+        match seen.get(&key).and_then(|&i| out.get_mut(i)) {
+            Some(o) if o.seeders.unwrap_or(0) >= r.seeders.unwrap_or(0) => {}
+            Some(o) => *o = r,
             None => {
                 seen.insert(key, out.len());
                 out.push(r);
@@ -263,8 +263,9 @@ impl CorrentApp {
         });
 
         let f = self.torznab.filter.trim().to_lowercase();
-        let rows: Vec<usize> = (0..self.torznab.results.len())
-            .filter(|&i| f.is_empty() || self.torznab.results[i].title.to_lowercase().contains(&f))
+        let rows: Vec<usize> = (self.torznab.results.iter().enumerate())
+            .filter(|(_, r)| f.is_empty() || r.title.to_lowercase().contains(&f))
+            .map(|(i, _)| i)
             .collect();
         if rows.is_empty() {
             if self.torznab.searched && self.torznab.pending == 0 {
@@ -338,7 +339,7 @@ impl CorrentApp {
                 })
                 .body(|body| {
                     body.rows(30.0, rows.len(), |mut row| {
-                        let r = &self.torznab.results[rows[row.index()]];
+                        let Some(r) = rows.get(row.index()).and_then(|&i| self.torznab.results.get(i)) else { return };
                         row.col(|ui| {
                             let resp = ui.add(egui::Label::new(RichText::new(&r.title).color(p.text)).truncate());
                             if let Some(page) = &r.page {

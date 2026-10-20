@@ -22,7 +22,7 @@ impl CorrentApp {
         }
         let hashes: Vec<_> = sel.iter().map(|t| t.hash).collect();
         let single = sel.len() == 1;
-        let first = sel[0].clone();
+        let Some(first) = sel.first().cloned() else { return };
 
         let label = if sel.iter().all(|t| t.restore_failed) { t!("Retry") } else { t!("Resume") };
         if sel.iter().any(|t| t.state.is_paused_like() || t.state == TorrentState::Error)
@@ -274,7 +274,7 @@ impl CorrentApp {
         }
         if consume(sc(Modifiers::COMMAND, Key::A)) {
             let rows = self.visible_rows().to_vec();
-            self.selected = rows.iter().map(|&i| self.snap.torrents[i].hash).collect();
+            self.selected = rows.iter().filter_map(|&i| self.snap.torrents.get(i).map(|t| t.hash)).collect();
         }
         if consume(sc(Modifiers::SHIFT, Key::Delete)) {
             let h = self.selected_hashes();
@@ -298,15 +298,17 @@ impl CorrentApp {
         }
         if consume(sc(Modifiers::NONE, Key::F2)) {
             let sel = self.selected_views();
-            if sel.len() == 1 {
-                let (h, n) = (sel[0].hash, sel[0].name.clone());
+            if let [t] = sel.as_slice() {
+                let (h, n) = (t.hash, t.name.clone());
                 self.open_rename_dialog(h, n);
             }
         }
         if consume(sc(Modifiers::NONE, Key::Enter)) {
             let sel = self.selected_views();
-            if sel.len() == 1 && self.server.is_none() {
-                super::open_path(&sel[0].content_path.clone());
+            if let [t] = sel.as_slice()
+                && self.server.is_none()
+            {
+                super::open_path(&t.content_path.clone());
             }
         }
         if consume(sc(Modifiers::NONE, Key::Escape)) {
@@ -321,14 +323,14 @@ impl CorrentApp {
             if rows.is_empty() {
                 return;
             }
-            let hashes: Vec<_> = rows.iter().map(|&i| self.snap.torrents[i].hash).collect();
+            let hashes: Vec<_> = rows.iter().filter_map(|&i| self.snap.torrents.get(i).map(|t| t.hash)).collect();
             let cur = self.focus.and_then(|f| hashes.iter().position(|h| *h == f));
             let next = match (cur, up) {
                 (None, _) => 0,
                 (Some(c), true) => c.saturating_sub(1),
                 (Some(c), false) => (c + 1).min(hashes.len() - 1),
             };
-            let h = hashes[next];
+            let Some(&h) = hashes.get(next) else { return };
             if shift {
                 self.selected.insert(h);
             } else {

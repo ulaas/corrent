@@ -331,7 +331,7 @@ impl CorrentApp {
             })
             .body(|body| {
                 body.rows(30.0, rows.len(), |mut row| {
-                    let (f, a) = rows[row.index()];
+                    let Some(&(f, a)) = rows.get(row.index()) else { return };
                     let rule = matchers
                         .iter()
                         .find(|(_, m, r)| rule_applies_to(r, &f.url) && m.matches(&a.article.title))

@@ -1,6 +1,7 @@
 //! Procedurally drawn application icon (no binary assets needed).
 
 /// RGBA pixels of the Corrent icon at `size`×`size`.
+#[expect(clippy::indexing_slicing, reason = "fixed-size colour arrays and a buffer sized for every pixel")]
 pub fn icon_rgba(size: u32) -> Vec<u8> {
     let s = size as f32;
     let mut px = vec![0u8; (size * size * 4) as usize];

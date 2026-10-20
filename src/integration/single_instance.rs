@@ -248,10 +248,10 @@ fn handle_client(conn: &Stream, tx: &std::sync::mpsc::Sender<IpcMessage>) {
             Ok(0) => break,
             Ok(n) => {
                 total += n;
-                buf.extend_from_slice(&chunk[..n]);
+                buf.extend_from_slice(chunk.get(..n).unwrap_or_default());
                 while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=nl).collect();
-                    if handle(&line[..line.len() - 1]) {
+                    if handle(line.strip_suffix(b"\n").unwrap_or(&line)) {
                         return;
                     }
                 }

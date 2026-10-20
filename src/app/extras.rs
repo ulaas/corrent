@@ -42,7 +42,10 @@ impl CorrentApp {
                         format!(
                             "{}  {}",
                             icons::ARROW_COUNTER_CLOCKWISE,
-                            t!("Undo remove “{name}”", name = self.snap.undoable[0].1)
+                            t!(
+                                "Undo remove “{name}”",
+                                name = self.snap.undoable.first().map(|u| u.1.as_str()).unwrap_or_default()
+                            )
                         )
                     } else {
                         format!("{}  {}", icons::ARROW_COUNTER_CLOCKWISE, t!("Undo remove ({n} torrents)", n = n))
@@ -303,7 +306,7 @@ impl CorrentApp {
                             18.0,
                             lines.len(),
                             |ui, range| {
-                                for l in &lines[range] {
+                                for l in lines.get(range).unwrap_or_default() {
                                     let color = match l.level {
                                         Level::ERROR => p.error,
                                         Level::WARN => p.warn,

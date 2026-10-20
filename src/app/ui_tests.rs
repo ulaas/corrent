@@ -637,3 +637,22 @@ fn saving_settings_never_waits_on_the_disk() {
     corrent_core::faults::clear(&f.dir);
     assert!(std::fs::read_to_string(&file).unwrap().contains("download_limit = 123"));
 }
+
+#[test]
+fn rows_from_an_older_snapshot_never_index_past_a_shorter_one() {
+    // STABILITY.md D12: an engine restart used to start the generation again at 0, so a cached
+    // row list could be reused against a shorter torrent list.
+    let five = (1..=5).map(|n| torrent(n, &format!("T{n}"), TorrentState::Seeding)).collect();
+    let (_f, app) = app("stale-rows", five);
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label("T5").click();
+    h.run_steps(2);
+    let two = (1..=2).map(|n| torrent(n, &format!("T{n}"), TorrentState::Seeding)).collect();
+    h.state_mut().snap = Arc::new(Snapshot { torrents: two, generation: 1, ..Default::default() });
+    h.run_steps(3);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.key_press(egui::Key::ArrowDown);
+    h.run_steps(3);
+    assert!(h.query_by_label("T1").is_some());
+}

@@ -137,7 +137,7 @@ impl CorrentApp {
         let due = (start.elapsed().as_millis().saturating_sub(3000) / 300) as usize;
         let all: Vec<&str> = list.split(',').collect();
         while self.tv.dev_sent < due.min(all.len()) {
-            if let Some(k) = Key::from_name(all[self.tv.dev_sent].trim()) {
+            if let Some(k) = all.get(self.tv.dev_sent).and_then(|s| Key::from_name(s.trim())) {
                 keys.push(k);
             }
             self.tv.dev_sent += 1;
@@ -421,7 +421,7 @@ impl CorrentApp {
                 if alpha <= 0.0 {
                     continue;
                 }
-                let sha = &backdrops[k % backdrops.len()];
+                let Some(sha) = backdrops.get(k % backdrops.len()) else { continue };
                 if let Some(tex) = self.media.image(&client, &self.rt, &self.ctx, sha, (rect.width() * ppp) as u32) {
                     // Slow drift (Ken Burns).
                     let zoom = 1.0 + 0.06 * frac;

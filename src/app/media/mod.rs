@@ -463,7 +463,9 @@ impl CorrentApp {
     fn play_item(&mut self, item: &Item, siblings: &[Item]) {
         let start = siblings.iter().position(|s| s.id == item.id);
         let queue: Vec<QueueEntry> = match start {
-            Some(i) => siblings[i..].iter().filter(|s| s.kind.playable()).map(Self::entry).collect(),
+            Some(i) => {
+                siblings.get(i..).unwrap_or_default().iter().filter(|s| s.kind.playable()).map(Self::entry).collect()
+            }
             None => vec![Self::entry(item)],
         };
         self.play_queue(queue, audio_kind(item.kind));
@@ -815,7 +817,7 @@ impl CorrentApp {
                     let w = if kind_aspect(it.kind) > 1.0 { width * 1.6 } else { width };
                     if self.card(ui, p, client, it, w).clicked() {
                         if it.kind.playable() && !matches!(it.kind, ItemKind::Track) {
-                            self.play_item(it, &items[n..n + 1]);
+                            self.play_item(it, items.get(n..n + 1).unwrap_or_default());
                         } else {
                             self.open(Page::Item(it.id));
                         }
@@ -946,8 +948,9 @@ impl CorrentApp {
             .get_or_insert_with(|| fetch(&self.rt, &self.ctx, async move { c.get("/api/v1/me/prefs").await }));
         let Some(Ok(prefs)) = ready(prefs) else { return rows };
         let list = |k: &str| -> Vec<String> {
-            prefs[k]
-                .as_array()
+            prefs
+                .get(k)
+                .and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                 .unwrap_or_default()
         };

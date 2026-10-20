@@ -81,7 +81,7 @@ pub fn matches_filters(t: &TorrentView, prefs: &UiPrefs, search: &str) -> bool {
 
 pub fn compute_rows(snap: &Snapshot, prefs: &UiPrefs, search: &str) -> Vec<usize> {
     let mut rows: Vec<usize> =
-        (0..snap.torrents.len()).filter(|&i| matches_filters(&snap.torrents[i], prefs, search)).collect();
+        (snap.torrents.iter().enumerate()).filter(|(_, t)| matches_filters(t, prefs, search)).map(|(i, _)| i).collect();
     let ts = &snap.torrents;
     let cmp = |a: &TorrentView, b: &TorrentView| -> Ordering {
         let f = |x: f64, y: f64| x.partial_cmp(&y).unwrap_or(Ordering::Equal);
@@ -110,7 +110,8 @@ pub fn compute_rows(snap: &Snapshot, prefs: &UiPrefs, search: &str) -> Vec<usize
         }
     };
     rows.sort_by(|&a, &b| {
-        let o = cmp(&ts[a], &ts[b]).then_with(|| ts[a].queue_pos.cmp(&ts[b].queue_pos));
+        let (Some(a), Some(b)) = (ts.get(a), ts.get(b)) else { return Ordering::Equal };
+        let o = cmp(a, b).then_with(|| a.queue_pos.cmp(&b.queue_pos));
         if prefs.sort_asc { o } else { o.reverse() }
     });
     rows
@@ -203,7 +204,7 @@ impl CorrentApp {
 
         let scroll_to = if self.scroll_to_focus {
             self.scroll_to_focus = false;
-            self.focus.and_then(|f| rows.iter().position(|&i| snap.torrents[i].hash == f))
+            self.focus.and_then(|f| rows.iter().position(|&i| snap.torrents.get(i).is_some_and(|t| t.hash == f)))
         } else {
             None
         };
@@ -271,7 +272,8 @@ impl CorrentApp {
             })
             .body(|body| {
                 body.rows(row_h, rows.len(), |mut row| {
-                    let t = &snap.torrents[rows[row.index()]];
+                    // A row list from an older snapshot may point past this one (STABILITY.md D12).
+                    let Some(t) = rows.get(row.index()).and_then(|&i| snap.torrents.get(i)) else { return };
                     let selected = self.selected.contains(&t.hash);
                     let fade = self.row_fade(t.hash);
                     row.set_selected(selected);
@@ -297,9 +299,8 @@ impl CorrentApp {
                         let before = if upper {
                             Some(t.hash)
                         } else {
-                            rows[row.index() + 1..]
-                                .iter()
-                                .map(|&i| &snap.torrents[i])
+                            (rows.get(row.index() + 1..).unwrap_or_default().iter())
+                                .filter_map(|&i| snap.torrents.get(i))
                                 .find(|n| !n.pending)
                                 .map(|n| n.hash)
                         };
@@ -418,13 +419,14 @@ impl CorrentApp {
         if mods.shift
             && let Some(anchor) = self.anchor
         {
-            let pos = |x: InfoHash| rows.iter().position(|&i| snap.torrents[i].hash == x);
+            let pos = |x: InfoHash| rows.iter().position(|&i| snap.torrents.get(i).is_some_and(|t| t.hash == x));
             if let (Some(a), Some(b)) = (pos(anchor), pos(h)) {
                 if !mods.command {
                     self.selected.clear();
                 }
-                for &i in &rows[a.min(b)..=a.max(b)] {
-                    self.selected.insert(snap.torrents[i].hash);
+                let range = rows.get(a.min(b)..=a.max(b)).unwrap_or_default();
+                for t in range.iter().filter_map(|&i| snap.torrents.get(i)) {
+                    self.selected.insert(t.hash);
                 }
             }
         } else if mods.command {
