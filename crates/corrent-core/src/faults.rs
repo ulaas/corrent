@@ -136,6 +136,153 @@ pub fn call_delay(hash: [u8; 20]) -> Option<Duration> {
     }
 }
 
+/// STABILITY.md D8: a named point of a durable write. `op` says what is written, `phase` how far
+/// the write got. With fault injection compiled in, the harness (`corrent-harness`) uses it to
+/// end the process right there (`CORRENT_DEV_KILL_AT=<op>:<phase>:<n>`, the n-th time) or to
+/// list the points a run reaches (`CORRENT_DEV_KILL_LOG=<file>`). Otherwise it does nothing.
+pub fn kill_point(op: &str, phase: &str) {
+    #[cfg(any(test, feature = "testkit"))]
+    kill::reached(op, phase);
+    #[cfg(not(any(test, feature = "testkit")))]
+    let _ = (op, phase);
+}
+
+/// [`kill_point`] for a write of `path`, named after the file.
+pub fn kill_point_at(path: &Path, phase: &str) {
+    #[cfg(any(test, feature = "testkit"))]
+    kill::reached(&op_of(path), phase);
+    #[cfg(not(any(test, feature = "testkit")))]
+    let _ = (path, phase);
+}
+
+/// The kill-point name of a file Corrent writes: the same in every run, whatever the folder or
+/// the time in the name.
+#[cfg(any(test, feature = "testkit"))]
+pub fn op_of(path: &Path) -> String {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let dir = path.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let base = |n: &str| match n {
+        "store.json" => "store",
+        "settings.toml" => "settings",
+        "rss.json" => "rss",
+        "session.json" => "session-recover",
+        _ => "other",
+    };
+    if dir == "torrents" {
+        return if name.ends_with(".torrent") { "readd-backup" } else { "readd-note" }.into();
+    }
+    if dir == "ipfilter" {
+        return "ipfilter".into();
+    }
+    for tag in ["daily", "good", "bad", "pre-prune"] {
+        if let Some((file, _)) = name.split_once(&format!(".{tag}-")) {
+            return format!("gen-{tag}-{}", base(file));
+        }
+    }
+    // Migration backups: `<file>.v<N>-<time>`.
+    for file in ["settings.toml", "store.json"] {
+        if name.strip_prefix(file).is_some_and(|r| r.starts_with(".v")) {
+            return format!("migrate-{}", base(file));
+        }
+    }
+    base(&name).into()
+}
+
+#[cfg(any(test, feature = "testkit"))]
+mod kill {
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+
+    struct Plan {
+        op: String,
+        phase: String,
+        nth: u64,
+    }
+
+    struct State {
+        plan: Option<Plan>,
+        log: Option<std::fs::File>,
+        counts: HashMap<(String, String), u64>,
+    }
+
+    fn state() -> &'static Mutex<State> {
+        static S: OnceLock<Mutex<State>> = OnceLock::new();
+        S.get_or_init(|| {
+            let plan = std::env::var("CORRENT_DEV_KILL_AT").ok().and_then(|v| {
+                let mut it = v.splitn(3, ':');
+                let (op, phase, nth) = (it.next()?, it.next()?, it.next()?.parse().ok()?);
+                Some(Plan { op: op.into(), phase: phase.into(), nth })
+            });
+            let log = std::env::var_os("CORRENT_DEV_KILL_LOG")
+                .and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
+            Mutex::new(State { plan, log, counts: HashMap::new() })
+        })
+    }
+
+    thread_local! {
+        /// Unit tests: the points this thread reaches, instead of the process-wide plan.
+        static RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub fn reached(op: &str, phase: &str) {
+        let recorded = RECORD.with(|r| r.borrow_mut().as_mut().map(|v| v.push((op.into(), phase.into()))).is_some());
+        if recorded {
+            return;
+        }
+        let mut st = crate::util::lock(state());
+        if st.plan.is_none() && st.log.is_none() {
+            return;
+        }
+        let n = {
+            let c = st.counts.entry((op.into(), phase.into())).or_default();
+            *c += 1;
+            *c
+        };
+        if let Some(f) = st.log.as_mut() {
+            // Unbuffered: the line is the OS's once written, even if the process ends next.
+            let _ = writeln!(f, "{op}:{phase}");
+        }
+        if st.plan.as_ref().is_some_and(|p| p.op == op && p.phase == phase && p.nth == n) {
+            terminate();
+        }
+    }
+
+    /// End the process at once: no destructors, no flushing, like a power cut for the process
+    /// (the OS still writes what it already has).
+    fn terminate() -> ! {
+        #[cfg(windows)]
+        {
+            unsafe extern "system" {
+                fn GetCurrentProcess() -> isize;
+                fn TerminateProcess(process: isize, code: u32) -> i32;
+            }
+            // SAFETY: the pseudo handle of this process; TerminateProcess doesn't return.
+            unsafe {
+                TerminateProcess(GetCurrentProcess(), super::KILLED_EXIT_CODE);
+            }
+        }
+        std::process::abort()
+    }
+
+    /// Run `f` and return the kill points it reached on this thread (nothing is killed).
+    pub fn record(f: impl FnOnce()) -> Vec<(String, String)> {
+        RECORD.with(|r| *r.borrow_mut() = Some(Vec::new()));
+        f();
+        RECORD.with(|r| r.borrow_mut().take()).unwrap_or_default()
+    }
+}
+
+/// The exit code of a process ended at a kill point (Windows; Unix ends with SIGABRT).
+#[cfg(any(test, feature = "testkit"))]
+pub const KILLED_EXIT_CODE: u32 = 75;
+
+/// Tests: the kill points `f` reaches on this thread, in order.
+#[cfg(any(test, feature = "testkit"))]
+pub fn record_kill_points(f: impl FnOnce()) -> Vec<(String, String)> {
+    kill::record(f)
+}
+
 enum Kind {
     Fs,
     StartDelay,
@@ -157,5 +304,55 @@ fn lookup(kind: Kind, path: &Path) -> Option<Duration> {
     {
         let _ = (kind, path);
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writes_reach_their_kill_points_in_order() {
+        let d = std::env::temp_dir().join(format!("corrent-killpoints-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let store = d.join("store.json");
+        let first = record_kill_points(|| crate::util::write_atomic(&store, b"1").unwrap());
+        let names = |v: &[(String, String)]| v.iter().map(|(o, p)| format!("{o}:{p}")).collect::<Vec<_>>();
+        assert_eq!(names(&first), ["store:before_tmp", "store:after_tmp", "store:after_rename"]);
+        // The second save refreshes the missing .bak first.
+        let second = record_kill_points(|| crate::util::write_atomic(&store, b"2").unwrap());
+        assert_eq!(
+            names(&second),
+            [
+                "store:before_tmp",
+                "store:after_tmp",
+                "store:bak_after_tmp",
+                "store:bak_after_rename",
+                "store:after_bak",
+                "store:after_rename"
+            ]
+        );
+        let generation = record_kill_points(|| {
+            crate::util::keep_generations(&store, "daily", b"3", 3).unwrap();
+        });
+        assert_eq!(
+            names(&generation),
+            ["gen-daily-store:after_tmp", "gen-daily-store:after_rename", "gen-daily-store:after_prune"]
+        );
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn kill_point_names_dont_depend_on_folders_or_times() {
+        let p = |s: &str| op_of(Path::new(s));
+        assert_eq!(p("C:/x/data/settings.toml"), "settings");
+        assert_eq!(p("/d/data/rss.json"), "rss");
+        assert_eq!(p("/d/data/store.json.pre-prune-1700000000"), "gen-pre-prune-store");
+        assert_eq!(p("/d/data/session/session.json.good-17"), "gen-good-session-recover");
+        assert_eq!(p("/d/data/session/session.json"), "session-recover");
+        assert_eq!(p("/d/data/settings.toml.v0-1700000000"), "migrate-settings");
+        assert_eq!(p("/d/data/torrents/ab.torrent"), "readd-backup");
+        assert_eq!(p("/d/data/torrents/ab.json"), "readd-note");
+        assert_eq!(p("/d/data/ipfilter/blocklist-download.txt"), "ipfilter");
     }
 }

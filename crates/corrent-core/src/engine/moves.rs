@@ -34,6 +34,7 @@ fn move_one(src: &Path, dst: &Path, copy: bool) -> anyhow::Result<()> {
         anyhow::bail!("{} already exists at the destination", dst.display());
     }
     if !copy && std::fs::rename(src, dst).is_ok() {
+        crate::faults::kill_point("move", "after_rename");
         return Ok(());
     }
     // Different volume: copy to a .part file, sync it, then put it in place.
@@ -42,11 +43,15 @@ fn move_one(src: &Path, dst: &Path, copy: bool) -> anyhow::Result<()> {
         .with_context(|| format!("copying {}", src.display()))
         // Opened for writing: Windows refuses to flush a read-only handle.
         .and_then(|_| std::fs::OpenOptions::new().write(true).open(&part)?.sync_all().context("syncing the copy"))
-        .and_then(|()| std::fs::rename(&part, dst).context("putting the copy in place"));
+        .and_then(|()| {
+            crate::faults::kill_point("move", "after_part_sync");
+            std::fs::rename(&part, dst).context("putting the copy in place")
+        });
     if let Err(e) = copied {
         let _ = std::fs::remove_file(&part);
         return Err(e);
     }
+    crate::faults::kill_point("move", "after_part_rename");
     if let Err(e) = std::fs::remove_file(src) {
         // As before the move: otherwise the complete copy would block every later move there.
         let _ = std::fs::remove_file(dst);

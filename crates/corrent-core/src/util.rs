@@ -20,18 +20,22 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = sibling(path, "tmp");
+    crate::faults::kill_point_at(path, "before_tmp");
     if let Err(e) = write_synced(&tmp, data) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }
+    crate::faults::kill_point_at(path, "after_tmp");
     if path.exists() {
         refresh_bak(path);
+        crate::faults::kill_point_at(path, "after_bak");
     }
     if let Err(e) = rename_retrying(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }
     sync_parent(path);
+    crate::faults::kill_point_at(path, "after_rename");
     Ok(())
 }
 
@@ -59,8 +63,14 @@ fn refresh_bak(path: &Path) {
     if !fresh && let Ok(current) = std::fs::read(path) {
         // Through a temp file too: a crash mid-refresh must not leave a cut-off backup.
         let tmp = sibling(&bak, "tmp");
-        if write_synced(&tmp, &current).and_then(|()| std::fs::rename(&tmp, &bak)).is_err() {
+        let written = write_synced(&tmp, &current).and_then(|()| {
+            crate::faults::kill_point_at(path, "bak_after_tmp");
+            std::fs::rename(&tmp, &bak)
+        });
+        if written.is_err() {
             let _ = std::fs::remove_file(&tmp);
+        } else {
+            crate::faults::kill_point_at(path, "bak_after_rename");
         }
     }
 }
@@ -72,11 +82,17 @@ pub fn write_replace(path: &Path, data: &[u8]) -> anyhow::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = sibling(path, "tmp");
-    if let Err(e) = write_synced(&tmp, data).and_then(|()| rename_retrying(&tmp, path)) {
+    crate::faults::kill_point_at(path, "before_tmp");
+    let written = write_synced(&tmp, data).and_then(|()| {
+        crate::faults::kill_point_at(path, "after_tmp");
+        rename_retrying(&tmp, path)
+    });
+    if let Err(e) = written {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }
     sync_parent(path);
+    crate::faults::kill_point_at(path, "after_rename");
     Ok(())
 }
 
@@ -121,14 +137,20 @@ fn keep_generation_at(path: &Path, tag: &str, data: &[u8], keep: usize, ts: i64)
         std::fs::create_dir_all(dir)?;
     }
     let tmp = sibling(&file, "tmp");
-    if let Err(e) = write_synced(&tmp, data).and_then(|()| std::fs::rename(&tmp, &file)) {
+    let written = write_synced(&tmp, data).and_then(|()| {
+        crate::faults::kill_point_at(&file, "after_tmp");
+        std::fs::rename(&tmp, &file)
+    });
+    if let Err(e) = written {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }
     sync_parent(&file);
+    crate::faults::kill_point_at(&file, "after_rename");
     for (_, old) in generations(path, tag).into_iter().skip(keep) {
         let _ = std::fs::remove_file(old);
     }
+    crate::faults::kill_point_at(&file, "after_prune");
     Ok(file)
 }
 

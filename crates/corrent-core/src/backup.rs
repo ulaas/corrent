@@ -152,8 +152,10 @@ pub fn apply_pending(paths: &Paths) -> Option<String> {
             if cur.exists() {
                 std::fs::create_dir_all(&keep)?;
                 std::fs::rename(&cur, keep.join(name))?;
+                crate::faults::kill_point("restore", "after_keep");
             }
             std::fs::rename(&staged, &cur)?;
+            crate::faults::kill_point("restore", "after_apply");
             applied += 1;
         }
         std::fs::remove_dir_all(&stage)
