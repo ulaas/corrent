@@ -113,8 +113,8 @@ clusters, `?v=` + ETag on segments, and an 8 KiB index buffer. Checked with mpv 
 - Windows service install, stop and shutdown;
 - crossfade, which mpv can't do because it plays one file at a time.
 
-**Desktop roadmap:** hardening per `docs/STABILITY.md`. S1 (profile data-loss guards) and S2
-(engine persistence durability) are done on Windows; see their Results rows. S3 is next. Then upstreaming the librqbit patches (`docs/upstream/`),
+**Desktop roadmap:** hardening per `docs/STABILITY.md`. S1 (profile data-loss guards), S2 (engine
+persistence durability) and S3 (no hangs) are done on Windows; see their Results rows. S4 is next. Then upstreaming the librqbit patches (`docs/upstream/`),
 and a first tagged release.
 - S1 adds a lock that the desktop app and `correntd` share: `corrent.lock` in the data folder. It
   replaces `correntd.lock`, and a stale `correntd.lock` file is harmless.
@@ -122,6 +122,12 @@ and a first tagged release.
 - S2 adds a third librqbit patch (D5, `docs/upstream/librqbit-persistence-fsync.patch`). In
   `session/` it keeps `session.json.good-*` and `.bad-*` copies (`engine/session_db.rs`); in
   `logs/` the files `alive` and `power-loss.pending` (`crash.rs`).
+- S3 adds:
+  - test-only fault injection in `corrent_core::faults` (slow disk, stalled engine calls, start
+    delay or deadline, HTTP timeout, all scoped to one test's folder);
+  - one engine-call worker in the actor;
+  - `corrent_core::logfile`: `corrent.log` now rotates to `corrent.log.1` … `.5`;
+  - a fourth librqbit patch (`docs/upstream/librqbit-http-timeouts.patch`).
 - Left open from the S1 review:
   - Closing the console window of a `correntd` started by hand on Windows, or logging off, still
     kills it before it saves. A fix needs a `SetConsoleCtrlHandler` callback that blocks until
