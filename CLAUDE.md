@@ -31,6 +31,7 @@ cargo build                 # debug
 cargo build --release       # target/release/corrent.exe (owner runs this build)
 powershell -File scripts/fetch-libmpv.ps1   # once: libmpv-2.dll into .cache/libmpv; build.rs copies it next to the exe
 cargo test --workspace      # unit + loopback engine integration tests (crates/corrent-core/src/engine/e2e_tests.rs)
+cargo test -p corrent-core --features testkit --test durability -- --ignored --nocapture   # kill at every write (~2 min)
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo deny check   # CI gates
 ./target/debug/corrent.exe --portable [magnet|url|file]
 ./target/debug/correntd --data-dir target/debug/correntd-data   # headless server (docs/SERVER.md)
@@ -134,7 +135,7 @@ MSI/portable zip/winget, AppImage/Flatpak, dmg; release workflow — see docs/PA
 translation + language setting, web interface, Mica spike (no-go) (M27).
 Fable reviews of every milestone range and a final roadmap audit were addressed. Default save folder: `Downloads/Corrent`.
 
-Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S5 done 2026-10-20, S6 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
+Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S6 done 2026-10-20, S7 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
 upstreaming the librqbit patches (docs/upstream/) and a first tagged release.
 
 Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.
