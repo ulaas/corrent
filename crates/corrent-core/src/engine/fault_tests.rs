@@ -359,3 +359,28 @@ async fn fm_http_torrent_urls_fail_cleanly() {
 fn start_leecher(dir: &std::path::Path) -> Leecher {
     super::testkit::start(dir)
 }
+
+/// I1: two hours asleep between two ticks. The engine notices the wake-up once, adds a moment
+/// of seeding time rather than two hours, and a one-minute "inactive" seeding limit doesn't
+/// stop the torrent for time it never spent awake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_wake_after_two_hours_counts_no_lost_time() {
+    let dir = temp_dir("fm-wake");
+    let s = seeder(&dir).await;
+    let mut cfg = settings(&dir);
+    cfg.seeding.inactive_enabled = true;
+    cfg.seeding.inactive_minutes = 1;
+    let l = start_with(&dir, cfg);
+    download(&l, &s, &dir).await;
+    let before = find(&l.engine.snapshot(), s.hash).unwrap().seeding_secs;
+    crate::faults::jump_ticks(&l.paths.data_dir, Duration::from_secs(2 * 3600));
+    wait_for(&l, "the wake-up", 10, |sn| sn.session.wakes == 1).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let snap = l.engine.snapshot();
+    let t = find(&snap, s.hash).unwrap();
+    assert_eq!(t.state, TorrentState::Seeding, "not stopped for inactivity it never had");
+    assert!(t.seeding_secs <= before + 5, "seeding time {} → {}", before, t.seeding_secs);
+    assert_eq!(snap.session.wakes, 1, "one wake-up");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

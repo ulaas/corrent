@@ -202,9 +202,40 @@ pub fn rss_failed(failures: &mut std::collections::HashMap<String, (u32, std::ti
     n < 3
 }
 
+/// The time between two engine ticks, made safe to count with (STABILITY.md I1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TickGap {
+    /// What the tick counts as elapsed (seeding time, rates): at most three intervals, so a
+    /// computer that slept for hours doesn't add hours of seeding.
+    pub elapsed: std::time::Duration,
+    /// The computer was asleep (or the process stopped) in between.
+    pub woke: bool,
+}
+
+/// A gap longer than this between ticks is a wake-up.
+pub const WAKE_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub fn tick_gap(raw: std::time::Duration, interval: std::time::Duration) -> TickGap {
+    TickGap { elapsed: raw.min(interval.saturating_mul(3)), woke: raw > WAKE_AFTER }
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn tick_gaps_after_sleep() {
+        use std::time::Duration as D;
+        let i = D::from_millis(500);
+        assert_eq!(tick_gap(D::ZERO, i), TickGap { elapsed: D::ZERO, woke: false });
+        assert_eq!(tick_gap(i, i), TickGap { elapsed: i, woke: false });
+        assert_eq!(tick_gap(D::from_secs(1), i).elapsed, D::from_secs(1), "a slow tick counts as it was");
+        assert_eq!(tick_gap(D::from_secs(5), i).elapsed, D::from_millis(1500), "up to 3 intervals");
+        assert!(!tick_gap(D::from_secs(29), i).woke);
+        assert!(tick_gap(D::from_secs(31), i).woke);
+        let h = tick_gap(D::from_secs(2 * 3600), i);
+        assert_eq!((h.elapsed, h.woke), (D::from_millis(1500), true), "two hours asleep add 1.5 s");
+    }
 
     #[test]
     fn rss_failures_are_bounded() {

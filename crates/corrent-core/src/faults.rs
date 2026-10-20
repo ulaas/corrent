@@ -79,6 +79,20 @@ mod imp {
         Some(std::io::Error::from_raw_os_error(if cfg!(windows) { *win } else { *unix }))
     }
 
+    /// A pretend sleep, by profile folder: added to the next tick's gap, once.
+    static TICK_JUMP: Mutex<Vec<(PathBuf, Duration)>> = Mutex::new(Vec::new());
+
+    pub fn jump_ticks(scope: &Path, d: Duration) {
+        TICK_JUMP.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((scope.to_path_buf(), d));
+    }
+
+    pub fn take_tick_jump(data_dir: &Path) -> Duration {
+        let mut v = TICK_JUMP.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (now, later): (Vec<_>, Vec<_>) = v.drain(..).partition(|(p, _)| data_dir.starts_with(p.as_path()));
+        *v = later;
+        now.into_iter().map(|(_, d)| d).sum()
+    }
+
     /// Storage faults by profile folder, with the bytes written since each was set.
     static STORAGE: Mutex<Vec<(PathBuf, super::StorageFault, u64)>> = Mutex::new(Vec::new());
 
@@ -140,6 +154,24 @@ pub fn set_access_denied(prefix: &Path, times: Option<u32>) {
 #[cfg(any(test, feature = "testkit"))]
 pub fn clear_file_errors(prefix: &Path) {
     imp::clear_file_errors(prefix);
+}
+
+/// Tests: the next engine tick of profiles under `scope` sees `d` more time passed (as after the
+/// computer slept).
+#[cfg(any(test, feature = "testkit"))]
+pub fn jump_ticks(scope: &Path, d: Duration) {
+    imp::jump_ticks(scope, d);
+}
+
+/// The pretend sleep for this profile's next tick (zero in release builds).
+pub fn take_tick_jump(data_dir: &Path) -> Duration {
+    #[cfg(any(test, feature = "testkit"))]
+    return imp::take_tick_jump(data_dir);
+    #[cfg(not(any(test, feature = "testkit")))]
+    {
+        let _ = data_dir;
+        Duration::ZERO
+    }
 }
 
 /// An injected error for writing `path` (test builds; never in release).

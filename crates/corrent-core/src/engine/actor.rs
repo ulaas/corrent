@@ -142,6 +142,8 @@ pub struct Actor {
     generation: u64,
     tick_count: u64,
     last_tick: Instant,
+    /// Wake-ups noticed this run (I1).
+    wakes: u32,
     free_space: Option<u64>,
     session_down_total: u64,
     session_up_total: u64,
@@ -249,6 +251,7 @@ impl Actor {
             // Continue after a restart: the UI caches rows per generation (STABILITY.md D12).
             generation,
             tick_count: 0,
+            wakes: 0,
             last_tick: Instant::now(),
             free_space: None,
             session_down_total: 0,
@@ -1849,6 +1852,21 @@ impl Actor {
 
     /// Every map and set the actor keeps (keep in sync with the fields).
     #[cfg(debug_assertions)]
+    /// I1: the computer slept (or the process was stopped) for `gap`. Time-based state is reset
+    /// so nothing acts on the gap: no torrent looks stalled, the queue doesn't count slow time,
+    /// free space is looked at again, and feeds that all fell due are spread out.
+    fn on_wake(&mut self, gap: Duration) {
+        tracing::info!("woke up after {gap:?}");
+        let now = Instant::now();
+        for t in self.last_down_active.values_mut() {
+            *t = now;
+        }
+        self.slow_since.clear();
+        self.free_space_running = None;
+        self.rss.stagger(now, Duration::from_secs(10));
+        self.wakes += 1;
+    }
+
     fn map_sizes(&self) -> Vec<(&'static str, usize)> {
         vec![
             ("torrent_history", self.torrent_history.len()),
@@ -1880,9 +1898,15 @@ impl Actor {
     }
 
     fn tick_inner(&mut self) {
-        let elapsed = self.last_tick.elapsed();
+        let raw = self.last_tick.elapsed() + crate::faults::take_tick_jump(&self.paths.data_dir);
         self.last_tick = Instant::now();
         self.tick_count += 1;
+        let interval = Duration::from_millis(self.settings.advanced.refresh_interval_ms.clamp(200, 5000));
+        let gap = super::logic::tick_gap(raw, interval);
+        let elapsed = gap.elapsed;
+        if gap.woke {
+            self.on_wake(raw);
+        }
 
         self.run_schedule();
         self.poll_feeds();
@@ -2105,6 +2129,7 @@ impl Actor {
         });
 
         let session_view = SessionView {
+            wakes: self.wakes,
             down_bps: down,
             up_bps: up,
             dht_nodes: sess.get_dht().map(|d| d.stats().routing_table_size),

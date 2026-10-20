@@ -162,6 +162,8 @@ pub struct StreamView {
 
 #[derive(Clone, Debug, Default)]
 pub struct SessionView {
+    /// Times the engine noticed a wake-up (sleep, hibernation) this run.
+    pub wakes: u32,
     pub down_bps: u64,
     pub up_bps: u64,
     pub dht_nodes: Option<usize>,
