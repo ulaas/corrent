@@ -692,6 +692,12 @@ impl Player {
     pub fn show(&mut self, ui: &mut Ui, p: &Palette) -> PlayerAction {
         let mut action = PlayerAction::None;
         let ctx = ui.ctx().clone();
+        // Space plays and pauses. Taken before the controls are drawn: a focused button would
+        // also take it as a click (and undo the toggle). Not while typing (the room code).
+        if !ctx.text_edit_focused() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space)) {
+            self.toggle_pause();
+            self.controls_until = Instant::now() + Duration::from_secs(3);
+        }
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
         // Never ask mpv synchronously from the render thread: properties arrive as events.
@@ -750,10 +756,10 @@ impl Player {
         {
             self.controls_until = Instant::now() + Duration::from_secs(3);
         }
+        // A click alone does nothing: it may be the start of a resize at the window's edge, or
+        // just bring the window to the front. Space plays and pauses.
         if resp.double_clicked() {
             action = PlayerAction::ToggleFullscreen;
-        } else if resp.clicked() {
-            self.toggle_pause();
         }
         self.sync_room(&ctx);
         if let Some(c) = &mut self.casting {
@@ -865,9 +871,8 @@ impl Player {
     }
 
     fn keys(&mut self, ctx: &egui::Context, action: &mut PlayerAction) {
-        let (space, left, right, up, down, f, m, esc) = ctx.input(|i| {
+        let (left, right, up, down, f, m, esc) = ctx.input(|i| {
             (
-                i.key_pressed(egui::Key::Space),
                 i.key_pressed(egui::Key::ArrowLeft),
                 i.key_pressed(egui::Key::ArrowRight),
                 i.key_pressed(egui::Key::ArrowUp),
@@ -877,9 +882,6 @@ impl Player {
                 i.key_pressed(egui::Key::Escape),
             )
         });
-        if space {
-            self.toggle_pause();
-        }
         if left {
             self.seek(-10.0, true);
         }
@@ -901,7 +903,7 @@ impl Player {
         if esc {
             *action = if self.fullscreen { PlayerAction::ToggleFullscreen } else { PlayerAction::Close };
         }
-        if space || left || right || up || down || m {
+        if left || right || up || down || m {
             self.controls_until = Instant::now() + Duration::from_secs(3);
         }
     }
