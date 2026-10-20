@@ -58,6 +58,9 @@ pub struct TorrentMeta {
     pub output_folder: Option<PathBuf>,
     pub only_files: Option<Vec<usize>>,
     pub paused: bool,
+    /// A rebuild of the engine's list found no metainfo for it: shown as a failed load with
+    /// Retry (on every start) until it is found or removed.
+    pub metainfo_missing: bool,
 }
 
 impl TorrentMeta {
@@ -116,6 +119,8 @@ pub struct Store {
     pub warning: Option<String>,
     /// The file belongs to a newer Corrent: never overwrite it.
     read_only: bool,
+    /// The file was damaged beyond its backups: the records start over.
+    reset: bool,
     last_error: Option<String>,
     pending_error: Option<String>,
     /// UTC day of the newest daily generation (`store.json.daily-<ts>`), read on the first save.
@@ -160,6 +165,7 @@ impl Store {
         }
         let mut warning = None;
         let mut newer_unreadable = false;
+        let mut reset = false;
         // Exists but can't be read (lock, permissions): run read-only so it is never overwritten.
         let mut unreadable = false;
         let data = match std::fs::read(&path) {
@@ -227,6 +233,7 @@ impl Store {
                         }
                         None => {
                             let _ = std::fs::remove_file(&path);
+                            reset = true;
                             warning = Some(t!(
                                 "Corrent's data file was damaged and no usable backup exists: categories, tags and totals were \
                                  reset. Your torrents are unaffected. The damaged file was kept as {path}.",
@@ -272,6 +279,7 @@ impl Store {
             last_save: std::time::Instant::now(),
             warning,
             read_only,
+            reset,
             last_error: None,
             pending_error: None,
             daily_day: None,
@@ -400,14 +408,24 @@ impl Store {
     }
 
     /// Save now and wait until it is on disk (shutdown; a store dropped while its task unwinds).
-    pub fn flush(&mut self) {
+    /// True when everything is on disk.
+    pub fn flush(&mut self) -> bool {
         if (self.dirty || self.soft_dirty) && !self.read_only {
             self.submit();
         }
-        if !crate::writer::global().flush(&self.path, FLUSH_TIMEOUT) {
+        let done = crate::writer::global().flush(&self.path, FLUSH_TIMEOUT);
+        if !done {
             tracing::warn!("store.json is still being saved after {FLUSH_TIMEOUT:?}");
         }
         self.collect_result();
+        done && !self.read_only && self.last_error.is_none()
+    }
+
+    /// The records are what was saved: not hidden (an unreadable or newer file, saved by nobody
+    /// this session) and not started over after damage. A rebuild of the engine's list relies
+    /// on them (D6b).
+    pub fn records_trusted(&self) -> bool {
+        !self.read_only && !self.reset
     }
 
     fn submit(&mut self) {

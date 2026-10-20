@@ -1528,7 +1528,7 @@ async fn the_store_mirrors_where_the_engine_keeps_data() {
         .await;
     flush(&l).await;
     let only = read_store(&l.paths).torrents[&s.hash].only_files.clone();
-    assert!(only.as_ref().is_none_or(|o| *o == vec![0, 1]), "{only:?}");
+    assert_eq!(only, Some(vec![0, 1]));
 
     let dest = dir.join("dl2");
     l.engine.send(EngineCommand::MoveStorage { hashes: vec![s.hash], to: dest.clone() });
@@ -1664,6 +1664,13 @@ async fn a_rebuild_without_records_or_metainfo_loses_nothing_it_can_keep() {
     tokio::time::sleep(Duration::from_secs(6)).await;
     let paths = stop(l).await;
     assert!(read_store(&paths).torrents.contains_key(&gone), "record kept");
+    // The next start (an ordinary one) still shows it, and still keeps its record.
+    let l = start(&dir);
+    wait_for(&l, "the failed load again", 30, |sn| find(sn, gone).is_some_and(|t| t.restore_failed)).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert!(find(&l.engine.snapshot(), gone).is_some_and(|t| t.restore_failed));
+    let paths = stop(l).await;
+    assert!(read_store(&paths).torrents[&gone].metainfo_missing, "record kept");
 
     // Now without the store as well.
     for e in std::fs::read_dir(&paths.data_dir).unwrap().flatten() {
@@ -1683,5 +1690,32 @@ async fn a_rebuild_without_records_or_metainfo_loses_nothing_it_can_keep() {
     assert_eq!(t.state, TorrentState::Paused);
     assert_eq!(t.save_path, dir.join("dl"), "the download folder");
     stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// D6b: without Corrent's records (here: written by a newer version) a lost list is not rebuilt
+/// into guessed folders; the engine doesn't start and nothing is touched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuild_without_readable_records_touches_nothing() {
+    let dir = temp_dir("db-rebuild-refused");
+    let l = start(&dir);
+    let hashes = add_tiny_torrents(&l, &dir, 1).await;
+    let paths = stop(l).await;
+    std::fs::write(paths.store_file(), br#"{"schema_version":99,"torrents":5}"#).unwrap();
+    lose_session_db(&paths, true);
+    let bitv = paths.session_dir().join(format!("{}.bitv", hashes[0].to_hex()));
+    let had_bitv = bitv.exists();
+    let l = start(&dir);
+    let notices = notices_until(&l, 30, |sn| matches!(sn.engine_state, super::types::EngineState::Failed(_))).await;
+    assert!(
+        matches!(l.engine.snapshot().engine_state, super::types::EngineState::Failed(_)),
+        "the engine must not start: {notices:?}"
+    );
+    assert!(notices.iter().any(|n| n.contains("can't be read right now")), "{notices:?}");
+    let paths = stop(l).await;
+    let db = std::fs::read(paths.session_dir().join("session.json")).unwrap();
+    assert!(db.ends_with(b"garbage"), "the list is left as it is");
+    assert_eq!(bitv.exists(), had_bitv, "piece state kept");
+    assert_eq!(std::fs::read(paths.store_file()).unwrap(), br#"{"schema_version":99,"torrents":5}"#);
     let _ = std::fs::remove_dir_all(dir);
 }

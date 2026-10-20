@@ -105,15 +105,18 @@ pub type Fallback<'a> = &'a dyn Fn(Option<&str>, &str, bool) -> PathBuf;
 /// `session.json.bad-<ts>`.
 ///
 /// `skip` are torrents being removed or re-added (never brought back from here, even if their
-/// metainfo is still there).
+/// metainfo is still there). `trusted`: the store's records are what was saved
+/// (`Store::records_trusted`); a rebuild needs them, or it would put every torrent in a guessed
+/// folder and throw away its piece state.
 ///
-/// `None`: nothing to do. `Err`: the plan couldn't be made (the file is left as it is).
+/// `None`: nothing to do. `Err`: a rebuild is needed but can't be done now (nothing is touched).
 /// The caller records in the store that these torrents are paused *before* `commit`, so a crash in
 /// between leaves either the old state (planned again at the next start) or a paused record.
 pub fn plan(
     session_dir: &Path,
     store: &crate::store::StoreData,
     skip: &HashSet<InfoHash>,
+    trusted: bool,
     fallback: Fallback<'_>,
 ) -> Option<Result<Plan, String>> {
     let path = db_file(session_dir);
@@ -146,6 +149,10 @@ pub fn plan(
         // A new profile has no list and nothing to rebuild one from.
         if p.torrents.is_empty() && p.missing.is_empty() && !path.exists() {
             return None;
+        }
+        if !trusted {
+            tracing::error!("session.json needs a rebuild, but the store's records can't be trusted now");
+            return Some(Err(path.display().to_string()));
         }
         tracing::error!(
             "no usable copy of session.json: rebuilding it ({} torrents, {} in a guessed folder, {} without metainfo)",
@@ -253,11 +260,12 @@ fn rebuild(
 /// saved for their old folder, so they are checked in full.
 pub fn commit(session_dir: &Path, plan: &Plan) -> Result<(), String> {
     let path = db_file(session_dir);
+    let bytes = serde_json::to_vec(&plan.db).map_err(|e| format!("{}: {e}", path.display()))?;
+    crate::util::write_replace(&path, &bytes).map_err(|e| format!("{}: {e:#}", path.display()))?;
+    // After the list: a list that couldn't be written leaves everything as it was.
     for h in &plan.guessed {
         let _ = std::fs::remove_file(session_dir.join(format!("{}.bitv", h.to_hex())));
     }
-    let bytes = serde_json::to_vec(&plan.db).map_err(|e| format!("{}: {e}", path.display()))?;
-    crate::util::write_replace(&path, &bytes).map_err(|e| format!("{}: {e:#}", path.display()))?;
     match plan.how {
         How::Restored { saved_at } => tracing::warn!(
             "session.json restored from the copy of {saved_at} ({} torrents, all paused)",
@@ -389,7 +397,7 @@ mod tests {
         skip: &HashSet<InfoHash>,
         fallback: Fallback<'_>,
     ) -> Option<Plan> {
-        let p = plan(dir, store, skip, fallback)?.unwrap();
+        let p = plan(dir, store, skip, true, fallback)?.unwrap();
         commit(dir, &p).unwrap();
         Some(p)
     }
@@ -412,7 +420,7 @@ mod tests {
         let bad = crate::util::generations(&path, "bad");
         assert_eq!(std::fs::read(&bad[0].1).unwrap(), b"{ cut off");
         // Now good: nothing more to do.
-        assert!(plan(&dir, &store, &HashSet::new(), &no_fallback).is_none());
+        assert!(plan(&dir, &store, &HashSet::new(), true, &no_fallback).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -434,7 +442,7 @@ mod tests {
     fn a_missing_list_comes_back_only_if_there_was_one() {
         let dir = scratch("missing");
         let empty = crate::store::StoreData::default();
-        assert!(plan(&dir, &empty, &HashSet::new(), &no_fallback).is_none(), "a new profile");
+        assert!(plan(&dir, &empty, &HashSet::new(), true, &no_fallback).is_none(), "a new profile");
         good(&dir, 100, &db(&[(0, A)]));
         let r = recover(&dir, &store_of(&[hash(A)]), &HashSet::new(), &no_fallback).unwrap();
         assert_eq!(r.torrents, vec![hash(A)]);
@@ -509,7 +517,24 @@ mod tests {
         // What librqbit reads back (through the same view as failed restores).
         let entries = super::super::restore::persisted_entries(&dir);
         assert_eq!(entries.len(), 3);
-        assert!(plan(&dir, &store, &HashSet::new(), &fallback).is_none(), "now good");
+        assert!(plan(&dir, &store, &HashSet::new(), true, &fallback).is_none(), "now good");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn records_that_cant_be_trusted_stop_a_rebuild_and_touch_nothing() {
+        let dir = scratch("rebuild-untrusted");
+        let path = dir.join("session.json");
+        std::fs::write(&path, "garbage").unwrap();
+        let a = metainfo_file(&dir, 1, false);
+        let empty = crate::store::StoreData::default();
+        assert!(matches!(plan(&dir, &empty, &HashSet::new(), false, &no_fallback), Some(Err(_))));
+        assert_eq!(std::fs::read(&path).unwrap(), b"garbage");
+        assert!(dir.join(format!("{}.bitv", a.to_hex())).exists(), "piece state kept");
+        // Missing instead of damaged: the same.
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(plan(&dir, &empty, &HashSet::new(), false, &no_fallback), Some(Err(_))));
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -336,7 +336,17 @@ impl Actor {
         self.engine_state = if self.session.is_some() { EngineState::Restarting } else { EngineState::Starting };
         self.start_phase = Some(StartPhase::TorrentList);
         self.publish();
-        let rebuilt = self.recover_session_db();
+        let rebuilt = match self.recover_session_db() {
+            Ok(rebuilt) => rebuilt,
+            Err(why) => {
+                // Starting would give the engine an empty list; the banner says why.
+                self.engine_state = EngineState::Failed(why);
+                self.start_phase = None;
+                self.publish();
+                return;
+            }
+        };
+        self.show_missing_metainfo();
         self.purge_pending();
         if std::mem::take(&mut self.first_start) {
             self.check_after_power_loss();
@@ -1226,19 +1236,21 @@ impl Actor {
         }
     }
 
-    /// D6a: a damaged (or lost) `session.json` comes back from its newest good copy, before
-    /// librqbit reads it.
-    /// D6a/D6b: put back a damaged or lost engine list. Returns true when the list was rebuilt
-    /// (not a copy worth keeping as a good one).
-    fn recover_session_db(&mut self) -> bool {
+    /// D6a/D6b: before librqbit reads it, put back a damaged or lost engine list from its newest
+    /// good copy, or rebuild it. Ok(true) when the list was rebuilt (not a copy worth keeping as a
+    /// good one); Err when the engine must not start (it would start with an empty list).
+    fn recover_session_db(&mut self) -> Result<bool, String> {
         let dir = self.paths.session_dir();
         // Being removed, or being re-added (their recovery brings them back with the right folder).
+        // (Recovered only with both its note and its metainfo backup.)
         let mut skip: HashSet<InfoHash> = self.store.data.purge.iter().copied().collect();
-        if let Ok(rd) = std::fs::read_dir(self.paths.torrents_dir()) {
+        let readds = self.paths.torrents_dir();
+        if let Ok(rd) = std::fs::read_dir(&readds) {
             skip.extend(rd.flatten().filter_map(|e| {
                 let p = e.path();
                 p.extension().is_some_and(|x| x == "json").then_some(())?;
-                p.file_stem().and_then(|s| s.to_str()).and_then(InfoHash::from_hex)
+                let hash = p.file_stem().and_then(|s| s.to_str()).and_then(InfoHash::from_hex)?;
+                readds.join(format!("{}.torrent", hash.to_hex())).exists().then_some(hash)
             }));
         }
         let (downloads, cats) = (&self.settings.downloads, &self.store.data.categories);
@@ -1249,18 +1261,23 @@ impl Actor {
                 .unwrap_or_else(|| downloads.save_path.clone());
             if multi && downloads.create_subfolder { base.join(sanitize_name(name)) } else { base }
         };
-        let plan = match super::session_db::plan(&dir, &self.store.data, &skip, &fallback) {
-            None => return false,
+        let trusted = self.store.records_trusted();
+        let plan = match super::session_db::plan(&dir, &self.store.data, &skip, trusted, &fallback) {
+            None => return Ok(false),
             Some(Ok(p)) => p,
             Some(Err(path)) => {
-                self.emit(EngineEvent::DataWarning(t!(
-                    "The engine's torrent list ({path}) is damaged and no usable copy was found. The torrent \
-                     engine can't start until the file is repaired or removed.",
+                let why = t!(
+                    "The engine's torrent list ({path}) is damaged or missing, no usable copy was found, and \
+                     Corrent's own records can't be read right now to rebuild it. The torrent engine doesn't \
+                     start, so nothing is lost; restart Corrent to try again.",
                     path = path
-                )));
-                return false;
+                )
+                .to_string();
+                self.emit(EngineEvent::DataWarning(why.clone()));
+                return Err(why);
             }
         };
+        let rebuild = plan.how == super::session_db::How::Rebuilt;
         // Paused by the user as far as Corrent is concerned: the queue must not resume them into
         // folders that may have changed. Saved before the list is written (see `plan`). A record
         // is made for torrents the store doesn't know, or the queue would start them.
@@ -1270,15 +1287,27 @@ impl Actor {
             m.pause_reason = Some(PauseReason::User);
             m.force_started = false;
         }
+        for m in &plan.missing {
+            self.store.meta_mut(m.hash).metainfo_missing = true;
+        }
         self.store.mark_dirty();
-        self.store.flush();
+        // A restore from a copy works without a store; a rebuild doesn't (see `plan`).
+        if !self.store.flush() && rebuild {
+            let why = t!("The engine's torrent list was lost, but Corrent couldn't save its own records before \
+                 rebuilding it. The torrent engine doesn't start, so nothing is lost; restart Corrent to try again.")
+            .to_string();
+            self.emit(EngineEvent::DataWarning(why.clone()));
+            return Err(why);
+        }
         if let Err(path) = super::session_db::commit(&dir, &plan) {
-            self.emit(EngineEvent::DataWarning(t!(
+            let why = t!(
                 "The engine's torrent list ({path}) is damaged and could not be replaced. The torrent \
                  engine can't start until the file is repaired or removed.",
                 path = path
-            )));
-            return false;
+            )
+            .to_string();
+            self.emit(EngineEvent::DataWarning(why.clone()));
+            return Err(why);
         }
         self.prune_suspended = true;
         let n = plan.torrents.len();
@@ -1292,30 +1321,9 @@ impl Actor {
                     date = crate::util::fmt_date(saved_at),
                     n = n
                 )));
-                false
+                Ok(false)
             }
             super::session_db::How::Rebuilt => {
-                // Metainfo gone: shown as failed loads (Retry looks for it), never retried alone.
-                for m in &plan.missing {
-                    let trackers = self
-                        .store
-                        .get(&m.hash)
-                        .and_then(|r| r.source_magnet.as_deref())
-                        .and_then(|l| librqbit::Magnet::parse(l).ok())
-                        .map(|l| l.trackers)
-                        .unwrap_or_default();
-                    let error = t!("Its torrent file is missing. Retry looks for it on the network.").to_string();
-                    let f = super::restore::FailedRestore {
-                        id: super::restore::NOT_LISTED,
-                        hash: m.hash,
-                        output_folder: m.output_folder.clone(),
-                        only_files: m.only_files.clone(),
-                        paused: true,
-                        trackers,
-                        error,
-                    };
-                    self.failed.insert(m.hash, f);
-                }
                 let mut text = if n == 0 {
                     t!("The engine's torrent list was lost and no saved copy was usable, and no torrent files \
                          were left to rebuild it from: the engine starts with an empty list.")
@@ -1356,8 +1364,37 @@ impl Actor {
                     text.push_str(&extra);
                 }
                 self.emit(EngineEvent::DataWarning(text));
-                true
+                Ok(true)
             }
+        }
+    }
+
+    /// D6b: records whose metainfo a rebuild didn't find show as failed loads (Retry looks for the
+    /// metainfo on the network), on every start until found or removed; never retried alone.
+    fn show_missing_metainfo(&mut self) {
+        let rows: Vec<super::restore::FailedRestore> = self
+            .store
+            .data
+            .torrents
+            .iter()
+            .filter(|(h, m)| m.metainfo_missing && !self.failed.contains_key(*h))
+            .map(|(h, m)| super::restore::FailedRestore {
+                id: super::restore::NOT_LISTED,
+                hash: *h,
+                output_folder: m.output_folder.clone().unwrap_or_else(|| self.settings.downloads.save_path.clone()),
+                only_files: m.only_files.clone(),
+                paused: true,
+                trackers: m
+                    .source_magnet
+                    .as_deref()
+                    .and_then(|l| librqbit::Magnet::parse(l).ok())
+                    .map(|l| l.trackers)
+                    .unwrap_or_default(),
+                error: t!("Its torrent file is missing. Retry looks for it on the network.").to_string(),
+            })
+            .collect();
+        for f in rows {
+            self.failed.insert(f.hash, f);
         }
     }
 
@@ -1421,13 +1458,28 @@ impl Actor {
     }
 
     fn retry_failed_inner(&mut self, hash: InfoHash, quiet: bool) {
-        let (Some(sess), Some(f)) = (self.session.clone(), self.failed.get(&hash).cloned()) else { return };
+        let (Some(sess), Some(mut f)) = (self.session.clone(), self.failed.get(&hash).cloned()) else { return };
+        if self.busy.contains_key(&hash) {
+            return;
+        }
+        // Without metainfo it is looked for on the network: added running so that it announces
+        // to its trackers (the store's pause brings it back to paused once it is there).
+        let not_listed = f.id == super::restore::NOT_LISTED;
+        if not_listed {
+            f.paused = false;
+        }
         let dir = self.paths.session_dir();
         let tx = self.internal_tx.clone();
         self.busy.insert(hash, t!("Retrying…").into());
         let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
         tokio::spawn(async move {
-            let result = super::restore::retry(&sess, &dir, &f, peer_limit).await;
+            let result = if not_listed {
+                tokio::time::timeout(METAINFO_SEARCH, super::restore::retry(&sess, &dir, &f, peer_limit))
+                    .await
+                    .unwrap_or_else(|_| Err(t!("Not found on the network yet. Try again later.").to_string()))
+            } else {
+                super::restore::retry(&sess, &dir, &f, peer_limit).await
+            };
             let _ = tx.send(Internal::RestoreRetried { hash, result, quiet }).await;
         });
     }
@@ -1598,7 +1650,12 @@ impl Actor {
                         if let Some((path, after)) = from_watch {
                             self.settle_watch_file(path, after, true);
                         }
+                        // Added again by hand: no longer a failed load.
+                        if self.failed.get(&hash).is_some_and(|f| f.id == super::restore::NOT_LISTED) {
+                            self.failed.remove(&hash);
+                        }
                         let m = self.store.meta_mut(hash);
+                        m.metainfo_missing = false;
                         m.name = name.clone();
                         m.category = req.category.clone();
                         m.tags = req.tags.clone();
@@ -1714,6 +1771,12 @@ impl Actor {
                 match result {
                     Ok(()) => {
                         self.failed.remove(&hash);
+                        if let Some(m) = self.store.data.torrents.get_mut(&hash)
+                            && m.metainfo_missing
+                        {
+                            m.metainfo_missing = false;
+                            self.store.mark_dirty();
+                        }
                         self.toast(ToastKind::Success, t!("Torrent loaded."));
                     }
                     Err(e) => {
@@ -3161,6 +3224,8 @@ enum Job {
 
 /// How long the engine may take to start, plus 100 ms per torrent in its list.
 const START_DEADLINE: Duration = Duration::from_secs(60);
+/// How long a Retry of a torrent without metainfo looks for it on the network.
+const METAINFO_SEARCH: Duration = Duration::from_secs(120);
 
 /// One librqbit call may take this long (pausing rewrites and syncs session.json).
 const ENGINE_CALL_TIMEOUT: Duration = Duration::from_secs(10);
