@@ -70,6 +70,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "corrent-plugin-omdb"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "corrent-plugin-opensubtitles"
 version = "1.0.0"
 dependencies = [

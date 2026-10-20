@@ -2928,5 +2928,14 @@ async fn items_wait_for_a_provider_and_are_identified_once_one_is_ready() {
         assert!(std::time::Instant::now() < deadline, "identified after the provider came: {d}");
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
+    // Rating sites (what OMDb adds) are kept with the item; a key that isn't a plain name isn't.
+    let ratings: std::collections::BTreeMap<String, String> =
+        [("imdb", "7.4"), ("rotten_tomatoes", "85%"), ("x') OR 1=1 --", "0")]
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+    h.st.library.set_ratings(id, ratings).await.unwrap();
+    let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
+    assert_eq!(d["extra"]["ratings"], json!({ "imdb": "7.4", "rotten_tomatoes": "85%" }), "{d}");
     h.stop().await;
 }

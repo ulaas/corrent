@@ -1455,8 +1455,20 @@ impl CorrentApp {
             if let Some(r) = &d.official_rating {
                 facts.push(r.clone());
             }
-            if let Some(r) = d.rating {
-                facts.push(format!("★ {r:.1}"));
+            // Rating sites (OMDb) when known, else the provider's own score.
+            let site =
+                |k: &str| d.extra.get("ratings").and_then(|r| r.get(k)).and_then(|v| v.as_str()).map(String::from);
+            let imdb = site("imdb");
+            match (&imdb, d.rating) {
+                (Some(r), _) => facts.push(format!("IMDb {r}")),
+                (None, Some(r)) => facts.push(format!("★ {r:.1}")),
+                (None, None) => {}
+            }
+            if let Some(rt) = site("rotten_tomatoes") {
+                facts.push(format!("Rotten Tomatoes {rt}"));
+            }
+            if let Some(mc) = site("metacritic") {
+                facts.push(format!("Metacritic {mc}"));
             }
             ui.label(RichText::new(facts.join("  ·  ")).color(p.text_dim));
         });

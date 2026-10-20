@@ -84,7 +84,9 @@ description = "One sentence."
 author = "You"
 host_api = "1"
 kinds = ["metadata"]          # metadata | indexer | notifier | subtitles | parser | task | events
-supplements = false           # metadata: only adds artwork/ids to another provider's match
+supplements = false           # metadata: only adds artwork/ids to another provider's match;
+                              # `rating:<site>` ids (e.g. rating:imdb = "7.8") are kept as the
+                              # item's scores from that site (the built-in OMDb plugin does this)
 task_every_min = 60           # task: default interval
 runtime = "wasm"              # or "process"
 command = ["my-plugin"]       # process: the program in the plugin's folder, and arguments

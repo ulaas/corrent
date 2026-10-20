@@ -350,6 +350,7 @@ pub fn builtins() -> Vec<(Manifest, &'static [u8])> {
         (include_str!("../builtin/tvdb.toml"), &include_bytes!("../builtin/tvdb.wasm")[..]),
         (include_str!("../builtin/fanart.toml"), &include_bytes!("../builtin/fanart.wasm")[..]),
         (include_str!("../builtin/opensubtitles.toml"), &include_bytes!("../builtin/opensubtitles.wasm")[..]),
+        (include_str!("../builtin/omdb.toml"), &include_bytes!("../builtin/omdb.wasm")[..]),
     ]
     .into_iter()
     .filter_map(|(m, w)| {
@@ -912,9 +913,10 @@ mod tests {
         let b = builtins();
         assert_eq!(
             b.iter().map(|(m, _)| m.id.as_str()).collect::<Vec<_>>(),
-            vec!["tmdb", "musicbrainz", "tvdb", "fanart", "opensubtitles"]
+            vec!["tmdb", "musicbrainz", "tvdb", "fanart", "opensubtitles", "omdb"]
         );
         assert!(b.iter().find(|(m, _)| m.id == "fanart").is_some_and(|(m, _)| m.supplements));
+        assert!(b.iter().find(|(m, _)| m.id == "omdb").is_some_and(|(m, _)| m.supplements));
         let rt = tokio::runtime::Runtime::new().unwrap();
         let h = PluginHost::new(Arc::new(MemoryKv::default()), rt.handle().clone()).unwrap();
         for (m, w) in b {

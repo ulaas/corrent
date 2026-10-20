@@ -308,6 +308,30 @@ impl Library {
             .await?)
     }
 
+    /// Scores from rating sites (`imdb` → "7.8", `rotten_tomatoes` → "85%"…) kept with an item
+    /// (`extra.ratings`), merged with what it has.
+    pub async fn set_ratings(&self, item: i64, ratings: BTreeMap<String, String>) -> Result<()> {
+        if ratings.is_empty() {
+            return Ok(());
+        }
+        self.db()
+            .write(move |t| {
+                for (k, v) in &ratings {
+                    // A key with only letters, digits and `_` (it goes into a JSON path).
+                    if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                        continue;
+                    }
+                    t.execute(
+                        &format!("UPDATE items SET extra = json_set(extra, '$.ratings.{k}', ?1) WHERE id = ?2"),
+                        params![v, item],
+                    )?;
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
     /// Items no provider matched are asked again (after a provider became usable). Returns how
     /// many.
     pub async fn reset_unmatched(&self) -> Result<usize> {

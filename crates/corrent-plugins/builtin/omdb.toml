@@ -1,0 +1,19 @@
+id = "omdb"
+name = "OMDb (IMDb ratings)"
+version = "1.0.0"
+description = "IMDb ratings, plus Rotten Tomatoes and Metacritic scores, for movies and shows another provider identified (by their IMDb id)."
+author = "Corrent"
+host_api = "1"
+kinds = ["metadata"]
+supplements = true
+
+[permissions]
+hosts = ["www.omdbapi.com"]
+rate_per_sec = 2
+
+[[settings]]
+key = "api_key"
+label = "API key"
+help = "Get a free key (1,000 lookups a day) at omdbapi.com → API Key."
+secret = true
+required = true

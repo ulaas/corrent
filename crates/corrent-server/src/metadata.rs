@@ -125,6 +125,13 @@ pub async fn apply(
         };
         let Some(c) = host.metadata_search(sid, q).await.ok().and_then(|c| c.into_iter().next()) else { continue };
         let Ok(extra) = host.metadata_details(sid, mk, c.id, language.to_string()).await else { continue };
+        // Rating sites (OMDb): `rating:<source>` entries.
+        let ratings: BTreeMap<String, String> = extra
+            .ids
+            .iter()
+            .filter_map(|(k, v)| k.strip_prefix("rating:").map(|k| (k.to_string(), v.clone())))
+            .collect();
+        let _ = st.library.set_ratings(item, ratings).await;
         for a in extra.artwork.iter().filter(|a| !have.contains(&a.kind)) {
             if let Some(bytes) = fetch_image(st, &a.url).await {
                 let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, Replace::IfMissingOrFrame, false).await;
