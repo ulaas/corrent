@@ -6,6 +6,10 @@ mod automation;
 pub mod creator;
 #[cfg(test)]
 mod e2e_tests;
+#[cfg(test)]
+mod fault_tests;
+#[cfg(any(test, feature = "testkit"))]
+pub(crate) mod faulty_storage;
 pub mod ipfilter;
 pub mod logic;
 mod moves;

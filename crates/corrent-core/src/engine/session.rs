@@ -93,6 +93,8 @@ fn options(
         client_name_and_version: Some(format!("Corrent {}", env!("CARGO_PKG_VERSION"))),
         // Torrent URLs and HTTP trackers: a server that trickles bytes can't hold an add forever.
         http_timeout: Some(crate::faults::http_timeout(&paths.data_dir).unwrap_or(Duration::from_secs(60))),
+        // Test builds: the filesystem storage with injectable faults (S8); None otherwise.
+        default_storage_factory: crate::faults::storage_factory(&paths.data_dir),
         // A child per attempt: a session that fails half-way cancels its own token when dropped.
         cancellation_token: Some(cancel.child_token()),
         ..Default::default()

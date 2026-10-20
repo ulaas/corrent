@@ -53,10 +53,90 @@ mod imp {
         let v = CALL_DELAY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         v.iter().find(|(h, _)| *h == hash).map(|(_, d)| *d)
     }
+
+    /// Storage faults by profile folder, with the bytes written since each was set.
+    static STORAGE: Mutex<Vec<(PathBuf, super::StorageFault, u64)>> = Mutex::new(Vec::new());
+
+    pub fn set_storage_fault(scope: &Path, f: super::StorageFault) {
+        STORAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((scope.to_path_buf(), f, 0));
+    }
+
+    pub fn clear_storage_faults(scope: &Path) {
+        STORAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(p, _, _)| !p.starts_with(scope));
+    }
+
+    pub fn storage_check(scope: &Path, op: super::StorageOp, bytes: u64) -> std::io::Result<()> {
+        use super::StorageFaultKind as K;
+        let mut delay = None;
+        let mut fail = None;
+        {
+            let mut v = STORAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (p, f, written) in v.iter_mut() {
+                if !scope.starts_with(p.as_path()) || f.op != op {
+                    continue;
+                }
+                match f.kind {
+                    K::DiskFull { after_bytes } => {
+                        if *written + bytes > after_bytes {
+                            fail = Some(std::io::Error::from_raw_os_error(if cfg!(windows) { 112 } else { 28 }));
+                        } else {
+                            *written += bytes;
+                        }
+                    }
+                    K::Permission => fail = Some(std::io::Error::from_raw_os_error(if cfg!(windows) { 5 } else { 13 })),
+                    K::Eio => fail = Some(std::io::Error::from_raw_os_error(if cfg!(windows) { 1117 } else { 5 })),
+                    K::Delay(d) => delay = Some(d),
+                }
+            }
+        }
+        if let Some(d) = delay {
+            std::thread::sleep(d);
+        }
+        fail.map_or(Ok(()), Err)
+    }
 }
 
 #[cfg(any(test, feature = "testkit"))]
-pub use imp::{clear_call_delay, set_call_delay};
+pub use imp::{clear_call_delay, clear_storage_faults, set_call_delay, set_storage_fault, storage_check};
+
+/// Where in the engine's storage a fault strikes (S8, tests only).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageOp {
+    /// Opening the files (adding, resuming).
+    Init,
+    Write,
+    Read,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageFaultKind {
+    /// Writes fail once this many more bytes were written (ENOSPC / ERROR_DISK_FULL).
+    DiskFull { after_bytes: u64 },
+    /// Access denied (EACCES / ERROR_ACCESS_DENIED).
+    Permission,
+    /// An I/O error (EIO / ERROR_IO_DEVICE).
+    Eio,
+    /// Every matching operation waits this long first.
+    Delay(Duration),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageFault {
+    pub op: StorageOp,
+    pub kind: StorageFaultKind,
+}
+
+/// The engine's storage for a profile: with injected faults in test builds, librqbit's own
+/// otherwise.
+pub fn storage_factory(data_dir: &Path) -> Option<librqbit::storage::BoxStorageFactory> {
+    #[cfg(any(test, feature = "testkit"))]
+    return Some(crate::engine::faulty_storage::FaultyStorageFactory::boxed(data_dir));
+    #[cfg(not(any(test, feature = "testkit")))]
+    {
+        let _ = data_dir;
+        None
+    }
+}
 
 /// A note when fault injection is compiled in (only test builds and the `testkit` feature).
 /// The binaries log it at start, so `scripts/release-hygiene.ps1` finds the text in a binary

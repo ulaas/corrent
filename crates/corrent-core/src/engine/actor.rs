@@ -3268,8 +3268,10 @@ async fn run_engine_calls(
                 tokio::time::sleep(d).await;
             }
             // Don't trust `is_paused()`: librqbit sets it when a pause is requested during
-            // initialization even if the torrent then goes live anyway.
-            let paused = matches!(h.stats().state, TorrentStatsState::Paused);
+            // initialization even if the torrent then goes live anyway. A torrent that stopped
+            // on an error (a full disk) starts like a paused one: librqbit opens its files again
+            // and checks what is there (nothing is downloaded twice).
+            let paused = matches!(h.stats().state, TorrentStatsState::Paused | TorrentStatsState::Error);
             match &kind {
                 CallKind::Pause if !paused => sess.pause(&h).await,
                 CallKind::Pause => Ok(()),

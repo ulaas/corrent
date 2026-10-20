@@ -24,7 +24,11 @@ impl CorrentApp {
         let single = sel.len() == 1;
         let Some(first) = sel.first().cloned() else { return };
 
-        let label = if sel.iter().all(|t| t.restore_failed) { t!("Retry") } else { t!("Resume") };
+        let label = if sel.iter().all(|t| t.restore_failed || t.state == TorrentState::Error) {
+            t!("Retry")
+        } else {
+            t!("Resume")
+        };
         if sel.iter().any(|t| t.state.is_paused_like() || t.state == TorrentState::Error)
             && item(ui, if label == t!("Retry") { icons::ARROW_CLOCKWISE } else { icons::PLAY }, label)
         {

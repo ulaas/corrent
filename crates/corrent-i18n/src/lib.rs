@@ -178,7 +178,11 @@ mod tests {
         }
         {
             for p in files {
-                if p.extension().is_none_or(|x| x != "rs") || p.ends_with("ui_tests.rs") || p.ends_with("e2e_tests.rs")
+                // Test files (`*_tests.rs`) and test-only modules aren't read by people.
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                if p.extension().is_none_or(|x| x != "rs")
+                    || name.ends_with("_tests.rs")
+                    || matches!(name, "faulty_storage.rs" | "netproxy.rs" | "faultserver.rs" | "testkit.rs")
                 {
                     continue;
                 }
