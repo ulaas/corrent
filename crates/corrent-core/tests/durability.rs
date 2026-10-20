@@ -98,12 +98,13 @@ fn kill_and_verify(name: &str, point: &str, n: u32) -> Result {
 #[test]
 fn a_few_kills_during_saves_lose_nothing() {
     // Deterministic points: the first store temp file, the 5th engine database temp file (an add),
-    // the second settings rename (with a fresh .bak), the re-add backup.
+    // the second settings rename (with a fresh .bak), the re-add note, a restore half done.
     for (i, (point, n)) in [
         ("store:after_tmp", 1),
         ("engine-session:after_tmp", 5),
         ("settings:after_rename", 2),
         ("readd-note:after_tmp", 1),
+        ("restore:after_keep", 2),
     ]
     .into_iter()
     .enumerate()
