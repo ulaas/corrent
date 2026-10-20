@@ -127,6 +127,7 @@ fn main() -> eframe::Result {
     let log_dir = paths.log_dir();
     std::thread::spawn(util::local_offset_secs);
     let restore_note = backup::apply_pending(&paths);
+    corrent_core::retention::prune_in_background(&paths);
     // A media-server restore staged from the web interface replaces settings.toml too, so it goes
     // before the settings are read.
     let server_restore = corrent_server::backups::apply_pending(&paths.data_dir);

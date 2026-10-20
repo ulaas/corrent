@@ -18,6 +18,7 @@ pub mod lock;
 pub mod logbuf;
 pub mod logfile;
 pub mod migrate;
+pub mod retention;
 pub mod rss;
 pub mod search;
 pub mod store;
