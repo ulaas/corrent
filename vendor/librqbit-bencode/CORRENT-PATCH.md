@@ -12,7 +12,12 @@ E2), marked `CORRENT PATCH (E2)` in `src/deserialize.rs` and `src/lib.rs`:
   file tree nests two per folder.
 - **Checked numbers.** String lengths and integers were parsed with unchecked arithmetic: 20 or
   more digits panicked in builds with overflow checks and wrapped to a wrong length without them.
-  They now use atoi's checked parsers, so such a number is `InvalidValue`.
+  They now use atoi's checked parsers, so such a number is `InvalidValue`. One behaviour change: an
+  integer above `i64::MAX` in a dynamically typed place (a skipped unknown key, a `BencodeValue`)
+  now fails the whole message instead of wrapping silently.
+
+The limit was measured in Corrent's dev profile, which builds dependencies at opt-level 2: 512
+levels fit a 1 MiB stack there. Corrent parses on 2 MiB tokio threads.
 
 The tests are in Corrent (`crates/corrent-core/src/engine/untrusted_tests.rs`), because vendored
 crates aren't workspace members and their tests don't run in the gate.

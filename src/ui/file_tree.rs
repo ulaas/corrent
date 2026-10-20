@@ -181,7 +181,8 @@ fn show_node(
                 ui.label(RichText::new(icons::PLAY_CIRCLE).color(p.accent))
                     .on_hover_text(t!("Being streamed to a media player"));
             } else {
-                ui.label(RichText::new(file_icon(name)).color(p.text_dim));
+                let own = e.components.last().map(String::as_str).unwrap_or(name);
+                ui.label(RichText::new(file_icon(own)).color(p.text_dim));
             }
             ui.add(egui::Label::new(RichText::new(name).color(if on { p.text } else { p.text_mute })).truncate());
             row_tail(ui, p, e.len, e.done, e.priority);

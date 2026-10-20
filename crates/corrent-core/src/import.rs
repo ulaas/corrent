@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Resume data of other clients (about a byte per piece; bigger is not resume data).
+/// Resume data of other clients (a few bytes per piece; bigger is not resume data).
 const MAX_RESUME_BYTES: u64 = 16 << 20;
 
 use librqbit_bencode::{BencodeValue, ByteBufOwned};

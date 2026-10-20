@@ -51,8 +51,12 @@ where
         // tree in the UI would nest that deep.
         let joined: usize = components.iter().map(|c| c.len() + 1).sum();
         if components.len() > MAX_COMPONENTS || joined > MAX_PATH_BYTES {
-            let shown: String = components.join("/").chars().take(120).collect();
-            return Err(t!("The torrent contains a path that is too deep or too long: {path}…", path = shown));
+            let full = components.join("/");
+            let mut shown: String = full.chars().take(120).collect();
+            if shown.len() < full.len() {
+                shown.push('…');
+            }
+            return Err(t!("The torrent contains a path that is too deep or too long: {path}", path = shown));
         }
         if rules.case_insensitive {
             let key = components

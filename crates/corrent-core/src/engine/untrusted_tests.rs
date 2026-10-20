@@ -35,7 +35,14 @@ fn the_deepest_accepted_value_fits_a_small_stack() {
     // At the limit, with the debug build's big frames, on the smallest stack Corrent runs on.
     let ok = lists(MAX_DEPTH);
     let too_deep = lists(MAX_DEPTH + 1);
+    // And through a torrent's typed parse: an unknown key holding nearly the limit.
+    let mut torrent = b"d4:infod6:lengthi1e4:name1:a12:piece lengthi16384e6:pieces20:".to_vec();
+    torrent.extend_from_slice(&[7u8; 20]);
+    torrent.extend_from_slice(b"5:extra");
+    torrent.extend_from_slice(&lists(MAX_DEPTH - 2));
+    torrent.extend_from_slice(b"ee");
     on_stack(1 << 20, move || {
+        assert!(librqbit::torrent_from_bytes(&torrent).is_ok());
         assert!(dyn_from_bytes::<ByteBufOwned>(&ok).is_ok());
         assert!(dyn_from_bytes::<ByteBufOwned>(&too_deep).is_err());
         let msg = format!("{:#}", dyn_from_bytes::<ByteBufOwned>(&too_deep).unwrap_err());

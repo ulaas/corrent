@@ -70,10 +70,19 @@ impl Sessions {
 
     pub fn failed(&mut self, ip: IpAddr) {
         self.fails.retain(|_, (_, at)| at.elapsed() < BAN);
-        // Many addresses failing (a scan): forget the oldest rather than grow without end.
+        // Many addresses failing (a scan): forget the oldest rather than grow without end, but an
+        // address that is banned only once nothing else is left (else enough addresses would push
+        // a ban out and let it keep guessing).
         while self.fails.len() >= MAX_FAILS_TRACKED && !self.fails.contains_key(&ip) {
-            let Some(oldest) = self.fails.iter().min_by_key(|(_, (_, at))| *at).map(|(k, _)| *k) else { break };
-            self.fails.remove(&oldest);
+            let oldest = |banned: bool| {
+                self.fails
+                    .iter()
+                    .filter(|(_, (n, _))| (*n >= MAX_FAILS) == banned)
+                    .min_by_key(|(_, (_, at))| *at)
+                    .map(|(k, _)| *k)
+            };
+            let Some(gone) = oldest(false).or_else(|| oldest(true)) else { break };
+            self.fails.remove(&gone);
         }
         let e = self.fails.entry(ip).or_insert((0, Instant::now()));
         e.0 += 1;
@@ -98,13 +107,9 @@ impl Sessions {
         // Expired sessions go here too, not only when someone logs in.
         self.sids.retain(|_, at| at.elapsed() < SESSION_TTL);
         match self.sids.get_mut(sid) {
-            Some(at) if at.elapsed() < SESSION_TTL => {
+            Some(at) => {
                 *at = Instant::now();
                 true
-            }
-            Some(_) => {
-                self.sids.remove(sid);
-                false
             }
             None => false,
         }
@@ -139,10 +144,17 @@ mod tests {
         assert!(s.check(&first), "a session in use stays");
         assert!(s.check(sids.last().unwrap()));
         assert!(!s.check(&sids[1]), "the least recently used went");
+        // A banned address stays banned however many others fail meanwhile.
+        let bad: IpAddr = "10.9.9.9".parse().unwrap();
+        for _ in 0..MAX_FAILS {
+            s.failed(bad);
+        }
+        assert!(s.banned(bad));
         for i in 0..5000u32 {
             s.failed(IpAddr::from(i.to_be_bytes()));
         }
         assert!(s.fails.len() <= MAX_FAILS_TRACKED);
+        assert!(s.banned(bad), "pushed out by a scan");
     }
 
     #[test]

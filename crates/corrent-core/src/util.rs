@@ -182,9 +182,10 @@ fn too_large(path: &Path, len: u64, max: u64) -> std::io::Result<()> {
     if len <= max {
         return Ok(());
     }
+    // The callers name the file already.
+    let _ = path;
     Err(std::io::Error::other(t!(
-        "{path} is too large ({size}; at most {max} is read)",
-        path = path.display(),
+        "the file is too large ({size}; at most {max} is read)",
         size = fmt_bytes(len),
         max = fmt_bytes(max)
     )))
