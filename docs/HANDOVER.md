@@ -98,6 +98,17 @@ never exit); an `ffprobe.exe` from a Python package may be on `PATH` and isn't t
   length of 0 hung the add; vendored `corrent_sizes::check`), magnets whose `so=` asked for all
   of memory (`corrent_sizes::parse_magnet`), counters and the schedule's weekday (saturating,
   guarded).
+- **S10 (observability), 2026-10-21:** crash reports list frames as offsets into the exe with
+  its stamp (`symbols.rs`); `--symbolize` / `scripts/symbolize.ps1` resolve them with the
+  release's PDB (release.yml keeps `symbols-windows`; keep it per release). Reports carry the
+  build, engine state, torrents by state, changed settings sections, the engine's breadcrumb
+  and last commands; an unclean exit without one leaves `crash-<ts>-noreport.txt`. Task panics
+  (outside the UI thread and the engine actor, E7) no longer cause "closed unexpectedly".
+  `watchdog.rs` writes `logs/hang-*.txt` for a stuck window (10 s) or engine (30 s). Health
+  self-checks (`health.rs`) feed a status-bar chip shown only on problems. ⋮ → Save
+  diagnostics… and `--diagnostics <zip>` (both binaries) make a redacted support bundle;
+  settings go through the `diagnostics::SETTINGS_FIELDS` allow-list, so **a new settings field
+  must be classified there** (a test fails until it is).
 - **Logins:** no bans or lockouts after wrong passwords any more (owner's choice); wrong pairing
   codes and PINs are still limited per address.
 - **Direct stream (V4b), `3a857b1`:** Matroska with H.264/HEVC + AAC/AC-3/E-AC-3/Opus is copied into
