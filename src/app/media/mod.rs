@@ -630,6 +630,14 @@ impl CorrentApp {
                         pl.fullscreen = fs;
                     }
                 }
+                PlayerAction::PickSubtitle => {
+                    let start = self.media.player.as_ref().and_then(|pl| pl.local_folder());
+                    self.pick(
+                        crate::app::pickers::PickTarget::SubtitleFile,
+                        crate::app::pickers::PickKind::Subtitle,
+                        start,
+                    );
+                }
                 PlayerAction::None => {}
             }
             return;

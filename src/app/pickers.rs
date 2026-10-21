@@ -35,6 +35,8 @@ pub enum PickTarget {
     ThemeExport,
     ImportFolder,
     LibraryFolder,
+    /// A subtitle file for the playing video.
+    SubtitleFile,
 }
 
 type PickResult = (u64, PickTarget, Vec<PathBuf>);
@@ -54,6 +56,9 @@ impl Default for Pickers {
     }
 }
 
+/// Subtitle formats mpv reads from a file.
+const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "ass", "ssa", "vtt", "sub", "idx", "sup", "smi", "sami", "txt"];
+
 pub enum PickKind {
     Folder,
     TorrentFiles,
@@ -63,6 +68,7 @@ pub enum PickKind {
     OpenZip,
     SaveTheme(String),
     OpenTheme,
+    Subtitle,
 }
 
 impl CorrentApp {
@@ -127,6 +133,13 @@ impl CorrentApp {
                     .unwrap_or_default(),
                 PickKind::OpenTheme => dialog
                     .add_filter(t!("Corrent theme"), &["toml"])
+                    .pick_file()
+                    .await
+                    .map(|h| vec![h.path().to_path_buf()])
+                    .unwrap_or_default(),
+                PickKind::Subtitle => dialog
+                    .add_filter(t!("Subtitles"), SUBTITLE_EXTENSIONS)
+                    .add_filter(t!("All files"), &["*"])
                     .pick_file()
                     .await
                     .map(|h| vec![h.path().to_path_buf()])
@@ -212,6 +225,11 @@ impl CorrentApp {
                 }
                 PickTarget::BackupExport => self.export_backup(first),
                 PickTarget::DiagnosticsExport => self.save_diagnostics(first),
+                PickTarget::SubtitleFile => {
+                    if let Some(pl) = &self.media.player {
+                        pl.add_subtitle(&first);
+                    }
+                }
                 PickTarget::BackupImport => self.import_backup(first),
                 PickTarget::ImportFolder => self.import_folder_picked(first),
                 PickTarget::LibraryFolder => self.library_folder_picked(first),

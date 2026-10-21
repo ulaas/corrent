@@ -388,6 +388,8 @@ pub struct CorrentApp {
     queue_drag: Option<Vec<InfoHash>>,
     /// Windows 11 draws a native rounded border, so ours is skipped.
     pub native_frame: bool,
+    /// The fullscreen state the native frame was last set up for.
+    chrome_fullscreen: bool,
     pub pickers: pickers::Pickers,
     pub extras: extras::Extras,
     icon_tex: Option<egui::TextureHandle>,
@@ -570,6 +572,7 @@ impl CorrentApp {
             rows_seen_once: false,
             queue_drag: None,
             native_frame,
+            chrome_fullscreen: false,
             pickers: Default::default(),
             extras: Default::default(),
             icon_tex: None,
@@ -1116,7 +1119,7 @@ impl eframe::App for CorrentApp {
         if self.mica { [0.0; 4] } else { visuals.panel_fill.to_normalized_gamma_f32() }
     }
 
-    fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
         if !self.frame_seen {
             crate::integration::macos_events::reinstall();
@@ -1148,6 +1151,11 @@ impl eframe::App for CorrentApp {
         #[cfg(debug_assertions)]
         self.media_dev_hooks(ctx);
         self.window_logic(ctx);
+        let fullscreen = ctx.input(|i| i.viewport().fullscreen).unwrap_or(false);
+        if self.native_frame && fullscreen != self.chrome_fullscreen {
+            self.chrome_fullscreen = fullscreen;
+            win_chrome::fullscreen(frame, fullscreen);
+        }
         ctx.request_repaint_after(std::time::Duration::from_secs(2));
         self.process_launch_queue();
         self.poll_remote();

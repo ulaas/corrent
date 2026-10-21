@@ -560,6 +560,17 @@ impl Player {
         s.ended = false;
     }
 
+    /// A subtitle file from this computer, shown right away (for this playback only).
+    pub fn add_subtitle(&self, path: &std::path::Path) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.cmd(&["sub-add", &path.to_string_lossy(), "select", &name]);
+    }
+
+    /// The folder of the video when it plays from this computer, to start the picker there.
+    pub fn local_folder(&self) -> Option<std::path::PathBuf> {
+        self.current()?.local.as_ref()?.parent().map(std::path::Path::to_path_buf)
+    }
+
     /// Commands from the UI thread are asynchronous: the UI never waits for mpv's core.
     fn cmd(&self, args: &[&str]) {
         let _ = self.mpv.command_async(0, args);
@@ -1237,6 +1248,7 @@ impl Player {
         }
         let tracks = crate::util::with_lock(&self.status, |s| s.tracks.clone());
         let mpv = self.mpv.clone();
+        let mut pick = false;
         crate::ui::widgets::popup(egui::Popup::from_toggle_button_response(&r), |ui| {
             ui.set_min_width(260.0);
             for (kind, label, prop) in [("audio", t!("Audio"), "aid"), ("sub", t!("Subtitles"), "sid")] {
@@ -1251,9 +1263,17 @@ impl Player {
                         let _ = mpv.command_async(0, &["set", prop, &tr.id.to_string()]);
                     }
                 }
+                if kind == "sub"
+                    && ui.selectable_label(false, format!("{}  {}", pr::FOLDER_OPEN, t!("Load from file…"))).clicked()
+                {
+                    pick = true;
+                }
                 ui.separator();
             }
         });
+        if pick {
+            action = PlayerAction::PickSubtitle;
+        }
         action
     }
 
@@ -1866,6 +1886,8 @@ pub enum PlayerAction {
     None,
     Close,
     ToggleFullscreen,
+    /// "Load from file…": the app opens a picker and hands the file to `add_subtitle`.
+    PickSubtitle,
 }
 
 impl PlayerAction {

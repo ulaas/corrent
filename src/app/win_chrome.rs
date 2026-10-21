@@ -27,6 +27,43 @@ pub fn round_corners(cc: &eframe::CreationContext<'_>) -> bool {
     hr >= 0
 }
 
+/// Fullscreen drops the rounded corners and the native border DWM keeps drawing for a window
+/// that asked for them (a playing video showed a hairline and cut corners); leaving restores them.
+#[cfg(windows)]
+pub fn fullscreen(window: &impl raw_window_handle::HasWindowHandle, on: bool) {
+    use raw_window_handle::RawWindowHandle;
+
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmSetWindowAttribute(
+            hwnd: *mut core::ffi::c_void,
+            attr: u32,
+            value: *const core::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWCP_DONOTROUND: u32 = 1;
+    const DWMWCP_ROUND: u32 = 2;
+    const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
+    const DWMWA_COLOR_DEFAULT: u32 = 0xFFFF_FFFF;
+
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::Win32(win) = handle.as_raw() else { return };
+    let hwnd = win.hwnd.get() as *mut core::ffi::c_void;
+    let (corners, border) =
+        if on { (DWMWCP_DONOTROUND, DWMWA_COLOR_NONE) } else { (DWMWCP_ROUND, DWMWA_COLOR_DEFAULT) };
+    // SAFETY: valid HWND owned by this process; both values are u32s as documented by DWM.
+    unsafe {
+        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, (&corners as *const u32).cast(), 4);
+        DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, (&border as *const u32).cast(), 4);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn fullscreen(_window: &impl raw_window_handle::HasWindowHandle, _on: bool) {}
+
 /// Mica spike (roadmap B5b, debug builds only, `CORRENT_DEV_MICA=1`): ask DWM for the Mica
 /// backdrop and extend it into the client area. Needs a transparent window and clear color.
 #[cfg(all(windows, debug_assertions))]
