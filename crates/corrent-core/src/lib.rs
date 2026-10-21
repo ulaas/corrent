@@ -30,3 +30,5 @@ pub mod writer;
 
 #[cfg(test)]
 mod fixture_tests;
+#[cfg(test)]
+mod prop_tests;

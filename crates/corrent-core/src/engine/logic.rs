@@ -50,7 +50,8 @@ pub fn map_state(i: &StateInput) -> TorrentState {
 /// Whether the alternative-speed schedule is active at `minutes` past midnight on `weekday`
 /// (0 = Monday). Windows that cross midnight (e.g. 22:00–06:00) are supported.
 pub fn in_schedule(sch: &Schedule, minutes: u16, weekday: u8) -> bool {
-    if !sch.enabled || sch.days & (1 << weekday) == 0 {
+    // A weekday past Sunday is never scheduled (and `1 << 8` would overflow, P5).
+    if !sch.enabled || weekday > 6 || sch.days & (1 << weekday) == 0 {
         return false;
     }
     if sch.from_minutes <= sch.to_minutes {

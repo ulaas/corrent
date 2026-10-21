@@ -68,8 +68,9 @@ impl TorrentMeta {
     pub fn absorb_counters(&mut self, raw_up: u64, raw_down: u64) -> (u64, u64) {
         let du = if raw_up >= self.last_raw_uploaded { raw_up - self.last_raw_uploaded } else { raw_up };
         let dd = if raw_down >= self.last_raw_downloaded { raw_down - self.last_raw_downloaded } else { raw_down };
-        self.uploaded_total += du;
-        self.downloaded_total += dd;
+        // Saturating: totals come from store.json too, which may hold anything (P2).
+        self.uploaded_total = self.uploaded_total.saturating_add(du);
+        self.downloaded_total = self.downloaded_total.saturating_add(dd);
         self.last_raw_uploaded = raw_up;
         self.last_raw_downloaded = raw_down;
         (du, dd)

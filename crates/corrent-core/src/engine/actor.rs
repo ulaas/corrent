@@ -2115,10 +2115,10 @@ impl Actor {
             }
         }
 
-        self.store.data.stats.all_time_downloaded += total_dd;
-        self.store.data.stats.all_time_uploaded += total_du;
-        self.session_down_total += total_dd;
-        self.session_up_total += total_du;
+        self.store.data.stats.all_time_downloaded = self.store.data.stats.all_time_downloaded.saturating_add(total_dd);
+        self.store.data.stats.all_time_uploaded = self.store.data.stats.all_time_uploaded.saturating_add(total_du);
+        self.session_down_total = self.session_down_total.saturating_add(total_dd);
+        self.session_up_total = self.session_up_total.saturating_add(total_du);
 
         if self.tick_count.is_multiple_of(2) {
             self.enforce_pauses(&views, &handles);
@@ -2277,8 +2277,8 @@ impl Actor {
         let mut counters = false;
         if let Some(f) = fetched {
             let (du, dd) = m.absorb_counters(stats.uploaded_bytes, f);
-            *total_du += du;
-            *total_dd += dd;
+            *total_du = total_du.saturating_add(du);
+            *total_dd = total_dd.saturating_add(dd);
             counters = du > 0 || dd > 0;
             if dd > 0 {
                 // Data arrived this session: a completion right after is a real download.
@@ -2358,9 +2358,9 @@ impl Actor {
             *carry += elapsed.as_millis() as u64;
             if *carry >= 1000 {
                 let secs = *carry / 1000;
-                m.seeding_seconds += secs;
+                m.seeding_seconds = m.seeding_seconds.saturating_add(secs);
                 // Inactivity only accrues while actually seeding, never while Corrent is closed.
-                m.inactive_seeding_secs = if up_bps > 0 { 0 } else { m.inactive_seeding_secs + secs };
+                m.inactive_seeding_secs = if up_bps > 0 { 0 } else { m.inactive_seeding_secs.saturating_add(secs) };
                 *carry %= 1000;
                 counters = true;
             }
