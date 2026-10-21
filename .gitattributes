@@ -5,5 +5,6 @@
 web/dist/** -diff linguist-generated=true
 *.woff2 binary
 tests/fuzz-corpus/** binary
+tests/fuzz-corpus/README.md text
 proptest-regressions/** -text
 **/proptest-regressions/** -text

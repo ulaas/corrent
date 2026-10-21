@@ -134,4 +134,3 @@ corrent-db = { path = "crates/corrent-db" }
 corrent-library = { path = "crates/corrent-library" }
 egui_kittest = "=0.36.2"
 corrent-fuzz = { path = "crates/corrent-fuzz" }
-proptest = { version = "1.12", default-features = false, features = ["std"] }

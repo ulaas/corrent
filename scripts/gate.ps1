@@ -10,6 +10,9 @@ if ($LASTEXITCODE -ne 0) { 'GATE FAIL: clippy'; ($out -split "`n" | Select-Strin
 # Release builds compile code that debug builds don't (and leave out `cfg(debug_assertions)`).
 $out = cargo check --workspace --release 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0) { 'GATE FAIL: release check'; ($out -split "`n" | Select-String -Pattern '^error' -Context 0, 7 | Select-Object -First 40); exit 1 }
+# The fuzz targets as the cargo-fuzz crate builds them (feature `fuzz`, not only in test builds).
+$out = cargo check --manifest-path fuzz/Cargo.toml 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { 'GATE FAIL: fuzz check'; ($out -split "`n" | Select-String -Pattern '^error' -Context 0, 7 | Select-Object -First 40); exit 1 }
 $out = cargo test --workspace 2>&1 | Out-String
 if ($out -match 'FAILED|panicked|error(\[|:)') { 'GATE FAIL: tests'; ($out -split "`n" | Select-String -Pattern 'FAILED|panicked|^error' -Context 0, 5 | Select-Object -First 40); exit 1 }
 $deny = cargo deny check 2>&1 | Out-String

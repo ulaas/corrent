@@ -604,7 +604,7 @@ mod fuzz_tests {
         let dir = std::env::temp_dir().join(format!("corrent-p8-rss-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        corrent_fuzz::run("rss_load", corrent_fuzz::iterations(40), |r| {
+        corrent_fuzz::run("rss_load", corrent_fuzz::iterations(40).min(2_000), |r| {
             let path = dir.join("rss.json");
             let text = r.case(&fixtures, 256);
             std::fs::write(&path, &text).unwrap();

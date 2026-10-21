@@ -46,14 +46,20 @@ used by the `webui`/`http-api` features Corrent doesn't enable), plus runtime co
   librqbit-core's `Lengths` sums file lengths unchecked, divides by the piece length and keeps the
   piece count in a u32. A piece length of 0 panicked in every build (the add never finished);
   file lengths adding up past 2^64 or more than 2^32 pieces panicked in debug builds and gave
-  wrong sizes in release. Found by the Z1 fuzz target (STABILITY.md S9). The proper fix belongs
+  wrong sizes in release. It also requires one piece hash per piece (BEP 3): a tiny file claiming
+  2^31 pieces made librqbit allocate per-piece state. Found by the Z1 fuzz target (STABILITY.md S9)
+  and its review. One extra hash is tolerated, because of the next item.
+- The torrent creator (`src/create_torrent_file.rs`, `CORRENT PATCH (Z1)`) wrote one hash too
+  many when the total size is an exact multiple of the piece length (a hash of nothing after the
+  last full piece). libtorrent-based clients (qBittorrent, Deluge) refuse such torrents; Corrent's
+  torrent creator uses this code. Diff: `docs/upstream/librqbit-create-piece-count.patch`. The proper fix belongs
   in librqbit-core (`Lengths::from_torrent`/`new`); diff: `docs/upstream/librqbit-length-checks.patch`.
 - Magnets parsed without huge select-only lists (`corrent_sizes::parse_magnet`, call site marked
   `CORRENT PATCH (Z6)` in `src/session.rs`; Corrent's own code uses it too, a test checks that
   nothing calls `Magnet::parse` directly). librqbit-core expands `so=a-b` into every index, so
   `so=0-18446744073709551615` (in a pasted magnet, a launch argument, a feed or the Web API)
-  asked for all of memory. `so=` values listing more than 2^20 indices in all are dropped (the
-  magnet then selects every file). Found by the Z6 fuzz target; same diff as above.
+  asked for all of memory. The `so=` values that bring the list past 2^20 indices are dropped (an
+  earlier, small one stays). Found by the Z6 fuzz target; same diff as above.
 
 librqbit rebuilds these from the add-time options whenever a torrent goes live again, so Corrent
 stores them itself and re-applies them (`Actor::apply_torrent_limits`).

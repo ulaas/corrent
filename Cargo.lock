@@ -1365,7 +1365,6 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "open",
- "proptest",
  "quick-xml 0.42.0",
  "raw-window-handle",
  "regex",

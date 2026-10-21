@@ -759,8 +759,14 @@ async fn torrents_with_impossible_sizes_are_refused() {
     .into_bytes();
     three.extend_from_slice(&[7u8; 20]);
     three.extend_from_slice(b"ee");
-    for (what, bytes) in [("piece length 0", single(5, 0)), ("2^32 pieces", single(16384 << 32, 16384)), ("sum", three)]
-    {
+    let cases = [
+        ("piece length 0", single(5, 0)),
+        ("2^32 pieces", single(16384 << 32, 16384)),
+        ("sum", three),
+        // One hash for 2^31 pieces: librqbit would allocate state for all of them.
+        ("hashes", single(1 << 35, 16)),
+    ];
+    for (what, bytes) in cases {
         let err = add_error(&l, &dir, bytes).await.unwrap_or_else(|| panic!("{what}: added"));
         assert!(err.contains("invalid torrent"), "{what}: {err}");
     }

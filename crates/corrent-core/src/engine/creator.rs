@@ -159,4 +159,31 @@ mod tests {
         assert_ne!(public.hash, c.hash);
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    /// One hash per piece, also when the size is an exact multiple of the piece length (librqbit
+    /// wrote an extra one there, which libtorrent-based clients refuse).
+    #[tokio::test]
+    async fn one_hash_per_piece() {
+        let dir = std::env::temp_dir().join(format!("corrent-create-pieces-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, size) in [("exact.bin", 4 * 32 * 1024), ("partial.bin", 4 * 32 * 1024 + 1)] {
+            std::fs::write(dir.join(name), vec![5u8; size]).unwrap();
+            let req = CreateRequest {
+                id: 1,
+                source: dir.join(name),
+                name: None,
+                trackers: Vec::new(),
+                piece_length: Some(32 * 1024),
+                private: false,
+                comment: None,
+                save_to: dir.join(format!("{name}.torrent")),
+                seed: false,
+            };
+            let c = create(&req).await.unwrap();
+            let t = librqbit::torrent_from_bytes(&c.bytes).unwrap();
+            assert_eq!(t.info.data.pieces.as_ref().len(), 20 * size.div_ceil(32 * 1024), "{name}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

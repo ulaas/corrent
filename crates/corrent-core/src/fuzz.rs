@@ -16,7 +16,7 @@ pub type Target = fn(&[u8]);
 
 /// Every target, by its corpus folder name.
 pub const TARGETS: &[(&str, Target)] =
-    &[("z1", z1), ("z2-peer", z2_peer), ("z2-dht", z2_dht), ("z3", z3), ("z5", z5), ("z6", z6), ("z7", z7)];
+    &[("z1", z1), ("z2_peer", z2_peer), ("z2_dht", z2_dht), ("z3", z3), ("z5", z5), ("z6", z6), ("z7", z7)];
 
 /// Z1: torrent bytes (a file, a URL, a feed, the watch folder, an import, the Web API) through
 /// the bencode parsers, librqbit's validation and Corrent's path checks. Accepted paths stay inside
@@ -268,18 +268,18 @@ mod tests {
         for (f, b) in corpus("z1").iter().filter(|(f, _)| f.starts_with("seed-")) {
             assert!(librqbit::torrent_from_bytes(b).is_ok(), "z1/{f}");
         }
-        for (f, b) in corpus("z2-dht").iter().filter(|(f, _)| f.starts_with("seed-")) {
+        for (f, b) in corpus("z2_dht").iter().filter(|(f, _)| f.starts_with("seed-")) {
             let r = librqbit_dht::bprotocol::deserialize_message::<ByteBuf>(b);
-            assert!(r.is_ok(), "z2-dht/{f}: {r:?}");
+            assert!(r.is_ok(), "z2_dht/{f}: {r:?}");
         }
-        for (f, b) in corpus("z2-peer")
+        for (f, b) in corpus("z2_peer")
             .iter()
             .filter(|(f, _)| f.starts_with("seed-") && !f.contains("handshake") && !f.contains("info"))
         {
             let r = librqbit_peer_protocol::Message::deserialize(b, &[]);
-            assert!(r.is_ok(), "z2-peer/{f}: {r:?}");
+            assert!(r.is_ok(), "z2_peer/{f}: {r:?}");
         }
-        let hs = corpus("z2-peer").into_iter().find(|(f, _)| f == "seed-handshake").unwrap().1;
+        let hs = corpus("z2_peer").into_iter().find(|(f, _)| f == "seed-handshake").unwrap().1;
         assert!(librqbit_peer_protocol::Handshake::deserialize(&hs).is_ok());
         for (f, b) in corpus("z5").iter().filter(|(f, _)| f.starts_with("seed-") && !f.contains("error")) {
             assert!(
@@ -299,12 +299,12 @@ mod tests {
 
     #[test]
     fn z2_peer_wire_messages() {
-        fuzz("z2-peer", 5_000, 2048);
+        fuzz("z2_peer", 5_000, 2048);
     }
 
     #[test]
     fn z2_dht_packets() {
-        fuzz("z2-dht", 5_000, 1500);
+        fuzz("z2_dht", 5_000, 1500);
     }
 
     #[test]
@@ -340,8 +340,9 @@ mod tests {
 
     #[test]
     fn z5_a_big_feed_parses_in_time() {
-        // Debug builds are ~10× slower; the 8 MiB check below runs in the long run.
-        feeds_parse_in_time(1, std::time::Duration::from_secs(if cfg!(debug_assertions) { 4 } else { 1 }));
+        // Only catches blow-ups here (a loaded gate, a debug build); the 8 MiB check below runs
+        // optimized in the long run.
+        feeds_parse_in_time(1, std::time::Duration::from_secs(if cfg!(debug_assertions) { 15 } else { 1 }));
     }
 
     /// STABILITY.md Z5: an 8 MiB feed (the download cap) parses in under a second (optimized).

@@ -87,6 +87,15 @@ never exit); an `ffprobe.exe` from a Python package may be on `PATH` and isn't t
   repeats the timing-sensitive ones 20 times. Product fixes it found: Resume restarts a torrent
   stopped by a disk error; the update check caps GitHub's answer; a wake from sleep no longer
   counts the time asleep (I1).
+- **S9 (fuzz and property tests), 2026-10-21:** fuzz target bodies in
+  `crates/corrent-core/src/fuzz.rs` (`z1`–`z7`, feature `fuzz`) and
+  `crates/corrent-server/src/webapi/fuzz.rs` (`z4`); seeds and every failing input in
+  `tests/fuzz-corpus/` (replayed by `cargo test`); cargo-fuzz crate in `fuzz/` (nightly);
+  property tests P1–P10 in `crates/corrent-core/src/prop_tests.rs` (proptest). Long run:
+  `scripts/fuzz-long.ps1`. Fixes it found: torrent sizes librqbit-core can't hold (a piece
+  length of 0 hung the add; vendored `corrent_sizes::check`), magnets whose `so=` asked for all
+  of memory (`corrent_sizes::parse_magnet`), counters and the schedule's weekday (saturating,
+  guarded).
 - **Logins:** no bans or lockouts after wrong passwords any more (owner's choice); wrong pairing
   codes and PINs are still limited per address.
 - **Direct stream (V4b), `3a857b1`:** Matroska with H.264/HEVC + AAC/AC-3/E-AC-3/Opus is copied into

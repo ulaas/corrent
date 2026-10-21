@@ -6,7 +6,7 @@
 
 use librqbit_core::torrent_metainfo::TorrentMetaV1Info;
 
-pub fn check<B>(info: &TorrentMetaV1Info<B>) -> anyhow::Result<()> {
+pub fn check<B: AsRef<[u8]>>(info: &TorrentMetaV1Info<B>) -> anyhow::Result<()> {
     if info.piece_length == 0 {
         anyhow::bail!("invalid torrent: the piece length is 0");
     }
@@ -17,8 +17,17 @@ pub fn check<B>(info: &TorrentMetaV1Info<B>) -> anyhow::Result<()> {
     let Some(total) = total else {
         anyhow::bail!("invalid torrent: the files add up to more than 16 EiB");
     };
-    if total.div_ceil(u64::from(info.piece_length)) > u64::from(u32::MAX) {
+    let pieces = total.div_ceil(u64::from(info.piece_length));
+    if pieces > u64::from(u32::MAX) {
         anyhow::bail!("invalid torrent: more than 4 billion pieces");
+    }
+    // A hash for every piece (BEP 3). Without this a 100-byte file claiming 2^31 small pieces made
+    // librqbit allocate per-piece state (hundreds of MiB) and preallocate the claimed size. One
+    // extra hash is tolerated: librqbit's creator wrote one for sizes that are an exact multiple
+    // of the piece length (fixed in `create_torrent_file.rs`, but such torrents exist).
+    let hashes = info.pieces.as_ref().len() as u64 / 20;
+    if hashes < pieces || hashes > pieces.saturating_add(1) {
+        anyhow::bail!("invalid torrent: the piece hashes don't match its size");
     }
     Ok(())
 }
@@ -27,8 +36,8 @@ pub fn check<B>(info: &TorrentMetaV1Info<B>) -> anyhow::Result<()> {
 /// every range into a `Vec<usize>` (`so=0-18446744073709551615` asks for all of memory).
 pub const MAX_SELECT_ONLY: u64 = 1 << 20;
 
-/// [`Magnet::parse`] without `so=` parameters that would list more than [`MAX_SELECT_ONLY`]
-/// indices (they are dropped: the magnet then selects every file).
+/// [`Magnet::parse`] without the `so=` parameters that would bring the list past
+/// [`MAX_SELECT_ONLY`] indices (those are dropped; an earlier, small one stays).
 pub fn parse_magnet(url: &str) -> anyhow::Result<librqbit_core::magnet::Magnet> {
     librqbit_core::magnet::Magnet::parse(&without_huge_select_only(url))
 }
@@ -49,7 +58,7 @@ fn select_only_span(value: &str) -> u64 {
 
 fn without_huge_select_only(url: &str) -> std::borrow::Cow<'_, str> {
     // Through the URL parser first, like `Magnet::parse`: it strips tabs and line breaks and
-    // trims control characters, so `so=0-1844…` is a range there.
+    // trims control characters, so `so=0-1844…` followed by a CR is a range there.
     let Ok(mut u) = url::Url::parse(url) else { return url.into() };
     let Some(query) = u.query() else { return url.into() };
     let mut total = 0u64;

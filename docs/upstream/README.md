@@ -19,6 +19,8 @@ ready to turn into upstream pull requests:
   (vendored as `vendor/librqbit-bencode`).
 - `librqbit-http-timeouts.patch` — `SessionOptions::http_timeout` (60 s default, 15 s connect)
   for the session's HTTP client, and a 32 MiB cap on `.torrent` files downloaded from a URL.
+- `librqbit-create-piece-count.patch` — `create_torrent` wrote an extra (empty) piece hash when
+  the total size is an exact multiple of the piece length; libtorrent refuses those torrents.
 - `librqbit-length-checks.patch` — refuse torrents whose sizes `Lengths` can't hold (a piece
   length of 0, file lengths adding up past 2^64, more than 2^32 pieces) before `validate()`. The
   upstream fix belongs in librqbit-core's `Lengths::from_torrent`/`new` (checked sum, a zero check,

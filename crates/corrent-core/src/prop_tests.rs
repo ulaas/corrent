@@ -17,6 +17,11 @@ fn cases(n: usize) -> ProptestConfig {
     ProptestConfig { cases: corrent_fuzz::iterations(n) as u32, ..ProptestConfig::default() }
 }
 
+/// For tests that touch the disk: long runs raise them to 2000 at most.
+fn disk_cases(n: usize) -> ProptestConfig {
+    ProptestConfig { cases: corrent_fuzz::iterations(n).min(2_000) as u32, ..ProptestConfig::default() }
+}
+
 fn hash(i: usize) -> InfoHash {
     InfoHash([i as u8; 20])
 }
@@ -307,6 +312,7 @@ proptest! {
                 .filter(|i| controlled(i))
                 .filter(|i| (running(i.view.state) && !p.pause.contains(&i.view.hash)) || p.resume.contains(&i.view.hash))
                 .collect();
+            // "Finished" as `plan_queue` defines it (logic.rs).
             let up = active.iter().filter(|i| i.view.completed_at.is_some() && i.view.done >= i.view.size).count() as u32;
             let dl = active.len() as u32 - up;
             prop_assert!(active.len() as u32 <= q.max_active_total, "{} active > {}", active.len(), q.max_active_total);
@@ -614,7 +620,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(cases(60))]
+    #![proptest_config(disk_cases(60))]
 
     /// P7, from disk: a damaged `store.json` is replaced by its `.bak` (with a warning; the
     /// torrents and categories are back).

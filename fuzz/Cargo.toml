@@ -1,0 +1,84 @@
+# cargo-fuzz targets (STABILITY.md workstream Z): each one calls the body that the stable runner
+# in `cargo test` uses (`corrent_core::fuzz`, `corrent_server::webapi::fuzz`). Needs nightly:
+#   cargo +nightly fuzz run z1 corpus/z1 ../tests/fuzz-corpus/z1 -- -rss_limit_mb=256 -max_len=65536
+# Its own workspace (excluded from the main one, not built by the gate).
+[package]
+name = "corrent-fuzzing"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+corrent-core = { path = "../crates/corrent-core", features = ["fuzz"] }
+corrent-server = { path = "../crates/corrent-server", features = ["fuzz"] }
+
+# A separate workspace doesn't see the main one's patches: the same vendored crates.
+[patch.crates-io]
+librqbit-dht = { path = "../vendor/librqbit-dht" }
+librqbit = { path = "../vendor/librqbit" }
+librqbit-bencode = { path = "../vendor/librqbit-bencode" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "z1"
+path = "fuzz_targets/z1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "z2_peer"
+path = "fuzz_targets/z2_peer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "z2_dht"
+path = "fuzz_targets/z2_dht.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "z3"
+path = "fuzz_targets/z3.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "z4"
+path = "fuzz_targets/z4.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "z5"
+path = "fuzz_targets/z5.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "z6"
+path = "fuzz_targets/z6.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "z7"
+path = "fuzz_targets/z7.rs"
+test = false
+doc = false
+bench = false

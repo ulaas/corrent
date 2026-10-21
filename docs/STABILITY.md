@@ -159,32 +159,32 @@ What follows lists what the grep cannot show.
 
 ## Workstream Z — Fuzzing and property tests
 
-**Prerequisite (Z0): a library target.** Corrent is binary-only, so fuzz targets can't reach its parsers. Split it into `src/lib.rs` (all modules, `pub(crate)` kept where possible) and a thin `src/main.rs`. This is a mechanical change in one commit; check that `t!` and the `i18n` gate still work. Fuzz targets go in `fuzz/` (cargo-fuzz, nightly). Every crash or interesting input is copied to `tests/fuzz-corpus/<target>/`, and a stable unit test, `fuzz_corpus_replay`, runs all of them in plain `cargo test` on every OS. A spike decides whether cargo-fuzz runs locally on Windows MSVC nightly; if not, fuzzing runs in the nightly CI job [O].
+**Z0 (dropped, S9): no lib/bin split needed.** Since the engine moved into `crates/corrent-core` (and the Web API into `corrent-server`), every parser that takes bytes from outside the machine is in a library crate. The two items still in the `corrent` binary (`PaletteDef::from_toml`, a local file, and the IPC `parse_line`, the same user's socket) are tested from the binary's own test modules. **Layout:** each target is one function, `corrent_core::fuzz::z*` (and `corrent_server::webapi::fuzz::z4`), compiled only into test builds and the `fuzz` feature (release hygiene scans for `CORRENT_FUZZ_COMPILED_IN`). Three runners share them: seeded mutations in every `cargo test` (`corrent-fuzz`: byte and text edits, edge numbers; `CORRENT_FUZZ_SECS` for long runs, `scripts/fuzz-long.ps1`), `fuzz_corpus_replay` over `tests/fuzz-corpus/<target>/` (seeds and every input that once failed; a failing case is saved to `target/fuzz-failures/`), and the cargo-fuzz crate in `fuzz/` (nightly, coverage-guided; type-checked on stable, run [O]). The P tests use proptest (`crates/corrent-core/src/prop_tests.rs`); shrunk failures are kept in `proptest-regressions/`.
 
 Fuzz targets are kept for parsers that take bytes from outside the machine. Local config files, filter lists and user rules get property tests instead (P8–P10).
 
 | Item | Target / property | Entry point | Acceptance |
 |---|---|---|---|
-| Z1 Torrent bytes | bencode → `torrent_from_bytes` → E1 path check → E2 depth check | `librqbit_core::torrent_metainfo::torrent_from_bytes`, `util::bencode_depth_ok`, `engine::paths::check_torrent_paths` | 30 min with no crash; no `Ok` result whose path escapes the save folder or has case-only duplicates |
-| Z2 Peer wire / DHT | `MessageBorrowed::deserialize`, extended handshake, ut_metadata (including the E2 depth check in the peer metadata path), PEX; DHT KRPC | `librqbit-peer-protocol`, `librqbit-dht` bencode messages, the vendored ut_metadata parse | 30 min with no crash; memory < 256 MiB |
-| Z3 Stream HTTP head | `parse_request`, `parse_range`, `parse_path` (`engine/stream.rs:592–647`) | Pure functions | No panic; `start ≤ end < len` invariant holds in `handle` |
-| Z4 Web API inputs | `read_form`, `hashes()`, multipart add, `host_allowed`, `host_and_port`, `sid_from` (`webapi/mod.rs:156–215`, `qbt.rs:69–97`) | Pure parts plus an axum `oneshot` against a mock `EngineHandle` | No panic; no 5xx except 503 |
-| Z5 RSS / Torznab XML | `rss::feed::parse` (`feed.rs:26`), `search::parse` (`search.rs:95`) | Pure | No panic, < 1 s per 8 MiB input |
-| Z6 Magnet / URL / CLI | `AddSource::parse` (`types.rs:319`), `url_decode` (`types.rs:354`), `librqbit::Magnet::parse`, IPC `parse_line` | Pure | No panic |
-| Z7 Import parsers | `import::parse_torrent`, `dict`, fastresume and Transmission resume (`import.rs:69–131`) | Pure (bytes in) | No panic |
+| Z1 Torrent bytes | bencode → `torrent_from_bytes` → size check → `validate` → E1 path checks (Windows, Linux and host rules) | `fuzz::z1`: `librqbit::torrent_from_bytes`, `librqbit::corrent_sizes::check`, `engine::paths::check_torrent_paths`, `import::parse_torrent` | 30 min with no crash; no `Ok` result whose path escapes the save folder or has case-only duplicates |
+| Z2 Peer wire / DHT | `Message::deserialize` (split across both buffer halves, and with the length fixed up), `Handshake`, `ExtendedMessage`, `UtMetadata`, `ExtendedHandshake`/`UtPex`, the magnet's info dictionary; DHT KRPC (borrowed and owned buffers); parsed messages serialize back. The E2 depth check in the peer metadata path is the vendored bencode's (`untrusted_tests.rs`). | `fuzz::z2_peer`, `fuzz::z2_dht` (`librqbit-dht`'s `bprotocol`, public for this) | 30 min with no crash; memory < 256 MiB: on stable, inputs ≤ 64 KiB; `-rss_limit_mb=256` in the nightly run [O] |
+| Z3 Stream HTTP head | `parse_request`, `parse_range`, `parse_path`, `plan_range` (split from `handle`) | `fuzz::z3` | No panic; `start ≤ end < len` invariant holds in `handle` |
+| Z4 Web API inputs | `read_form`, `parse_hashes`, `host_allowed`, `host_and_port`, `sid_from`, `truthy` | `webapi::fuzz::z4`, plus `webapi_inputs_are_refused_cleanly` (mutated requests to 27 routes against a real engine over loopback) | No panic; no 5xx except 503 |
+| Z5 RSS / Torznab XML | `rss::feed::parse`, `search::parse` (RSS, Atom, JSON Feed, Torznab) | `fuzz::z5`; 8 MiB feeds of three shapes timed | No panic, < 1 s per 8 MiB input |
+| Z6 Magnet / URL / CLI | `AddSource::parse_with` (a pure file check), `describe`, `info_hash`, `url_decode`, `redact_url`, `corrent_sizes::parse_magnet`; IPC `parse_line_with` (root crate test) | `fuzz::z6` | No panic |
+| Z7 Import parsers | `import::dict`, `qbt_plan`, `transmission_plan` (split from `scan`: the folders a resume file names are never touched) | `fuzz::z7` | No panic |
 
 | Item | Property tests (proptest, dev-dependency, MIT/Apache) | Acceptance |
 |---|---|---|
-| P1 Queue | For any sequence of `queue_place`, `queue_move`, `remove` and `normalize_queue` (`store.rs:284–343`), positions stay a dense permutation `0..n` and the relative order of unmoved items is kept | 10k cases |
-| P2 Counters | `TorrentMeta::absorb_counters` (`store.rs:55`): totals never decrease over any sequence of raw counters, including resets to 0 (re-add) | 10k cases |
-| P3 Queue planner | `logic::plan_queue` (`logic.rs:83`): never exceeds the active, download or upload limits; force-started items are always running; result is deterministic | 10k cases |
+| P1 Queue | For any sequence of adds, `queue_place`, `queue_move`, `remove` and `normalize_queue`, positions stay a dense permutation `0..n` and the relative order of unmoved items is kept | 10k cases |
+| P2 Counters | `TorrentMeta::absorb_counters`: totals never decrease over any sequence of raw counters, including resets to 0 (re-add) | 10k cases |
+| P3 Queue planner | `logic::plan_queue`: never exceeds the active, download or upload limits (without the slow-torrent exemption); pauses and resumes only what it controls; never pauses a force-started item (keeping those running is the actor's job); the same plan for any input order (queue positions distinct) | 10k cases |
 | P4 Seed limits | `seed_limit_reason`: monotonic in ratio and time; overrides win; exempt never pauses | 5k cases |
 | P5 Schedule | `in_schedule` across week boundaries and all minute and weekday combinations | Exhaustive (7 × 1440) |
 | P6 Settings round-trip | Arbitrary `Settings` → TOML → `Settings` is identical; `session::options` never panics for any settings (ports, limits, empty paths) | 5k cases |
 | P7 Store round-trip | Arbitrary `StoreData` → JSON → load (including `.bak` path) is identical | 5k cases |
-| P8 Config files (was Z8) | `PaletteDef::from_toml` (`theme.rs:429`), `Settings::salvage` + `migrate_settings` (`config.rs:599`), `StoreData` JSON + `migrate_store`, `rss` `StateFile`: arbitrary and mutated inputs never panic; every `Ok` result serializes back and reparses to an equal value | 5k cases each |
-| P9 IP filter lists (was Z9) | `ipfilter::parse_entry` (`ipfilter.rs:25`) and the gzip path: no panic; ranges satisfy `start ≤ end` | 10k cases |
-| P10 Episode filter / rules (was Z10) | `EpisodeFilter::parse`, `episode_of`, `Matcher::new` with arbitrary user regex (`rules.rs:95` caps regex size): no panic | 10k cases |
+| P8 Config files (was Z8) | `PaletteDef::from_toml` (root crate test), `Settings::parse`/`salvage` + `migrate_settings`, `StoreData` JSON + `migrate_store`, `rss` `StateFile`: arbitrary and mutated inputs never panic; every `Ok` result serializes back and reparses to an equal value | 5k cases each |
+| P9 IP filter lists (was Z9) | `ipfilter::parse_entry` and the gzip path (`gunzip_capped`): no panic; ranges satisfy `start ≤ end` | 10k cases |
+| P10 Episode filter / rules (was Z10) | `EpisodeFilter::parse` (allows exactly its ranges), `episode_of`, `Matcher::new` with arbitrary user regex (capped at 1 MiB compiled): no panic | 10k cases |
 
 ---
 
@@ -239,7 +239,7 @@ Fuzz targets are kept for parsers that take bytes from outside the machine. Loca
 | Item | What / why | How | Acceptance |
 |---|---|---|---|
 | R1 CI matrix | `ci.yml` runs fmt, clippy, test and release build on 3 OSes, MSRV check-only, and deny. | Add: `--locked`; the MSRV job runs `cargo test` too; a Linux cross-clippy job is unnecessary (the native ubuntu job covers it); `scripts/vendor-diff` (E8); `fuzz_corpus_replay` runs as part of `cargo test`. | Green once pushed [O]. |
-| R2 Nightly job | — | Scheduled daily on ubuntu: 5 min per fuzz target with corpus caching. Optional, best effort, not a gate: ASan (`-Zsanitizer=address -Zbuild-std`) for `cargo test --lib` (pure modules; the aws-lc C code is built with ASan too, or excluded if it can't be); TSan on the e2e tests (known false positives suppressed in a file); `cargo miri test` on the pure modules (`engine::logic`, `store`, `rss::rules`, stream parsers, `ipfilter::parse_entry`), possible after the Z0 lib split. | A fuzz failure opens an issue (owner reviews) [O]. |
+| R2 Nightly job | — | Scheduled daily on ubuntu: 5 min per fuzz target with corpus caching. Optional, best effort, not a gate: ASan (`-Zsanitizer=address -Zbuild-std`) for `cargo test --lib` (pure modules; the aws-lc C code is built with ASan too, or excluded if it can't be); TSan on the e2e tests (known false positives suppressed in a file); `cargo miri test` on the pure modules (`engine::logic`, `store`, `rss::rules`, stream parsers, `ipfilter::parse_entry`). The fuzz job runs `fuzz/` (`fuzz/README.md`) with `tests/fuzz-corpus/` as the starting corpus. | A fuzz failure opens an issue (owner reviews) [O]. |
 | R3 Mutation testing (advisory) | — | `cargo mutants` on `engine/logic.rs`, `store.rs`, `rss/rules.rs`, `engine/ipfilter.rs`, `stream.rs` parse functions, `migrate.rs`, `util::classify_io`. Claude runs it locally; missed mutants become tests where they show a real gap. | Advisory, not a gate: the caught percentage is recorded in Results. |
 | R4 Beta channel | `updates.rs` checks GitHub Releases (opt-in). | Settings → Updates gets an opt-in "include beta versions" that also accepts pre-releases (`v0.x.y-beta.N`). Betas ship the same artifacts. | Unit test of version selection. The owner publishes betas [O]. |
 | R5 Regression corpus | — | `tests/fixtures/` (D9) plus `tests/fuzz-corpus/`, plus `tests/regressions/<issue>/`. Every stability bug fixed adds its input and a test, named after the bug. | The policy is written down in this doc and checked in the release checklist. |
@@ -301,7 +301,7 @@ Ordered by risk reduction per effort. Each one is a single commit series with it
 | S6 | **Durability tests:** harness binary, crash-at-every-write (D8), fixture files per schema (D9), backup restore and move drills (D10) | S1, S2 | – | Done (2026-10-20, `b7c75fb`..`c1c29cb`; see Results) |
 | S7 | **Store schema v2 and rebuild:** mirror output folder, files and paused in the store (D7); rebuild `session.json` from `*.torrent` + store (D6b) | S6 | – | Done (2026-10-20, `7973017`..`b1cfdba`; see Results) |
 | S8 | **Fault-injection harness:** `faults` table, `FaultyStorage` [V], netproxy and HTTP fault server, Claude-run scenario matrix, injectable clock and wake handling (I1) | S3, S6 | OS-level rows [O] | Done (2026-10-21, `2668614`..; see Results) |
-| S9 | **Fuzz and property tests:** lib/bin split (Z0), Z1–Z7, corpus replay test, P1–P10 | S4, S5 | nightly CI [O] | Planned |
+| S9 | **Fuzz and property tests:** Z1–Z7 (Z0 dropped), corpus replay test, P1–P10 | S4, S5 | nightly CI [O] | Done (2026-10-21, `6128061`..; see Results) |
 | S10 | **Observability:** debug symbols (O2), crash context and no-report note (O3), diagnostics bundle (O4), health self-checks (O5), watchdog and breadcrumbs (O6), panic-hook thread tagging (E7) | S3 | symbol upload in release.yml [O] | Planned |
 | S11 | **Concurrency:** per-hash operation contract and targeted tests (C1), restart/shutdown stress (C2), deadlock check (C3), tokio-console (C4, optional), deterministic timing (C5) | S6 | – | Planned |
 | S12 | **Soak and scale:** soak harness and metrics (L1, L2), 24 h budgets (L3), 10k scale (L4), perf-compare (L5); measure F13/F16 and decide the patches | S8, S10 | 72 h real-swarm soak [O] | Planned |
@@ -315,7 +315,7 @@ Bar v1 needs S1–S5 plus D8/D9 from S6 (see the stability bar). S7 (D7, D6b) is
 
 ## Risks
 
-1. **The lib/bin split (Z0) touches every module.** Do it as a mechanical commit with no logic changes, and check `i18n::tests::no_hard_coded_ui_strings` (it may scan file paths).
+1. ~~**The lib/bin split (Z0) touches every module.**~~ Not needed (S9): every external-input parser is in a library crate.
 2. **More vendoring means more upstream drift.** Prefer Corrent-side checks (E1, E2, E5) over patching unvendored crates. Each [V] patch (D5, F4, E2's peer-metadata check, D13 only if the token can't be passed from outside, FaultyStorage, F13) stays minimal, marked, and has an upstream diff. vendor-diff (E8) keeps it honest.
 3. **The store schema v2 (D7) is a migration.** A bug there loses data. That is why D7 and the D6b rebuild that needs it are in S7, after S6: they ship only once the D9 file fixtures and the D8 kill test cover them, and the dated pre-migration backup stays. S2 ships only D6a, which needs no schema change.
 4. **fsync costs on slow disks.** D4 adds fsyncs in S1. In the same milestone, store and `rss.json` saves move to the writer thread (F1 part 1), so the actor never waits on them. Settings saves stay on the UI thread until F2 (S3); D4 makes them no slower (the parent-dir fsync is Unix only, and `.bak` is refreshed less often). D5's fsyncs (S2) run inside librqbit's persistence flush; measure them in L4 and in the S8 slow-disk scenario, and debounce them in a patch only if the numbers demand it.

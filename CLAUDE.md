@@ -33,6 +33,8 @@ powershell -File scripts/fetch-libmpv.ps1   # once: libmpv-2.dll into .cache/lib
 cargo test --workspace      # unit + loopback engine integration tests (crates/corrent-core/src/engine/e2e_tests.rs)
 cargo test -p corrent-core --features testkit --test durability -- --ignored --nocapture   # kill at every write (~2 min)
 powershell -File scripts/fault-matrix.ps1   # S8 fault tests (fm_*), timing ones 20x in a row
+powershell -File scripts/fuzz-long.ps1 [-Minutes 30] [-Cases 1000000]   # S9: fuzz targets and property tests, long
+# fuzz targets: crates/corrent-core/src/fuzz.rs (corpus tests/fuzz-corpus/, cargo-fuzz in fuzz/), property tests: crates/corrent-core/src/prop_tests.rs
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo deny check   # CI gates
 ./target/debug/corrent.exe --portable [magnet|url|file]
 ./target/debug/correntd --data-dir target/debug/correntd-data   # headless server (docs/SERVER.md)
@@ -138,7 +140,7 @@ MSI/portable zip/winget, AppImage/Flatpak, dmg; release workflow — see docs/PA
 translation + language setting, web interface, Mica spike (no-go) (M27).
 Fable reviews of every milestone range and a final roadmap audit were addressed. Default save folder: `Downloads/Corrent`.
 
-Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S8 done 2026-10-21, S9 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
+Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S9 done 2026-10-21, S10 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
 upstreaming the librqbit patches (docs/upstream/) and a first tagged release.
 
 Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.

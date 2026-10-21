@@ -154,7 +154,10 @@ async fn create_torrent_raw<'a>(
         }
     }
 
-    if remaining_piece_length > 0 && length > 0 {
+    // CORRENT PATCH (Z1): only a partial last piece gets its own hash. Before, a total size that
+    // is an exact multiple of the piece length got one hash too many (of nothing), which
+    // libtorrent-based clients refuse.
+    if remaining_piece_length < piece_length && length > 0 {
         piece_hashes.extend_from_slice(&piece_checksum.finish());
     }
     Ok(CreateTorrentRawResult {
