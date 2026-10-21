@@ -1116,7 +1116,7 @@ impl Actor {
         let pending = self.next_pending;
         self.next_pending += 1;
         let hash = match &req.source {
-            AddSource::Magnet(m) => librqbit::Magnet::parse(m)
+            AddSource::Magnet(m) => librqbit::corrent_sizes::parse_magnet(m)
                 .ok()
                 .and_then(|m| m.as_id20())
                 .map(|id| InfoHash(id.0))
@@ -1419,7 +1419,7 @@ impl Actor {
                 trackers: m
                     .source_magnet
                     .as_deref()
-                    .and_then(|l| librqbit::Magnet::parse(l).ok())
+                    .and_then(|l| librqbit::corrent_sizes::parse_magnet(l).ok())
                     .map(|l| l.trackers)
                     .unwrap_or_default(),
                 error: t!("Its torrent file is missing. Retry looks for it on the network.").to_string(),
@@ -3027,7 +3027,7 @@ async fn add_torrent(
     let multi = l.info.info().files.is_some();
     // Trackers from the magnet link (tr=…) must reach the engine even when we add from bytes.
     let magnet_trackers: Vec<String> = match &req.source {
-        AddSource::Magnet(m) => librqbit::Magnet::parse(m).map(|m| m.trackers).unwrap_or_default(),
+        AddSource::Magnet(m) => librqbit::corrent_sizes::parse_magnet(m).map(|m| m.trackers).unwrap_or_default(),
         _ => Vec::new(),
     };
     let output =

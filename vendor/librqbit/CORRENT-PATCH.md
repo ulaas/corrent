@@ -48,6 +48,12 @@ used by the `webui`/`http-api` features Corrent doesn't enable), plus runtime co
   file lengths adding up past 2^64 or more than 2^32 pieces panicked in debug builds and gave
   wrong sizes in release. Found by the Z1 fuzz target (STABILITY.md S9). The proper fix belongs
   in librqbit-core (`Lengths::from_torrent`/`new`); diff: `docs/upstream/librqbit-length-checks.patch`.
+- Magnets parsed without huge select-only lists (`corrent_sizes::parse_magnet`, call site marked
+  `CORRENT PATCH (Z6)` in `src/session.rs`; Corrent's own code uses it too, a test checks that
+  nothing calls `Magnet::parse` directly). librqbit-core expands `so=a-b` into every index, so
+  `so=0-18446744073709551615` (in a pasted magnet, a launch argument, a feed or the Web API)
+  asked for all of memory. `so=` values listing more than 2^20 indices in all are dropped (the
+  magnet then selects every file). Found by the Z6 fuzz target; same diff as above.
 
 librqbit rebuilds these from the add-time options whenever a torrent goes live again, so Corrent
 stores them itself and re-applies them (`Actor::apply_torrent_limits`).

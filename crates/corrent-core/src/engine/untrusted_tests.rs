@@ -83,3 +83,39 @@ fn numbers_too_big_for_their_type_are_invalid_not_a_panic() {
     assert!(from_bytes::<Small>(b"d1:ni300ee").is_err(), "300 doesn't fit a u8");
     assert!(from_bytes::<Small>(b"d1:ni200ee").is_ok());
 }
+
+#[test]
+fn magnets_cant_ask_for_all_of_memory() {
+    // Z6: librqbit-core expands `so=a-b` into every index (this one: 2^64 of them).
+    let h = "08ada5a7a6183aae1e09d831df6748d566095a10";
+    for so in ["so=0-18446744073709551615", "s%6F=0-18446744073709551615", "so=0-1048576&so=0-1048576"] {
+        let m = librqbit::corrent_sizes::parse_magnet(&format!("magnet:?xt=urn:btih:{h}&{so}&dn=x")).unwrap();
+        assert_eq!(m.as_id20().map(|i| i.as_string()), Some(h.to_string()), "{so}");
+        assert!(m.get_select_only().is_none_or(|v| v.len() <= 1 << 20), "{so}");
+        assert_eq!(m.name.as_deref(), Some("x"));
+    }
+    let m = librqbit::corrent_sizes::parse_magnet(&format!("magnet:?xt=urn:btih:{h}&so=0,2,4-6")).unwrap();
+    assert_eq!(m.get_select_only(), Some(vec![0, 2, 4, 5, 6]), "a normal selection stays");
+}
+
+#[test]
+fn magnets_are_parsed_through_the_size_check() {
+    // Every magnet parse goes through `corrent_sizes::parse_magnet` (see the test above).
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut dirs = vec![root.join("src")];
+    dirs.extend(std::fs::read_dir(root.join("crates")).unwrap().flatten().map(|e| e.path().join("src")));
+    let mut bad = Vec::new();
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && std::fs::read_to_string(&p).unwrap().contains(concat!("Magnet::", "parse("))
+            {
+                bad.push(p);
+            }
+        }
+    }
+    assert!(bad.is_empty(), "use librqbit::corrent_sizes::parse_magnet in {bad:?}");
+}

@@ -140,6 +140,56 @@ fn data_at(t: &Parsed, base: &Path, subfolder: bool) -> bool {
     }
 }
 
+/// What a client's resume data says about a torrent (no file system access: the folders are
+/// checked by `locate`).
+#[derive(Debug, Default)]
+pub(crate) struct Plan {
+    /// Folders the data may be in, most likely first.
+    pub candidates: Vec<PathBuf>,
+    pub subfolder: bool,
+    pub category: Option<String>,
+    pub tags: Vec<String>,
+    pub paused: bool,
+}
+
+pub(crate) fn qbt_plan(t: &Parsed, r: Option<&Dict>) -> Plan {
+    // qBittorrent keeps unfinished torrents in its "incomplete" folder when one is set.
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for key in ["qBt-savePath", "save_path", "qBt-downloadPath"] {
+        if let Some(p) = r.and_then(|d| get_str(d, key)).map(PathBuf::from)
+            && !candidates.contains(&p)
+        {
+            candidates.push(p);
+        }
+    }
+    // Content layout: Original/Subfolder keep the torrent's folder, NoSubfolder drops it;
+    // "Subfolder" wraps a single file in a folder named after it (without extension).
+    let layout = r.and_then(|d| get_str(d, "qBt-contentLayout")).unwrap_or_default();
+    let mut subfolder = layout != "NoSubfolder";
+    if layout == "Subfolder" && t.first_file.is_none() {
+        let stem = Path::new(&t.name).file_stem().map(|x| x.to_os_string()).unwrap_or_default();
+        candidates = candidates.into_iter().map(|c| c.join(&stem)).collect();
+        subfolder = false;
+    }
+    Plan {
+        candidates,
+        subfolder,
+        category: r.and_then(|d| get_str(d, "qBt-category")),
+        tags: r.map(|d| get_str_list(d, "qBt-tags")).unwrap_or_default(),
+        paused: r.is_some_and(|d| get_int(d, "paused") == Some(1) || get_int(d, "stopped") == Some(1)),
+    }
+}
+
+pub(crate) fn transmission_plan(r: Option<&Dict>) -> Plan {
+    // Unfinished torrents may sit in the "incomplete" folder.
+    let candidates = ["destination", "incomplete-dir"]
+        .iter()
+        .filter_map(|k| r.and_then(|d| get_str(d, k)))
+        .map(PathBuf::from)
+        .collect();
+    Plan { candidates, subfolder: true, paused: r.is_some_and(|d| get_int(d, "paused") == Some(1)), ..Plan::default() }
+}
+
 /// The first candidate folder that holds the data, else the first candidate.
 fn locate(t: &Parsed, candidates: &[PathBuf], subfolder: bool) -> (Option<PathBuf>, bool) {
     match candidates.iter().find(|c| data_at(t, c, subfolder)) {
@@ -175,35 +225,17 @@ pub fn scan(client: Client, dir: &Path) -> Result<Vec<ImportItem>, String> {
                 let resume = crate::util::read_capped(&f.with_extension("fastresume"), MAX_RESUME_BYTES)
                     .ok()
                     .and_then(|b| dict(&b));
-                let r = resume.as_ref();
-                // qBittorrent keeps unfinished torrents in its "incomplete" folder when one is set.
-                let mut candidates: Vec<PathBuf> = Vec::new();
-                for key in ["qBt-savePath", "save_path", "qBt-downloadPath"] {
-                    if let Some(p) = r.and_then(|d| get_str(d, key)).map(PathBuf::from)
-                        && !candidates.contains(&p)
-                    {
-                        candidates.push(p);
-                    }
-                }
-                // Content layout: Original/Subfolder keep the torrent's folder, NoSubfolder drops it;
-                // "Subfolder" wraps a single file in a folder named after it (without extension).
-                let layout = r.and_then(|d| get_str(d, "qBt-contentLayout")).unwrap_or_default();
-                let mut subfolder = layout != "NoSubfolder";
-                if layout == "Subfolder" && t.first_file.is_none() {
-                    let stem = Path::new(&t.name).file_stem().map(|x| x.to_os_string()).unwrap_or_default();
-                    candidates = candidates.into_iter().map(|c| c.join(&stem)).collect();
-                    subfolder = false;
-                }
-                let (save_path, data_found) = locate(&t, &candidates, subfolder);
+                let plan = qbt_plan(&t, resume.as_ref());
+                let (save_path, data_found) = locate(&t, &plan.candidates, plan.subfolder);
                 out.push(ImportItem {
                     name: t.name,
                     hash: t.hash,
                     bytes: t.bytes,
                     save_path,
-                    category: r.and_then(|d| get_str(d, "qBt-category")),
-                    tags: r.map(|d| get_str_list(d, "qBt-tags")).unwrap_or_default(),
-                    paused: r.is_some_and(|d| get_int(d, "paused") == Some(1) || get_int(d, "stopped") == Some(1)),
-                    create_subfolder: subfolder,
+                    category: plan.category,
+                    tags: plan.tags,
+                    paused: plan.paused,
+                    create_subfolder: plan.subfolder,
                     data_found,
                 });
             }
@@ -222,22 +254,17 @@ pub fn scan(client: Client, dir: &Path) -> Result<Vec<ImportItem>, String> {
                         .find_map(|n| crate::util::read_capped(&r.join(n), MAX_RESUME_BYTES).ok())
                         .and_then(|b| dict(&b))
                 });
-                // Unfinished torrents may sit in the "incomplete" folder.
-                let candidates: Vec<PathBuf> = ["destination", "incomplete-dir"]
-                    .iter()
-                    .filter_map(|k| resume.as_ref().and_then(|d| get_str(d, k)))
-                    .map(PathBuf::from)
-                    .collect();
+                let plan = transmission_plan(resume.as_ref());
                 // Files Transmission is still downloading are named "*.part": not found → re-download.
-                let (save_path, data_found) = locate(&t, &candidates, true);
+                let (save_path, data_found) = locate(&t, &plan.candidates, plan.subfolder);
                 out.push(ImportItem {
                     name: t.name,
                     hash: t.hash,
                     bytes: t.bytes,
                     save_path,
-                    category: None,
-                    tags: Vec::new(),
-                    paused: resume.as_ref().is_some_and(|d| get_int(d, "paused") == Some(1)),
+                    category: plan.category,
+                    tags: plan.tags,
+                    paused: plan.paused,
                     create_subfolder: true,
                     data_found,
                 });

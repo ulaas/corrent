@@ -268,13 +268,19 @@ impl AddSource {
     /// bytes); URLs and files on disk are only known once fetched/read.
     pub fn info_hash(&self) -> Option<InfoHash> {
         match self {
-            AddSource::Magnet(m) => librqbit_core::magnet::Magnet::parse(m).ok()?.as_id20().map(|h| InfoHash(h.0)),
+            AddSource::Magnet(m) => librqbit::corrent_sizes::parse_magnet(m).ok()?.as_id20().map(|h| InfoHash(h.0)),
             AddSource::Bytes { bytes, .. } => librqbit::torrent_from_bytes(bytes).ok().map(|t| InfoHash(t.info_hash.0)),
             _ => None,
         }
     }
 
     pub fn parse(input: &str) -> Option<AddSource> {
+        AddSource::parse_with(input, |p| p.is_file())
+    }
+
+    /// [`AddSource::parse`] with the "is it a file?" check given (the fuzz target passes a pure
+    /// one: on Windows `\host\share\x` looks up a server and `\.\pipe\x` opens a pipe).
+    pub fn parse_with(input: &str, is_file: impl Fn(&std::path::Path) -> bool) -> Option<AddSource> {
         let s = input.trim().trim_matches('"');
         if s.is_empty() {
             return None;
@@ -292,7 +298,7 @@ impl AddSource {
             return Some(AddSource::Magnet(format!("magnet:?xt=urn:btih:{s}")));
         }
         let path = PathBuf::from(s);
-        if lower.ends_with(".torrent") || path.is_file() {
+        if lower.ends_with(".torrent") || is_file(&path) {
             return Some(AddSource::File(path));
         }
         None

@@ -276,15 +276,20 @@ fn handle_client(conn: &Stream, tx: &std::sync::mpsc::Sender<IpcMessage>) {
 }
 
 fn parse_line(line: &str) -> Option<IpcMessage> {
+    parse_line_with(line, |p| p.is_file())
+}
+
+/// [`parse_line`] with the file check given (tests pass a pure one).
+fn parse_line_with(line: &str, is_file: impl Fn(&std::path::Path) -> bool) -> Option<IpcMessage> {
     let line = line.trim();
     if line == "FOCUS" {
         return Some(IpcMessage::Focus);
     }
     let item = line.strip_prefix("ADD ")?;
-    match AddSource::parse(item)? {
+    match AddSource::parse_with(item, &is_file)? {
         AddSource::File(p) => {
             // Only accept existing .torrent files from other processes.
-            let ok = p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("torrent"));
+            let ok = is_file(&p) && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("torrent"));
             ok.then_some(IpcMessage::Add(AddSource::File(p)))
         }
         other => Some(IpcMessage::Add(other)),
@@ -402,5 +407,32 @@ mod more_tests {
         assert!(matches!(parse_line(&format!("ADD {}", t.display())), Some(IpcMessage::Add(AddSource::File(_)))));
         let _ = std::fs::remove_file(f);
         let _ = std::fs::remove_file(t);
+    }
+}
+
+#[cfg(test)]
+mod fuzz_tests {
+    use super::*;
+
+    /// STABILITY.md Z6: lines from another process on the local socket never panic, and a file is
+    /// only passed on when it exists and is a .torrent (the file check is pure here).
+    #[test]
+    fn ipc_lines_never_panic() {
+        const SEEDS: &[&str] = &[
+            "FOCUS",
+            "ADD magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&so=0-3",
+            "ADD https://example.invalid/a.torrent?passkey=x",
+            "ADD 08ada5a7a6183aae1e09d831df6748d566095a10",
+            r#"ADD "C:\Users\me\Downloads\x.torrent""#,
+            "ADD /home/me/x.torrent",
+        ];
+        corrent_fuzz::run("ipc_lines", corrent_fuzz::iterations(3_000), |r| {
+            let line = r.case(SEEDS, 256);
+            for exists in [false, true] {
+                if let Some(IpcMessage::Add(AddSource::File(p))) = parse_line_with(&line, |_| exists) {
+                    assert!(exists && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("torrent")), "{line:?}");
+                }
+            }
+        });
     }
 }

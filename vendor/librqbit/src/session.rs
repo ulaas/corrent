@@ -1115,7 +1115,8 @@ impl Session {
             let mut opts = opts.unwrap_or_default();
             let add_res = match add {
                 AddTorrent::Url(magnet) if magnet.starts_with("magnet:") || magnet.len() == 40 => {
-                    let magnet = Magnet::parse(&magnet)
+                    // CORRENT PATCH (Z6): no select-only list that fills memory.
+                    let magnet = crate::corrent_sizes::parse_magnet(&magnet)
                         .context("provided path is not a valid magnet URL")?;
                     let info_hash = magnet
                         .as_id20()

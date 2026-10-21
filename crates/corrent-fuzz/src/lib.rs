@@ -69,7 +69,12 @@ impl Rng {
         let mut chars: Vec<char> = seed.chars().collect();
         for _ in 0..=self.below(4) {
             let len = chars.len();
-            match self.below(6) {
+            match self.below(7) {
+                6 => {
+                    let at = self.below(len + 1);
+                    let n: Vec<char> = self.pick(EDGE_NUMBERS).chars().collect();
+                    chars.splice(at..at, n);
+                }
                 0 => {
                     let at = self.below(len + 1);
                     let c = self.char();
@@ -121,7 +126,13 @@ impl Rng {
         let mut b = seed.to_vec();
         for _ in 0..=self.below(4) {
             let len = b.len();
-            match self.below(7) {
+            match self.below(8) {
+                7 if len > 0 => {
+                    // A number at its edge: zero, a sign, a type's limit and one past it.
+                    let (from, to) = digit_run(&b, self.below(len));
+                    let n = *self.pick(EDGE_NUMBERS);
+                    b.splice(from..to, n.bytes());
+                }
                 0 => {
                     let at = self.below(len + 1);
                     let digits = self.next_u64().to_string().repeat(1 + self.below(3));
@@ -167,6 +178,38 @@ impl Rng {
         let seed = *self.pick(seeds);
         self.mutate_bytes(seed)
     }
+}
+
+/// Numbers that break length and size math.
+pub const EDGE_NUMBERS: &[&str] = &[
+    "0",
+    "1",
+    "-1",
+    "255",
+    "256",
+    "65535",
+    "65536",
+    "2147483647",
+    "2147483648",
+    "4294967295",
+    "4294967296",
+    "9223372036854775807",
+    "9223372036854775808",
+    "18446744073709551615",
+    "18446744073709551616",
+    "-9223372036854775808",
+];
+
+/// The digit run around `at` (empty at `at` when there is none).
+fn digit_run(b: &[u8], at: usize) -> (usize, usize) {
+    let (mut a, mut e) = (at, at);
+    while a > 0 && b[a - 1].is_ascii_digit() {
+        a -= 1;
+    }
+    while e < b.len() && b[e].is_ascii_digit() {
+        e += 1;
+    }
+    (a, e)
 }
 
 /// How many cases a [`run_budget`] target gets: a count (`CORRENT_FUZZ_ITERS` or the default),

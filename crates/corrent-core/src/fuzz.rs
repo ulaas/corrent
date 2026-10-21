@@ -15,7 +15,7 @@ use crate::engine::types::AddSource;
 pub type Target = fn(&[u8]);
 
 /// Every target, by its corpus folder name.
-pub const TARGETS: &[(&str, Target)] = &[("z1", z1)];
+pub const TARGETS: &[(&str, Target)] = &[("z1", z1), ("z6", z6), ("z7", z7)];
 
 /// Z1: torrent bytes (a file, a URL, a feed, the watch folder, an import, the Web API) through
 /// the bencode parsers, librqbit's validation and Corrent's path checks. Accepted paths stay inside
@@ -65,6 +65,42 @@ pub fn z1(data: &[u8]) {
             }
         }
     }
+}
+
+/// Z6: what users paste and launches pass on (CLI arguments, IPC lines, the Add dialog, the Web
+/// API's `urls`, feed links): classification, display, redaction and the magnet parser.
+pub fn z6(data: &[u8]) {
+    use crate::engine::types::{magnet_display_name, url_decode};
+    let s = String::from_utf8_lossy(data);
+    for exists in [false, true] {
+        if let Some(src) = AddSource::parse_with(&s, |_| exists) {
+            let _ = (src.describe(), src.info_hash());
+        }
+    }
+    let _ = (magnet_display_name(&s), url_decode(&s), crate::util::redact_url(&s));
+    if let Ok(m) = librqbit::corrent_sizes::parse_magnet(&s) {
+        let n = m.get_select_only().map_or(0, |v| v.len());
+        assert!(n as u64 <= librqbit::corrent_sizes::MAX_SELECT_ONLY, "{n} select-only indices");
+    }
+}
+
+/// A single-file and a multi-file torrent for the import plans.
+fn import_torrents() -> [crate::import::Parsed; 2] {
+    let single = b"d4:infod6:lengthi5e4:name5:a.mkv12:piece lengthi16384e6:pieces20:AAAAAAAAAAAAAAAAAAAAee";
+    let multi =
+        b"d4:infod5:filesld6:lengthi5e4:pathl1:aeee4:name1:x12:piece lengthi16384e6:pieces20:AAAAAAAAAAAAAAAAAAAAee";
+    [crate::import::parse_torrent(single.to_vec()).unwrap(), crate::import::parse_torrent(multi.to_vec()).unwrap()]
+}
+
+/// Z7: another client's resume data (qBittorrent `.fastresume`, Transmission `.resume`) read on
+/// import. Only the pure part: the folders it names are never touched here.
+pub fn z7(data: &[u8]) {
+    let Some(d) = crate::import::dict(data) else { return };
+    for t in &import_torrents() {
+        let _ = crate::import::qbt_plan(t, Some(&d));
+    }
+    let plan = crate::import::transmission_plan(Some(&d));
+    assert!(plan.candidates.len() <= 2);
 }
 
 #[cfg(test)]
@@ -133,5 +169,15 @@ mod tests {
     #[test]
     fn z1_torrent_bytes() {
         fuzz("z1", 3_000, 4096);
+    }
+
+    #[test]
+    fn z6_magnets_urls_and_launch_items() {
+        fuzz("z6", 3_000, 512);
+    }
+
+    #[test]
+    fn z7_import_resume_data() {
+        fuzz("z7", 3_000, 2048);
     }
 }
