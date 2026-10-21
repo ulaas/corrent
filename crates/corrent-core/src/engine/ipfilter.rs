@@ -76,10 +76,15 @@ fn p2p_lines(text: &str) -> String {
 }
 
 fn gunzip_if_needed(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    gunzip_capped(bytes, MAX_LIST_BYTES)
+}
+
+/// A gzip-compressed list unpacked, at most `max` bytes of it; anything else as it is.
+pub(crate) fn gunzip_capped(bytes: Vec<u8>, max: usize) -> Result<Vec<u8>, String> {
     if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut out = Vec::new();
         flate2::read::MultiGzDecoder::new(&bytes[..])
-            .take(MAX_LIST_BYTES as u64)
+            .take(max as u64)
             .read_to_end(&mut out)
             .map_err(|e| t!("the list is not valid gzip ({e})", e = e))?;
         Ok(out)

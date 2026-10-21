@@ -690,3 +690,207 @@ fn generators_mostly_make_loadable_values() {
     let stores = (0..400).filter(|s| arbitrary_store(*s).is_some()).count();
     assert!(settings > 100 && stores > 100, "{settings} settings, {stores} stores of 400");
 }
+
+// ---- P9: IP filter lists --------------------------------------------------------------------
+
+fn ip_entry() -> impl Strategy<Value = String> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let ip = prop_oneof![any::<Ipv4Addr>().prop_map(IpAddr::V4), any::<Ipv6Addr>().prop_map(IpAddr::V6)];
+    let noise = "[ -~]{0,12}";
+    prop_oneof![
+        ip.clone().prop_map(|a| a.to_string()),
+        (ip.clone(), 0..140u32).prop_map(|(a, l)| format!("{a}/{l}")),
+        (ip.clone(), ip.clone()).prop_map(|(a, b)| format!("{a}-{b}")),
+        (noise, ip.clone(), ip.clone()).prop_map(|(n, a, b)| format!("{n}:{a}-{b}")),
+        (" *#?", noise).prop_map(|(p, n)| format!("{p}{n}")),
+        (ip, noise).prop_map(|(a, n)| format!("{a}{n}")),
+    ]
+}
+
+proptest! {
+    #![proptest_config(cases(5_000))]
+
+    /// P9: entries never panic; a range has one family and starts before it ends; one address is
+    /// itself; a CIDR block contains its address and is aligned to its mask; a reversed IPv4
+    /// range is refused.
+    #[test]
+    fn p9_ip_filter_entries(line in ip_entry()) {
+        use std::net::IpAddr;
+        use crate::engine::ipfilter::parse_entry;
+        let r = parse_entry(&line);
+        if let Ok(Some((a, b))) = r {
+            prop_assert_eq!(a.is_ipv4(), b.is_ipv4());
+            prop_assert!(a <= b, "{} > {}", a, b);
+        }
+        if let Ok(ip) = line.trim().parse::<IpAddr>() {
+            prop_assert_eq!(r.clone(), Ok(Some((ip, ip))));
+        }
+        if let Some((ip, len)) = line.split_once('/')
+            && let (Ok(ip), Ok(len)) = (ip.parse::<IpAddr>(), len.parse::<u32>())
+        {
+            let bits = if ip.is_ipv4() { 32 } else { 128 };
+            match r {
+                Ok(Some((a, b))) => {
+                    prop_assert!(len <= bits && a <= ip && ip <= b);
+                    let size = |x: IpAddr| match x {
+                        IpAddr::V4(v) => u128::from(v.to_bits()),
+                        IpAddr::V6(v) => v.to_bits(),
+                    };
+                    // [a, b] is exactly the 2^(bits - len) addresses of the block.
+                    let span = size(b) - size(a);
+                    prop_assert_eq!(span.checked_add(1).map_or(128, |n| n.trailing_zeros()), bits - len);
+                }
+                _ => prop_assert!(len > bits),
+            }
+        }
+        if let Some((a, b)) = line.split_once('-')
+            && let (Ok(IpAddr::V4(a)), Ok(IpAddr::V4(b))) = (a.parse::<IpAddr>(), b.parse::<IpAddr>())
+            && a > b
+        {
+            prop_assert!(r.is_err());
+        }
+    }
+
+    /// P9: any bytes through the gzip path never panic, and the cap holds.
+    #[test]
+    fn p9_gzip_lists(bytes in prop::collection::vec(any::<u8>(), 0..512), gz in any::<bool>()) {
+        let input = if gz { [vec![0x1f, 0x8b], bytes].concat() } else { bytes };
+        if let Ok(out) = crate::engine::ipfilter::gunzip_capped(input, 1 << 16) {
+            prop_assert!(out.len() <= 1 << 16 || !gz);
+        }
+    }
+}
+
+/// P9: a gzip bomb stops at the cap; a real gzip list comes back whole.
+#[test]
+fn p9_gzip_bomb_is_capped() {
+    use std::io::Write;
+    let gzip = |b: &[u8]| {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        e.write_all(b).unwrap();
+        e.finish().unwrap()
+    };
+    let bomb = gzip(&vec![0u8; 10 << 20]);
+    assert!(bomb.len() < 64 << 10);
+    assert_eq!(crate::engine::ipfilter::gunzip_capped(bomb, 1 << 20).unwrap().len(), 1 << 20);
+    let list = b"corrent:1.2.3.4-1.2.3.9\n# a comment\n10.0.0.0/8\n".repeat(50);
+    assert_eq!(crate::engine::ipfilter::gunzip_capped(gzip(&list), 1 << 20).unwrap(), list);
+}
+
+// ---- P10: download rules --------------------------------------------------------------------
+
+fn episode_filter_text() -> impl Strategy<Value = String> {
+    let num = prop_oneof![0..100u32, any::<u32>()].prop_map(|n| n.to_string());
+    let range = prop_oneof![
+        num.clone(),
+        (num.clone(), num.clone()).prop_map(|(a, b)| format!("{a}-{b}")),
+        num.clone().prop_map(|a| format!("{a}-")),
+        "[ -~]{0,6}",
+    ];
+    (prop::bool::ANY, num, prop::collection::vec(range, 0..5), "[ ;]{0,2}")
+        .prop_map(|(s, season, ranges, sep)| format!("{}{season}x{}{sep}", if s { "S" } else { "" }, ranges.join(";")))
+}
+
+proptest! {
+    #![proptest_config(cases(3_000))]
+
+    /// P10: episode filters never panic; what parses allows exactly its ranges (each ends at or
+    /// after its start), for its season only.
+    #[test]
+    fn p10_episode_filters(text in episode_filter_text(), season in 0..100u32, episode in 0..200u32) {
+        use crate::rss::rules::EpisodeFilter;
+        let Ok(f) = EpisodeFilter::parse(&text) else { return Ok(()) };
+        let t = text.trim().to_ascii_lowercase();
+        let (s, rest) = t.split_once('x').unwrap();
+        let fs: u32 = s.trim().trim_start_matches('s').parse().unwrap();
+        let ranges: Vec<(u32, Option<u32>)> = rest
+            .split(';')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|p| match p.split_once('-') {
+                Some((a, b)) => (a.trim().parse().unwrap(), b.trim().parse().ok()),
+                None => (p.parse().unwrap(), p.parse().ok()),
+            })
+            .collect();
+        prop_assert!(!ranges.is_empty());
+        for (a, b) in &ranges {
+            prop_assert!(b.is_none_or(|b| b >= *a));
+        }
+        let want = season == fs && ranges.iter().any(|(a, b)| episode >= *a && b.is_none_or(|b| episode <= b));
+        prop_assert_eq!(f.allows(season, episode), want);
+        prop_assert!(!f.allows(fs.wrapping_add(1), episode) || fs == u32::MAX);
+    }
+
+    /// P10: titles never panic, and a found episode is written in the title.
+    #[test]
+    fn p10_episode_of_titles(title in "[ -~]{0,40}|.{0,40}", s in 0..100u32, e in 0..1000u32, sep in "[ ._-]?") {
+        use crate::rss::rules::episode_of;
+        if let Some((a, b)) = episode_of(&title) {
+            prop_assert!(title.contains(&a.to_string()) && title.contains(&b.to_string()));
+        }
+        let t = format!("Show.Name.S{s:02}{sep}E{e:02}.1080p");
+        prop_assert_eq!(episode_of(&t), Some((s, e)));
+    }
+}
+
+/// Patterns that blow up or don't compile.
+const NASTY: &[&str] = &[
+    "(a*)*b",
+    "(a|a)*",
+    ".{1000}{1000}",
+    "(",
+    ")",
+    "[",
+    "a{99999999}",
+    "\\",
+    "(?i)ı",
+    "\\p{Greek}+",
+    "x{2,1}",
+    "*",
+    "?",
+    "|",
+    "a||b",
+    "(?P<n>a)(?P<n>b)",
+    "\\b\\B",
+    "[[:alpha:]]",
+    "\\u{10FFFF}",
+];
+
+proptest! {
+    #![proptest_config(cases(1_000))]
+
+    /// P10: any rule compiles to a matcher or an error (no panic, and blow-ups stop at the size
+    /// limit), and matching any title doesn't panic.
+    #[test]
+    fn p10_rules_with_any_patterns(
+        contain in prop_oneof![prop::sample::select(NASTY).prop_map(String::from), "[ -~]{0,24}", ".{0,24}"],
+        exclude in prop_oneof![prop::sample::select(NASTY).prop_map(String::from), "[ -~]{0,24}"],
+        regex in any::<bool>(),
+        episodes in prop_oneof![Just(String::new()), episode_filter_text()],
+        titles in prop::collection::vec(".{0,60}", 1..4),
+    ) {
+        let rule = crate::rss::RssRule {
+            must_contain: contain,
+            must_not_contain: exclude,
+            use_regex: regex,
+            episode_filter: episodes,
+            ..Default::default()
+        };
+        if let Ok(m) = crate::rss::rules::Matcher::new(&rule) {
+            for t in &titles {
+                let _ = m.matches(t);
+            }
+        }
+    }
+}
+
+/// P10: a pattern that would compile to a huge program is an error, quickly.
+#[test]
+fn p10_huge_patterns_are_refused_quickly() {
+    for pattern in [".{1000}{1000}", "(\\w{100}){100}", "[a-z]{50000}"] {
+        let t = std::time::Instant::now();
+        let rule = crate::rss::RssRule { must_contain: pattern.into(), use_regex: true, ..Default::default() };
+        assert!(crate::rss::rules::Matcher::new(&rule).is_err(), "{pattern}");
+        assert!(t.elapsed() < Duration::from_secs(2), "{pattern}: {:?}", t.elapsed());
+    }
+}
