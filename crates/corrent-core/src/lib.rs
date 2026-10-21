@@ -15,6 +15,7 @@ pub mod engine;
 pub mod faults;
 #[cfg(any(test, feature = "fuzz"))]
 pub mod fuzz;
+pub mod health;
 pub mod import;
 pub mod lock;
 pub mod logbuf;

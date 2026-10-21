@@ -245,6 +245,8 @@ pub enum EngineCommand {
     /// asking whether the session may end, and the answer may still be no).
     Flush(std::sync::mpsc::Sender<()>),
     /// Debug builds only: panic inside the engine task (crash-report testing).
+    /// Run the health self-checks now (they also run every 5 minutes).
+    CheckHealth,
     #[cfg(debug_assertions)]
     DevPanic,
     /// Debug builds only: the engine is busy this long (hang-report testing).

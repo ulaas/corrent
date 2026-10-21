@@ -70,6 +70,21 @@ mod imp {
         FILE_ERROR.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(p, _, _)| !p.starts_with(prefix));
     }
 
+    static FREE_SPACE: Mutex<Vec<(PathBuf, u64)>> = Mutex::new(Vec::new());
+
+    pub fn set_free_space(prefix: &Path, bytes: Option<u64>) {
+        let mut v = FREE_SPACE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        v.retain(|(p, _)| p != prefix);
+        if let Some(b) = bytes {
+            v.push((prefix.to_path_buf(), b));
+        }
+    }
+
+    pub fn free_space(path: &Path) -> Option<u64> {
+        let v = FREE_SPACE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        v.iter().find(|(p, _)| path.starts_with(p)).map(|(_, b)| *b)
+    }
+
     pub fn file_error(path: &Path) -> Option<std::io::Error> {
         let mut v = FILE_ERROR.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (_, (win, unix), times) = v.iter_mut().find(|(p, _, t)| path.starts_with(p.as_path()) && *t != Some(0))?;
@@ -172,6 +187,23 @@ pub fn take_tick_jump(data_dir: &Path) -> Duration {
     {
         let _ = data_dir;
         Duration::ZERO
+    }
+}
+
+/// Tests: the free space reported for folders under `prefix` (None: the real value again).
+#[cfg(any(test, feature = "testkit"))]
+pub fn set_free_space(prefix: &Path, bytes: Option<u64>) {
+    imp::set_free_space(prefix, bytes);
+}
+
+/// A test's free space for `path` (None in release builds: measure it).
+pub fn free_space(path: &Path) -> Option<u64> {
+    #[cfg(any(test, feature = "testkit"))]
+    return imp::free_space(path);
+    #[cfg(not(any(test, feature = "testkit")))]
+    {
+        let _ = path;
+        None
     }
 }
 

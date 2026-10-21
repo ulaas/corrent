@@ -99,6 +99,7 @@ impl CorrentApp {
                 )
                 .on_hover_text(t!("Free space in the default download folder"));
             }
+            self.health_chip(ui, p);
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
@@ -137,6 +138,46 @@ impl CorrentApp {
                     sparkline(ui, &downs, p.accent, vec2(70.0, 16.0));
                 }
             });
+        });
+    }
+
+    /// O5: shown only while a self-check fails; lists the problems with a way to fix each.
+    fn health_chip(&mut self, ui: &mut Ui, p: &Palette) {
+        use corrent_core::health::Issue;
+        let issues = self.snap.health.clone();
+        if issues.is_empty() {
+            return;
+        }
+        let text = if issues.len() == 1 { t!("1 problem").to_string() } else { t!("{n} problems", n = issues.len()) };
+        let r = ui
+            .add(
+                egui::Label::new(RichText::new(format!("{} {text}", icons::WARNING)).small().color(p.warn))
+                    .sense(egui::Sense::click()),
+            )
+            .on_hover_text(t!("Corrent's self-checks found a problem. Click for details."));
+        crate::ui::widgets::popup(egui::Popup::menu(&r), |ui| {
+            ui.set_max_width(360.0);
+            for issue in &issues {
+                ui.label(RichText::new(issue.label()).color(p.text));
+                let fix = match issue {
+                    Issue::SaveFolder(_) | Issue::LowSpace(_) => t!("Choose another download folder…"),
+                    Issue::StoreSave(_) => t!("Open the data folder"),
+                };
+                if ui.button(fix).clicked() {
+                    match issue {
+                        Issue::SaveFolder(_) | Issue::LowSpace(_) => {
+                            self.open_settings_at(super::settings_window::Page::Downloads)
+                        }
+                        Issue::StoreSave(_) => super::open_path(&self.paths.data_dir),
+                    }
+                    ui.close();
+                }
+                ui.separator();
+            }
+            if ui.button(t!("Check again")).clicked() {
+                self.engine.send(crate::engine::EngineCommand::CheckHealth);
+                ui.close();
+            }
         });
     }
 

@@ -231,6 +231,8 @@ pub struct Snapshot {
     pub all_time_downloaded: u64,
     pub all_time_uploaded: u64,
     pub free_space: Option<u64>,
+    /// Problems the self-checks found (O5); empty when all is well.
+    pub health: Vec<crate::health::Issue>,
     pub warning: Option<String>,
     /// Recently removed torrents that can still be restored (hash, name).
     pub undoable: Vec<(InfoHash, String)>,

@@ -417,3 +417,42 @@ async fn fm_resume_never_recreates_a_missing_folder() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// O5: each self-check flips on its own and clears once fixed: a save folder that can't be
+/// written, low free space and a failed save of the store all show in the snapshot after
+/// CheckHealth (the checks also run every 5 minutes).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_health_checks_flip_and_clear() {
+    use crate::health::Issue;
+    let dir = temp_dir("fm-health");
+    let l = start(&dir);
+    let save = dir.join("dl");
+    let healthy = wait_for(&l, "the first check", 30, |sn| save.is_dir() && sn.health.is_empty()).await;
+    assert!(healthy.health.is_empty(), "a fresh profile is fine (the probe creates the folder)");
+
+    crate::faults::set_access_denied(&save, None);
+    l.engine.send(EngineCommand::CheckHealth);
+    wait_for(&l, "the unwritable folder", 30, |sn| matches!(sn.health.as_slice(), [Issue::SaveFolder(_)])).await;
+    crate::faults::clear_file_errors(&save);
+    l.engine.send(EngineCommand::CheckHealth);
+    wait_for(&l, "the folder writable again", 30, |sn| sn.health.is_empty()).await;
+
+    crate::faults::set_free_space(&save, Some(10 << 20));
+    l.engine.send(EngineCommand::CheckHealth);
+    wait_for(&l, "low space", 30, |sn| sn.health == [Issue::LowSpace(10 << 20)]).await;
+    crate::faults::set_free_space(&save, None);
+    l.engine.send(EngineCommand::CheckHealth);
+    wait_for(&l, "room again", 30, |sn| sn.health.is_empty()).await;
+
+    let hashes = super::e2e_tests::add_tiny_torrents_pub(&l, &dir, 1).await;
+    let store_file = l.paths.store_file();
+    crate::faults::set_disk_full(&store_file, None);
+    l.engine.send(EngineCommand::SetCategory { hashes: hashes.clone(), category: Some("Changed".into()) });
+    wait_for(&l, "the failed store save", 30, |sn| matches!(sn.health.as_slice(), [Issue::StoreSave(_)])).await;
+    crate::faults::clear_file_errors(&store_file);
+    let engine = l.engine.clone();
+    assert!(tokio::task::spawn_blocking(move || engine.flush_blocking(Duration::from_secs(5))).await.unwrap());
+    wait_for(&l, "saved again", 30, |sn| sn.health.is_empty()).await;
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

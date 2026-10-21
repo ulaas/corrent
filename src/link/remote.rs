@@ -512,7 +512,8 @@ impl Ctx {
             EngineCommand::ReloadIpFilter | EngineCommand::StopStream(_) | EngineCommand::AllowStream { .. } => {
                 self.unavailable()
             }
-            EngineCommand::SetDetailTarget(_) | EngineCommand::Shutdown(_) => {}
+            // The server checks itself (its own logs).
+            EngineCommand::SetDetailTarget(_) | EngineCommand::Shutdown(_) | EngineCommand::CheckHealth => {}
             // The server keeps its own data; nothing to save here.
             EngineCommand::Flush(done) => {
                 let _ = done.send(());

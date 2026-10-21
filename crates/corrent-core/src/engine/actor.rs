@@ -21,6 +21,8 @@ use crate::watchdog::{self, Doing};
 
 const HISTORY_LEN: usize = 600;
 const STALL_AFTER: Duration = Duration::from_secs(30);
+/// How often the health self-checks run (O5).
+const HEALTH_EVERY: Duration = Duration::from_secs(300);
 
 enum Internal {
     AddFinished {
@@ -58,6 +60,11 @@ enum Internal {
     },
     /// Free space of the save folder, measured off the actor.
     FreeSpace(Option<u64>),
+    /// The health self-checks' probe of the save folder, and its free space (O5).
+    Health {
+        probe: Result<(), String>,
+        free: Option<u64>,
+    },
     WatchScanned(super::automation::Scan),
     /// A watch-folder file was moved out of the way after its add.
     WatchFileSettled(PathBuf),
@@ -181,6 +188,12 @@ pub struct Actor {
     tick_ms: std::collections::VecDeque<u32>,
     last_heartbeat: Option<Instant>,
     low_space_warned: bool,
+    /// O5: the save folder's last probe, when the checks last started, whether one runs, and
+    /// the problems last logged.
+    health_probe: Result<(), String>,
+    health_at: Option<Instant>,
+    health_running: bool,
+    health_logged: Vec<crate::health::Issue>,
     stream: Option<Arc<super::stream::StreamServer>>,
     /// Per stream session: last sample (time, bytes served) and smoothed rate.
     stream_rates: HashMap<u64, (Instant, u64, f64)>,
@@ -279,6 +292,10 @@ impl Actor {
             tick_ms: std::collections::VecDeque::with_capacity(60),
             last_heartbeat: None,
             low_space_warned: false,
+            health_probe: Ok(()),
+            health_at: None,
+            health_running: false,
+            health_logged: Vec::new(),
             stream: None,
             stream_rates: HashMap::new(),
             stream_haves: HashMap::new(),
@@ -907,6 +924,10 @@ impl Actor {
                 self.apply_rate_limits();
             }
             EngineCommand::Shutdown(_) => unreachable!("handled in run loop"),
+            EngineCommand::CheckHealth => {
+                self.health_at = None;
+                self.check_health();
+            }
             EngineCommand::Flush(done) => {
                 self.store.flush();
                 self.rss.flush();
@@ -1620,8 +1641,36 @@ impl Actor {
     }
 
     /// Warn once when the default download folder runs low while something is downloading.
+    /// Start the self-checks' probe (off the engine's thread), unless one runs.
+    fn check_health(&mut self) {
+        if self.health_running || self.engine_state != EngineState::Running {
+            return;
+        }
+        self.health_running = true;
+        self.health_at = Some(Instant::now());
+        let (path, tx) = (self.settings.downloads.save_path.clone(), self.internal_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let probe = crate::health::probe(&path).map_err(|e| crate::util::explain_io(&e.to_string()));
+            let _ = tx.blocking_send(Internal::Health { probe, free: free_space(&path) });
+        });
+    }
+
+    /// The self-checks' problems now; changes are logged (correntd has no chip).
+    fn health(&mut self) -> Vec<crate::health::Issue> {
+        let issues = crate::health::evaluate(&self.health_probe, self.free_space, self.store.save_error());
+        if issues != self.health_logged {
+            if issues.is_empty() {
+                tracing::info!("health checks: all well again");
+            } else {
+                tracing::warn!("health checks: {issues:?}");
+            }
+            self.health_logged = issues.clone();
+        }
+        issues
+    }
+
     fn check_free_space(&mut self) {
-        const LOW: u64 = 1024 * 1024 * 1024;
+        const LOW: u64 = crate::health::LOW_SPACE;
         let Some(free) = self.free_space else { return };
         let downloading = self.snapshot.load().torrents.iter().any(|t| t.state == TorrentState::Downloading);
         if free < LOW && downloading && !self.low_space_warned {
@@ -1666,6 +1715,11 @@ impl Actor {
         match msg {
             Internal::FreeSpace(free) => {
                 self.free_space_running = None;
+                self.free_space = free;
+            }
+            Internal::Health { probe, free } => {
+                self.health_running = false;
+                self.health_probe = probe;
                 self.free_space = free;
             }
             Internal::WatchScanned(scan) => {
@@ -1973,6 +2027,11 @@ impl Actor {
             }
         }
 
+        // O5, every 5 minutes once the engine runs (a fresh profile's save folder is created by
+        // the probe, like the first download would).
+        if self.health_at.is_none_or(|t| t.elapsed() >= HEALTH_EVERY) {
+            self.check_health();
+        }
         // Disk work off the engine's thread: a sleeping disk or an offline share must not stall it.
         if self.tick_count % 20 == 1 && self.free_space_running.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
             self.free_space_running = Some(Instant::now());
@@ -2232,6 +2291,7 @@ impl Actor {
             all_time_downloaded: self.store.data.stats.all_time_downloaded,
             all_time_uploaded: self.store.data.stats.all_time_uploaded,
             free_space: self.free_space,
+            health: self.health(),
             warning: self.warning.clone(),
             rss: self.rss.view(),
             busy_ops: self.busy.len(),
@@ -3219,6 +3279,9 @@ async fn readd(
 
 pub(super) fn free_space(path: &Path) -> Option<u64> {
     crate::faults::fs_delay(path);
+    if let Some(free) = crate::faults::free_space(path) {
+        return Some(free);
+    }
     let mut p = path.to_path_buf();
     loop {
         if p.exists() {

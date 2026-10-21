@@ -1060,3 +1060,25 @@ fn a_stalled_engine_says_what_it_is_busy_with() {
     h.run_steps(2);
     h.get_by_label_contains("hasn't responded for 31 seconds");
 }
+
+#[test]
+fn the_health_chip_shows_only_problems() {
+    use corrent_core::health::Issue;
+    let (_f, app) = app("health", vec![torrent(1, "a", TorrentState::Downloading)]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("problem").is_none(), "nothing while all is well");
+    let snap = Snapshot {
+        health: vec![Issue::LowSpace(5 << 20), Issue::StoreSave("the disk is full".into())],
+        ..(*h.state().snap).clone()
+    };
+    h.state_mut().snap = Arc::new(snap);
+    h.run_steps(2);
+    h.get_by_label_contains("2 problems").click();
+    h.run_steps(2);
+    h.get_by_label_contains("free in the download folder");
+    h.get_by_label_contains("Corrent couldn't save its data: the disk is full");
+    h.get_by_label("Choose another download folder…").click();
+    h.run_steps(2);
+    assert!(h.state().settings_draft.as_ref().is_some_and(|d| d.page == super::settings_window::Page::Downloads));
+}

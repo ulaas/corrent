@@ -323,6 +323,11 @@ impl Store {
     }
 
     /// A new save failure to report (each distinct failure is reported once).
+    /// Why the last save failed, until one succeeds (O5).
+    pub fn save_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
     pub fn take_save_error(&mut self) -> Option<String> {
         self.pending_error.take()
     }
