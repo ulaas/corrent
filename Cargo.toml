@@ -13,7 +13,7 @@ workspace = true
 [workspace]
 members = [".", "crates/*"]
 # WebAssembly plugins build for wasm32-wasip2 in their own workspace (scripts/build-plugins.sh).
-exclude = ["plugins"]
+exclude = ["plugins", "fuzz"]
 resolver = "3"
 
 # STABILITY.md F17: no panicking calls outside tests (clippy.toml exempts test code). A site that
@@ -133,3 +133,5 @@ corrent-core = { path = "crates/corrent-core", features = ["testkit"] }
 corrent-db = { path = "crates/corrent-db" }
 corrent-library = { path = "crates/corrent-library" }
 egui_kittest = "=0.36.2"
+corrent-fuzz = { path = "crates/corrent-fuzz" }
+proptest = { version = "1.12", default-features = false, features = ["std"] }

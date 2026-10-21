@@ -49,6 +49,8 @@ mod chunk_tracker;
 mod create_torrent_file;
 // CORRENT PATCH (D8): test-only kill points in the persistence writes.
 pub mod corrent_hooks;
+// CORRENT PATCH (Z1): torrent sizes checked before librqbit-core's unchecked length math.
+pub mod corrent_sizes;
 mod dht_utils;
 mod error;
 pub mod file_info;

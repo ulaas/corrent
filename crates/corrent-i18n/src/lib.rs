@@ -182,7 +182,7 @@ mod tests {
                 let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
                 if p.extension().is_none_or(|x| x != "rs")
                     || name.ends_with("_tests.rs")
-                    || matches!(name, "faulty_storage.rs" | "netproxy.rs" | "faultserver.rs" | "testkit.rs")
+                    || matches!(name, "faulty_storage.rs" | "netproxy.rs" | "faultserver.rs" | "testkit.rs" | "fuzz.rs")
                 {
                     continue;
                 }

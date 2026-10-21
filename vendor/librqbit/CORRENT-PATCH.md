@@ -41,6 +41,14 @@ used by the `webui`/`http-api` features Corrent doesn't enable), plus runtime co
   Corrent's durability harness does, to end the process there (STABILITY.md D8). No upstream
   diff: it exists for Corrent's tests.
 
+- Torrent sizes checked before `validate()` (`src/corrent_sizes.rs`, call sites marked
+  `CORRENT PATCH (Z1)` in `src/session.rs`: adds from bytes, and metadata received for a magnet).
+  librqbit-core's `Lengths` sums file lengths unchecked, divides by the piece length and keeps the
+  piece count in a u32. A piece length of 0 panicked in every build (the add never finished);
+  file lengths adding up past 2^64 or more than 2^32 pieces panicked in debug builds and gave
+  wrong sizes in release. Found by the Z1 fuzz target (STABILITY.md S9). The proper fix belongs
+  in librqbit-core (`Lengths::from_torrent`/`new`); diff: `docs/upstream/librqbit-length-checks.patch`.
+
 librqbit rebuilds these from the add-time options whenever a torrent goes live again, so Corrent
 stores them itself and re-applies them (`Actor::apply_torrent_limits`).
 

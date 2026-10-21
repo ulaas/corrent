@@ -1208,6 +1208,7 @@ impl Actor {
                 let (name, files) =
                     match librqbit::torrent_from_bytes(&bytes).map_err(anyhow::Error::from).and_then(|t| {
                         let name = t.info.data.name.as_ref().map(|n| String::from_utf8_lossy(n.as_ref()).into_owned());
+                        librqbit::corrent_sizes::check(&t.info.data)?;
                         let v = t.info.data.validate()?;
                         let files: Vec<PathBuf> = v.iter_file_details().map(|f| f.filename.to_pathbuf()).collect();
                         Ok((name.unwrap_or_else(|| hash.to_hex()), files))

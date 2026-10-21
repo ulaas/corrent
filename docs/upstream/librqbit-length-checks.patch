@@ -1,0 +1,69 @@
+diff --git src/lib.rs src/lib.rs
+index 62a26b6..b844cea 100644
+--- src/lib.rs
++++ src/lib.rs
+@@ -49,6 +49,8 @@ mod chunk_tracker;
+ mod create_torrent_file;
+ // CORRENT PATCH (D8): test-only kill points in the persistence writes.
+ pub mod corrent_hooks;
++// CORRENT PATCH (Z1): torrent sizes checked before librqbit-core's unchecked length math.
++pub mod corrent_sizes;
+ mod dht_utils;
+ mod error;
+ pub mod file_info;
+diff --git src/session.rs src/session.rs
+index 64603c4..77491b6 100644
+--- src/session.rs
++++ src/session.rs
+@@ -1175,7 +1175,11 @@ impl Session {
+                     InternalAddResult {
+                         info_hash: torrent.meta.info_hash,
+                         metadata: Some(TorrentMetadata::new(
+-                            torrent.meta.info.data.validate()?,
++                            {
++                                // CORRENT PATCH (Z1)
++                                crate::corrent_sizes::check(&torrent.meta.info.data)?;
++                                torrent.meta.info.data.validate()?
++                            },
+                             torrent.torrent_bytes,
+                             torrent.meta.info.raw_bytes.0,
+                         )?),
+@@ -1679,6 +1683,8 @@ impl Session {
+                 seen,
+             } => {
+                 trace!(?info, "received result from DHT");
++                // CORRENT PATCH (Z1)
++                crate::corrent_sizes::check(&info)?;
+                 let info = info.validate()?;
+                 Ok(ResolveMagnetResult {
+                     metadata: TorrentMetadata::new(
+diff --git src/corrent_sizes.rs vendor/librqbit/src/corrent_sizes.rs
+new file mode 100644
+index 0000000..5307b81
+--- /dev/null
++++ src/corrent_sizes.rs
+@@ -0,0 +1,24 @@
++// CORRENT PATCH (Z1): sizes librqbit-core's `Lengths` can't hold. `Lengths::from_torrent` sums the
++// file lengths unchecked (a panic in debug builds, a wrong size in release), divides by the piece
++// length (a piece length of 0 panics in every build) and keeps the piece count in a u32 (a count
++// past it wraps, and `last_piece_id` underflows). Called before every `validate()` of a torrent's
++// info: added from bytes, and received from peers for a magnet.
++
++use librqbit_core::torrent_metainfo::TorrentMetaV1Info;
++
++pub fn check<B>(info: &TorrentMetaV1Info<B>) -> anyhow::Result<()> {
++    if info.piece_length == 0 {
++        anyhow::bail!("invalid torrent: the piece length is 0");
++    }
++    let total = match &info.files {
++        Some(files) => files.iter().try_fold(0u64, |sum, f| sum.checked_add(f.length)),
++        None => Some(info.length.unwrap_or(0)),
++    };
++    let Some(total) = total else {
++        anyhow::bail!("invalid torrent: the files add up to more than 16 EiB");
++    };
++    if total.div_ceil(u64::from(info.piece_length)) > u64::from(u32::MAX) {
++        anyhow::bail!("invalid torrent: more than 4 billion pieces");
++    }
++    Ok(())
++}

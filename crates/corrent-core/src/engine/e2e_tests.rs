@@ -692,7 +692,6 @@ fn multi_file_torrent(name: &str, files: &[&[&str]]) -> Vec<u8> {
 }
 
 /// Add `bytes` and return the error toast it ends with (None if it was added).
-#[cfg(any(windows, target_os = "macos"))]
 async fn add_error(l: &Leecher, dir: &Path, bytes: Vec<u8>) -> Option<String> {
     l.engine.send(EngineCommand::Add(Box::new(AddRequest {
         source: AddSource::Bytes { name: "crafted.torrent".into(), bytes },
@@ -738,6 +737,34 @@ async fn files_differing_only_in_case_are_refused() {
         assert!(err.contains("can't store safely"), "{err}");
     }
     assert!(l.engine.snapshot().torrents.iter().all(|t| t.pending), "nothing was added");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Z1 findings: sizes librqbit-core's length math can't hold (a panic, or wrong sizes in release).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn torrents_with_impossible_sizes_are_refused() {
+    let dir = temp_dir("sizes");
+    let l = start(&dir);
+    let single = |length: u64, piece: u32| {
+        let mut b = format!("d4:infod6:lengthi{length}e4:name1:x12:piece lengthi{piece}e6:pieces20:").into_bytes();
+        b.extend_from_slice(&[7u8; 20]);
+        b.extend_from_slice(b"ee");
+        b
+    };
+    let huge = 9_000_000_000_000_000_000u64;
+    let mut three = format!(
+        "d4:infod5:filesld6:lengthi{huge}e4:pathl1:aeed6:lengthi{huge}e4:pathl1:beed6:lengthi{huge}e4:pathl1:ceee4:name1:x12:piece lengthi16384e6:pieces20:"
+    )
+    .into_bytes();
+    three.extend_from_slice(&[7u8; 20]);
+    three.extend_from_slice(b"ee");
+    for (what, bytes) in [("piece length 0", single(5, 0)), ("2^32 pieces", single(16384 << 32, 16384)), ("sum", three)]
+    {
+        let err = add_error(&l, &dir, bytes).await.unwrap_or_else(|| panic!("{what}: added"));
+        assert!(err.contains("invalid torrent"), "{what}: {err}");
+    }
+    assert!(l.engine.is_alive());
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -5,19 +5,19 @@
 #   powershell -File scripts/release-hygiene.ps1
 $ErrorActionPreference = 'Continue'
 Set-Location (Join-Path $PSScriptRoot '..')
-$markers = @('CORRENT_DEV_', 'CORRENT_FAULTS_COMPILED_IN', 'CORRENT_FUZZ_ITERS',
+$markers = @('CORRENT_DEV_', 'CORRENT_FAULTS_COMPILED_IN', 'CORRENT_FUZZ_ITERS', 'CORRENT_FUZZ_SECS', 'CORRENT_FUZZ_COMPILED_IN',
     'corrent_fuzz', 'console_subscriber', 'tokio_unstable')
 function Find-Markers([string]$exe) {
     $text = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($exe))
     $markers | Where-Object { $text.Contains($_) }
 }
 
-# The scan must be able to see the markers: a debug build with the test kit has them compiled in
+# The scan must be able to see the markers: a debug build with the fuzz targets (and the test kit) has them compiled in
 # (built into its own target folder, so the normal debug build stays as it is).
-cargo build -p corrent --features corrent-core/testkit --target-dir target/hygiene *> $null
+cargo build -p corrent --features corrent-core/fuzz --target-dir target/hygiene *> $null
 if ($LASTEXITCODE -ne 0) { 'RELEASE HYGIENE FAIL: control build'; exit 1 }
 $seen = Find-Markers 'target/hygiene/debug/corrent.exe'
-foreach ($m in 'CORRENT_DEV_', 'CORRENT_FAULTS_COMPILED_IN') {
+foreach ($m in 'CORRENT_DEV_', 'CORRENT_FAULTS_COMPILED_IN', 'CORRENT_FUZZ_COMPILED_IN') {
     if (-not ($seen -contains $m)) { "RELEASE HYGIENE FAIL: the scan can't see $m in a control build (broken check)"; exit 1 }
 }
 

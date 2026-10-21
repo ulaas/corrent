@@ -1339,6 +1339,7 @@ dependencies = [
  "chrono",
  "corrent-core",
  "corrent-db",
+ "corrent-fuzz",
  "corrent-i18n",
  "corrent-library",
  "corrent-mpv",
@@ -1364,6 +1365,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "open",
+ "proptest",
  "quick-xml 0.42.0",
  "raw-window-handle",
  "regex",
@@ -1407,6 +1409,7 @@ dependencies = [
  "librqbit-bencode",
  "librqbit-core",
  "open",
+ "proptest",
  "quick-xml 0.42.0",
  "regex",
  "reqwest",
@@ -2538,7 +2541,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6374,6 +6377,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
+name = "proptest"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8530004ccb15eae51c7e40009fbe317f341f804db54dc033eec1c50be28cfa0"
+dependencies = [
+ "bitflags 2.13.2",
+ "chacha20",
+ "core_detect",
+ "num-traits",
+ "rand 0.10.3",
+ "rand_xorshift",
+ "regex-syntax",
+ "unarray",
+]
+
+[[package]]
 name = "pulley-interpreter"
 version = "49.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6503,7 +6522,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6599,6 +6618,15 @@ name = "rand_pcg"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+dependencies = [
+ "rand_core 0.10.1",
+]
+
+[[package]]
+name = "rand_xorshift"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60aa6af80be32871323012e02e6e65f8a7cc7890931ae421d217ad8fe0df2ccf"
 dependencies = [
  "rand_core 0.10.1",
 ]
@@ -7014,7 +7042,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7108,7 +7136,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7875,10 +7903,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8363,6 +8391,12 @@ dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "unarray"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
 
 [[package]]
 name = "unicase"
@@ -9234,7 +9268,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

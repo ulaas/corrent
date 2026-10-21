@@ -1175,7 +1175,11 @@ impl Session {
                     InternalAddResult {
                         info_hash: torrent.meta.info_hash,
                         metadata: Some(TorrentMetadata::new(
-                            torrent.meta.info.data.validate()?,
+                            {
+                                // CORRENT PATCH (Z1)
+                                crate::corrent_sizes::check(&torrent.meta.info.data)?;
+                                torrent.meta.info.data.validate()?
+                            },
                             torrent.torrent_bytes,
                             torrent.meta.info.raw_bytes.0,
                         )?),
@@ -1679,6 +1683,8 @@ impl Session {
                 seen,
             } => {
                 trace!(?info, "received result from DHT");
+                // CORRENT PATCH (Z1)
+                crate::corrent_sizes::check(&info)?;
                 let info = info.validate()?;
                 Ok(ResolveMagnetResult {
                     metadata: TorrentMetadata::new(

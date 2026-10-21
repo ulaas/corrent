@@ -13,6 +13,9 @@ workspace = true
 [features]
 # Loopback seeder/leecher helpers for integration tests in other crates.
 testkit = []
+# Fuzz target bodies (`corrent_core::fuzz`, STABILITY.md Z): for the `fuzz/` cargo-fuzz crate.
+# Test tooling like the test kit, which it brings along.
+fuzz = ["testkit"]
 
 # The durability harness (STABILITY.md D8): test tooling, built only with the test kit.
 [[bin]]
@@ -56,3 +59,4 @@ aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys",
 
 [dev-dependencies]
 corrent-fuzz = { path = "../corrent-fuzz" }
+proptest = { version = "1.12", default-features = false, features = ["std"] }

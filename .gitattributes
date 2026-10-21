@@ -4,3 +4,6 @@
 *.ico binary
 web/dist/** -diff linguist-generated=true
 *.woff2 binary
+tests/fuzz-corpus/** binary
+proptest-regressions/** -text
+**/proptest-regressions/** -text

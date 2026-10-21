@@ -4,3 +4,7 @@
 /.zigvenv
 /dist
 /.cache
+/fuzz/target
+/fuzz/artifacts
+/fuzz/corpus
+/fuzz/Cargo.lock

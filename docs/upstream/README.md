@@ -19,5 +19,9 @@ ready to turn into upstream pull requests:
   (vendored as `vendor/librqbit-bencode`).
 - `librqbit-http-timeouts.patch` — `SessionOptions::http_timeout` (60 s default, 15 s connect)
   for the session's HTTP client, and a 32 MiB cap on `.torrent` files downloaded from a URL.
+- `librqbit-length-checks.patch` — refuse torrents whose sizes `Lengths` can't hold (a piece
+  length of 0, file lengths adding up past 2^64, more than 2^32 pieces) before `validate()`. The
+  upstream fix belongs in librqbit-core's `Lengths::from_torrent`/`new` (checked sum, a zero check,
+  a `u32::try_from` for the piece count); this patch is the librqbit-side stopgap.
 
 The owner submits them; Corrent drops the vendored copies once a release contains equivalents.

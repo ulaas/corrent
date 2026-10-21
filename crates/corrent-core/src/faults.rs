@@ -227,11 +227,16 @@ pub fn storage_factory(data_dir: &Path) -> Option<librqbit::storage::BoxStorageF
     }
 }
 
-/// A note when fault injection is compiled in (only test builds and the `testkit` feature).
+/// A note when fault injection is compiled in (only test builds and the `testkit` or `fuzz`
+/// feature).
 /// The binaries log it at start, so `scripts/release-hygiene.ps1` finds the text in a binary
 /// that got the feature by mistake.
 pub fn compiled_in() -> Option<&'static str> {
-    #[cfg(any(test, feature = "testkit"))]
+    #[cfg(feature = "fuzz")]
+    return Some(
+        "CORRENT_FAULTS_COMPILED_IN, CORRENT_FUZZ_COMPILED_IN: fault injection, the test kit and the fuzz targets are in this build",
+    );
+    #[cfg(all(any(test, feature = "testkit"), not(feature = "fuzz")))]
     return Some("CORRENT_FAULTS_COMPILED_IN: fault injection and the test kit are in this build");
     #[cfg(not(any(test, feature = "testkit")))]
     None
