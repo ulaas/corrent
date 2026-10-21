@@ -814,3 +814,23 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod fuzz_tests {
+    use super::*;
+
+    /// STABILITY.md P8: theme files (user-made or downloaded) never panic; what loads has valid
+    /// colors and saves back to the same theme.
+    #[test]
+    fn theme_files_never_panic() {
+        let seed =
+            PaletteDef::from_palette("Mine", &Palette::nord(true, accent_color(Accent::Blue, [0; 3], true))).to_toml();
+        corrent_fuzz::run("theme_toml", corrent_fuzz::iterations(1_500), |r| {
+            let text = r.case(&[&seed], 512);
+            if let Ok(def) = PaletteDef::from_toml(&text) {
+                assert!(def.to_palette().is_ok());
+                assert_eq!(PaletteDef::from_toml(&def.to_toml()), Ok(def));
+            }
+        });
+    }
+}

@@ -739,7 +739,7 @@ impl Settings {
 
     /// Parse a settings file. An empty file, or a very short one without `schema_version`, is
     /// damage (a crash while writing it), not "all defaults".
-    fn parse(text: &str) -> Result<Settings, String> {
+    pub(crate) fn parse(text: &str) -> Result<Settings, String> {
         if text.trim().is_empty() || (text.len() < 16 && !text.contains("schema_version")) {
             return Err("the file is empty".into());
         }

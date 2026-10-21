@@ -19,7 +19,7 @@ mod moves;
 pub mod netproxy;
 pub mod paths;
 mod restore;
-mod session;
+pub(crate) mod session;
 mod session_db;
 pub mod stream;
 #[cfg(any(test, feature = "testkit"))]

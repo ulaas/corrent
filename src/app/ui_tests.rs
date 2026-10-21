@@ -817,9 +817,14 @@ fn identify_dialog_searches_and_explains_missing_keys() {
     step_until(&mut h, "the item page", |h| h.query_by_label_contains("Identify…").is_some());
     h.get_by_label_contains("Identify…").click();
     step_until(&mut h, "the search", |h| h.query_by_label_contains("Nothing found").is_some());
-    h.get_by_label("Close").click();
-    h.run_steps(2);
-    assert!(h.query_by_label_contains("Nothing found").is_none());
+    // Clicked until it closes: a click while the modal is still opening can be lost (under a
+    // loaded gate).
+    step_until(&mut h, "the dialog to close", |h| {
+        if let Some(b) = h.query_by_label("Close") {
+            b.click();
+        }
+        h.query_by_label_contains("Nothing found").is_none()
+    });
 }
 
 /// Media → AI agent: how to connect, and a proposal an agent made, approved from the page.

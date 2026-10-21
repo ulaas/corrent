@@ -580,3 +580,46 @@ mod tests {
         assert!(!rule_is_active(&RssRule { enabled: false, ..r }));
     }
 }
+
+#[cfg(test)]
+mod fuzz_tests {
+    use super::*;
+
+    /// STABILITY.md P8: a damaged `rss.json` never panics; what parses saves and reads back the
+    /// same; loading one (with or without a good `.bak`) doesn't panic either.
+    #[test]
+    fn damaged_feed_history_files() {
+        let fixtures = [
+            include_str!("../../tests/fixtures/profile-v0/rss.json"),
+            include_str!("../../tests/fixtures/profile-v2/rss.json"),
+        ];
+        corrent_fuzz::run("rss_state", corrent_fuzz::iterations(1_500), |r| {
+            let text = r.case(&fixtures, 256);
+            if let Ok(d) = serde_json::from_str::<StateFile>(&text) {
+                let a = serde_json::to_value(&d).unwrap();
+                let back: StateFile = serde_json::from_slice(&serde_json::to_vec_pretty(&d).unwrap()).unwrap();
+                assert_eq!(serde_json::to_value(&back).unwrap(), a);
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("corrent-p8-rss-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        corrent_fuzz::run("rss_load", corrent_fuzz::iterations(40), |r| {
+            let path = dir.join("rss.json");
+            let text = r.case(&fixtures, 256);
+            std::fs::write(&path, &text).unwrap();
+            let backup = r.chance(50);
+            if backup {
+                std::fs::write(path.with_extension("json.bak"), fixtures[1]).unwrap();
+            } else {
+                let _ = std::fs::remove_file(path.with_extension("json.bak"));
+            }
+            let parses = serde_json::from_str::<StateFile>(&text).is_ok();
+            let rss = Rss::load(path);
+            // Damaged without a usable backup: read-only and said so, so nothing is downloaded twice.
+            assert_eq!(rss.read_only, !parses && !backup, "{text:?}");
+            assert_eq!(rss.warning.is_some(), rss.read_only);
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

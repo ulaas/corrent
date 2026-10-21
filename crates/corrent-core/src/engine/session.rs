@@ -24,7 +24,7 @@ pub fn limits(down_kib: u32, up_kib: u32) -> LimitsConfig {
     LimitsConfig { download_bps: kib_limit(down_kib), upload_bps: kib_limit(up_kib) }
 }
 
-fn options(
+pub(crate) fn options(
     paths: &Paths,
     s: &Settings,
     port_override: Option<u16>,

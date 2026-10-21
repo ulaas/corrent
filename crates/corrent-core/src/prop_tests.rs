@@ -447,3 +447,246 @@ proptest! {
         prop_assert!(weekday < 7 || !on);
     }
 }
+
+// ---- P6: settings round trip ----------------------------------------------------------------
+
+const EDGE_INTS: &[i64] = &[0, 1, -1, 255, 256, 65_535, 65_536, 4_294_967_295, 4_294_967_296, i64::MAX, i64::MIN];
+
+/// One random edit somewhere in a TOML document: a leaf value replaced with one of its kind, or
+/// an array element added or removed.
+fn mutate_toml(v: &mut toml::Value, r: &mut corrent_fuzz::Rng) {
+    match v {
+        toml::Value::Table(t) => {
+            let keys: Vec<String> = t.keys().cloned().collect();
+            if let Some(k) = keys.get(r.below(keys.len()))
+                && let Some(child) = t.get_mut(k)
+            {
+                mutate_toml(child, r);
+            }
+        }
+        toml::Value::Array(a) => match r.below(3) {
+            0 if !a.is_empty() => {
+                a.remove(r.below(a.len()));
+            }
+            1 if !a.is_empty() => {
+                let c = a[r.below(a.len())].clone();
+                a.push(c);
+            }
+            _ => {
+                let n = a.len();
+                if let Some(c) = a.get_mut(r.below(n)) {
+                    mutate_toml(c, r);
+                }
+            }
+        },
+        toml::Value::Integer(i) => {
+            *i = if r.chance(50) { *r.pick(EDGE_INTS) } else { (r.next_u64() % 100_000) as i64 };
+        }
+        toml::Value::Float(f) => *f = [0.0, -1.0, 1e-9, 1e30, 0.5][r.below(5)] + (r.below(1000) as f64) / 10.0,
+        toml::Value::String(s) => *s = r.text(24),
+        toml::Value::Boolean(b) => *b = !*b,
+        toml::Value::Datetime(_) => {}
+    }
+}
+
+/// Settings with random edits that still deserialize (each field keeps its type's range).
+fn arbitrary_settings(seed: u64) -> Option<crate::config::Settings> {
+    let mut r = corrent_fuzz::Rng::new(seed);
+    let mut v = toml::Value::try_from(crate::config::Settings::default()).unwrap();
+    // Watch folders are empty by default: give the edits one to change.
+    if let Some(w) = v.get_mut("watch").and_then(|w| w.as_table_mut()) {
+        let mut folder = toml::Table::new();
+        folder.insert("path".into(), "C:/w".into());
+        folder.insert("save_path".into(), "D:/x".into());
+        folder.insert("category".into(), "tv".into());
+        w.insert("folders".into(), toml::Value::Array(vec![toml::Value::Table(folder)]));
+    }
+    for _ in 0..=r.below(12) {
+        mutate_toml(&mut v, &mut r);
+    }
+    v.try_into().ok()
+}
+
+proptest! {
+    #![proptest_config(cases(1_500))]
+
+    /// P6: what deserializes saves and reads back identically, the current version migrates to
+    /// itself, and the engine's options build from it without a panic.
+    #[test]
+    fn p6_settings_round_trip(seed in any::<u64>(), alt in any::<bool>()) {
+        use crate::migrate::{SETTINGS_VERSION, migrate_settings};
+        let Some(mut s) = arbitrary_settings(seed) else { return Ok(()) };
+        s.schema_version = SETTINGS_VERSION;
+        let text = toml::to_string_pretty(&s);
+        prop_assert!(text.is_ok(), "settings that load can't be saved: {:?}", text.err());
+        let back = crate::config::Settings::parse(&text.unwrap());
+        prop_assert_eq!(back.as_ref().ok(), Some(&s));
+        let mut m = s.clone();
+        prop_assert!(!migrate_settings(&mut m, SETTINGS_VERSION));
+        prop_assert_eq!(&m, &s);
+        let paths = crate::config::Paths { data_dir: std::env::temp_dir().join("corrent-p6-never-written"), portable: true };
+        let lists = crate::engine::ipfilter::Prepared::default();
+        let _ = crate::engine::session::options(&paths, &s, None, alt, &lists, &tokio_util::sync::CancellationToken::new());
+    }
+}
+
+// ---- P7: store round trip -------------------------------------------------------------------
+
+fn mutate_json(v: &mut serde_json::Value, r: &mut corrent_fuzz::Rng) {
+    use serde_json::Value;
+    match v {
+        Value::Object(o) => {
+            let keys: Vec<String> = o.keys().cloned().collect();
+            if let Some(k) = keys.get(r.below(keys.len()))
+                && let Some(c) = o.get_mut(k)
+            {
+                mutate_json(c, r);
+            }
+        }
+        Value::Array(a) => match r.below(3) {
+            0 if !a.is_empty() => {
+                a.remove(r.below(a.len()));
+            }
+            1 if !a.is_empty() => {
+                let c = a[r.below(a.len())].clone();
+                a.push(c);
+            }
+            _ => {
+                let n = a.len();
+                if let Some(c) = a.get_mut(r.below(n)) {
+                    mutate_json(c, r);
+                }
+            }
+        },
+        Value::Number(n) => {
+            // Mostly of the same kind and in the narrow types' range (u8 to u32), sometimes not.
+            let float = n.is_f64();
+            *v = if float || r.chance(5) {
+                serde_json::json!((r.below(1000) as f64) / 8.0)
+            } else if r.chance(10) {
+                serde_json::json!(r.pick(EDGE_INTS))
+            } else {
+                serde_json::json!(*r.pick(&[0u64, 1, 2, 7, 100, 127, 255, 65_535, 1 << 20, u32::MAX as u64]))
+            }
+        }
+        Value::String(s) => *s = r.text(24),
+        Value::Bool(b) => *b = !*b,
+        Value::Null => *v = serde_json::json!(r.below(5)),
+    }
+}
+
+/// A store as Corrent writes it (torrents, categories, tags), with random edits.
+fn arbitrary_store(seed: u64) -> Option<crate::store::StoreData> {
+    let mut r = corrent_fuzz::Rng::new(seed);
+    let fixture = include_bytes!("../tests/fixtures/profile-v2/store.json");
+    let mut v: serde_json::Value = serde_json::from_slice(fixture).unwrap();
+    for _ in 0..=r.below(12) {
+        mutate_json(&mut v, &mut r);
+    }
+    serde_json::from_value(v).ok()
+}
+
+/// Serialize, deserialize, serialize: the same document (no `PartialEq` needed, and map order
+/// doesn't matter).
+fn json_round_trips<T: serde::Serialize + serde::de::DeserializeOwned>(x: &T) -> Result<(), String> {
+    let a = serde_json::to_value(x).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec_pretty(x).map_err(|e| e.to_string())?;
+    let back: T = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let b = serde_json::to_value(&back).map_err(|e| e.to_string())?;
+    if a == b { Ok(()) } else { Err(format!("{a}\nbecame\n{b}")) }
+}
+
+proptest! {
+    #![proptest_config(cases(1_500))]
+
+    /// P7: a store that loads saves and loads back identically; the current version migrates to
+    /// itself.
+    #[test]
+    fn p7_store_round_trip(seed in any::<u64>()) {
+        use crate::migrate::{STORE_VERSION, migrate_store};
+        let Some(mut d) = arbitrary_store(seed) else { return Ok(()) };
+        d.schema_version = STORE_VERSION;
+        prop_assert_eq!(json_round_trips(&d), Ok(()));
+        let before = serde_json::to_value(&d).unwrap();
+        prop_assert!(!migrate_store(&mut d, STORE_VERSION));
+        prop_assert_eq!(serde_json::to_value(&d).unwrap(), before);
+    }
+}
+
+proptest! {
+    #![proptest_config(cases(60))]
+
+    /// P7, from disk: a damaged `store.json` is replaced by its `.bak` (with a warning; the
+    /// torrents and categories are back).
+    #[test]
+    fn p7_damaged_store_comes_back_from_its_backup(seed in any::<u64>(), garbage in prop::collection::vec(any::<u8>(), 0..64)) {
+        let Some(mut d) = arbitrary_store(seed) else { return Ok(()) };
+        d.schema_version = crate::migrate::STORE_VERSION;
+        if serde_json::from_slice::<crate::store::StoreData>(&garbage).is_ok() {
+            return Ok(());
+        }
+        let dir = std::env::temp_dir().join(format!("corrent-p7-{}-{seed:x}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.json");
+        std::fs::write(&path, &garbage).unwrap();
+        std::fs::write(dir.join("store.json.bak"), serde_json::to_vec_pretty(&d).unwrap()).unwrap();
+        let s = Store::load(path);
+        let ok = s.warning.is_some()
+            && s.data.torrents.keys().collect::<std::collections::BTreeSet<_>>() == d.torrents.keys().collect()
+            && s.data.categories == d.categories;
+        s.discard();
+        let _ = std::fs::remove_dir_all(&dir);
+        prop_assert!(ok);
+    }
+}
+
+// ---- P8: config files as found on disk ------------------------------------------------------
+
+proptest! {
+    #![proptest_config(cases(1_500))]
+
+    /// P8: damaged settings files never panic: what parses round-trips, salvage keeps the
+    /// sections it can.
+    #[test]
+    fn p8_damaged_settings_files(seed in any::<u64>()) {
+        let mut r = corrent_fuzz::Rng::new(seed);
+        let fixtures = [
+            include_str!("../tests/fixtures/profile-v0/settings.toml"),
+            include_str!("../tests/fixtures/profile-v2/settings.toml"),
+        ];
+        let text = r.case(&fixtures, 256);
+        let _ = crate::migrate::toml_version(&text);
+        if let Ok(mut s) = crate::config::Settings::parse(&text) {
+            crate::migrate::migrate_settings(&mut s, crate::migrate::toml_version(&text));
+            let back = crate::config::Settings::parse(&toml::to_string_pretty(&s).unwrap()).unwrap();
+            prop_assert_eq!(back, s);
+        }
+        let (s, _) = crate::config::Settings::salvage(&text);
+        prop_assert!(toml::to_string_pretty(&s).is_ok());
+    }
+
+    /// P8: damaged store files: what parses migrates and round-trips.
+    #[test]
+    fn p8_damaged_store_files(seed in any::<u64>()) {
+        let mut r = corrent_fuzz::Rng::new(seed);
+        let fixtures = [
+            include_str!("../tests/fixtures/profile-v0/store.json"),
+            include_str!("../tests/fixtures/profile-v2/store.json"),
+        ];
+        let text = r.case(&fixtures, 256);
+        let from = crate::migrate::json_version(text.as_bytes());
+        if let Ok(mut d) = serde_json::from_str::<crate::store::StoreData>(&text) {
+            crate::migrate::migrate_store(&mut d, from);
+            prop_assert_eq!(json_round_trips(&d), Ok(()));
+        }
+    }
+}
+
+/// The P6/P7 generators mostly produce values that load (otherwise those tests check nothing).
+#[test]
+fn generators_mostly_make_loadable_values() {
+    let settings = (0..400).filter(|s| arbitrary_settings(*s).is_some()).count();
+    let stores = (0..400).filter(|s| arbitrary_store(*s).is_some()).count();
+    assert!(settings > 100 && stores > 100, "{settings} settings, {stores} stores of 400");
+}
