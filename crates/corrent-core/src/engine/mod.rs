@@ -250,6 +250,9 @@ pub enum EngineCommand {
     /// Debug builds only: the engine is busy this long (hang-report testing).
     #[cfg(debug_assertions)]
     DevHang(std::time::Duration),
+    /// Debug builds only: a task next to the engine panics, like a librqbit peer task (E7).
+    #[cfg(debug_assertions)]
+    DevTaskPanic,
 }
 
 /// Free space on the volume holding `path` (or its nearest existing ancestor).
@@ -423,7 +426,7 @@ impl EngineHandle {
     ) -> (mpsc::Sender<EngineCommand>, Arc<std::sync::atomic::AtomicUsize>, tokio::task::JoinHandle<()>) {
         let (tx, rx, adds) = command_queue();
         let io = BackendIo { commands: rx, snapshot: snapshot.clone(), wake: wake.clone(), events: events.clone() };
-        (tx, adds, rt.spawn(backend(io)))
+        (tx, adds, rt.spawn(crate::crash::engine_scope(backend(io))))
     }
 
     fn spawn(
@@ -439,12 +442,13 @@ impl EngineHandle {
             (paths.clone(), wake.clone(), events.clone(), snapshot.clone(), tx.clone());
         // Loading the store and feed history does file I/O (with retries): not on the UI thread.
         let task = rt.spawn(async move {
+            // A panic in the engine actor is fatal (E7), also while it loads.
             let actor = tokio::task::spawn_blocking(move || {
-                actor::Actor::new(paths, settings, wake, events, snapshot, self_tx)
+                crate::crash::engine_thread(|| actor::Actor::new(paths, settings, wake, events, snapshot, self_tx))
             })
             .await;
             match actor {
-                Ok(actor) => actor.run(rx).await,
+                Ok(actor) => crate::crash::engine_scope(actor.run(rx)).await,
                 Err(e) => std::panic::resume_unwind(e.into_panic()),
             }
         });

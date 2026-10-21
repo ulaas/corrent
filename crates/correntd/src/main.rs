@@ -493,6 +493,10 @@ fn run(args: Args) -> anyhow::Result<()> {
     let fingerprint = tls_material.as_ref().map(|t| t.fingerprint.clone()).filter(|f| !f.is_empty());
 
     corrent_core::crash::install_hook(paths.log_dir());
+    corrent_core::crash::note(|c| {
+        c.build = format!("correntd {}", env!("CARGO_PKG_VERSION"));
+        c.portable = args.portable;
+    });
     let previous = corrent_core::crash::start(&paths.log_dir());
     corrent_core::watchdog::start(paths.log_dir(), corrent_core::watchdog::Limits::SERVER);
     if previous.unclean {

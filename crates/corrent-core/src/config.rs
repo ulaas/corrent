@@ -788,6 +788,16 @@ impl Settings {
         (s, lost)
     }
 
+    /// Top-level sections that differ from the defaults (names only, for crash reports).
+    pub fn changed_sections(&self) -> Vec<String> {
+        let table = |s: &Settings| match toml::Value::try_from(s) {
+            Ok(toml::Value::Table(t)) => t,
+            _ => Default::default(),
+        };
+        let (ours, defaults) = (table(self), table(&Settings::default()));
+        ours.iter().filter(|(k, v)| v.is_table() && defaults.get(*k) != Some(*v)).map(|(k, _)| k.clone()).collect()
+    }
+
     pub fn save(&self, paths: &Paths) -> anyhow::Result<()> {
         if crate::migrate::settings_read_only() {
             tracing::warn!("not saving settings: the file belongs to a newer version of Corrent");
@@ -872,6 +882,16 @@ pub struct PaletteDef {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn changed_sections_name_only_what_differs() {
+        let mut s = super::Settings::default();
+        assert!(s.changed_sections().is_empty());
+        s.speed.download_limit = 100;
+        s.connection.proxy_password = "secret".into();
+        s.schema_version += 1;
+        assert_eq!(s.changed_sections(), vec!["connection".to_string(), "speed".to_string()]);
+    }
 
     #[test]
     fn playback_options_for_mpv() {

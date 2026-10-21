@@ -45,7 +45,7 @@ Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_TAB=general|files|peers|trackers|pieces|speed`,
 `CORRENT_DEV_OPEN=settings|remote|magnet|about|log|stats|streams|creator|import|feeds|rules|remove|remove-undo`,
 `CORRENT_DEV_STREAM_URL=<file>` (writes the first torrent's stream URL prefix; play it with `curl`),
-`CORRENT_DEV_PANIC=ui|engine`, `CORRENT_DEV_HANG=ipc` (the primary takes forwarded launches but never confirms them) `|ui` (the UI thread sleeps 15 s) `|engine` (the engine is busy 40 s; both write `logs/hang-*.txt`), `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
+`CORRENT_DEV_PANIC=ui|engine|torrent` (torrent: a task next to the engine, which the app survives), `CORRENT_DEV_HANG=ipc` (the primary takes forwarded launches but never confirms them) `|ui` (the UI thread sleeps 15 s) `|engine` (the engine is busy 40 s; both write `logs/hang-*.txt`), `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
 Media/server hooks (run without torrents): `CORRENT_DEV_VIEW=media|libraries`, `CORRENT_DEV_PROFILES=1`, `CORRENT_DEV_SERVER_FS=1` (with a paired server), `CORRENT_DEV_ITEM=<id>`, `CORRENT_DEV_PLAY=<id>`,
 `CORRENT_DEV_SHOT=<png>` (+ `CORRENT_DEV_SHOT_DELAY=<s>`, `CORRENT_DEV_EXIT=1`; works on Linux too),
 `CORRENT_DEV_LIBRARY=<folder>[;kind[;name]]|…` (adds those libraries to the profile; make test media with

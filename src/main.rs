@@ -155,6 +155,10 @@ fn main() -> eframe::Result {
     let _log_guard = init_logging(&paths);
     let _log_flush = corrent_core::logfile::FlushGuard;
     crash::install_hook(paths.log_dir());
+    crash::note(|c| {
+        c.build = version_text();
+        c.portable = paths.portable;
+    });
     let previous_run = crash::start(&paths.log_dir());
     corrent_core::watchdog::start(paths.log_dir(), corrent_core::watchdog::Limits::GUI);
     if previous_run.unclean {

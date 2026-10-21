@@ -521,7 +521,7 @@ impl Ctx {
             #[expect(clippy::panic, reason = "debug-only hook that tests crash reports")]
             EngineCommand::DevPanic => panic!("CORRENT_DEV_PANIC=engine (remote)"),
             #[cfg(debug_assertions)]
-            EngineCommand::DevHang(_) => {}
+            EngineCommand::DevHang(_) | EngineCommand::DevTaskPanic => {}
         }
     }
 }

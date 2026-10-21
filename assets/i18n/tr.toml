@@ -24,6 +24,8 @@
 "A beautiful, stable BitTorrent client." = "Güzel ve kararlı bir BitTorrent istemcisi."
 "A crash report was saved. Restart the engine to continue; actions you take now are applied after the restart." = "Bir çökme raporu kaydedildi. Devam etmek için motoru yeniden başlatın; şimdi yaptığınız işlemler yeniden başlatmadan sonra uygulanır."
 "A crash report was saved. Your torrents and settings were restored." = "Bir çökme raporu kaydedildi. Torrentleriniz ve ayarlarınız geri yüklendi."
+"It may have been ended by the system or another program; the end of its log was saved. Your torrents were restored." = "Sistem veya başka bir program tarafından kapatılmış olabilir; günlüğünün sonu kaydedildi. Torrentleriniz geri yüklendi."
+"Something inside Corrent failed and was stopped; Corrent keeps running. A crash report was saved." = "Corrent'in içindeki bir parça hata verdi ve durduruldu; Corrent çalışmaya devam ediyor. Bir çökme raporu kaydedildi."
 "A few quick choices and you're ready to go." = "Birkaç hızlı seçimden sonra hazırsınız."
 "A file is in use by another program. Close it and retry." = "Bir dosya başka bir program tarafından kullanılıyor. Programı kapatıp tekrar deneyin."
 "A file or folder is missing (for example, a disconnected drive)." = "Bir dosya veya klasör eksik (örneğin bağlantısı kesilmiş bir sürücü)."

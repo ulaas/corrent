@@ -210,6 +210,8 @@ impl Actor {
         self_tx: mpsc::Sender<EngineCommand>,
     ) -> Self {
         let generation = snapshot.load().generation;
+        let changed = settings.changed_sections();
+        crate::crash::note(|c| c.changed_settings = changed);
         // Bounded (STABILITY.md F11): tasks wait for room rather than queue without end.
         let (internal_tx, internal_rx) = mpsc::channel(INTERNAL_QUEUE);
         let store = Store::load(paths.store_file());
@@ -852,6 +854,8 @@ impl Actor {
                 }
             }
             EngineCommand::ApplySettings(new) => {
+                let changed = new.changed_sections();
+                crate::crash::note(|c| c.changed_settings = changed);
                 if new.rss != self.settings.rss {
                     self.rss.settings_changed(&new.rss);
                     let rules_changed = new.rss.rules != self.settings.rss.rules
@@ -913,6 +917,11 @@ impl Actor {
             EngineCommand::DevPanic => panic!("CORRENT_DEV_PANIC=engine"),
             #[cfg(debug_assertions)]
             EngineCommand::DevHang(d) => tokio::time::sleep(d).await,
+            #[cfg(debug_assertions)]
+            EngineCommand::DevTaskPanic => {
+                #[expect(clippy::panic, reason = "debug-only hook that tests crash reports")]
+                tokio::spawn(async { panic!("CORRENT_DEV_PANIC=torrent") });
+            }
         }
     }
 
@@ -2195,6 +2204,20 @@ impl Actor {
         }
 
         self.generation += 1;
+        let mut counts: Vec<(TorrentState, u32)> = Vec::new();
+        for v in &views {
+            match counts.iter_mut().find(|(s, _)| *s == v.state) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((v.state, 1)),
+            }
+        }
+        let torrents = counts.iter().map(|(s, n)| format!("{s:?} {n}")).collect::<Vec<_>>().join(", ");
+        let (engine, free) = (format!("{:?}", self.engine_state), self.free_space);
+        crate::crash::note(|c| {
+            c.engine = engine;
+            c.torrents = torrents;
+            c.free_space = free;
+        });
         let snap = Snapshot {
             row_history: self.row_history.clone(),
             torrents: views,

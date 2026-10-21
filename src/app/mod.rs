@@ -356,6 +356,8 @@ pub struct CorrentApp {
     tray_failed: bool,
     pub ctx: egui::Context,
     previous_run: crate::crash::PreviousRun,
+    /// Task panics already told about (E7).
+    task_panics_seen: u64,
     pub data_notes: Vec<String>,
     /// Free space per folder typed in a dialog: (measured at, bytes), filled in the background.
     pub free_cache: Arc<std::sync::Mutex<FreeSpaceCache>>,
@@ -542,6 +544,7 @@ impl CorrentApp {
             tray_failed: false,
             ctx: ctx.clone(),
             previous_run: Default::default(),
+            task_panics_seen: crate::crash::task_panics().0,
             data_notes: Vec::new(),
             free_cache: Default::default(),
             free_inflight: Default::default(),
@@ -745,12 +748,27 @@ impl CorrentApp {
         ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
     }
 
+    /// E7: a task panicked and the app went on: say so once per panic, with its report.
+    fn task_panic_notice(&mut self) {
+        let (n, report) = crate::crash::task_panics();
+        if n > self.task_panics_seen {
+            self.task_panics_seen = n;
+            let actions = report.map(|r| vec![(t!("View report").to_string(), toasts::ToastAction::OpenFile(r))]);
+            self.toasts.push_with(
+                ToastKind::Warning,
+                t!("Something inside Corrent failed and was stopped; Corrent keeps running. A crash report was saved."),
+                actions.unwrap_or_default(),
+            );
+        }
+    }
+
     /// "Closed unexpectedly" banner shown after an unclean exit.
     fn crash_banner(&mut self, ui: &mut Ui, p: &Palette) {
         if !self.previous_run.unclean {
             return;
         }
-        let report = self.previous_run.report.clone();
+        let report = self.previous_run.report.clone().or_else(|| self.previous_run.note.clone());
+        let noted = self.previous_run.report.is_none() && self.previous_run.note.is_some();
         egui::Frame::new()
             .fill(p.warn.gamma_multiply(0.12))
             .stroke(egui::Stroke::new(1.0, p.warn.gamma_multiply(0.5)))
@@ -764,7 +782,9 @@ impl CorrentApp {
                         ui.label(
                             egui::RichText::new(t!("Corrent closed unexpectedly last time")).strong().color(p.text),
                         );
-                        let detail = if report.is_some() {
+                        let detail = if noted {
+                            t!("It may have been ended by the system or another program; the end of its log was saved. Your torrents were restored.")
+                        } else if report.is_some() {
                             t!("A crash report was saved. Your torrents and settings were restored.")
                         } else {
                             t!("It may have been ended by the system or another program. Your torrents were restored.")
@@ -1106,6 +1126,7 @@ impl eframe::App for CorrentApp {
         self.drain_background();
         self.drain_pickers();
         self.drain_events(ctx);
+        self.task_panic_notice();
         let refused = self.engine.refused();
         if refused > self.refused_seen {
             self.toasts.push(ToastKind::Warning, t!("Corrent is busy and couldn't do that. Try again in a moment."));
@@ -1225,6 +1246,9 @@ impl CorrentApp {
             Ok("ui") => panic!("CORRENT_DEV_PANIC=ui"),
             Ok("engine") => {
                 self.engine.send(crate::engine::EngineCommand::DevPanic);
+            }
+            Ok("torrent") => {
+                self.engine.send(crate::engine::EngineCommand::DevTaskPanic);
             }
             _ => {}
         }
