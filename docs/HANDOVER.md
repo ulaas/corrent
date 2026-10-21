@@ -67,7 +67,9 @@ or settings paths; and a fast download could announce `Completed` before its add
 it); without `libmpv-2.dll` the in-process ones are skipped.
 
 **Not yet verified on Windows:** `correntd` as a Windows service, the mpv worker, DLNA/SSDP and
-mDNS through the Windows firewall, and the Jellyfin listener on port 8096.
+mDNS through the Windows firewall (the app's "servers on your network" notice depends on it; it
+was checked with `CORRENT_DEV_FOUND` only, because a test `correntd` bound to the network would
+raise a firewall prompt on the owner's desktop), and the Jellyfin listener on port 8096.
 
 Windows notes: run mpv checks with `--no-config` (a user `mpv.conf` with `keep-open` makes it
 never exit); an `ffprobe.exe` from a Python package may be on `PATH` and isn't the real one.

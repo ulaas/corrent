@@ -96,9 +96,15 @@ impl Default for ConnectDialog {
 }
 
 impl ConnectDialog {
-    /// Debug hook: a pairing link as if pasted.
+    /// A pairing link or address as if pasted (debug hook, and a server found on the network:
+    /// its announced fingerprint is never filled in, so it still has to be checked).
     pub fn dev_fill(&mut self, link: &str) {
         self.address = link.to_string();
+    }
+
+    #[cfg(test)]
+    pub fn address(&self) -> &str {
+        &self.address
     }
 }
 
@@ -127,19 +133,18 @@ impl CorrentApp {
 
     /// Switches to a server (`Some`) or back to this computer's engine (`None`) and remembers it.
     pub fn use_server(&mut self, entry: Option<ServerEntry>) {
+        self.switch_server(entry, None);
+    }
+
+    /// `use_server`, remembering `fallback` (the key of the server left because it couldn't be
+    /// reached; offered again when it shows up on the network).
+    fn switch_server(&mut self, entry: Option<ServerEntry>, fallback: Option<String>) {
         self.servers.active = entry.as_ref().map(ServerEntry::key);
+        self.servers.fallback = fallback;
         if let Some(e) = &entry {
             self.servers.upsert(e.clone());
         }
-        let (servers, paths, tx) = (self.servers.clone(), self.paths.clone(), self.ui_events_tx.clone());
-        self.rt.spawn_blocking(move || {
-            if let Err(e) = servers.save(&paths) {
-                let _ = tx.send(EngineEvent::Toast(
-                    crate::engine::ToastKind::Error,
-                    t!("Couldn't save the server list: {e}", e = e),
-                ));
-            }
-        });
+        self.save_servers();
         // Back to this computer's engine: the previous local session must have stopped first
         // (it owns the profile). Checked every frame by `switch_tick`.
         if entry.is_none() && self.local_stopping.as_ref().is_some_and(|h| !h.is_finished()) {
@@ -402,6 +407,19 @@ impl CorrentApp {
         }
     }
 
+    /// Saves `servers.toml` off the UI thread.
+    pub(super) fn save_servers(&self) {
+        let (servers, paths, tx) = (self.servers.clone(), self.paths.clone(), self.ui_events_tx.clone());
+        self.rt.spawn_blocking(move || {
+            if let Err(e) = servers.save(&paths) {
+                let _ = tx.send(EngineEvent::Toast(
+                    crate::engine::ToastKind::Error,
+                    t!("Couldn't save the server list: {e}", e = e),
+                ));
+            }
+        });
+    }
+
     /// Server entries in the overflow menu.
     pub(super) fn server_menu(&mut self, ui: &mut Ui) {
         match &self.server {
@@ -436,6 +454,7 @@ impl CorrentApp {
         let problem = s.status.problem.load_full();
         let Some(problem) = problem else { return };
         let name = s.entry.name.clone();
+        let key = s.entry.key();
         let mut local = false;
         egui::Frame::new()
             .fill(p.warn.gamma_multiply(0.12))
@@ -462,7 +481,7 @@ impl CorrentApp {
                 });
             });
         if local {
-            self.use_server(None);
+            self.switch_server(None, Some(key));
         }
         ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
     }

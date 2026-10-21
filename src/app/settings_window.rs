@@ -118,7 +118,7 @@ impl Page {
         match self {
             Page::Behavior => {
                 t!(
-                    "confirm exit tray close minimize start minimized notifications notify delete dialog skip run program command complete default handler magnet torrent association register updates version"
+                    "confirm exit tray close minimize start minimized notifications notify delete dialog skip run program command complete default handler magnet torrent association register updates version server servers network lan find switch"
                 )
             }
             Page::Downloads => {
@@ -603,6 +603,27 @@ impl CorrentApp {
                     heading(ui, p, t!("Notifications"));
                     toggle(ui, p, t!("Notify when a download completes"), "", &mut s.behavior.notify_on_complete);
                     toggle(ui, p, t!("Notify when a torrent is added"), "", &mut s.behavior.notify_on_add);
+                });
+                ui.add_space(10.0);
+                card(p).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    heading(ui, p, t!("Corrent servers on this network"));
+                    toggle(
+                        ui,
+                        p,
+                        t!("Look for Corrent servers on this network"),
+                        t!("Shows a notice when a new server appears. Connecting to it still needs its pairing code."),
+                        &mut s.behavior.find_servers,
+                    );
+                    ui.add_enabled_ui(s.behavior.find_servers, |ui| {
+                        toggle(
+                            ui,
+                            p,
+                            t!("Switch back to your server by itself"),
+                            t!("When the server you left because it couldn't be reached answers again (not while a dialog or video is open)."),
+                            &mut s.behavior.auto_switch_server,
+                        );
+                    });
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {

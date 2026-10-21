@@ -6,6 +6,7 @@ pub mod connect;
 mod creator;
 mod details;
 mod dialogs;
+mod discover_ui;
 mod dnd;
 mod extras;
 mod feeds;
@@ -407,6 +408,8 @@ pub struct CorrentApp {
     /// The server used instead of the local engine (None: local).
     pub server: Option<connect::ServerLink>,
     pub connect: Option<connect::ConnectDialog>,
+    /// Corrent servers on this network.
+    discover: discover_ui::DiscoverState,
     /// Saved servers (`servers.toml`).
     pub servers: crate::link::Servers,
     /// Switching back to the local engine once the previous local session has stopped.
@@ -575,6 +578,7 @@ impl CorrentApp {
             servers,
             pending_local: false,
             connect: None,
+            discover: Default::default(),
             media_dev_pair: None,
             media_dev_profiles: false,
             #[cfg(debug_assertions)]
@@ -1102,6 +1106,7 @@ impl eframe::App for CorrentApp {
         self.media_tick(ctx);
         self.tv_tick(ctx);
         self.switch_tick();
+        self.discovery_tick(ctx);
         #[cfg(debug_assertions)]
         self.media_dev_hooks(ctx);
         self.window_logic(ctx);
@@ -1306,6 +1311,7 @@ impl CorrentApp {
             |ui| {
                 self.engine_banner(ui, &p);
                 self.server_banner(ui, &p);
+                self.discovery_banner(ui, &p);
                 self.crash_banner(ui, &p);
                 self.data_banner(ui, &p);
                 self.handler_banner(ui, &p);

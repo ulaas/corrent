@@ -41,6 +41,8 @@ fn settings(dir: &std::path::Path) -> Settings {
     s.bittorrent.lsd = false;
     s.bittorrent.trackers_enabled = false;
     s.behavior.handler_prompt_dismissed = true;
+    // No multicast from tests (they inject what the network would announce).
+    s.behavior.find_servers = false;
     // Tests read English labels, whatever the machine's language.
     s.appearance.language = "en".into();
     s
@@ -867,4 +869,111 @@ fn agent_page_shows_a_proposal_and_approves_it() {
     step_until(&mut h, "approved", |h| h.query_by_label_contains("Nothing to decide").is_some());
     let d: serde_json::Value = rt.block_on(client.get(&format!("/api/v1/items/{id}"))).unwrap();
     assert_eq!(d["title"], "Sintel");
+}
+
+fn found_server(id: &str, name: &str, ip: &str) -> corrent_server::discovery::Found {
+    corrent_server::discovery::Found {
+        advert: corrent_server::discovery::Advert {
+            id: id.into(),
+            name: name.into(),
+            version: "1".into(),
+            fingerprint: "00112233445566778899aabbccddeeff".into(),
+            https: true,
+            port: 8443,
+        },
+        addrs: vec![ip.parse().unwrap()],
+    }
+}
+
+/// A new server on the network: one notice, Connect… opens the dialog with its address (not
+/// its fingerprint), and it isn't shown again this session.
+#[test]
+fn a_new_server_on_the_network_is_offered_once() {
+    let (_f, app) = app("found-new", vec![]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().discovery_found(found_server("ab12cd34ef56", "Home", "192.168.1.20"));
+    h.state_mut().discovery_found(found_server("ab12cd34ef56", "Home", "192.168.1.20"));
+    h.run_steps(2);
+    assert_eq!(h.query_all_by_label_contains("“Home” is on this network").count(), 1);
+    h.get_by_label("Connect…").click();
+    h.run_steps(2);
+    let d = h.state().connect.as_ref().expect("the Connect dialog");
+    assert_eq!(d.address(), "https://192.168.1.20:8443");
+    h.state_mut().connect = None;
+    h.state_mut().discovery_found(found_server("ab12cd34ef57", "Office", "192.168.1.21"));
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("is on this network").is_none(), "once per session");
+}
+
+#[test]
+fn dont_ask_again_turns_the_search_off() {
+    let (_f, mut app) = app("found-never", vec![]);
+    app.settings.behavior.find_servers = true;
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().discovery_found(found_server("ab12cd34ef56", "Home", "192.168.1.20"));
+    h.state_mut().discovery_found(found_server("ab12cd34ef58", "Attic", "192.168.1.22"));
+    h.run_steps(2);
+    h.get_by_label_contains("2 Corrent servers are on this network");
+    h.get_by_label("Don't ask again").click();
+    h.run_steps(2);
+    assert!(!h.state().settings.behavior.find_servers);
+    assert!(h.query_by_label_contains("on this network").is_none());
+}
+
+/// The server the app left because it couldn't be reached answers again: offered, and Switch
+/// uses it (Keep forgets it).
+#[test]
+fn the_server_left_behind_is_offered_again() {
+    let (_f, mut app) = app("found-back", vec![]);
+    let entry = crate::link::ServerEntry {
+        id: "ab12cd34ef56".into(),
+        name: "Home".into(),
+        url: "https://192.0.2.10:8443".into(),
+        ..Default::default()
+    };
+    app.servers.upsert(entry.clone());
+    app.servers.fallback = Some(entry.key());
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().discovery_offer(entry.clone());
+    h.run_steps(2);
+    h.get_by_label_contains("“Home” is reachable again");
+    h.get_by_label("Keep this computer's engine").click();
+    h.run_steps(2);
+    assert_eq!(h.state().servers.fallback, None);
+    assert!(h.query_by_label_contains("is reachable again").is_none());
+    h.state_mut().servers.fallback = Some(entry.key());
+    h.state_mut().discovery_offer(entry.clone());
+    h.run_steps(2);
+    h.get_by_label("Switch to it").click();
+    h.run_steps(2);
+    assert_eq!(h.state().servers.active, Some(entry.key()));
+    assert_eq!(h.state().servers.fallback, None);
+    assert!(h.state().server.is_some());
+}
+
+/// A moved server is believed only once its new address answers (here: never), and its saved
+/// address only changes then.
+#[test]
+fn a_paired_server_found_elsewhere_keeps_its_address_until_checked() {
+    let (_f, mut app) = app("found-moved", vec![]);
+    let entry = crate::link::ServerEntry {
+        id: "ab12cd34ef56".into(),
+        name: "Home".into(),
+        url: "https://192.0.2.10:8443".into(),
+        ..Default::default()
+    };
+    app.servers.upsert(entry.clone());
+    app.servers.fallback = Some(entry.key());
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().discovery_found(found_server("ab12cd34ef56", "Home", "192.0.2.77"));
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("is on this network").is_none(), "a paired server isn't new");
+    assert_eq!(h.state().servers.list[0].url, "https://192.0.2.10:8443");
+    let moved = h.state_mut().discovery_verified(&entry.key(), "https://192.0.2.77:8443").unwrap();
+    assert_eq!(h.state().servers.list[0].url, "https://192.0.2.77:8443");
+    assert_eq!(h.state().servers.fallback, Some(moved.key()));
 }

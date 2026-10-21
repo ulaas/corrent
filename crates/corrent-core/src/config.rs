@@ -208,6 +208,12 @@ pub struct Behavior {
     pub register_torrent_handler: bool,
     pub keep_handler_registration: bool,
     pub handler_prompt_dismissed: bool,
+    /// Notice Corrent servers that announce themselves on this network (connecting to a new one
+    /// still needs pairing).
+    pub find_servers: bool,
+    /// Switch back to the server the app fell back from as soon as it is reachable again,
+    /// without asking.
+    pub auto_switch_server: bool,
 }
 
 impl Default for Behavior {
@@ -228,6 +234,8 @@ impl Default for Behavior {
             register_torrent_handler: false,
             keep_handler_registration: true,
             handler_prompt_dismissed: false,
+            find_servers: true,
+            auto_switch_server: false,
         }
     }
 }

@@ -49,7 +49,7 @@ Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 Media/server hooks (run without torrents): `CORRENT_DEV_VIEW=media|libraries`, `CORRENT_DEV_PROFILES=1`, `CORRENT_DEV_SERVER_FS=1` (with a paired server), `CORRENT_DEV_ITEM=<id>`, `CORRENT_DEV_PLAY=<id>`,
 `CORRENT_DEV_SHOT=<png>` (+ `CORRENT_DEV_SHOT_DELAY=<s>`, `CORRENT_DEV_EXIT=1`; works on Linux too),
 `CORRENT_DEV_LIBRARY=<folder>[;kind[;name]]|…` (adds those libraries to the profile; make test media with
-`powershell -File scripts/dev-media.ps1 -Out <scratch>`), `CORRENT_DEV_PAGE=library:<id>|row:<id>|agent`, `CORRENT_DEV_PAUSE=<s>` (pauses the hooked playback so the controls stay up), `CORRENT_DEV_CONNECT=<pairing link>` (fills the Connect dialog), `CORRENT_DEV_PAIR=<pairing link>` (pairs and switches —
+`powershell -File scripts/dev-media.ps1 -Out <scratch>`), `CORRENT_DEV_PAGE=library:<id>|row:<id>|agent`, `CORRENT_DEV_PAUSE=<s>` (pauses the hooked playback so the controls stay up), `CORRENT_DEV_CONNECT=<pairing link>` (fills the Connect dialog), `CORRENT_DEV_FOUND=<name>[;<ip>]|…` (servers announced as if on the network: the notice), `CORRENT_DEV_PAIR=<pairing link>` (pairs and switches —
 writes `servers.toml` into the test profile; delete it afterwards). `CORRENT_DEV_OPEN` also takes `connect`. TV mode: `--tv`, and `CORRENT_DEV_KEYS=ArrowDown,ArrowRight,Enter` presses keys
 (one per 300 ms from 3 s) like a remote.
 To pre-configure the test profile, write `target/debug/corrent-data/settings.toml`

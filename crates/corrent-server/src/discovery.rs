@@ -85,6 +85,46 @@ pub fn advertise(a: &Advert) -> anyhow::Result<Advertiser> {
     Ok(Advertiser { daemon, fullname })
 }
 
+/// A server from a resolved advertisement (None for other events and adverts without an id).
+/// The name is cleaned for display; loopback and unspecified addresses are dropped.
+fn found_from(ev: ServiceEvent) -> Option<Found> {
+    let ServiceEvent::ServiceResolved(s) = ev else { return None };
+    let p = s.get_properties();
+    let get = |k: &str| p.get_property_val_str(k).unwrap_or_default().to_string();
+    let found = Found {
+        advert: Advert {
+            id: get("id"),
+            name: get("name").chars().filter(|c| !c.is_control()).take(40).collect(),
+            version: get("ver"),
+            fingerprint: get("fp"),
+            https: get("https") == "1",
+            port: s.get_port(),
+        },
+        addrs: s
+            .get_addresses()
+            .iter()
+            .map(|a| a.to_ip_addr())
+            .filter(|a| !a.is_loopback() && !a.is_unspecified())
+            .collect(),
+    };
+    (!found.advert.id.is_empty()).then_some(found)
+}
+
+/// Adds `f` to `list`, merging the addresses of a server already in it (same id).
+pub fn merge(list: &mut Vec<Found>, f: Found) {
+    match list.iter_mut().find(|x| x.advert.id == f.advert.id) {
+        Some(x) => {
+            for a in f.addrs {
+                if !x.addrs.contains(&a) {
+                    x.addrs.push(a);
+                }
+            }
+            x.advert = f.advert;
+        }
+        None => list.push(f),
+    }
+}
+
 /// Lists servers that answer within `wait` (blocking: run it off the UI thread).
 pub fn browse(wait: Duration) -> anyhow::Result<Vec<Found>> {
     let daemon = ServiceDaemon::new()?;
@@ -93,35 +133,11 @@ pub fn browse(wait: Duration) -> anyhow::Result<Vec<Found>> {
     let mut out: Vec<Found> = Vec::new();
     while let Some(left) = deadline.checked_duration_since(Instant::now()) {
         match rx.recv_timeout(left) {
-            Ok(ServiceEvent::ServiceResolved(s)) => {
-                let p = s.get_properties();
-                let get = |k: &str| p.get_property_val_str(k).unwrap_or_default().to_string();
-                let found = Found {
-                    advert: Advert {
-                        id: get("id"),
-                        name: get("name"),
-                        version: get("ver"),
-                        fingerprint: get("fp"),
-                        https: get("https") == "1",
-                        port: s.get_port(),
-                    },
-                    addrs: s.get_addresses().iter().map(|a| a.to_ip_addr()).collect(),
-                };
-                if found.advert.id.is_empty() {
-                    continue;
-                }
-                match out.iter_mut().find(|f| f.advert.id == found.advert.id) {
-                    Some(f) => {
-                        for a in found.addrs {
-                            if !f.addrs.contains(&a) {
-                                f.addrs.push(a);
-                            }
-                        }
-                    }
-                    None => out.push(found),
+            Ok(ev) => {
+                if let Some(f) = found_from(ev) {
+                    merge(&mut out, f);
                 }
             }
-            Ok(_) => {}
             Err(_) => break,
         }
     }
@@ -129,6 +145,48 @@ pub fn browse(wait: Duration) -> anyhow::Result<Vec<Found>> {
     let _ = daemon.shutdown();
     out.sort_by(|a, b| a.advert.name.cmp(&b.advert.name));
     Ok(out)
+}
+
+/// A search that keeps running: servers are reported as they announce themselves (when they
+/// start, and again when the daemon re-asks). Ends when dropped.
+pub struct Browser {
+    daemon: ServiceDaemon,
+    events: mdns_sd::Receiver<ServiceEvent>,
+}
+
+impl Browser {
+    pub fn start() -> anyhow::Result<Browser> {
+        let daemon = ServiceDaemon::new()?;
+        // Network interfaces are listed every 5 s by default; a minute is plenty here.
+        let _ = daemon.set_ip_check_interval(60);
+        let events = daemon.browse(SERVICE)?;
+        Ok(Browser { daemon, events })
+    }
+
+    /// Ask the network again now (after a sleep: the daemon's own re-asking backs off to an hour).
+    pub fn requery(&mut self) -> anyhow::Result<()> {
+        let _ = self.daemon.stop_browse(SERVICE);
+        self.events = self.daemon.browse(SERVICE)?;
+        Ok(())
+    }
+
+    /// The servers resolved since the last call (doesn't block).
+    pub fn poll(&self) -> Vec<Found> {
+        let mut out = Vec::new();
+        while let Ok(ev) = self.events.try_recv() {
+            if let Some(f) = found_from(ev) {
+                merge(&mut out, f);
+            }
+        }
+        out
+    }
+}
+
+impl Drop for Browser {
+    fn drop(&mut self) {
+        let _ = self.daemon.stop_browse(SERVICE);
+        let _ = self.daemon.shutdown();
+    }
 }
 
 #[cfg(test)]
@@ -153,6 +211,21 @@ mod tests {
         f.addrs = vec!["fd00::5".parse().unwrap()];
         assert_eq!(f.url().as_deref(), Some("https://[fd00::5]:8443"));
         assert_eq!(instance_name(&f.advert), "Home (abcdef)");
+    }
+
+    #[test]
+    fn merging_keeps_one_entry_per_server() {
+        let found = |id: &str, ip: &str| Found {
+            advert: Advert { id: id.into(), name: id.into(), ..Default::default() },
+            addrs: vec![ip.parse().unwrap()],
+        };
+        let mut list = Vec::new();
+        merge(&mut list, found("a", "192.168.1.5"));
+        merge(&mut list, found("a", "10.0.0.5"));
+        merge(&mut list, found("a", "192.168.1.5"));
+        merge(&mut list, found("b", "192.168.1.6"));
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].addrs.len(), 2);
     }
 
     /// Advertise and find ourselves (needs a multicast-capable interface; skipped when the

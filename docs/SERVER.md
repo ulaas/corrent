@@ -335,6 +335,27 @@ pages then work against the server; creating torrents, importing from other clie
 streaming window and "open folder" are hidden (the files are on the server). **⋮ → Use this
 computer's engine** switches back.
 
+### Servers on your network
+
+The app listens for servers announcing themselves (`discovery`, below) and shows a notice once
+per session when one it isn't paired with appears: **Connect…** opens Connect with its address
+filled in, **Not now**, or **Don't ask again** (turns the search off; Settings → General →
+"Look for Corrent servers on this network" turns it back on). Connecting still needs pairing:
+anyone on the network can announce a server, so the announced fingerprint is never filled in.
+
+When you leave a server for this computer's engine because it couldn't be reached ("Use this
+computer's engine" in the warning), the app remembers it. When it announces itself again, the
+app checks its address first — over HTTPS with the CA pinned at pairing and the server's id,
+without sending the device token — and then offers **Switch to it** (or switches by itself
+with "Switch back to your server by itself"; not while a dialog or video is open). A server in
+use that announces a new address (DHCP) is checked the same way and followed; the new address is
+saved only once it answered. A server whose address changed while it was running keeps
+failing that check until it restarts (its certificate lists the addresses it had at start).
+
+The first search may ask for permission: on Windows the firewall prompt for Corrent (answering
+"Block" means servers aren't found; Connect still accepts an address), on macOS the "find
+devices on your local network" prompt.
+
 ### Offline copies
 
 Connected to a remote server, the app's item pages have **Download**: the original file
@@ -351,7 +372,7 @@ sent once it is back — unless the server saw that item played later.
 
 | Key | Default | What |
 |---|---|---|
-| `discovery` | `true` | Announce `_corrent._tcp` on the LAN (mDNS) with the id, name, version and certificate fingerprint. The desktop app lists it in Connect; the fingerprint there is a hint, pairing links pin it. |
+| `discovery` | `true` | Announce `_corrent._tcp` on the LAN (mDNS) with the id, name, version and certificate fingerprint. The desktop app lists it in Connect and notices new servers ("Servers on your network" above); the fingerprint there is a hint, pairing links pin it. |
 | `connect` | `false` | **Corrent Connect** (iroh): reachable from anywhere by the server's key (`connect.key` in the data folder), through NATs, relayed when hole punching fails, end-to-end encrypted. Pairing links then carry `connect=<id>`, and the app uses Connect when the server's address can't be reached. |
 | `connect_relay` | `true` | Use n0's public relays and address lookup (the server's addresses are published to `iroh.link` while Connect is on). Off: direct connections only. |
 | `port_mapping` | `false` | Ask the router (UPnP / NAT-PMP / PCP) to forward the HTTPS port. Clients outside the LAN also need `remote_access = true`. |

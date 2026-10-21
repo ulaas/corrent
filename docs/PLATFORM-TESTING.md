@@ -44,7 +44,11 @@ Run from a terminal so logs are visible (`CORRENT_LOG=debug corrent --portable`)
 9. **Drag & drop**: drop a `.torrent` file onto the window.
 10. **Restart**: quit and reopen; torrents come back without re-checking; no "closed unexpectedly"
     banner after a normal quit.
-11. **Data paths**: data lives in `~/.local/share/corrent` (Linux) or
+11. **Servers on the network**: with a `correntd` running on the same network, a notice
+    "“name” is on this network" appears within seconds. macOS asks for local-network access the
+    first time (the bundle declares `NSLocalNetworkUsageDescription` and `NSBonjourServices`;
+    without them macOS 14+ finds nothing). Linux: works next to Avahi (both share UDP 5353).
+12. **Data paths**: data lives in `~/.local/share/corrent` (Linux) or
     `~/Library/Application Support/Corrent` (macOS); the data dir is mode 0700 and contains
     `corrent.sock` while running.
 

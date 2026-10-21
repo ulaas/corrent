@@ -19,6 +19,12 @@
 </array>
 <key>NSHighResolutionCapable</key>
 <true/>
+<key>NSLocalNetworkUsageDescription</key>
+<string>Corrent looks for Corrent servers on your network.</string>
+<key>NSBonjourServices</key>
+<array>
+  <string>_corrent._tcp</string>
+</array>
 <key>UTImportedTypeDeclarations</key>
 <array>
   <dict>

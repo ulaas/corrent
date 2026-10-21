@@ -2,6 +2,7 @@
 //! paired with. A remote server stands in for the local engine behind the same
 //! [`EngineHandle`](crate::engine::EngineHandle), so the torrent UI is the same either way.
 
+pub mod discover;
 pub mod pair;
 pub mod remote;
 
@@ -52,6 +53,9 @@ pub struct Servers {
     pub active: Option<String>,
     #[serde(rename = "server")]
     pub list: Vec<ServerEntry>,
+    /// [`ServerEntry::key`] of the server the app left because it couldn't be reached (offered
+    /// again when it shows up on the network); None after a deliberate switch.
+    pub fallback: Option<String>,
 }
 
 impl Servers {
@@ -96,6 +100,26 @@ impl Servers {
         self.list.iter().find(|s| &s.key() == key)
     }
 
+    /// The server at `old_key` moved to `url` (checked first): the entry, and `active` and
+    /// `fallback` when they point at it, follow. Returns the moved entry (None: no such entry,
+    /// or one for that id and address exists already).
+    pub fn replace_address(&mut self, old_key: &str, url: &str) -> Option<ServerEntry> {
+        let id = self.list.iter().find(|s| s.key() == old_key)?.id.clone();
+        let new_key = format!("{id}@{url}");
+        if new_key != old_key && self.list.iter().any(|s| s.key() == new_key) {
+            return None;
+        }
+        let e = self.list.iter_mut().find(|s| s.key() == old_key)?;
+        e.url = url.to_string();
+        let moved = e.clone();
+        for k in [&mut self.active, &mut self.fallback] {
+            if k.as_deref() == Some(old_key) {
+                *k = Some(new_key.clone());
+            }
+        }
+        Some(moved)
+    }
+
     /// Adds or replaces (same id and address) an entry.
     pub fn upsert(&mut self, e: ServerEntry) {
         match self.list.iter_mut().find(|s| s.key() == e.key()) {
@@ -135,5 +159,31 @@ mod tests {
             assert_eq!(mode & 0o077, 0, "owner only");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_moved_server_keeps_its_place() {
+        let e = |url: &str, token: &str| ServerEntry {
+            id: "ab12cd34".into(),
+            url: url.into(),
+            token: token.into(),
+            ..Default::default()
+        };
+        let mut s = Servers::default();
+        s.upsert(e("https://10.0.0.5:8443", "t1"));
+        let old = s.list[0].key();
+        s.active = Some(old.clone());
+        s.fallback = Some(old.clone());
+        let moved = s.replace_address(&old, "https://10.0.0.9:8443").unwrap();
+        assert_eq!(moved.token, "t1");
+        assert_eq!(s.active, Some(moved.key()));
+        assert_eq!(s.fallback, Some(moved.key()));
+        assert_eq!(s.list.len(), 1);
+        // Never onto another entry's place.
+        s.upsert(e("https://10.0.0.7:8443", "t2"));
+        assert!(s.replace_address(&moved.key(), "https://10.0.0.7:8443").is_none());
+        assert_eq!(s.list.iter().find(|x| x.token == "t1").unwrap().url, "https://10.0.0.9:8443");
+        assert_eq!(s.list.iter().find(|x| x.token == "t2").unwrap().url, "https://10.0.0.7:8443");
+        assert!(s.replace_address("nope", "https://x").is_none());
     }
 }
