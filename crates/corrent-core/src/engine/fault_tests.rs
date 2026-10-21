@@ -1,6 +1,6 @@
-//! STABILITY.md S8: the engine under injected faults (storage, network, time). Fast ones run in
-//! the gate; heavy ones are `#[ignore]` and run by `scripts/fault-matrix.ps1` (names start with
-//! `fm_`).
+//! STABILITY.md S8: the engine under injected faults (storage, network, time), all `fm_*`. They
+//! run in the gate; `scripts/fault-matrix.ps1` runs them and repeats the timing-sensitive ones 20
+//! times in a row (timing asserts keep 2× margins for a loaded machine).
 
 use std::time::Duration;
 
@@ -91,7 +91,7 @@ async fn fm_slow_data_writes_keep_the_engine_responsive() {
             (last, seen_at) = (g, std::time::Instant::now());
         }
     }
-    assert!(gap < Duration::from_secs(1), "snapshots stopped for {gap:?}");
+    assert!(gap < Duration::from_secs(2), "snapshots stopped for {gap:?}");
     assert!(
         l.engine.snapshot().session.tick_max_ms < 500,
         "slowest tick {} ms",
@@ -381,6 +381,39 @@ async fn fm_wake_after_two_hours_counts_no_lost_time() {
     assert_eq!(t.state, TorrentState::Seeding, "not stopped for inactivity it never had");
     assert!(t.seeding_secs <= before + 5, "seeding time {} → {}", before, t.seeding_secs);
     assert_eq!(snap.session.wakes, 1, "one wake-up");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The download's folder disappears (removed, a drive unplugged): the torrent stops with that
+/// error, and Resume says so instead of making the folder again and downloading into it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_resume_never_recreates_a_missing_folder() {
+    let dir = temp_dir("fm-missing");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    let scope = l.paths.data_dir.clone();
+    set_storage_fault(&scope, StorageFault { op: StorageOp::Write, kind: StorageFaultKind::Missing });
+    add(&l, &s, &dir);
+    wait_for(&l, "the missing-folder error", 60, |sn| find(sn, s.hash).is_some_and(|t| t.state == TorrentState::Error))
+        .await;
+    while l.events.try_recv().is_ok() {}
+    l.engine.send(EngineCommand::Resume(vec![s.hash]));
+    let mut told = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !told && std::time::Instant::now() < deadline {
+        match l.events.try_recv() {
+            Ok(super::EngineEvent::Toast(super::ToastKind::Error, _)) => told = true,
+            Ok(_) => {}
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    assert!(told, "the user is told why it can't resume");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let t = find(&l.engine.snapshot(), s.hash).unwrap().clone();
+    assert_eq!(t.state, TorrentState::Error, "not started again");
+    assert_eq!(classify_io(t.error.as_deref().unwrap_or_default()), IoKind::NotFound);
+    clear_storage_faults(&scope);
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }

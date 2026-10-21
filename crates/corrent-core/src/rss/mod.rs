@@ -235,9 +235,10 @@ impl Rss {
     }
 
     /// Fetch `url` (or all feeds) on the next tick.
-    /// After the computer slept, every feed is due at once: spread them `step` apart instead.
+    /// After the computer slept, the feeds that fell due are due at once: spread them `step`
+    /// apart instead (feeds not due yet keep their time).
     pub fn stagger(&mut self, now: Instant, step: std::time::Duration) {
-        let mut urls: Vec<String> = self.next_due.keys().cloned().collect();
+        let mut urls: Vec<String> = self.next_due.iter().filter(|(_, t)| **t <= now).map(|(u, _)| u.clone()).collect();
         urls.sort();
         for (i, u) in urls.into_iter().enumerate() {
             self.next_due.insert(u, now + step.saturating_mul(i as u32));

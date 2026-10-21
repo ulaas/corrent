@@ -81,6 +81,12 @@ never exit); an `ffprobe.exe` from a Python package may be on `PATH` and isn't t
   `CORRENT_DEV_LIBRARY`/`CORRENT_DEV_PAGE`. Building plugins needs `rustup target add
   wasm32-wasip2` (installed on this machine) and `scripts/build-plugins.sh`. Details in
   `docs/MEDIASERVER.md` (MS18 row).
+- **S8 (fault injection), 2026-10-21:** `crates/corrent-core/src/engine/fault_tests.rs` (`fm_*`)
+  with test-only `faulty_storage.rs`, `netproxy.rs`, `faultserver.rs` and new `faults` rules
+  (storage faults, profile write errors, `jump_ticks`). `scripts/fault-matrix.ps1` runs them and
+  repeats the timing-sensitive ones 20 times. Product fixes it found: Resume restarts a torrent
+  stopped by a disk error; the update check caps GitHub's answer; a wake from sleep no longer
+  counts the time asleep (I1).
 - **Logins:** no bans or lockouts after wrong passwords any more (owner's choice); wrong pairing
   codes and PINs are still limited per address.
 - **Direct stream (V4b), `3a857b1`:** Matroska with H.264/HEVC + AAC/AC-3/E-AC-3/Opus is copied into

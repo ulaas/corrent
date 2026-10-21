@@ -1296,3 +1296,4 @@
 "There isn't enough space in {path}: {need} needed, {free} free." = "{path} içinde yeterli yer yok: {need} gerekli, {free} boş."
 "This download's file names can't be placed safely." = "Bu indirmenin dosya adları güvenle yerleştirilemiyor."
 "the plot “{plot}”" = "“{plot}” konusu"
+"The download's folder is missing: put it back (plug the drive in), or move the torrent with Move to…" = "İndirmenin klasörü yok: geri koyun (sürücüyü takın) ya da torrenti Taşı… ile başka yere taşıyın."

@@ -17,7 +17,8 @@ use tokio::sync::watch;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Transparent,
-    /// Each chunk waits this long, in both directions.
+    /// Each chunk (up to 16 KiB) waits this long before it is passed on, in both directions
+    /// (one at a time: a slow link more than a long one).
     Latency(Duration),
     /// At most this many bytes per second, each direction.
     Bandwidth(u64),

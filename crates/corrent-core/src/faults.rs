@@ -124,6 +124,7 @@ mod imp {
                     }
                     K::Permission => fail = Some(std::io::Error::from_raw_os_error(if cfg!(windows) { 5 } else { 13 })),
                     K::Eio => fail = Some(std::io::Error::from_raw_os_error(if cfg!(windows) { 1117 } else { 5 })),
+                    K::Missing => fail = Some(std::io::Error::from_raw_os_error(if cfg!(windows) { 3 } else { 2 })),
                     K::Delay(d) => delay = Some(d),
                 }
             }
@@ -202,6 +203,8 @@ pub enum StorageFaultKind {
     Permission,
     /// An I/O error (EIO / ERROR_IO_DEVICE).
     Eio,
+    /// The folder is gone (ENOENT / ERROR_PATH_NOT_FOUND).
+    Missing,
     /// Every matching operation waits this long first.
     Delay(Duration),
 }

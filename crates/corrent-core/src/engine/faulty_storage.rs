@@ -86,6 +86,8 @@ impl TorrentStorage for FaultyStorage {
     }
 
     fn ensure_file_length(&self, file_id: usize, length: u64) -> anyhow::Result<()> {
+        // Allocating fails like writing does (a full disk, no access).
+        self.check(StorageOp::Write, 0)?;
         self.inner.ensure_file_length(file_id, length)
     }
 

@@ -396,6 +396,8 @@ impl Actor {
                     tracing::info!("engine session started");
                     self.detect_failed_restores();
                     self.recover_interrupted_readds();
+                    // A slow start isn't time asleep (I1).
+                    self.last_tick = Instant::now();
                     self.publish();
                     return;
                 }
@@ -991,6 +993,20 @@ impl Actor {
 
     fn resume(&mut self, hash: InfoHash, force: bool) {
         let (Some(sess), Some(h)) = (self.session.clone(), self.handle_for(&hash)) else { return };
+        // Stopped because its folder is gone (a removed folder, an unplugged drive): starting it
+        // would make the folder again (on another disk, for a mount point) and download into it.
+        let snap = self.snapshot.load();
+        let folder_gone = snap.torrents.iter().find(|t| t.hash == hash).is_some_and(|t| {
+            t.state == TorrentState::Error
+                && t.error.as_deref().map(crate::util::classify_io) == Some(crate::util::IoKind::NotFound)
+        });
+        if folder_gone {
+            self.toast(
+                ToastKind::Error,
+                t!("The download's folder is missing: put it back (plug the drive in), or move the torrent with Move to…"),
+            );
+            return;
+        }
         let m = self.store.meta_mut(hash);
         if m.pause_reason == Some(PauseReason::SeedLimit) {
             m.seed_limit_exempt = true;
@@ -1850,8 +1866,6 @@ impl Actor {
         self.tick_ms.push_back(started.elapsed().as_millis().min(u32::MAX as u128) as u32);
     }
 
-    /// Every map and set the actor keeps (keep in sync with the fields).
-    #[cfg(debug_assertions)]
     /// I1: the computer slept (or the process was stopped) for `gap`. Time-based state is reset
     /// so nothing acts on the gap: no torrent looks stalled, the queue doesn't count slow time,
     /// free space is looked at again, and feeds that all fell due are spread out.
@@ -1867,6 +1881,8 @@ impl Actor {
         self.wakes += 1;
     }
 
+    /// Every map and set the actor keeps (keep in sync with the fields).
+    #[cfg(debug_assertions)]
     fn map_sizes(&self) -> Vec<(&'static str, usize)> {
         vec![
             ("torrent_history", self.torrent_history.len()),
