@@ -44,8 +44,9 @@ impl CorrentApp {
             ui.add_space(4.0);
             ui.label(
                 RichText::new(t!(
-                    "A zip file to attach to a bug report: logs, crash reports, settings without passwords, keys or \
-                     feed addresses, and counts of your torrents. Nothing is sent anywhere."
+                    "A zip file to attach to a bug report: logs (they may name torrents and files), crash reports, \
+                     settings without passwords, keys or feed addresses, and counts of your torrents. Nothing is \
+                     sent anywhere."
                 ))
                 .small()
                 .color(p.text_dim),

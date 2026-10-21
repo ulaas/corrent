@@ -266,7 +266,20 @@ fn pattern(re: &str) -> regex::Regex {
 static URL: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| pattern(r#"(?i)\b(?:https?|udp|wss?)://[^\s"'<>)\]]+"#));
 static MAGNET: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| pattern(r#"(?i)\bmagnet:\?[^\s"'<>]+"#));
-static HASH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| pattern(r"(?i)\b[0-9a-f]{40}\b"));
+static HASH: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| pattern(r"(?i)\b(?:[0-9a-f]{64}|[0-9a-f]{40})\b"));
+
+/// The home folder however it is written: either slash (doubled in escaped text), any case, with
+/// or without the `\\?\` long-path prefix.
+fn home_pattern(home: &str) -> Option<regex::Regex> {
+    let parts: Vec<String> = home.split(['\\', '/']).filter(|p| !p.is_empty()).map(regex::escape).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let sep = r"[\\/]+";
+    let lead = if home.starts_with(['\\', '/']) { sep } else { "" };
+    regex::Regex::new(&format!(r"(?i)(?:[\\/]+\?[\\/]+)?{lead}{}\b", parts.join(sep))).ok()
+}
 
 /// A log or report line as exported: addresses without credentials and queries, magnet links
 /// out, and (unless asked for) no info hashes or home folder.
@@ -277,11 +290,9 @@ pub fn redact_line(line: &str, opts: Options, home: Option<&str>) -> String {
         s = HASH.replace_all(&s, "<hash>").into_owned();
     }
     if !opts.paths
-        && let Some(home) = home.filter(|h| h.len() > 3)
+        && let Some(re) = home.and_then(home_pattern)
     {
-        s = s.replace(home, "~");
-        let escaped = home.replace('\\', "\\\\");
-        s = s.replace(&escaped, "~");
+        s = re.replace_all(&s, "~").into_owned();
     }
     s
 }
@@ -310,7 +321,8 @@ fn log_files(paths: &Paths) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| {
             p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-                (n.contains(".log") || (n.starts_with("crash-") || n.starts_with("hang-")) && n.ends_with(".txt"))
+                ((n.starts_with("corrent") && n.contains(".log"))
+                    || (n.starts_with("crash-") || n.starts_with("hang-")) && n.ends_with(".txt"))
                     && !never(n)
             })
         })
@@ -574,6 +586,23 @@ dark = true
         for bad in ["passkey", "abc", "user:pw", "k=1", "0123456789abcdef", "someone"] {
             assert!(!out.contains(bad), "{bad} in {out}");
         }
+        let v2 = "a".repeat(64);
+        assert_eq!(redact_line(&format!("v2 {v2}."), Options::default(), None), "v2 <hash>.");
+        // The home folder in other spellings.
+        let win = r"C:\Users\someone";
+        for spelled in [
+            r"C:/Users/someone/x".to_string(),
+            r"c:\users\SOMEONE\x".to_string(),
+            r"C:\\Users\\someone\\x".to_string(),
+            r"\\?\C:\Users\someone\x".to_string(),
+        ] {
+            let got = redact_line(&spelled, Options::default(), Some(win));
+            assert!(!got.to_lowercase().contains("someone"), "{spelled} -> {got}");
+        }
+        assert_eq!(
+            redact_line("/home/someoneelse/x", Options::default(), Some("/home/someone")),
+            "/home/someoneelse/x"
+        );
         assert!(
             out.contains("https://t.example/announce?…") && out.contains("<magnet link>") && out.contains("~"),
             "{out}"

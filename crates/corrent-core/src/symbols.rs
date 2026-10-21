@@ -24,15 +24,16 @@ impl Image {
 
     fn parse(line: &str) -> Option<Image> {
         let rest = line.strip_prefix("image: ")?;
-        let mut parts = rest.split(' ');
-        let name = parts.next()?.to_string();
+        // From the right: the name may contain spaces (`corrent (1).exe`).
+        let mut parts = rest.rsplitn(4, ' ');
         let mut field = |key: &str| -> Option<u64> {
             let v = parts.next()?.strip_prefix(key)?.strip_prefix("=0x")?;
             u64::from_str_radix(v, 16).ok()
         };
-        let base = field("base")? as usize;
-        let size = field("size")? as usize;
         let stamp = field("stamp")?;
+        let size = field("size")? as usize;
+        let base = field("base")? as usize;
+        let name = parts.next()?.to_string();
         Some(Image { name, base, size, stamp })
     }
 
@@ -147,7 +148,7 @@ pub fn symbolize(report: &str) -> Result<String, String> {
     symbolize_with(report, &theirs, &ours, |addr, out| {
         let mut found = false;
         // The frame's address is where the call returns to; one byte back is the call itself.
-        backtrace::resolve((addr - 1) as *mut c_void, |s| {
+        backtrace::resolve(addr.saturating_sub(1) as *mut c_void, |s| {
             if found {
                 out.push_str("\n      ");
             }
@@ -164,7 +165,8 @@ fn symbolize_with(
     ours: &Image,
     mut resolve: impl FnMut(usize, &mut String) -> bool,
 ) -> Result<String, String> {
-    if theirs.name != ours.name || theirs.size != ours.size || theirs.stamp != ours.stamp {
+    // Size and link stamp identify the build (the user may have renamed the exe).
+    if theirs.size != ours.size || theirs.stamp != ours.stamp {
         // English, like the rest of the command line (and the report).
         let mut why = String::new();
         let _ = write!(
@@ -260,6 +262,9 @@ mod tests {
         let theirs = Image { base: 0x2000_0000, ..ours.clone() };
         assert_eq!(Image::parse(&theirs.header()), Some(theirs.clone()));
         assert_eq!(Image::parse("image: x base=0x1 size=zz stamp=0x1"), None);
+        let spaced = Image { name: "corrent (1).exe".into(), ..ours.clone() };
+        assert_eq!(Image::parse(&spaced.header()), Some(spaced.clone()));
+        assert!(symbolize_with("x", &spaced, &ours, |_, _| true).is_ok(), "a renamed exe is the same build");
         let report = format!(
             "{}\n   0: corrent.exe+0x10  old::name\n        at a.rs:1\n   1: 0x7ffa0000  ntdll\n   2: corrent.exe+0x20\n",
             theirs.header()

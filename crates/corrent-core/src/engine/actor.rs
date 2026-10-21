@@ -873,6 +873,11 @@ impl Actor {
             EngineCommand::ApplySettings(new) => {
                 let changed = new.changed_sections();
                 crate::crash::note(|c| c.changed_settings = changed);
+                if new.downloads.save_path != self.settings.downloads.save_path {
+                    // The last probe was of the old folder: check the new one on the next tick.
+                    self.health_probe = Ok(());
+                    self.health_at = None;
+                }
                 if new.rss != self.settings.rss {
                     self.rss.settings_changed(&new.rss);
                     let rules_changed = new.rss.rules != self.settings.rss.rules
@@ -1649,8 +1654,10 @@ impl Actor {
         self.health_running = true;
         self.health_at = Some(Instant::now());
         let (path, tx) = (self.settings.downloads.save_path.clone(), self.internal_tx.clone());
+        // Only a fresh profile gets its folder made (see `health::probe`).
+        let create = self.store.data.torrents.is_empty();
         tokio::task::spawn_blocking(move || {
-            let probe = crate::health::probe(&path).map_err(|e| crate::util::explain_io(&e.to_string()));
+            let probe = crate::health::probe(&path, create).map_err(|e| crate::util::explain_io(&e.to_string()));
             let _ = tx.blocking_send(Internal::Health { probe, free: free_space(&path) });
         });
     }

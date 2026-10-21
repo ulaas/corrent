@@ -359,6 +359,7 @@ pub struct CorrentApp {
     previous_run: crate::crash::PreviousRun,
     /// Task panics already told about (E7).
     task_panics_seen: u64,
+    task_panic_told: Option<std::time::Instant>,
     /// ⋮ → Save diagnostics… while open (O4).
     diagnostics: Option<diagnostics_ui::DiagnosticsDialog>,
     pub data_notes: Vec<String>,
@@ -548,6 +549,7 @@ impl CorrentApp {
             ctx: ctx.clone(),
             previous_run: Default::default(),
             task_panics_seen: crate::crash::task_panics().0,
+            task_panic_told: None,
             diagnostics: None,
             data_notes: Vec::new(),
             free_cache: Default::default(),
@@ -752,11 +754,14 @@ impl CorrentApp {
         ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
     }
 
-    /// E7: a task panicked and the app went on: say so once per panic, with its report.
+    /// E7: a task panicked and the app went on: say so, with its report (at most once a minute).
     fn task_panic_notice(&mut self) {
         let (n, report) = crate::crash::task_panics();
-        if n > self.task_panics_seen {
+        if n > self.task_panics_seen
+            && self.task_panic_told.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60))
+        {
             self.task_panics_seen = n;
+            self.task_panic_told = Some(std::time::Instant::now());
             let actions = report.map(|r| vec![(t!("View report").to_string(), toasts::ToastAction::OpenFile(r))]);
             self.toasts.push_with(
                 ToastKind::Warning,

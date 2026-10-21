@@ -299,6 +299,9 @@ fn in_engine() -> bool {
 }
 
 static TASK_PANICS: AtomicU64 = AtomicU64::new(0);
+/// When the last task-panic report was written (unix seconds): at most one a minute, since a
+/// panicking peer task could fire many times a second.
+static LAST_TASK_REPORT_AT: AtomicU64 = AtomicU64::new(0);
 static LAST_TASK_REPORT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Task panics so far, and the newest one's report (the GUI tells the user once per panic).
@@ -387,6 +390,16 @@ fn write_report(log_dir: &Path, info: &std::panic::PanicHookInfo<'_>) -> std::io
         .unwrap_or_else(|| "(non-string panic payload)".into());
     let thread = std::thread::current();
     let kind = panic_kind(thread.name(), in_engine());
+    if kind == PanicKind::Task {
+        TASK_PANICS.fetch_add(1, Ordering::Relaxed);
+        let last = LAST_TASK_REPORT_AT.load(Ordering::Relaxed);
+        if (ts as u64).saturating_sub(last) < 60 {
+            return Ok(());
+        }
+        LAST_TASK_REPORT_AT.store(ts as u64, Ordering::Relaxed);
+    } else if in_engine() {
+        crate::watchdog::actor_stopped();
+    }
     // Never block inside a panic: skip the log tail if the lock is held. A poisoned buffer (a
     // panic while logging) is still worth reading.
     let lines = match crate::logbuf::LINES.try_lock() {
@@ -421,7 +434,6 @@ fn write_report(log_dir: &Path, info: &std::panic::PanicHookInfo<'_>) -> std::io
             if let Ok(mut last) = LAST_TASK_REPORT.try_lock() {
                 *last = Some(path.clone());
             }
-            TASK_PANICS.fetch_add(1, Ordering::Relaxed);
         }
     }
     for old in reports(log_dir).into_iter().skip(KEEP_REPORTS) {

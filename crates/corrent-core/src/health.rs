@@ -30,14 +30,20 @@ impl Issue {
     }
 }
 
-/// A file is written to and removed from `save_path` (created if missing, as a download would).
-pub fn probe(save_path: &Path) -> std::io::Result<()> {
+/// A file is written to and removed from `save_path`. A missing folder is created only when
+/// `create` (a fresh profile, as its first download would): otherwise it is a problem, since
+/// making it again would put downloads on another disk when a drive is unplugged.
+pub fn probe(save_path: &Path, create: bool) -> std::io::Result<()> {
     crate::faults::fs_delay(save_path);
     let file = save_path.join(format!(".corrent-probe-{}", std::process::id()));
     if let Some(e) = crate::faults::file_error(&file) {
         return Err(e);
     }
-    std::fs::create_dir_all(save_path)?;
+    if create {
+        std::fs::create_dir_all(save_path)?;
+    } else if !save_path.is_dir() {
+        return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+    }
     std::fs::write(&file, b"corrent")?;
     std::fs::remove_file(&file)
 }
@@ -75,20 +81,24 @@ mod tests {
     }
 
     #[test]
-    fn the_probe_creates_the_folder_and_leaves_nothing() {
+    fn the_probe_creates_the_folder_only_when_asked_and_leaves_nothing() {
         let dir = std::env::temp_dir().join(format!("corrent-probe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let save = dir.join("new").join("folder");
-        probe(&save).unwrap();
+        // A folder that went away (an unplugged drive) isn't made again.
+        assert_eq!(probe(&save, false).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert!(!save.exists());
+        probe(&save, true).unwrap();
         assert!(save.is_dir());
         assert_eq!(std::fs::read_dir(&save).unwrap().count(), 0);
+        probe(&save, false).unwrap();
         // Under a file: can't be created.
         std::fs::write(dir.join("file"), "x").unwrap();
-        assert!(probe(&dir.join("file").join("sub")).is_err());
+        assert!(probe(&dir.join("file").join("sub"), true).is_err());
         crate::faults::set_access_denied(&save, None);
-        assert!(probe(&save).is_err());
+        assert!(probe(&save, false).is_err());
         crate::faults::clear_file_errors(&save);
-        probe(&save).unwrap();
+        probe(&save, false).unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 }

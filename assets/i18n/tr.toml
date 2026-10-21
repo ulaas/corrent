@@ -1330,7 +1330,7 @@
 "Only {free} free in the download folder" = "İndirme klasöründe yalnızca {free} boş alan var"
 "Save diagnostics…" = "Tanılama bilgilerini kaydet…"
 "Save diagnostics" = "Tanılama bilgilerini kaydet"
-"A zip file to attach to a bug report: logs, crash reports, settings without passwords, keys or feed addresses, and counts of your torrents. Nothing is sent anywhere." = "Hata bildirimine eklenecek bir zip dosyası: günlükler, çökme raporları, parolalar, anahtarlar ve akış adresleri çıkarılmış ayarlar ve torrentlerinizin sayıları. Hiçbir yere gönderilmez."
+"A zip file to attach to a bug report: logs (they may name torrents and files), crash reports, settings without passwords, keys or feed addresses, and counts of your torrents. Nothing is sent anywhere." = "Hata bildirimine eklenecek bir zip dosyası: günlükler (torrent ve dosya adları içerebilir), çökme raporları, parolalar, anahtarlar ve akış adresleri çıkarılmış ayarlar ve torrentlerinizin sayıları. Hiçbir yere gönderilmez."
 "Include file and folder paths" = "Dosya ve klasör yollarını ekle"
 "Include torrent info hashes" = "Torrent bilgi karmalarını ekle"
 "Saved diagnostics to {path}" = "Tanılama bilgileri {path} konumuna kaydedildi"

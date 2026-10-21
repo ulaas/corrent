@@ -27,6 +27,9 @@ jobs:
           cargo install cargo-wix --locked
       - name: Portable zip and MSI
         run: powershell -File scripts/package-windows.ps1 -Msi
+      # Crash reports must resolve to file:line with this profile's PDBs (O2).
+      - name: Symbols check
+        run: cargo run --release --locked -p corrent-core --example symbols_check
       - name: winget manifests
         shell: pwsh
         run: |

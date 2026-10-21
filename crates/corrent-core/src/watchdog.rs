@@ -51,7 +51,8 @@ pub struct Crumb {
 
 static START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
-/// Milliseconds since the first call in this process (monotonic; includes time asleep).
+/// Milliseconds since the first call in this process (monotonic; whether time asleep counts
+/// depends on the OS, which is why the watchdog watches its own gaps).
 pub fn now_ms() -> u64 {
     START.elapsed().as_millis() as u64
 }
@@ -81,6 +82,12 @@ pub fn doing(what: Doing) {
 /// The engine actor is alive (each tick, and while a long phase reports progress).
 pub fn actor_beat() {
     ACTOR_BEAT.store(now_ms(), Ordering::Relaxed);
+}
+
+/// The engine actor ended (a panic, or it stopped): not a hang until it beats again. Safe in
+/// the panic hook (one atomic store).
+pub fn actor_stopped() {
+    ACTOR_BEAT.store(0, Ordering::Relaxed);
 }
 
 pub fn crumb() -> Arc<Crumb> {
@@ -208,6 +215,9 @@ pub fn report(hang: &Hang, commands: &[Arc<str>], log: &[String]) -> String {
     let _ = writeln!(out, "time: {} (unix {ts})", crate::util::fmt_date(ts));
     let _ = writeln!(out, "os: {} {}", std::env::consts::OS, std::env::consts::ARCH);
     let _ = writeln!(out, "not responding: {side}, for {} s", hang.secs);
+    if hang.side == Side::Ui {
+        let _ = writeln!(out, "(holding the window's title bar or edge also stops its frames)");
+    }
     let _ = writeln!(out, "engine busy with: {}", hang.crumb.doing);
     let _ = writeln!(out, "recent commands: {}", commands.join(", "));
     let _ = writeln!(out, "\nrecent log:");
@@ -242,6 +252,8 @@ pub fn start(log_dir: PathBuf, limits: Limits) {
     if STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
+    // Beats are never 0 once started (0 means "not running").
+    let _ = *START;
     let _ = std::thread::Builder::new().name("corrent-watchdog".into()).spawn(move || {
         let mut last = now_ms();
         let mut awake_since = 0;
