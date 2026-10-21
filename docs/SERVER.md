@@ -24,7 +24,7 @@ read from standard input). An existing qBittorrent-API account of the profile be
 administrator automatically.
 
 Chores from a terminal (also next to a running server; add `--data-dir`/`--portable` as for the
-server): `correntd admin status` (users, libraries, last backup, a staged restore), `admin users`,
+server): `correntd --diagnostics <file.zip>` (logs, crash and hang reports, settings without secrets, counts — for a bug report; `--symbolize <report>` resolves a crash report with the release's PDB), `correntd admin status` (users, libraries, last backup, a staged restore), `admin users`,
 `admin reset-password <name>` (password like `--init-admin`), `admin enable|disable <name>`, and
 `admin scan` (asks the running server to scan every library, with a device token it deletes
 afterwards).

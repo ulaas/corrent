@@ -262,6 +262,11 @@ pub fn free_space_for(path: &std::path::Path) -> Option<u64> {
     actor::free_space(path)
 }
 
+/// Torrents in the engine's list in `session_dir` (diagnostics).
+pub fn session_torrent_count(session_dir: &std::path::Path) -> usize {
+    session_db::torrent_count(session_dir)
+}
+
 /// Commands queued while the engine is down, replayed after a restart.
 const BACKLOG_CAP: usize = 256;
 

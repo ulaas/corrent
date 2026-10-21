@@ -44,6 +44,18 @@ fn main() -> eframe::Result {
         println!("Corrent {}", version_text());
         return Ok(());
     }
+    // Read-only: works beside a running Corrent (no profile lock, no settings repair).
+    if let Some(i) = args.iter().position(|a| a == "--diagnostics") {
+        #[cfg(windows)]
+        attach_console();
+        let Some(out) = args.get(i + 1) else {
+            eprintln!("--diagnostics needs a file name (a .zip)");
+            std::process::exit(2);
+        };
+        let paths = Paths::resolve(flag("--portable"));
+        let app = format!("Corrent {}", version_text());
+        std::process::exit(corrent_core::diagnostics::cli(&paths, std::path::Path::new(out), &app));
+    }
     // Resolves a crash report from this very build (its .pdb beside the exe; scripts/symbolize.ps1).
     if let Some(i) = args.iter().position(|a| a == "--symbolize") {
         #[cfg(windows)]
@@ -79,6 +91,7 @@ fn main() -> eframe::Result {
         println!("  --mcp          serve AI agents (MCP over stdin/stdout) from the running Corrent");
         println!("  --version      print the version and the commit it was built from");
         println!("  --symbolize <crash report>  resolve a report of this build (its .pdb beside it)");
+        println!("  --diagnostics <file.zip>    save logs, reports and redacted settings for a bug report");
         println!("  -h, --help     show this help");
         return Ok(());
     }

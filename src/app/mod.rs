@@ -5,6 +5,7 @@ mod batch;
 pub mod connect;
 mod creator;
 mod details;
+mod diagnostics_ui;
 mod dialogs;
 mod discover_ui;
 mod dnd;
@@ -358,6 +359,8 @@ pub struct CorrentApp {
     previous_run: crate::crash::PreviousRun,
     /// Task panics already told about (E7).
     task_panics_seen: u64,
+    /// ⋮ → Save diagnostics… while open (O4).
+    diagnostics: Option<diagnostics_ui::DiagnosticsDialog>,
     pub data_notes: Vec<String>,
     /// Free space per folder typed in a dialog: (measured at, bytes), filled in the background.
     pub free_cache: Arc<std::sync::Mutex<FreeSpaceCache>>,
@@ -545,6 +548,7 @@ impl CorrentApp {
             ctx: ctx.clone(),
             previous_run: Default::default(),
             task_panics_seen: crate::crash::task_panics().0,
+            diagnostics: None,
             data_notes: Vec::new(),
             free_cache: Default::default(),
             free_inflight: Default::default(),
@@ -1224,6 +1228,7 @@ impl CorrentApp {
                 "log" => self.extras.log = true,
                 "stats" => self.extras.stats = true,
                 "streams" => self.extras.streams = true,
+                "diagnostics" => self.open_diagnostics(),
                 "remove" | "remove-undo" => {
                     if let Some(t) = self.snap.torrents.first() {
                         self.engine

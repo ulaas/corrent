@@ -1082,3 +1082,37 @@ fn the_health_chip_shows_only_problems() {
     h.run_steps(2);
     assert!(h.state().settings_draft.as_ref().is_some_and(|d| d.page == super::settings_window::Page::Downloads));
 }
+
+#[test]
+fn diagnostics_shows_what_it_saves_and_writes_it() {
+    let (f, app) = app("diag", vec![torrent(1, "a", TorrentState::Seeding)]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().open_diagnostics();
+    step_until(&mut h, "the entries", |h| h.query_by_label("settings.toml").is_some());
+    // The modal re-centres once the list is in.
+    h.run_steps(3);
+    h.get_by_label("Include file and folder paths");
+    h.get_by_label("Include torrent info hashes").click();
+    h.run_steps(2);
+    let opts = h.state().diagnostics.as_ref().map(|d| d.opts);
+    assert!(opts.is_some_and(|o| o.hashes && !o.paths), "{opts:?}");
+    // What the picker would return.
+    let out = f.dir.join("diag.zip");
+    h.state_mut().save_diagnostics(out.clone());
+    assert!(h.state().diagnostics.is_none(), "the dialog closes");
+    step_until(&mut h, "the bundle", |_| out.is_file() && std::fs::metadata(&out).is_ok_and(|m| m.len() > 0));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let names = loop {
+        let names = std::fs::File::open(&out)
+            .ok()
+            .and_then(|f| zip::ZipArchive::new(f).ok())
+            .and_then(|z| z.file_names().map(|n| n.ok().map(|n| n.to_string())).collect::<Option<Vec<_>>>());
+        if let Some(n) = names {
+            break n;
+        }
+        assert!(std::time::Instant::now() < deadline, "the zip never became readable");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    assert!(names.iter().any(|n| n == "metrics.txt") && names.iter().any(|n| n == "settings.toml"), "{names:?}");
+}

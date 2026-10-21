@@ -34,6 +34,7 @@ Options:
                           or standard input) and exit
   --print-fingerprint     print the certificate fingerprint clients pin, and exit
   --symbolize <report>    resolve a crash report of this build (its .pdb beside it)
+  --diagnostics <file>    save logs, reports and redacted settings (a zip) for a bug report
   -V, --version           print the version
   -h, --help              show this help
 
@@ -50,6 +51,7 @@ struct Args {
     remote_access: bool,
     init_admin: Option<String>,
     print_fingerprint: bool,
+    diagnostics: Option<PathBuf>,
     service: Option<Service>,
     account: Option<String>,
     password: Option<String>,
@@ -73,6 +75,7 @@ fn parse_args() -> Result<Option<Args>, String> {
         remote_access: false,
         init_admin: None,
         print_fingerprint: false,
+        diagnostics: None,
         service: None,
         account: None,
         password: None,
@@ -107,6 +110,7 @@ fn parse_args() -> Result<Option<Args>, String> {
             "--remote-access" => a.remote_access = true,
             "--init-admin" => a.init_admin = Some(value("--init-admin")?),
             "--print-fingerprint" => a.print_fingerprint = true,
+            "--diagnostics" => a.diagnostics = Some(PathBuf::from(value("--diagnostics")?)),
             "--symbolize" => {
                 let report = value("--symbolize")?;
                 std::process::exit(corrent_core::symbols::cli(std::path::Path::new(&report)));
@@ -412,6 +416,11 @@ fn run(args: Args) -> anyhow::Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&paths.data_dir, std::fs::Permissions::from_mode(0o700));
+    }
+    if let Some(out) = &args.diagnostics {
+        // Read-only, like --print-fingerprint: works next to a running server.
+        let app = format!("correntd {}", env!("CARGO_PKG_VERSION"));
+        std::process::exit(corrent_core::diagnostics::cli(&paths, out, &app));
     }
     if args.print_fingerprint {
         // Read-only: works next to a running server and never creates certificates.

@@ -11,6 +11,7 @@ extern crate corrent_i18n;
 pub mod backup;
 pub mod config;
 pub mod crash;
+pub mod diagnostics;
 pub mod engine;
 pub mod faults;
 #[cfg(any(test, feature = "fuzz"))]

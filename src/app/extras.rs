@@ -118,6 +118,9 @@ impl CorrentApp {
                 if ui.button(format!("{}  {}", icons::FOLDER_OPEN, t!("Open data folder"))).clicked() {
                     super::open_path(&self.paths.data_dir);
                 }
+                if ui.button(format!("{}  {}", icons::FIRST_AID_KIT, t!("Save diagnostics…"))).clicked() {
+                    self.open_diagnostics();
+                }
                 ui.separator();
                 if ui.button(format!("{}  {}", icons::INFO, t!("About Corrent"))).clicked() {
                     self.extras.about = true;
@@ -137,6 +140,7 @@ impl CorrentApp {
         self.stats_window(ctx, p);
         self.streams_window(ctx, p);
         self.log_window(ctx, p);
+        self.diagnostics_window(ctx, p);
     }
 
     fn about_window(&mut self, ctx: &Context, p: &Palette) {

@@ -26,6 +26,7 @@ pub enum PickTarget {
     WatchFolderSave(PathBuf),
     BackupExport,
     BackupImport,
+    DiagnosticsExport,
     OnboardingFolder,
     CreatorSource,
     CreatorOutput,
@@ -210,6 +211,7 @@ impl CorrentApp {
                     }
                 }
                 PickTarget::BackupExport => self.export_backup(first),
+                PickTarget::DiagnosticsExport => self.save_diagnostics(first),
                 PickTarget::BackupImport => self.import_backup(first),
                 PickTarget::ImportFolder => self.import_folder_picked(first),
                 PickTarget::LibraryFolder => self.library_folder_picked(first),
