@@ -35,6 +35,14 @@ User data in `%APPDATA%\Corrent` is kept on uninstall. Upgrades replace the prev
 lives in `corrent-data\` next to the exe. Nothing is written to the registry unless the user
 turns on *Open with Corrent* in Settings (the notification identity is never registered).
 
+**Symbols**: release builds keep line tables in `corrent.pdb`/`correntd.pdb`, which are never
+shipped. Crash reports list frames as offsets into the exe (`corrent.exe+0x1a2b3c`) with its
+link stamp; the workflow keeps the exes and PDBs as the `symbols-windows` artifact. Keep that
+artifact for every published release (LTO builds aren't reproducible), and resolve a user's
+report with `scripts/symbolize.ps1 -Report crash-….txt -Exe <artifact>\corrent.exe`.
+`cargo run --release -p corrent-core --example symbols_check` checks that the release profile's
+symbols resolve to file:line.
+
 **winget**: after a release is published, submit `dist/winget/*.yaml` from the workflow's
 `windows` artifact to `microsoft/winget-pkgs` (`wingetcreate submit` or a pull request).
 
@@ -73,4 +81,4 @@ Without them the dmg is unsigned and opens after right-click › Open.
    and `scripts/release-hygiene.ps1` (no debug hooks or test code in the release binaries).
 3. Commit, tag `vX.Y.Z`, push the tag (owner).
 4. Check the draft release's artifacts on each platform (`docs/PLATFORM-TESTING.md`), then publish.
-5. Submit the winget manifests.
+5. Submit the winget manifests, and keep the `symbols-windows` artifact with the release.

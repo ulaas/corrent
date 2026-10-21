@@ -87,6 +87,8 @@ opt-level = 2
 lto = "thin"
 codegen-units = 4
 strip = true
+# Line tables in the PDB (not shipped), so crash reports resolve to file:line (scripts/symbolize.ps1).
+debug = "line-tables-only"
 
 [target."cfg(windows)".dependencies]
 windows-registry = "0.6"

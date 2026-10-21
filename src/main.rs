@@ -44,6 +44,16 @@ fn main() -> eframe::Result {
         println!("Corrent {}", version_text());
         return Ok(());
     }
+    // Resolves a crash report from this very build (its .pdb beside the exe; scripts/symbolize.ps1).
+    if let Some(i) = args.iter().position(|a| a == "--symbolize") {
+        #[cfg(windows)]
+        attach_console();
+        let Some(report) = args.get(i + 1) else {
+            eprintln!("--symbolize needs a crash report");
+            std::process::exit(2);
+        };
+        std::process::exit(corrent_core::symbols::cli(std::path::Path::new(report)));
+    }
     let paths = Paths::resolve(flag("--portable"));
     let _ = std::fs::create_dir_all(&paths.data_dir);
     #[cfg(unix)]
@@ -68,6 +78,7 @@ fn main() -> eframe::Result {
         println!("  --write-icons <dir>  write the app icon set to a folder");
         println!("  --mcp          serve AI agents (MCP over stdin/stdout) from the running Corrent");
         println!("  --version      print the version and the commit it was built from");
+        println!("  --symbolize <crash report>  resolve a report of this build (its .pdb beside it)");
         println!("  -h, --help     show this help");
         return Ok(());
     }

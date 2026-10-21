@@ -56,6 +56,8 @@ aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 fs4 = "1.1.0"
 zip = { version = "9", default-features = false, features = ["deflate"] }
+# Raw frame addresses for crash reports and resolving them later (symbols.rs).
+backtrace = "0.3"
 
 [target."cfg(windows)".dependencies]
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }

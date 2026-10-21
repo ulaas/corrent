@@ -33,6 +33,7 @@ Options:
   --init-admin <name>     create the administrator (password from CORRENT_ADMIN_PASSWORD
                           or standard input) and exit
   --print-fingerprint     print the certificate fingerprint clients pin, and exit
+  --symbolize <report>    resolve a crash report of this build (its .pdb beside it)
   -V, --version           print the version
   -h, --help              show this help
 
@@ -106,6 +107,10 @@ fn parse_args() -> Result<Option<Args>, String> {
             "--remote-access" => a.remote_access = true,
             "--init-admin" => a.init_admin = Some(value("--init-admin")?),
             "--print-fingerprint" => a.print_fingerprint = true,
+            "--symbolize" => {
+                let report = value("--symbolize")?;
+                std::process::exit(corrent_core::symbols::cli(std::path::Path::new(&report)));
+            }
             "--account" => a.account = Some(value("--account")?),
             "--password" => a.password = Some(value("--password")?),
             other => return Err(format!("unknown option {other} (see --help)")),

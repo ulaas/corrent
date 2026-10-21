@@ -44,6 +44,16 @@ jobs:
         with:
           name: windows
           path: dist/**
+      # Not shipped: crash reports carry addresses that only these exact files resolve
+      # (scripts/symbolize.ps1). LTO builds aren't reproducible, so keep them with each release.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: symbols-windows
+          path: |
+            target/release/corrent.exe
+            target/release/corrent.pdb
+            target/release/correntd.exe
+            target/release/correntd.pdb
 
   linux:
     runs-on: ubuntu-22.04

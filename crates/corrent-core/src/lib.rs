@@ -24,6 +24,7 @@ pub mod retention;
 pub mod rss;
 pub mod search;
 pub mod store;
+pub mod symbols;
 pub mod updates;
 pub mod util;
 pub mod writer;

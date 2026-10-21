@@ -186,7 +186,8 @@ fn write_report(log_dir: &Path, info: &std::panic::PanicHookInfo<'_>) -> std::io
     if let Some(loc) = info.location() {
         writeln!(f, "location: {}:{}:{}", loc.file(), loc.line(), loc.column())?;
     }
-    writeln!(f, "\nbacktrace:\n{}", std::backtrace::Backtrace::force_capture())?;
+    // Offsets into the image, resolvable later by the same build (`--symbolize`, symbols.rs).
+    writeln!(f, "\nbacktrace:\n{}", crate::symbols::backtrace_text())?;
     // Never block inside a panic: skip the log tail if the lock is held. A poisoned buffer (a
     // panic while logging) is still worth reading.
     let lines = match crate::logbuf::LINES.try_lock() {
