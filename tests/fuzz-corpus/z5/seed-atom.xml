@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Atom</title><id>x</id><updated>2024-01-01T00:00:00Z</updated>
+<entry><title>Debian 12 netinst</title><id>urn:debian-12</id><updated>2024-01-02T00:00:00Z</updated>
+<link rel="enclosure" type="application/x-bittorrent" href="/debian.torrent"/></entry></feed>

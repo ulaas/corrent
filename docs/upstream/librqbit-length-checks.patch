@@ -49,10 +49,10 @@ index 64603c4..9cc5ef8 100644
                      metadata: TorrentMetadata::new(
 diff --git src/corrent_sizes.rs vendor/librqbit/src/corrent_sizes.rs
 new file mode 100644
-index 0000000..134ee66
+index 0000000..6c60e9b
 --- /dev/null
 +++ src/corrent_sizes.rs
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,77 @@
 +// CORRENT PATCH (Z1): sizes librqbit-core's `Lengths` can't hold. `Lengths::from_torrent` sums the
 +// file lengths unchecked (a panic in debug builds, a wrong size in release), divides by the piece
 +// length (a piece length of 0 panics in every build) and keeps the piece count in a u32 (a count
@@ -103,7 +103,10 @@ index 0000000..134ee66
 +}
 +
 +fn without_huge_select_only(url: &str) -> std::borrow::Cow<'_, str> {
-+    let Some((head, query)) = url.split_once('?') else { return url.into() };
++    // Through the URL parser first, like `Magnet::parse`: it strips tabs and line breaks and
++    // trims control characters, so `so=0-1844…` is a range there.
++    let Ok(mut u) = url::Url::parse(url) else { return url.into() };
++    let Some(query) = u.query() else { return url.into() };
 +    let mut total = 0u64;
 +    let mut dropped = false;
 +    let kept: Vec<&str> = query
@@ -123,5 +126,7 @@ index 0000000..134ee66
 +    if !dropped {
 +        return url.into();
 +    }
-+    format!("{head}?{}", kept.join("&")).into()
++    let kept = kept.join("&");
++    u.set_query(Some(&kept));
++    u.to_string().into()
 +}

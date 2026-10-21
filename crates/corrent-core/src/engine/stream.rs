@@ -467,16 +467,9 @@ impl StreamServer {
             return respond(&mut conn, "404 Not Found", &[], b"file not found").await;
         };
         let ctype = content_type(&name);
-        let (start, end, status) = match req.range {
-            Some((s, e)) => {
-                let e = e.unwrap_or(len.saturating_sub(1)).min(len.saturating_sub(1));
-                if len == 0 || s > e {
-                    let cr = format!("bytes */{len}");
-                    return respond(&mut conn, "416 Range Not Satisfiable", &[("Content-Range", &cr)], b"").await;
-                }
-                (s, e, "206 Partial Content")
-            }
-            None => (0, len.saturating_sub(1), "200 OK"),
+        let Some((start, end, status)) = plan_range(req.range, len) else {
+            let cr = format!("bytes */{len}");
+            return respond(&mut conn, "416 Range Not Satisfiable", &[("Content-Range", &cr)], b"").await;
         };
         let body_len = if len == 0 { 0 } else { end - start + 1 };
         let key = Key { ip, user_agent: req.user_agent.clone().unwrap_or_default(), hash, file };
@@ -606,14 +599,30 @@ async fn read_head(conn: &mut TcpStream) -> anyhow::Result<String> {
 }
 
 #[derive(Debug, PartialEq)]
-struct Request {
-    path: String,
-    head: bool,
-    range: Option<(u64, Option<u64>)>,
-    user_agent: Option<String>,
+pub(crate) struct Request {
+    pub path: String,
+    pub head: bool,
+    pub range: Option<(u64, Option<u64>)>,
+    pub user_agent: Option<String>,
 }
 
-fn parse_request(head: &str) -> Option<Request> {
+/// The bytes to send for a requested range of a file of `len` bytes: (first, last, status), or
+/// None for "416 Range Not Satisfiable". Without a range, a file of 0 bytes is `(0, 0)` with an
+/// empty body.
+pub(crate) fn plan_range(range: Option<(u64, Option<u64>)>, len: u64) -> Option<(u64, u64, &'static str)> {
+    match range {
+        Some((s, e)) => {
+            let e = e.unwrap_or(len.saturating_sub(1)).min(len.saturating_sub(1));
+            if len == 0 || s > e {
+                return None;
+            }
+            Some((s, e, "206 Partial Content"))
+        }
+        None => Some((0, len.saturating_sub(1), "200 OK")),
+    }
+}
+
+pub(crate) fn parse_request(head: &str) -> Option<Request> {
     let mut lines = head.split("\r\n");
     let mut first = lines.next()?.split_whitespace();
     let method = first.next()?;
@@ -639,7 +648,7 @@ fn parse_request(head: &str) -> Option<Request> {
 }
 
 /// Not a control or invisible formatting character (bidi overrides could disguise a name).
-fn printable(c: char) -> bool {
+pub(crate) fn printable(c: char) -> bool {
     !c.is_control()
         && !matches!(
             c,
@@ -648,7 +657,7 @@ fn printable(c: char) -> bool {
 }
 
 /// `bytes=START-[END]` (single range only).
-fn parse_range(v: &str) -> Option<(u64, Option<u64>)> {
+pub(crate) fn parse_range(v: &str) -> Option<(u64, Option<u64>)> {
     let r = v.strip_prefix("bytes=")?;
     if r.contains(',') {
         return None;
@@ -660,7 +669,7 @@ fn parse_range(v: &str) -> Option<(u64, Option<u64>)> {
 }
 
 /// `/<token>/<hash>/<file>/<name>` → (hash, file), only with the right token.
-fn parse_path(path: &str, token: &str) -> Option<(InfoHash, usize)> {
+pub(crate) fn parse_path(path: &str, token: &str) -> Option<(InfoHash, usize)> {
     let mut parts = path.trim_start_matches('/').split('/');
     if parts.next()? != token {
         return None;

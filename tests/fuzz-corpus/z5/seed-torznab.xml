@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed"><channel><title>Indexer</title>
+<item>
+  <title>Sintel 2010 1080p &amp; extras</title>
+  <guid>https://indexer.example/details/1</guid>
+  <link>https://indexer.example/dl/1.torrent?apikey=k</link>
+  <pubDate>Mon, 05 Oct 2026 10:00:00 +0000</pubDate>
+  <size>1234567</size>
+  <category>Movies</category>
+  <enclosure url="https://indexer.example/dl/1.torrent?apikey=k" length="1234567" type="application/x-bittorrent"/>
+  <torznab:attr name="seeders" value="42"/>
+  <torznab:attr name="peers" value="50"/>
+  <torznab:attr name="magneturl" value="magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&amp;dn=Sintel"/>
+  <torznab:attr name="infohash" value="08ADA5A7A6183AAE1E09D831DF6748D566095A10"/>
+</item>
+<item><title><![CDATA[Big Buck Bunny]]></title><link>https://indexer.example/dl/2.torrent</link></item>
+</channel></rss>

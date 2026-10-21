@@ -15,7 +15,7 @@ use crate::engine::types::AddSource;
 pub type Target = fn(&[u8]);
 
 /// Every target, by its corpus folder name.
-pub const TARGETS: &[(&str, Target)] = &[("z1", z1), ("z6", z6), ("z7", z7)];
+pub const TARGETS: &[(&str, Target)] = &[("z1", z1), ("z3", z3), ("z5", z5), ("z6", z6), ("z7", z7)];
 
 /// Z1: torrent bytes (a file, a URL, a feed, the watch folder, an import, the Web API) through
 /// the bencode parsers, librqbit's validation and Corrent's path checks. Accepted paths stay inside
@@ -65,6 +65,36 @@ pub fn z1(data: &[u8]) {
             }
         }
     }
+}
+
+/// Z3: the head of a request to the streaming server (any local program, or the LAN when it is
+/// shared). The bytes sent are always inside the file.
+pub fn z3(data: &[u8]) {
+    use crate::engine::stream::{parse_path, parse_range, parse_request, plan_range, printable};
+    let head = String::from_utf8_lossy(data);
+    let _ = parse_range(&head);
+    let Some(req) = parse_request(&head) else { return };
+    let _ = parse_path(&req.path, "0123456789abcdef");
+    if let Some(ua) = &req.user_agent {
+        assert!(ua.chars().count() <= 200 && ua.chars().all(printable), "{ua:?}");
+    }
+    let from_input = data.get(..8).map_or(0, |b| u64::from_le_bytes(b.try_into().unwrap()));
+    for len in [0, 1, 7, 65_536, u64::MAX, from_input] {
+        match plan_range(req.range, len) {
+            None => assert!(req.range.is_some(), "416 without a range"),
+            Some((start, end, _)) if len == 0 => assert!(req.range.is_none() && start == 0 && end == 0),
+            Some((start, end, _)) => {
+                assert!(start <= end && end < len, "{start}-{end} of {len}");
+                assert!((end - start).checked_add(1).is_some());
+            }
+        }
+    }
+}
+
+/// Z5: feeds and Torznab answers from the network (`rss::feed::parse`, `search::parse`).
+pub fn z5(data: &[u8]) {
+    let _ = crate::rss::feed::parse(data, "https://example.invalid/feed");
+    let _ = crate::search::parse(data, "p");
 }
 
 /// Z6: what users paste and launches pass on (CLI arguments, IPC lines, the Add dialog, the Web
@@ -144,12 +174,26 @@ mod tests {
         let f = target(name);
         on_stack(move || {
             let seeds: Vec<&[u8]> = seeds.iter().map(|(_, b)| b.as_slice()).collect();
-            corrent_fuzz::run_budget(
-                name,
-                corrent_fuzz::budget(default_cases),
-                |r| f(&r.bytes_case(&seeds, max_noise)),
-            );
+            corrent_fuzz::run_budget(name, corrent_fuzz::budget(default_cases), |r| {
+                let input = r.bytes_case(&seeds, max_noise);
+                if let Err(e) = std::panic::catch_unwind(|| f(&input)) {
+                    // Kept for the corpus (tests/fuzz-corpus/README.md).
+                    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/fuzz-failures");
+                    let _ = std::fs::create_dir_all(&dir);
+                    let file = dir.join(format!(
+                        "{name}-{:016x}",
+                        corrent_fuzz::Rng::new(input.len() as u64 + 1).next_u64() ^ fnv(&input)
+                    ));
+                    let _ = std::fs::write(&file, &input);
+                    eprintln!("{name}: failing input saved to {}", file.display());
+                    std::panic::resume_unwind(e);
+                }
+            });
         });
+    }
+
+    fn fnv(b: &[u8]) -> u64 {
+        b.iter().fold(0xcbf2_9ce4_8422_2325, |h, &x| (h ^ u64::from(x)).wrapping_mul(0x100_0000_01b3))
     }
 
     #[test]
@@ -169,6 +213,50 @@ mod tests {
     #[test]
     fn z1_torrent_bytes() {
         fuzz("z1", 3_000, 4096);
+    }
+
+    #[test]
+    fn z3_stream_request_heads() {
+        fuzz("z3", 5_000, 1024);
+    }
+
+    #[test]
+    fn z5_feeds_and_torznab() {
+        fuzz("z5", 2_000, 8192);
+    }
+
+    /// Feeds of `mib` MiB three ways: many items, one huge title, deep unknown elements.
+    fn big_feeds(mib: usize) -> Vec<(&'static str, Vec<u8>)> {
+        let size = mib << 20;
+        let head = "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><title>t</title>";
+        let tail = "</channel></rss>";
+        let item = "<item><title>Sintel 1080p</title><guid>g</guid><enclosure url=\"https://e.org/a.torrent\" length=\"5\"/></item>";
+        let items = format!("{head}{}{tail}", item.repeat(size / item.len()));
+        let title = format!("{head}<item><title>{}</title></item>{tail}", "x".repeat(size));
+        let n = size / 7;
+        let deep = format!("{head}<item>{}{}</item>{tail}", "<a><b>".repeat(n / 2), "</b></a>".repeat(n / 2));
+        vec![("items", items.into_bytes()), ("title", title.into_bytes()), ("deep", deep.into_bytes())]
+    }
+
+    fn feeds_parse_in_time(mib: usize, limit: std::time::Duration) {
+        for (what, feed) in big_feeds(mib) {
+            let t = std::time::Instant::now();
+            z5(&feed);
+            assert!(t.elapsed() < limit, "{what}: {mib} MiB took {:?}", t.elapsed());
+        }
+    }
+
+    #[test]
+    fn z5_a_big_feed_parses_in_time() {
+        // Debug builds are ~10× slower; the 8 MiB check below runs in the long run.
+        feeds_parse_in_time(1, std::time::Duration::from_secs(if cfg!(debug_assertions) { 4 } else { 1 }));
+    }
+
+    /// STABILITY.md Z5: an 8 MiB feed (the download cap) parses in under a second (optimized).
+    #[test]
+    #[ignore = "long run (scripts/fuzz-long.ps1)"]
+    fn z5_an_8_mib_feed_parses_in_a_second() {
+        feeds_parse_in_time(8, std::time::Duration::from_secs(1));
     }
 
     #[test]

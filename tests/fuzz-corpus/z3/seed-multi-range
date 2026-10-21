@@ -1,0 +1,4 @@
+GET /0123456789abcdef/08ada5a7a6183aae1e09d831df6748d566095a10/0/Sintel.mkv HTTP/1.1
+Range: bytes=0-1,5-9
+user-agent: mpv 0.38
+

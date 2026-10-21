@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Test feed</title>
+<item><title>Sintel 2010 1080p</title><guid>sintel-1</guid>
+  <link>https://example.org/sintel</link>
+  <enclosure url="https://example.org/sintel.torrent" length="1234" type="application/x-bittorrent"/>
+  <pubDate>Mon, 01 Jan 2024 10:00:00 GMT</pubDate></item>
+<item><title>Big Buck Bunny</title><link>magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&amp;dn=bbb</link></item>
+<item><title>No link</title></item>
+</channel></rss>

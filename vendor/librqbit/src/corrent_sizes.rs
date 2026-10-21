@@ -48,7 +48,10 @@ fn select_only_span(value: &str) -> u64 {
 }
 
 fn without_huge_select_only(url: &str) -> std::borrow::Cow<'_, str> {
-    let Some((head, query)) = url.split_once('?') else { return url.into() };
+    // Through the URL parser first, like `Magnet::parse`: it strips tabs and line breaks and
+    // trims control characters, so `so=0-1844…` is a range there.
+    let Ok(mut u) = url::Url::parse(url) else { return url.into() };
+    let Some(query) = u.query() else { return url.into() };
     let mut total = 0u64;
     let mut dropped = false;
     let kept: Vec<&str> = query
@@ -68,5 +71,7 @@ fn without_huge_select_only(url: &str) -> std::borrow::Cow<'_, str> {
     if !dropped {
         return url.into();
     }
-    format!("{head}?{}", kept.join("&")).into()
+    let kept = kept.join("&");
+    u.set_query(Some(&kept));
+    u.to_string().into()
 }
