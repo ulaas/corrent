@@ -203,3 +203,158 @@ async fn add_answers_503_when_the_engine_is_busy() {
     assert_eq!(add().await.unwrap().status(), 503);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// STABILITY.md Z4: mutated requests to every route, against a real engine. No answer is a server
+/// error (5xx) other than 503 (busy), and each comes within 5 s. Fields that would reach the
+/// network (`urls`) or folders outside the test (`savepath`…) are left out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn webapi_inputs_are_refused_cleanly() {
+    use crate::webapi::{WebApiServer, WebApiSettings, hash_password};
+    const ROUTES: &[(&str, bool)] = &[
+        ("app/version", false),
+        ("app/preferences", false),
+        ("transfer/info", false),
+        ("sync/maindata", false),
+        ("torrents/info", false),
+        ("torrents/properties", false),
+        ("torrents/files", false),
+        ("torrents/categories", false),
+        ("torrents/tags", false),
+        ("torrents/add", true),
+        ("torrents/pause", true),
+        ("torrents/resume", true),
+        ("torrents/delete", true),
+        ("torrents/recheck", true),
+        ("torrents/setCategory", true),
+        ("torrents/createCategory", true),
+        ("torrents/editCategory", true),
+        ("torrents/removeCategories", true),
+        ("torrents/addTags", true),
+        ("torrents/removeTags", true),
+        ("torrents/setShareLimits", true),
+        ("torrents/setForceStart", true),
+        ("torrents/setDownloadLimit", true),
+        ("torrents/setUploadLimit", true),
+        ("torrents/topPrio", true),
+        ("torrents/increasePrio", true),
+        ("auth/login", true),
+    ];
+    const KEYS: &[&str] = &[
+        "hashes",
+        "hash",
+        "category",
+        "categories",
+        "tags",
+        "paused",
+        "stopped",
+        "deleteFiles",
+        "ratioLimit",
+        "seedingTimeLimit",
+        "inactiveSeedingTimeLimit",
+        "limit",
+        "value",
+        "filter",
+        "sort",
+        "reverse",
+        "offset",
+        "rid",
+        "skip_checking",
+        "root_folder",
+        "contentLayout",
+        "upLimit",
+        "dlLimit",
+        "sequentialDownload",
+        "firstLastPiecePrio",
+        "autoTMM",
+        "rename",
+        "username",
+        "password",
+    ];
+    const VALUES: &[&str] = &[
+        "all",
+        "true",
+        "false",
+        "1",
+        "0",
+        "-1",
+        "-2",
+        "1.5",
+        "NaN",
+        "inf",
+        "1e308",
+        "",
+        "tv",
+        "a,b",
+        "a|b",
+        "08ada5a7a6183aae1e09d831df6748d566095a10",
+        "name",
+        "size",
+        "Subfolder",
+    ];
+    let dir = temp_dir("webapi-fuzz");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    let cfg = WebApiSettings {
+        enabled: true,
+        port: 0,
+        allow_lan: false,
+        username: "u".into(),
+        password_hash: hash_password("p"),
+    };
+    let shared = Arc::new(arc_swap::ArcSwap::from_pointee(settings(&dir)));
+    let server = WebApiServer::start(cfg, l.engine.clone(), shared).await.unwrap();
+    let base = format!("http://127.0.0.1:{}/api/v2", server.addr.port());
+    let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap();
+    let r = http.post(format!("{base}/auth/login")).form(&[("username", "u"), ("password", "p")]).send().await.unwrap();
+    let cookie = r.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+
+    // Built up front (the generator isn't Send across awaits), then sent.
+    let mut cases = Vec::new();
+    corrent_fuzz::run("webapi_requests", corrent_fuzz::iterations(300), |r| {
+        let (route, post) = *r.pick(ROUTES);
+        let mut form = url::form_urlencoded::Serializer::new(String::new());
+        for _ in 0..r.below(5) {
+            let v = if r.chance(70) { r.pick(VALUES).to_string() } else { r.case(VALUES, 40) };
+            form.append_pair(r.pick(KEYS), &v);
+        }
+        let raw = if r.chance(50) { r.mutate(&form.finish()) } else { form.finish() };
+        // What the server will decode, without the fields this test must not send.
+        let safe: String = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(url::form_urlencoded::parse(raw.as_bytes()).filter(|(k, _)| {
+                let k = k.to_ascii_lowercase();
+                !k.contains("url") && !k.contains("path") && k != "savepath"
+            }))
+            .finish();
+        let torrent = (route == "torrents/add" && r.chance(70)).then(|| r.mutate_bytes(&s.bytes));
+        cases.push((route, post, safe, torrent));
+    });
+    for (route, post, form, torrent) in cases {
+        let url = format!("{base}/{route}");
+        let req = match (post, torrent) {
+            (true, Some(t)) => {
+                let mut body = Vec::new();
+                for (k, v) in url::form_urlencoded::parse(form.as_bytes()) {
+                    body.extend(
+                        format!("--B\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n").as_bytes(),
+                    );
+                }
+                body.extend(
+                    b"--B\r\nContent-Disposition: form-data; name=\"torrents\"; filename=\"t.torrent\"\r\n\r\n",
+                );
+                body.extend(t);
+                body.extend(b"\r\n--B--\r\n");
+                http.post(&url).header("Content-Type", "multipart/form-data; boundary=B").body(body)
+            }
+            (true, None) => {
+                http.post(&url).header("Content-Type", "application/x-www-form-urlencoded").body(form.clone())
+            }
+            (false, _) => http.get(format!("{url}?{form}")),
+        };
+        let resp = req.header("Cookie", &cookie).send().await.unwrap_or_else(|e| panic!("{route} {form:?}: {e}"));
+        let status = resp.status().as_u16();
+        assert!(status < 500 || status == 503, "{route} {form:?}: {status}");
+    }
+    assert!(l.engine.is_alive());
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

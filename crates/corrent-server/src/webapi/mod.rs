@@ -9,6 +9,8 @@
 #![deny(clippy::indexing_slicing)]
 
 pub(crate) mod auth;
+#[cfg(any(test, feature = "fuzz"))]
+pub mod fuzz;
 mod qbt;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

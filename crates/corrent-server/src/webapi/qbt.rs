@@ -93,13 +93,16 @@ fn bad(msg: &str) -> Response {
 /// `hashes=a|b|c` or `all`.
 fn hashes(st: &ApiState, form: &HashMap<String, String>) -> Vec<InfoHash> {
     let Some(h) = form.get("hashes").or_else(|| form.get("hash")) else { return Vec::new() };
-    if h == "all" {
-        return st.engine.snapshot().torrents.iter().filter(|t| !t.pending).map(|t| t.hash).collect();
-    }
-    h.split('|').filter_map(|x| InfoHash::from_hex(x.trim())).collect()
+    parse_hashes(h)
+        .unwrap_or_else(|| st.engine.snapshot().torrents.iter().filter(|t| !t.pending).map(|t| t.hash).collect())
 }
 
-fn truthy(v: Option<&String>) -> bool {
+/// The hashes of a `hashes` field; None for `all`.
+pub(super) fn parse_hashes(h: &str) -> Option<Vec<InfoHash>> {
+    (h != "all").then(|| h.split('|').filter_map(|x| InfoHash::from_hex(x.trim())).collect())
+}
+
+pub(super) fn truthy(v: Option<&String>) -> bool {
     v.is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
 }
 
