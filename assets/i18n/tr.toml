@@ -1301,7 +1301,7 @@
 "“{name}” is reachable again" = "“{name}” yeniden erişilebilir"
 "You switched to this computer's engine while it couldn't be reached." = "Ona erişilemediği sırada bu bilgisayarın motoruna geçmiştiniz."
 "Keep this computer's engine" = "Bu bilgisayarın motoruyla devam et"
-"Switch to it" = "Ona geç"
+"Switch to it" = "Sunucuya geç"
 "“{name}” is on this network" = "“{name}” bu ağda"
 "{n} Corrent servers are on this network" = "Bu ağda {n} Corrent sunucusu var"
 "A Corrent server can run your torrents and media. Connecting needs its pairing code." = "Bir Corrent sunucusu torrentlerinizi ve medyanızı çalıştırabilir. Bağlanmak için eşleştirme kodu gerekir."

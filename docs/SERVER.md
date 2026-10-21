@@ -350,7 +350,11 @@ without sending the device token — and then offers **Switch to it** (or switch
 with "Switch back to your server by itself"; not while a dialog or video is open). A server in
 use that announces a new address (DHCP) is checked the same way and followed; the new address is
 saved only once it answered. A server whose address changed while it was running keeps
-failing that check until it restarts (its certificate lists the addresses it had at start).
+failing that check until it restarts (its certificate lists the addresses it had at start). Only
+servers with their own certificate authority (pinned at pairing) are followed to a new address;
+a server saved by name, or with a publicly trusted certificate, is only checked at its saved
+address. A server reached through Corrent Connect counts as connected, so its LAN address is
+followed only once that connection drops.
 
 The first search may ask for permission: on Windows the firewall prompt for Corrent (answering
 "Block" means servers aren't found; Connect still accepts an address), on macOS the "find

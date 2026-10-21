@@ -65,12 +65,17 @@ fn host_of(url: &str) -> Option<IpAddr> {
 /// still announces that address, else each announced address on the saved port scheme.
 /// Always `https` (taken from the saved address, never from the announcement: a plain-HTTP
 /// address would be checked without its certificate). Empty for servers saved without https.
+/// Only for servers with their own CA, pinned at pairing: a publicly trusted certificate would
+/// let anyone with one for their own address pass the check. A server saved by name is only
+/// checked at that name (following it to a LAN address would lose the name).
 pub fn candidates(entry: &ServerEntry, f: &Found) -> Vec<String> {
-    if !entry.url.starts_with("https://") {
+    if !entry.url.starts_with("https://") || entry.ca().is_none() || entry.fingerprint.is_empty() {
         return Vec::new();
     }
-    if host_of(&entry.url).is_some_and(|h| f.addrs.contains(&h)) {
-        return vec![entry.url.clone()];
+    match host_of(&entry.url) {
+        None => return vec![entry.url.clone()],
+        Some(h) if f.addrs.contains(&h) => return vec![entry.url.clone()],
+        Some(_) => {}
     }
     let mut addrs: Vec<IpAddr> = f
         .addrs
@@ -148,6 +153,7 @@ mod tests {
             name: "Home".into(),
             url: url.into(),
             fingerprint: FP.into(),
+            ca_pem: "-----BEGIN CERTIFICATE-----".into(),
             token: "secret".into(),
             ..Default::default()
         }
@@ -180,6 +186,12 @@ mod tests {
         plain.advert.https = false;
         assert!(candidates(&e, &plain).iter().all(|u| u.starts_with("https://")));
         assert!(candidates(&paired("http://192.168.1.5:8080"), &plain).is_empty());
+        // Only with a pinned CA: a public certificate for the attacker's own address would pass.
+        let public = ServerEntry { ca_pem: String::new(), fingerprint: String::new(), ..e.clone() };
+        assert!(candidates(&public, &found(ID, "", &["192.168.1.20"])).is_empty());
+        // Saved by name: checked there, never moved to a LAN address.
+        let named = paired("https://home.example.net:8443");
+        assert_eq!(candidates(&named, &found(ID, FP, &["192.168.1.20"])), vec!["https://home.example.net:8443"]);
     }
 
     #[test]

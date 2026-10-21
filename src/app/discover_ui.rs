@@ -25,6 +25,13 @@ enum Purpose {
     Moved,
 }
 
+/// New servers kept for the notice, address checks in flight, addresses tried per server, and
+/// checks remembered (anyone on the network can announce anything).
+const MAX_NEW: usize = 8;
+const MAX_PROBES: usize = 2;
+const MAX_ADDRESSES: usize = 4;
+const MAX_PROBED: usize = 64;
+
 #[derive(Default)]
 pub struct DiscoverState {
     browser: Option<Browser>,
@@ -49,12 +56,29 @@ impl CorrentApp {
     pub(super) fn discovery_tick(&mut self, ctx: &egui::Context) {
         #[cfg(debug_assertions)]
         self.discovery_dev_hook();
+        // An offer that no longer applies (the user chose a server, or dropped the fallback).
+        if self
+            .discover
+            .offer
+            .as_ref()
+            .is_some_and(|e| self.server.is_some() || self.servers.fallback.as_deref() != Some(e.key().as_str()))
+        {
+            self.discover.offer = None;
+        }
+        self.discovery_probes();
+        if self.settings.behavior.auto_switch_server
+            && self.calm()
+            && let Some(e) = self.discover.offer.take()
+        {
+            self.use_server(Some(e));
+        }
         let now = Instant::now();
         let st = &mut self.discover;
         let first = *st.first_frame.get_or_insert(now);
         if !discover::wanted(self.settings.behavior.find_servers, self.onboarding.is_some(), now - first) {
             st.browser = None;
             st.starting = None;
+            st.retry_at = None;
             return;
         }
         if st.browser.is_none() && st.starting.is_none() && st.retry_at.is_none_or(|t| now >= t) {
@@ -74,6 +98,7 @@ impl CorrentApp {
                 Ok(Ok(b)) => {
                     st.browser = Some(b);
                     st.starting = None;
+                    st.retry_at = None;
                 }
                 // No multicast here (some VPNs, a blocked firewall): try again later, quietly.
                 Ok(Err(e)) => {
@@ -84,10 +109,12 @@ impl CorrentApp {
                 Err(TryRecvError::Empty) => {}
             }
         }
-        // Back from sleep: ask again now, and check paired servers again.
+        // Back from sleep: ask again now (a failed request starts over), and check paired
+        // servers again.
         if st.last_tick.is_some_and(|t| now.duration_since(t) > Duration::from_secs(60)) {
-            if let Some(b) = &mut st.browser {
-                let _ = b.requery();
+            if st.browser.as_mut().is_some_and(|b| b.requery().is_err()) {
+                st.browser = None;
+                st.retry_at = None;
             }
             st.probed.clear();
         }
@@ -99,13 +126,6 @@ impl CorrentApp {
         for f in found {
             self.discovery_found(f);
         }
-        self.discovery_probes();
-        if self.settings.behavior.auto_switch_server
-            && self.calm()
-            && let Some(e) = self.discover.offer.take()
-        {
-            self.use_server(Some(e));
-        }
     }
 
     /// An announcement (from the network, or a test).
@@ -114,26 +134,28 @@ impl CorrentApp {
             Verdict::Skip => {}
             Verdict::New => {
                 let st = &mut self.discover;
-                if !st.noticed && !st.new.iter().any(|x| x.advert.id == f.advert.id) {
+                // Bounded: anyone on the network can announce any number of servers.
+                if !st.noticed && st.new.len() < MAX_NEW && !st.new.iter().any(|x| x.advert.id == f.advert.id) {
                     st.new.push(f);
                 }
             }
             Verdict::Paired(key) => {
-                let purpose = match &self.server {
-                    Some(s) if s.entry.key() == key && !s.connected() => Purpose::Moved,
-                    Some(_) => return,
-                    None if self.servers.fallback.as_deref() == Some(key.as_str()) && self.discover.offer.is_none() => {
-                        Purpose::Return
-                    }
-                    None => return,
-                };
+                let Some(purpose) = self.purpose(&key) else { return };
                 let Some(entry) = self.servers.list.iter().find(|e| e.key() == key).cloned() else { return };
                 let mut urls = discover::candidates(&entry, &f);
                 if matches!(purpose, Purpose::Moved) {
                     // Same address: the connection keeps retrying it by itself.
                     urls.retain(|u| *u != entry.url);
                 }
-                if urls.is_empty() || !self.discover.probed.insert(format!("{key}|{}", urls.join(","))) {
+                urls.truncate(MAX_ADDRESSES);
+                let st = &mut self.discover;
+                if st.probed.len() > MAX_PROBED {
+                    st.probed.clear();
+                }
+                if urls.is_empty()
+                    || st.probes.len() >= MAX_PROBES
+                    || !st.probed.insert(format!("{key}|{}", urls.join(",")))
+                {
                     return;
                 }
                 let slot =
@@ -147,6 +169,22 @@ impl CorrentApp {
         }
     }
 
+    /// Why the paired server with `key` matters now, if it does: the one in use while it can't
+    /// be reached, or the one the app fell back from (not offered yet).
+    fn purpose(&self, key: &str) -> Option<Purpose> {
+        match &self.server {
+            // Still the user's choice (not while a switch to this computer's engine is pending).
+            Some(s) if s.entry.key() == key && !s.connected() && self.servers.active.as_deref() == Some(key) => {
+                Some(Purpose::Moved)
+            }
+            Some(_) => None,
+            None if self.servers.fallback.as_deref() == Some(key) && self.discover.offer.is_none() => {
+                Some(Purpose::Return)
+            }
+            None => None,
+        }
+    }
+
     /// Address checks that finished.
     fn discovery_probes(&mut self) {
         let mut done = Vec::new();
@@ -154,31 +192,37 @@ impl CorrentApp {
         while i < self.discover.probes.len() {
             match self.discover.probes.get(i).and_then(|(_, _, s)| ready(s)) {
                 Some(r) => {
-                    let (purpose, key, _) = self.discover.probes.swap_remove(i);
-                    done.push((purpose, key, r));
+                    let (_, key, _) = self.discover.probes.swap_remove(i);
+                    done.push((key, r));
                 }
                 None => i += 1,
             }
         }
-        for (purpose, key, r) in done {
-            let Ok(url) = r else { continue };
-            let Some(entry) = self.discovery_verified(&key, &url) else { continue };
-            match purpose {
-                Purpose::Moved => {
-                    if self.server.as_ref().is_some_and(|s| s.entry.id == entry.id && !s.connected()) {
-                        self.toasts.push(
-                            crate::engine::ToastKind::Info,
-                            t!("“{name}” has a new address on this network", name = entry.name).to_string(),
-                        );
-                        self.use_server(Some(entry));
-                    }
-                }
-                Purpose::Return => {
-                    if self.server.is_none() && self.servers.fallback.as_deref() == Some(entry.key().as_str()) {
-                        self.discover.offer = Some(entry);
-                    }
+        for (key, r) in done {
+            if let Ok(url) = r {
+                self.discovery_probe_done(&key, &url);
+            }
+        }
+    }
+
+    /// `key`'s server answered at `url`. Acts only if that still matters (the check may finish
+    /// after a switch, or after the server came back at its old address).
+    pub(crate) fn discovery_probe_done(&mut self, key: &str, url: &str) {
+        match self.purpose(key) {
+            Some(Purpose::Moved) => {
+                let Some(entry) = self.discovery_verified(key, url) else { return };
+                self.toasts.push(
+                    crate::engine::ToastKind::Info,
+                    t!("“{name}” has a new address on this network", name = entry.name).to_string(),
+                );
+                self.use_server(Some(entry));
+            }
+            Some(Purpose::Return) => {
+                if let Some(entry) = self.discovery_verified(key, url) {
+                    self.discover.offer = Some(entry);
                 }
             }
+            None => {}
         }
     }
 
@@ -297,7 +341,11 @@ impl CorrentApp {
             });
         });
         if connect || later || never {
-            let one = (self.discover.new.len() == 1).then(|| self.discover.new.first().and_then(Found::url)).flatten();
+            // Always https: the announcement can't steer pairing to plain HTTP.
+            let one = (self.discover.new.len() == 1)
+                .then(|| self.discover.new.first().and_then(Found::url))
+                .flatten()
+                .map(|u| u.replacen("http://", "https://", 1));
             self.discover.noticed = true;
             self.discover.new.clear();
             if connect {
@@ -308,6 +356,9 @@ impl CorrentApp {
             }
             if never {
                 self.settings.behavior.find_servers = false;
+                if let Some(d) = self.settings_draft.as_mut() {
+                    d.settings.behavior.find_servers = false;
+                }
                 self.save_settings();
             }
         }

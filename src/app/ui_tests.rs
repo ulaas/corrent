@@ -977,3 +977,66 @@ fn a_paired_server_found_elsewhere_keeps_its_address_until_checked() {
     assert_eq!(h.state().servers.list[0].url, "https://192.0.2.77:8443");
     assert_eq!(h.state().servers.fallback, Some(moved.key()));
 }
+
+fn home_server() -> crate::link::ServerEntry {
+    crate::link::ServerEntry {
+        id: "ab12cd34ef56".into(),
+        name: "Home".into(),
+        url: "https://192.0.2.10:8443".into(),
+        ..Default::default()
+    }
+}
+
+/// The server in use can't be reached; its new address answered: followed and saved.
+#[test]
+fn a_moved_server_in_use_is_followed() {
+    let (_f, app) = app("found-follow", vec![]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    let entry = home_server();
+    h.state_mut().use_server(Some(entry.clone()));
+    h.run_steps(2);
+    assert!(h.state().server.as_ref().is_some_and(|s| !s.connected()));
+    h.state_mut().discovery_probe_done(&entry.key(), "https://192.0.2.77:8443");
+    h.run_steps(2);
+    assert_eq!(h.state().servers.list[0].url, "https://192.0.2.77:8443");
+    let active = h.state().servers.active.clone().unwrap();
+    assert!(active.ends_with("@https://192.0.2.77:8443"));
+    assert_eq!(h.state().server.as_ref().unwrap().entry.url, "https://192.0.2.77:8443");
+    // A late answer for a server no longer in use changes nothing.
+    h.state_mut().use_server(None);
+    h.state_mut().discovery_probe_done(&active, "https://192.0.2.99:8443");
+    assert_eq!(h.state().servers.list[0].url, "https://192.0.2.77:8443");
+}
+
+/// Switching back by itself waits for open dialogs; an offer the user overtook disappears.
+#[test]
+fn switching_back_by_itself_waits_and_stale_offers_go() {
+    let (_f, mut app) = app("found-auto", vec![]);
+    app.settings.behavior.auto_switch_server = true;
+    let entry = home_server();
+    app.servers.upsert(entry.clone());
+    app.servers.fallback = Some(entry.key());
+    let mut h = harness(app);
+    h.run_steps(2);
+    let ctx = h.ctx.clone();
+    h.state_mut().open_connect();
+    h.state_mut().discovery_offer(entry.clone());
+    h.state_mut().discovery_tick(&ctx);
+    assert!(h.state().server.is_none(), "not while the Connect dialog is open");
+    h.state_mut().connect = None;
+    h.state_mut().discovery_tick(&ctx);
+    assert_eq!(h.state().servers.active, Some(entry.key()));
+    assert_eq!(h.state().servers.fallback, None);
+    // Back on this computer's engine, offered again, then the user picks another server.
+    h.state_mut().settings.behavior.auto_switch_server = false;
+    h.state_mut().use_server(None);
+    h.state_mut().servers.fallback = Some(entry.key());
+    h.state_mut().discovery_offer(entry.clone());
+    let other = crate::link::ServerEntry { id: "ffff0000ffff".into(), name: "Office".into(), ..home_server() };
+    h.state_mut().use_server(Some(other));
+    h.state_mut().discovery_tick(&ctx);
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("is reachable again").is_none());
+    assert_eq!(h.state().servers.fallback, None);
+}
