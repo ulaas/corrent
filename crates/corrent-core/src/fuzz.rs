@@ -15,7 +15,8 @@ use crate::engine::types::AddSource;
 pub type Target = fn(&[u8]);
 
 /// Every target, by its corpus folder name.
-pub const TARGETS: &[(&str, Target)] = &[("z1", z1), ("z3", z3), ("z5", z5), ("z6", z6), ("z7", z7)];
+pub const TARGETS: &[(&str, Target)] =
+    &[("z1", z1), ("z2-peer", z2_peer), ("z2-dht", z2_dht), ("z3", z3), ("z5", z5), ("z6", z6), ("z7", z7)];
 
 /// Z1: torrent bytes (a file, a URL, a feed, the watch folder, an import, the Web API) through
 /// the bencode parsers, librqbit's validation and Corrent's path checks. Accepted paths stay inside
@@ -64,6 +65,56 @@ pub fn z1(data: &[u8]) {
                 assert!(seen.insert(key), "case-only duplicate {f:?}");
             }
         }
+    }
+}
+
+/// Z2: what a peer sends: the handshake, wire messages (split anywhere between the two halves
+/// of the receive buffer), extended messages (handshake, ut_metadata, ut_pex) and the torrent info
+/// assembled from ut_metadata. What parses must serialize back without a panic.
+pub fn z2_peer(data: &[u8]) {
+    use librqbit_bencode::{ByteBuf, from_bytes};
+    use librqbit_peer_protocol::extended::{
+        ExtendedMessage, PeerExtendedMessageIds, handshake::ExtendedHandshake, ut_metadata::UtMetadata, ut_pex::UtPex,
+    };
+    use librqbit_peer_protocol::{DoubleBufHelper, Handshake, Message};
+    let split = data.first().map_or(0, |&b| usize::from(b)).min(data.len());
+    let (a, b) = data.split_at(split);
+    // Mutations mostly break the length prefix: also try the message with it fixed up.
+    let mut framed = data.to_vec();
+    if let Some(prefix) = framed.get_mut(..4) {
+        prefix.copy_from_slice(&u32::try_from(data.len() - 4).unwrap_or(u32::MAX).to_be_bytes());
+    }
+    let ids = || PeerExtendedMessageIds { ut_metadata: Some(3), ut_pex: Some(1) };
+    for (x, y) in [(data, &[][..]), (a, b), (&framed[..], &[][..])] {
+        if let Ok((m, _)) = Message::deserialize(x, y) {
+            let mut out = vec![0u8; data.len() + 64];
+            let _ = m.serialize(&mut out, &ids);
+        }
+        let _ = ExtendedMessage::<ByteBuf>::deserialize(DoubleBufHelper::new(x, y));
+        let _ = UtMetadata::<ByteBuf>::deserialize(DoubleBufHelper::new(x, y));
+    }
+    let _ = Handshake::deserialize(data);
+    let _ = from_bytes::<ExtendedHandshake<ByteBuf>>(data);
+    let _ = from_bytes::<UtPex<ByteBuf>>(data);
+    // The info dictionary of a magnet, as librqbit checks it after ut_metadata.
+    if let Ok(info) = from_bytes::<librqbit_core::torrent_metainfo::TorrentMetaV1Info<ByteBuf>>(data)
+        && librqbit::corrent_sizes::check(&info).is_ok()
+    {
+        let _ = info.validate();
+    }
+}
+
+/// Z2: a DHT packet from anyone on the internet. What parses must serialize back.
+pub fn z2_dht(data: &[u8]) {
+    use librqbit_bencode::{ByteBuf, ByteBufOwned};
+    use librqbit_dht::bprotocol::{deserialize_message, serialize_message};
+    // The DHT worker parses into owned buffers.
+    if let Ok(m) = deserialize_message::<ByteBufOwned>(data) {
+        let _ = m.get_our_transaction_id();
+    }
+    if let Ok(m) = deserialize_message::<ByteBuf>(data) {
+        let mut out = Vec::new();
+        let _ = serialize_message(&mut out, m.transaction_id, m.version, m.ip, m.kind);
     }
 }
 
@@ -210,9 +261,50 @@ mod tests {
         assert!(failed.is_empty(), "these fail again: {failed:#?}");
     }
 
+    /// The mutations start from valid inputs: every seed parses.
+    #[test]
+    fn seeds_are_valid() {
+        use librqbit_bencode::ByteBuf;
+        for (f, b) in corpus("z1").iter().filter(|(f, _)| f.starts_with("seed-")) {
+            assert!(librqbit::torrent_from_bytes(b).is_ok(), "z1/{f}");
+        }
+        for (f, b) in corpus("z2-dht").iter().filter(|(f, _)| f.starts_with("seed-")) {
+            let r = librqbit_dht::bprotocol::deserialize_message::<ByteBuf>(b);
+            assert!(r.is_ok(), "z2-dht/{f}: {r:?}");
+        }
+        for (f, b) in corpus("z2-peer")
+            .iter()
+            .filter(|(f, _)| f.starts_with("seed-") && !f.contains("handshake") && !f.contains("info"))
+        {
+            let r = librqbit_peer_protocol::Message::deserialize(b, &[]);
+            assert!(r.is_ok(), "z2-peer/{f}: {r:?}");
+        }
+        let hs = corpus("z2-peer").into_iter().find(|(f, _)| f == "seed-handshake").unwrap().1;
+        assert!(librqbit_peer_protocol::Handshake::deserialize(&hs).is_ok());
+        for (f, b) in corpus("z5").iter().filter(|(f, _)| f.starts_with("seed-") && !f.contains("error")) {
+            assert!(
+                crate::rss::feed::parse(b, "https://e.org/").is_ok() || crate::search::parse(b, "p").is_ok(),
+                "z5/{f}"
+            );
+        }
+        for (f, b) in corpus("z7") {
+            assert!(crate::import::dict(&b).is_some(), "z7/{f}");
+        }
+    }
+
     #[test]
     fn z1_torrent_bytes() {
         fuzz("z1", 3_000, 4096);
+    }
+
+    #[test]
+    fn z2_peer_wire_messages() {
+        fuzz("z2-peer", 5_000, 2048);
+    }
+
+    #[test]
+    fn z2_dht_packets() {
+        fuzz("z2-dht", 5_000, 1500);
     }
 
     #[test]

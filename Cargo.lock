@@ -1408,6 +1408,8 @@ dependencies = [
  "librqbit",
  "librqbit-bencode",
  "librqbit-core",
+ "librqbit-dht",
+ "librqbit-peer-protocol",
  "open",
  "proptest",
  "quick-xml 0.42.0",

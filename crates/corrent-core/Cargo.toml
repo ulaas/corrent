@@ -15,7 +15,7 @@ workspace = true
 testkit = []
 # Fuzz target bodies (`corrent_core::fuzz`, STABILITY.md Z): for the `fuzz/` cargo-fuzz crate.
 # Test tooling like the test kit, which it brings along.
-fuzz = ["testkit"]
+fuzz = ["testkit", "dep:librqbit-peer-protocol", "dep:librqbit-dht"]
 
 # The durability harness (STABILITY.md D8): test tooling, built only with the test kit.
 [[bin]]
@@ -32,6 +32,9 @@ corrent-proto = { path = "../corrent-proto" }
 librqbit = { version = "=9.0.1", default-features = false, features = ["rust-tls"] }
 librqbit-bencode = "=9.0.1"
 librqbit-core = { version = "=9.0.1", default-features = false }
+# Only for the fuzz targets (Z2): the peer wire protocol and the DHT's messages.
+librqbit-peer-protocol = { version = "=9.0.1", optional = true }
+librqbit-dht = { version = "=9.0.1", optional = true }
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net", "io-util"] }
 tokio-util = "0.7.19"
 arc-swap = "1"
@@ -60,3 +63,5 @@ aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys",
 [dev-dependencies]
 corrent-fuzz = { path = "../corrent-fuzz" }
 proptest = { version = "1.12", default-features = false, features = ["std"] }
+librqbit-peer-protocol = "=9.0.1"
+librqbit-dht = "=9.0.1"

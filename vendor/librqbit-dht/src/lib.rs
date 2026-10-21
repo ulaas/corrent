@@ -1,4 +1,6 @@
-mod bprotocol;
+// CORRENT PATCH (Z2, test-only): the message parser, for Corrent's fuzz targets.
+#[doc(hidden)]
+pub mod bprotocol;
 mod dht;
 mod error;
 mod peer_store;
