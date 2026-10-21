@@ -247,6 +247,9 @@ pub enum EngineCommand {
     /// Debug builds only: panic inside the engine task (crash-report testing).
     #[cfg(debug_assertions)]
     DevPanic,
+    /// Debug builds only: the engine is busy this long (hang-report testing).
+    #[cfg(debug_assertions)]
+    DevHang(std::time::Duration),
 }
 
 /// Free space on the volume holding `path` (or its nearest existing ancestor).

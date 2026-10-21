@@ -675,6 +675,17 @@ impl CorrentApp {
             && self.last_snapshot.1.elapsed() > std::time::Duration::from_secs(30);
         if stalled {
             let secs = self.last_snapshot.1.elapsed().as_secs();
+            let text = match stall_cause(&corrent_core::watchdog::crumb().doing) {
+                Some(what) => t!(
+                    "The torrent engine hasn't responded for {secs} seconds (busy with: {what}). If this doesn't clear up, restart Corrent.",
+                    secs = secs,
+                    what = what
+                ),
+                None => t!(
+                    "The torrent engine hasn't responded for {secs} seconds. If this doesn't clear up, restart Corrent.",
+                    secs = secs
+                ),
+            };
             egui::Frame::new()
                 .fill(p.warn.gamma_multiply(0.12))
                 .stroke(egui::Stroke::new(1.0, p.warn.gamma_multiply(0.5)))
@@ -682,13 +693,7 @@ impl CorrentApp {
                 .inner_margin(egui::Margin::symmetric(14, 10))
                 .outer_margin(egui::Margin { left: 10, right: 10, top: 8, bottom: 2 })
                 .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(t!(
-                            "The torrent engine hasn't responded for {secs} seconds. If this doesn't clear up, restart Corrent.",
-                            secs = secs
-                        ))
-                        .color(p.text),
-                    );
+                    ui.label(egui::RichText::new(text).color(p.text));
                 });
             ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
         }
@@ -1088,6 +1093,9 @@ impl eframe::App for CorrentApp {
             crate::integration::macos_events::reinstall();
         }
         self.frame_seen = true;
+        // The watchdog's heartbeat (O6): frames stop while the window is hidden or minimized.
+        let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+        corrent_core::watchdog::ui_frame(!self.window_hidden && !minimized);
         self.snap = self.engine.snapshot();
         if self.snap.generation != self.last_snapshot.0 {
             self.last_snapshot = (self.snap.generation, std::time::Instant::now());
@@ -1203,6 +1211,14 @@ impl CorrentApp {
                 }
                 _ => {}
             }
+        }
+        // O6: a hung window (the UI thread sleeps) or a busy engine; both leave logs/hang-*.txt.
+        match std::env::var("CORRENT_DEV_HANG").as_deref() {
+            Ok("ui") => std::thread::sleep(std::time::Duration::from_secs(15)),
+            Ok("engine") => {
+                self.engine.send(crate::engine::EngineCommand::DevHang(std::time::Duration::from_secs(40)));
+            }
+            _ => {}
         }
         match std::env::var("CORRENT_DEV_PANIC").as_deref() {
             #[expect(clippy::panic, reason = "debug-only hook that tests crash reports")]
@@ -1343,6 +1359,20 @@ impl CorrentApp {
         let actions = self.toasts.show(&ctx, &p);
         self.run_toast_actions(&ctx, actions);
     }
+}
+
+/// What the stalled engine is busy with, for the banner (None when it is waiting, i.e. the
+/// stall is somewhere else). Command names are shown as they are: they are for bug reports.
+fn stall_cause(doing: &corrent_core::watchdog::Doing) -> Option<String> {
+    use corrent_core::watchdog::Doing;
+    Some(match doing {
+        Doing::Idle => return None,
+        Doing::Tick => t!("updating the torrent list").to_string(),
+        Doing::StartingSession => t!("starting the engine").to_string(),
+        Doing::StoppingSession => t!("stopping the engine").to_string(),
+        Doing::Shutdown => t!("shutting down").to_string(),
+        Doing::Command(name) => t!("the command {name}", name = name),
+    })
 }
 
 pub fn open_path(p: &std::path::Path) {

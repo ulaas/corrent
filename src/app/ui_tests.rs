@@ -1040,3 +1040,23 @@ fn switching_back_by_itself_waits_and_stale_offers_go() {
     assert!(h.query_by_label_contains("is reachable again").is_none());
     assert_eq!(h.state().servers.fallback, None);
 }
+
+#[test]
+fn a_stalled_engine_says_what_it_is_busy_with() {
+    use corrent_core::watchdog::Doing;
+    assert_eq!(super::stall_cause(&Doing::Idle), None, "waiting: the stall is elsewhere");
+    assert_eq!(
+        super::stall_cause(&Doing::Command("ApplySettings".into())).as_deref(),
+        Some("the command ApplySettings")
+    );
+    assert_eq!(super::stall_cause(&Doing::StoppingSession).as_deref(), Some("stopping the engine"));
+    let (_f, mut app) = app("stalled", vec![torrent(1, "a", TorrentState::Downloading)]);
+    app.snap = Arc::new(Snapshot { engine_state: crate::engine::types::EngineState::Running, ..(*app.snap).clone() });
+    let mut h = harness(app);
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("hasn't responded").is_none());
+    // No snapshot for 31 s (the crumb is whatever the other tests' engines are doing).
+    h.state_mut().last_snapshot.1 = std::time::Instant::now() - std::time::Duration::from_secs(31);
+    h.run_steps(2);
+    h.get_by_label_contains("hasn't responded for 31 seconds");
+}

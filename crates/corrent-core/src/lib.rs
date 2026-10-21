@@ -27,6 +27,7 @@ pub mod store;
 pub mod symbols;
 pub mod updates;
 pub mod util;
+pub mod watchdog;
 pub mod writer;
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ use super::{AddRequest, EngineCommand, EngineEvent, Preview, PreviewFile, ToastK
 use crate::config::{Paths, SeedAction, Settings};
 use crate::store::{PauseReason, Store};
 use crate::util::now_unix;
+use crate::watchdog::{self, Doing};
 
 const HISTORY_LEN: usize = 600;
 const STALL_AFTER: Duration = Duration::from_secs(30);
@@ -305,6 +306,7 @@ impl Actor {
             Err(e) => tracing::warn!("streaming server unavailable: {e:#}"),
         }
         self.start_session().await;
+        watchdog::doing(Doing::Idle);
         let mut tick =
             tokio::time::interval(Duration::from_millis(self.settings.advanced.refresh_interval_ms.clamp(200, 5000)));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -318,16 +320,22 @@ impl Actor {
                         break;
                     }
                     Some(cmd) => {
+                        // What the engine is busy with, for the watchdog and the stall banner (O6).
+                        watchdog::doing(Doing::Command(watchdog::command_name(&cmd)));
                         self.handle(cmd).await;
                         self.publish();
+                        watchdog::doing(Doing::Idle);
                     }
                 },
                 Some(msg) = internal_rx.recv() => {
                     self.handle_internal(msg);
                     self.publish();
+                    watchdog::actor_beat();
                 }
                 _ = tick.tick() => {
+                    watchdog::doing(Doing::Tick);
                     self.tick();
+                    watchdog::doing(Doing::Idle);
                 }
             }
         }
@@ -336,6 +344,7 @@ impl Actor {
     // ---------------------------------------------------------------- lifecycle
 
     async fn start_session(&mut self) {
+        watchdog::doing(Doing::StartingSession);
         self.engine_state = if self.session.is_some() { EngineState::Restarting } else { EngineState::Starting };
         self.start_phase = Some(StartPhase::TorrentList);
         self.publish();
@@ -418,6 +427,9 @@ impl Actor {
     /// Stop the session. False if it didn't stop in time (its tasks may still write
     /// `session.json`).
     async fn stop_session(&mut self) -> bool {
+        if !self.stopping {
+            watchdog::doing(Doing::StoppingSession);
+        }
         self.api = None;
         if let Some(st) = &self.stream {
             st.set_session(None);
@@ -440,6 +452,7 @@ impl Actor {
 
     async fn shutdown(&mut self, internal: &mut mpsc::Receiver<Internal>) {
         tracing::info!("engine shutting down");
+        watchdog::doing(Doing::Shutdown);
         self.stopping = true;
         // Let moves/rechecks finish (bounded): a torrent is out of the session while it is
         // re-added. Anything still running is recovered from its backup at the next start.
@@ -898,6 +911,8 @@ impl Actor {
             #[cfg(debug_assertions)]
             #[expect(clippy::panic, reason = "debug-only hook that tests crash reports")]
             EngineCommand::DevPanic => panic!("CORRENT_DEV_PANIC=engine"),
+            #[cfg(debug_assertions)]
+            EngineCommand::DevHang(d) => tokio::time::sleep(d).await,
         }
     }
 

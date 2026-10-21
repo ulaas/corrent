@@ -23,6 +23,8 @@ impl CorrentApp {
 
     pub fn hide_to_tray(&mut self, ctx: &Context) {
         self.window_hidden = true;
+        // No frames while hidden: not a hang (O6).
+        corrent_core::watchdog::ui_hidden();
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
     }
 
