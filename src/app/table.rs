@@ -229,7 +229,10 @@ impl CorrentApp {
             }
             for c in &cols {
                 let col = if *c == Col::Name {
-                    Column::remainder().at_least(180.0).clip(true)
+                    // Not resizable: egui keeps a resizable column's width, so after the window
+                    // shrank (restored from maximized, a larger zoom) the name pushed the other
+                    // columns out of view. It takes what the others leave instead.
+                    Column::remainder().at_least(180.0).clip(true).resizable(false)
                 } else {
                     Column::initial(c.default_width()).at_least(32.0).clip(true)
                 };
