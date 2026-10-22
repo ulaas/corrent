@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Corrent — a calm, beautiful BitTorrent client</title>
+  <meta name="description" content="Corrent is a free, open-source BitTorrent client and media server written in Rust. Fast, stable and beautiful, with no ads and no tracking.">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0b0d12">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Corrent — a calm, beautiful BitTorrent client">
+  <meta property="og:description" content="Free and open source, written in Rust. Fast, stable and beautiful, with no ads and no tracking.">
+  <meta property="og:image" content="img/list.webp">
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="icon" href="img/corrent-64.png" type="image/png">
+  <link rel="preload" href="fonts/Inter-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+  <script>document.documentElement.classList.replace('no-js', 'js');</script>
+  <script src="main.js" defer></script>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true">
+  <!-- Phosphor Icons (MIT), https://phosphoricons.com -->
+  <symbol id="github-logo" viewBox="0 0 256 256"><path d="M208.31,75.68A59.78,59.78,0,0,0,202.93,28,8,8,0,0,0,196,24a59.75,59.75,0,0,0-48,24H124A59.75,59.75,0,0,0,76,24a8,8,0,0,0-6.93,4,59.78,59.78,0,0,0-5.38,47.68A58.14,58.14,0,0,0,56,104v8a56.06,56.06,0,0,0,48.44,55.47A39.8,39.8,0,0,0,96,192v8H72a24,24,0,0,1-24-24A40,40,0,0,0,8,136a8,8,0,0,0,0,16,24,24,0,0,1,24,24,40,40,0,0,0,40,40H96v16a8,8,0,0,0,16,0V192a24,24,0,0,1,48,0v40a8,8,0,0,0,16,0V192a39.8,39.8,0,0,0-8.44-24.53A56.06,56.06,0,0,0,216,112v-8A58.14,58.14,0,0,0,208.31,75.68ZM200,112a40,40,0,0,1-40,40H112a40,40,0,0,1-40-40v-8a41.74,41.74,0,0,1,6.9-22.48A8,8,0,0,0,80,73.83a43.81,43.81,0,0,1,.79-33.58,43.88,43.88,0,0,1,32.32,20.06A8,8,0,0,0,119.82,64h32.35a8,8,0,0,0,6.74-3.69,43.87,43.87,0,0,1,32.32-20.06A43.81,43.81,0,0,1,192,73.83a8.09,8.09,0,0,0,1,7.65A41.72,41.72,0,0,1,200,104Z"/></symbol>
+  <symbol id="arrow-right" viewBox="0 0 256 256"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z"/></symbol>
+  <symbol id="arrow-down" viewBox="0 0 256 256"><path d="M205.66,149.66l-72,72a8,8,0,0,1-11.32,0l-72-72a8,8,0,0,1,11.32-11.32L120,196.69V40a8,8,0,0,1,16,0V196.69l58.34-58.35a8,8,0,0,1,11.32,11.32Z"/></symbol>
+  <symbol id="feather" viewBox="0 0 256 256"><path d="M221.28,34.75a64,64,0,0,0-90.49,0L60.69,104A15.9,15.9,0,0,0,56,115.31v73.38L26.34,218.34a8,8,0,0,0,11.32,11.32L67.32,200H140.7A15.92,15.92,0,0,0,152,195.32l0,0,69.23-70A64,64,0,0,0,221.28,34.75ZM142.07,46.06A48,48,0,0,1,211.79,112H155.33l34.35-34.34a8,8,0,0,0-11.32-11.32L120,124.69V67.87ZM72,115.35l32-31.67v57l-32,32ZM140.7,184H83.32l56-56h56.74Z"/></symbol>
+  <symbol id="shield-check" viewBox="0 0 256 256"><path d="M208,40H48A16,16,0,0,0,32,56v56c0,52.72,25.52,84.67,46.93,102.19,23.06,18.86,46,25.26,47,25.53a8,8,0,0,0,4.2,0c1-.27,23.91-6.67,47-25.53C198.48,196.67,224,164.72,224,112V56A16,16,0,0,0,208,40Zm0,72c0,37.07-13.66,67.16-40.6,89.42A129.3,129.3,0,0,1,128,223.62a128.25,128.25,0,0,1-38.92-21.81C61.82,179.51,48,149.3,48,112l0-56,160,0ZM82.34,141.66a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32l-56,56a8,8,0,0,1-11.32,0Z"/></symbol>
+  <symbol id="lock-key" viewBox="0 0 256 256"><path d="M128,112a28,28,0,0,0-8,54.83V184a8,8,0,0,0,16,0V166.83A28,28,0,0,0,128,112Zm0,40a12,12,0,1,1,12-12A12,12,0,0,1,128,152Zm80-72H176V56a48,48,0,0,0-96,0V80H48A16,16,0,0,0,32,96V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V96A16,16,0,0,0,208,80ZM96,56a32,32,0,0,1,64,0V80H96ZM208,208H48V96H208V208Z"/></symbol>
+  <symbol id="sliders-horizontal" viewBox="0 0 256 256"><path d="M40,88H73a32,32,0,0,0,62,0h81a8,8,0,0,0,0-16H135a32,32,0,0,0-62,0H40a8,8,0,0,0,0,16Zm64-24A16,16,0,1,1,88,80,16,16,0,0,1,104,64ZM216,168H199a32,32,0,0,0-62,0H40a8,8,0,0,0,0,16h97a32,32,0,0,0,62,0h17a8,8,0,0,0,0-16Zm-48,24a16,16,0,1,1,16-16A16,16,0,0,1,168,192Z"/></symbol>
+  <symbol id="person-arms-spread" viewBox="0 0 256 256"><path d="M160,40a32,32,0,1,0-32,32A32,32,0,0,0,160,40ZM128,56a16,16,0,1,1,16-16A16,16,0,0,1,128,56ZM231.5,87.71A19.62,19.62,0,0,0,212,72H44a20,20,0,0,0-8.38,38.16l.13,0,50.75,22.35-21,79.72A20,20,0,0,0,102,228.8l26-44.87,26,44.87a20,20,0,0,0,36.4-16.52l-21-79.72,50.75-22.35.13,0A19.64,19.64,0,0,0,231.5,87.71Zm-17.8,7.9-56.93,25.06a8,8,0,0,0-4.51,9.36L175.13,217a7,7,0,0,0,.49,1.35,4,4,0,0,1-5,5.45,4,4,0,0,1-2.25-2.07,6.31,6.31,0,0,0-.34-.63L134.92,164a8,8,0,0,0-13.84,0L88,221.05a6.31,6.31,0,0,0-.34.63,4,4,0,0,1-2.25,2.07,4,4,0,0,1-5-5.45,7,7,0,0,0,.49-1.35L103.74,130a8,8,0,0,0-4.51-9.36L42.3,95.61A4,4,0,0,1,44,88H212a4,4,0,0,1,1.73,7.61Z"/></symbol>
+  <symbol id="keyboard" viewBox="0 0 256 256"><path d="M224,48H32A16,16,0,0,0,16,64V192a16,16,0,0,0,16,16H224a16,16,0,0,0,16-16V64A16,16,0,0,0,224,48Zm0,144H32V64H224V192Zm-16-64a8,8,0,0,1-8,8H56a8,8,0,0,1,0-16H200A8,8,0,0,1,208,128Zm0-32a8,8,0,0,1-8,8H56a8,8,0,0,1,0-16H200A8,8,0,0,1,208,96ZM72,160a8,8,0,0,1-8,8H56a8,8,0,0,1,0-16h8A8,8,0,0,1,72,160Zm96,0a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,160Zm40,0a8,8,0,0,1-8,8h-8a8,8,0,0,1,0-16h8A8,8,0,0,1,208,160Z"/></symbol>
+  <symbol id="eye" viewBox="0 0 256 256"><path d="M247.31,124.76c-.35-.79-8.82-19.58-27.65-38.41C194.57,61.26,162.88,48,128,48S61.43,61.26,36.34,86.35C17.51,105.18,9,124,8.69,124.76a8,8,0,0,0,0,6.5c.35.79,8.82,19.57,27.65,38.4C61.43,194.74,93.12,208,128,208s66.57-13.26,91.66-38.34c18.83-18.83,27.3-37.61,27.65-38.4A8,8,0,0,0,247.31,124.76ZM128,192c-30.78,0-57.67-11.19-79.93-33.25A133.47,133.47,0,0,1,25,128,133.33,133.33,0,0,1,48.07,97.25C70.33,75.19,97.22,64,128,64s57.67,11.19,79.93,33.25A133.46,133.46,0,0,1,231.05,128C223.84,141.46,192.43,192,128,192Zm0-112a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z"/></symbol>
+  <symbol id="translate" viewBox="0 0 256 256"><path d="M247.15,212.42l-56-112a8,8,0,0,0-14.31,0l-21.71,43.43A88,88,0,0,1,108,126.93,103.65,103.65,0,0,0,135.69,64H160a8,8,0,0,0,0-16H104V32a8,8,0,0,0-16,0V48H32a8,8,0,0,0,0,16h87.63A87.76,87.76,0,0,1,96,116.35a87.74,87.74,0,0,1-19-31,8,8,0,1,0-15.08,5.34A103.63,103.63,0,0,0,84,127a87.55,87.55,0,0,1-52,17,8,8,0,0,0,0,16,103.46,103.46,0,0,0,64-22.08,104.18,104.18,0,0,0,51.44,21.31l-26.6,53.19a8,8,0,0,0,14.31,7.16L148.94,192h70.11l13.79,27.58A8,8,0,0,0,240,224a8,8,0,0,0,7.15-11.58ZM156.94,176,184,121.89,211.05,176Z"/></symbol>
+  <symbol id="gauge" viewBox="0 0 256 256"><path d="M207.06,72.67A111.24,111.24,0,0,0,128,40h-.4C66.07,40.21,16,91,16,153.13V176a16,16,0,0,0,16,16H224a16,16,0,0,0,16-16V152A111.25,111.25,0,0,0,207.06,72.67ZM224,176H119.71l54.76-75.3a8,8,0,0,0-12.94-9.42L99.92,176H32V153.13c0-3.08.15-6.12.43-9.13H56a8,8,0,0,0,0-16H35.27c10.32-38.86,44-68.24,84.73-71.66V80a8,8,0,0,0,16,0V56.33A96.14,96.14,0,0,1,221,128H200a8,8,0,0,0,0,16h23.67c.21,2.65.33,5.31.33,8Z"/></symbol>
+  <symbol id="play-circle" viewBox="0 0 256 256"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm48.24-94.78-64-40A8,8,0,0,0,100,88v80a8,8,0,0,0,12.24,6.78l64-40a8,8,0,0,0,0-13.56ZM116,153.57V102.43L156.91,128Z"/></symbol>
+  <symbol id="television" viewBox="0 0 256 256"><path d="M216,64H147.31l34.35-34.34a8,8,0,1,0-11.32-11.32L128,60.69,85.66,18.34A8,8,0,0,0,74.34,29.66L108.69,64H40A16,16,0,0,0,24,80V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V80A16,16,0,0,0,216,64ZM40,80H144V200H40ZM216,200H160V80h56V200Zm-16-84a12,12,0,1,1-12-12A12,12,0,0,1,200,116Zm0,48a12,12,0,1,1-12-12A12,12,0,0,1,200,164Z"/></symbol>
+  <symbol id="users-three" viewBox="0 0 256 256"><path d="M244.8,150.4a8,8,0,0,1-11.2-1.6A51.6,51.6,0,0,0,192,128a8,8,0,0,1-7.37-4.89,8,8,0,0,1,0-6.22A8,8,0,0,1,192,112a24,24,0,1,0-23.24-30,8,8,0,1,1-15.5-4A40,40,0,1,1,219,117.51a67.94,67.94,0,0,1,27.43,21.68A8,8,0,0,1,244.8,150.4ZM190.92,212a8,8,0,1,1-13.84,8,57,57,0,0,0-98.16,0,8,8,0,1,1-13.84-8,72.06,72.06,0,0,1,33.74-29.92,48,48,0,1,1,58.36,0A72.06,72.06,0,0,1,190.92,212ZM128,176a32,32,0,1,0-32-32A32,32,0,0,0,128,176ZM72,120a8,8,0,0,0-8-8A24,24,0,1,1,87.24,82a8,8,0,1,0,15.5-4A40,40,0,1,0,37,117.51,67.94,67.94,0,0,0,9.6,139.19a8,8,0,1,0,12.8,9.61A51.6,51.6,0,0,1,64,128,8,8,0,0,0,72,120Z"/></symbol>
+  <symbol id="browser" viewBox="0 0 256 256"><path d="M216,40H40A16,16,0,0,0,24,56V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40Zm0,16V88H40V56Zm0,144H40V104H216v96Z"/></symbol>
+  <symbol id="wifi-high" viewBox="0 0 256 256"><path d="M140,204a12,12,0,1,1-12-12A12,12,0,0,1,140,204ZM237.08,87A172,172,0,0,0,18.92,87,8,8,0,0,0,29.08,99.37a156,156,0,0,1,197.84,0A8,8,0,0,0,237.08,87ZM205,122.77a124,124,0,0,0-153.94,0A8,8,0,0,0,61,135.31a108,108,0,0,1,134.06,0,8,8,0,0,0,11.24-1.3A8,8,0,0,0,205,122.77Zm-32.26,35.76a76.05,76.05,0,0,0-89.42,0,8,8,0,0,0,9.42,12.94,60,60,0,0,1,70.58,0,8,8,0,1,0,9.42-12.94Z"/></symbol>
+  <symbol id="rss" viewBox="0 0 256 256"><path d="M106.91,149.09A71.53,71.53,0,0,1,128,200a8,8,0,0,1-16,0,56,56,0,0,0-56-56,8,8,0,0,1,0-16A71.53,71.53,0,0,1,106.91,149.09ZM56,80a8,8,0,0,0,0,16A104,104,0,0,1,160,200a8,8,0,0,0,16,0A120,120,0,0,0,56,80Zm118.79,1.21A166.9,166.9,0,0,0,56,32a8,8,0,0,0,0,16A151,151,0,0,1,163.48,92.52,151,151,0,0,1,208,200a8,8,0,0,0,16,0A166.9,166.9,0,0,0,174.79,81.21ZM60,184a12,12,0,1,0,12,12A12,12,0,0,0,60,184Z"/></symbol>
+  <symbol id="magnifying-glass" viewBox="0 0 256 256"><path d="M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"/></symbol>
+  <symbol id="plug" viewBox="0 0 256 256"><path d="M237.66,66.34a8,8,0,0,0-11.32,0L192,100.69,155.31,64l34.35-34.34a8,8,0,1,0-11.32-11.32L144,52.69,117.66,26.34a8,8,0,0,0-11.32,11.32L112.69,44l-53,53a40,40,0,0,0,0,56.57l15.71,15.71L26.34,218.34a8,8,0,0,0,11.32,11.32l49.09-49.09,15.71,15.71a40,40,0,0,0,56.57,0l53-53,6.34,6.35a8,8,0,0,0,11.32-11.32L203.31,112l34.35-34.34A8,8,0,0,0,237.66,66.34ZM147.72,185a24,24,0,0,1-33.95,0L71,142.23a24,24,0,0,1,0-33.95l53-53L200.69,132Z"/></symbol>
+  <symbol id="folder-open" viewBox="0 0 256 256"><path d="M245,110.64A16,16,0,0,0,232,104H216V88a16,16,0,0,0-16-16H130.67L102.94,51.2a16.14,16.14,0,0,0-9.6-3.2H40A16,16,0,0,0,24,64V208h0a8,8,0,0,0,8,8H211.1a8,8,0,0,0,7.59-5.47l28.49-85.47A16.05,16.05,0,0,0,245,110.64ZM93.34,64,123.2,86.4A8,8,0,0,0,128,88h72v16H69.77a16,16,0,0,0-15.18,10.94L40,158.7V64Zm112,136H43.1l26.67-80H232Z"/></symbol>
+  <symbol id="queue" viewBox="0 0 256 256"><path d="M32,64a8,8,0,0,1,8-8H216a8,8,0,0,1,0,16H40A8,8,0,0,1,32,64Zm104,56H40a8,8,0,0,0,0,16h96a8,8,0,0,0,0-16Zm0,64H40a8,8,0,0,0,0,16h96a8,8,0,0,0,0-16Zm112-24a8,8,0,0,1-3.76,6.78l-64,40A8,8,0,0,1,168,200V120a8,8,0,0,1,12.24-6.78l64,40A8,8,0,0,1,248,160Zm-23.09,0L184,134.43v51.14Z"/></symbol>
+  <symbol id="robot" viewBox="0 0 256 256"><path d="M200,48H136V16a8,8,0,0,0-16,0V48H56A32,32,0,0,0,24,80V192a32,32,0,0,0,32,32H200a32,32,0,0,0,32-32V80A32,32,0,0,0,200,48Zm16,144a16,16,0,0,1-16,16H56a16,16,0,0,1-16-16V80A16,16,0,0,1,56,64H200a16,16,0,0,1,16,16Zm-52-56H92a28,28,0,0,0,0,56h72a28,28,0,0,0,0-56Zm-24,16v24H116V152ZM80,164a12,12,0,0,1,12-12h8v24H92A12,12,0,0,1,80,164Zm84,12h-8V152h8a12,12,0,0,1,0,24ZM72,108a12,12,0,1,1,12,12A12,12,0,0,1,72,108Zm88,0a12,12,0,1,1,12,12A12,12,0,0,1,160,108Z"/></symbol>
+  <symbol id="windows-logo" viewBox="0 0 256 256"><path d="M208,136H128a8,8,0,0,0-8,8v57.45a8,8,0,0,0,6.57,7.88l80,14.54A7.61,7.61,0,0,0,208,224a8,8,0,0,0,8-8V144A8,8,0,0,0,208,136Zm-8,70.41-64-11.63V152h64ZM96,136H32a8,8,0,0,0-8,8v40a8,8,0,0,0,6.57,7.87l64,11.64a8.54,8.54,0,0,0,1.43.13,8,8,0,0,0,8-8V144A8,8,0,0,0,96,136Zm-8,50.05-48-8.73V152H88ZM213.13,33.86a8,8,0,0,0-6.56-1.73l-80,14.55A8,8,0,0,0,120,54.55V112a8,8,0,0,0,8,8h80a8,8,0,0,0,8-8V40A8,8,0,0,0,213.13,33.86ZM200,104H136V61.22l64-11.63ZM101.13,54.22a8,8,0,0,0-6.56-1.73l-64,11.64A8,8,0,0,0,24,72v40a8,8,0,0,0,8,8H96a8,8,0,0,0,8-8V60.36A8,8,0,0,0,101.13,54.22ZM88,104H40V78.68L88,70Z"/></symbol>
+  <symbol id="linux-logo" viewBox="0 0 256 256"><path d="M229,214.25A8,8,0,0,1,217.76,213C216.39,211.27,184,169.86,184,88A56,56,0,0,0,72,88c0,81.86-32.37,123.27-33.75,125a8,8,0,0,1-12.51-10c.15-.2,7.69-9.9,15.13-28.74C47.77,156.8,56,127.64,56,88a72,72,0,0,1,144,0c0,39.64,8.23,68.8,15.13,86.28,7.48,18.94,15.06,28.64,15.14,28.74A8,8,0,0,1,229,214.25ZM100,88a12,12,0,1,0,12,12A12,12,0,0,0,100,88Zm68,12a12,12,0,1,0-12,12A12,12,0,0,0,168,100ZM99.58,128.84a8,8,0,0,0-7.15,14.31l32,16a7.94,7.94,0,0,0,7.15,0l32-16a8,8,0,0,0-7.16-14.31L128,143.05ZM128,176a54.07,54.07,0,0,0-47,28.11,8,8,0,1,0,14,7.78,37.35,37.35,0,0,1,66,0,8,8,0,0,0,14-7.78A54.07,54.07,0,0,0,128,176Z"/></symbol>
+  <symbol id="apple-logo" viewBox="0 0 256 256"><path d="M223.3,169.59a8.07,8.07,0,0,0-2.8-3.4C203.53,154.53,200,134.64,200,120c0-17.67,13.47-33.06,21.5-40.67a8,8,0,0,0,0-11.62C208.82,55.74,187.82,48,168,48a72.2,72.2,0,0,0-40,12.13,71.56,71.56,0,0,0-90.71,9.09A74.63,74.63,0,0,0,16,123.4a127.06,127.06,0,0,0,40.14,89.73A39.8,39.8,0,0,0,83.59,224h87.68a39.84,39.84,0,0,0,29.12-12.57,125,125,0,0,0,17.82-24.6C225.23,174,224.33,172,223.3,169.59Zm-34.63,30.94a23.76,23.76,0,0,1-17.4,7.47H83.59a23.82,23.82,0,0,1-16.44-6.51A111.14,111.14,0,0,1,32,123,58.5,58.5,0,0,1,48.65,80.47,54.81,54.81,0,0,1,88,64h.78A55.45,55.45,0,0,1,123,76.28a8,8,0,0,0,10,0A55.44,55.44,0,0,1,168,64a70.64,70.64,0,0,1,36,10.35c-13,14.52-20,30.47-20,45.65,0,23.77,7.64,42.73,22.18,55.3A105.82,105.82,0,0,1,188.67,200.53ZM128.23,30A40,40,0,0,1,167,0h1a8,8,0,0,1,0,16h-1a24,24,0,0,0-23.24,18,8,8,0,1,1-15.5-4Z"/></symbol>
+  <symbol id="download-simple" viewBox="0 0 256 256"><path d="M224,144v64a8,8,0,0,1-8,8H40a8,8,0,0,1-8-8V144a8,8,0,0,1,16,0v56H208V144a8,8,0,0,1,16,0Zm-101.66,5.66a8,8,0,0,0,11.32,0l40-40a8,8,0,0,0-11.32-11.32L136,124.69V32a8,8,0,0,0-16,0v92.69L93.66,98.34a8,8,0,0,0-11.32,11.32Z"/></symbol>
+</svg>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top" id="top">
+  <nav class="nav wrap" aria-label="Main">
+    <a class="brand" href="#top" aria-label="Corrent, back to top">
+      <img src="img/corrent-64.png" alt="" width="28" height="28">
+      <span>Corrent</span>
+    </a>
+    <ul class="nav-links">
+      <li><a href="#tour">Tour</a></li>
+      <li><a href="#media">Media</a></li>
+      <li><a href="#stability">Stability</a></li>
+      <li><a href="#open">Open source</a></li>
+    </ul>
+    <a class="btn btn-ghost btn-sm" href="https://github.com/ulaas/corrent">
+      <svg class="i" aria-hidden="true"><use href="#github-logo"/></svg><span>GitHub</span>
+    </a>
+  </nav>
+</header>
+
+<main id="main">
+
+  <!-- Hero -->
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="aurora" aria-hidden="true"></div>
+    <div class="wrap hero-text">
+      <p class="eyebrow reveal">Free &amp; open source · Written in Rust</p>
+      <h1 id="hero-title" class="reveal" style="--d:1">Torrents,<br><span class="grad">beautifully calm.</span></h1>
+      <p class="lede reveal" style="--d:2">
+        Corrent is a BitTorrent client and media server that stays out of your way.
+        Fast, stable and good-looking, with no ads, no tracking and nothing to sign up for.
+      </p>
+      <div class="cta reveal" style="--d:3">
+        <a class="btn btn-primary" href="https://github.com/ulaas/corrent">
+          <svg class="i" aria-hidden="true"><use href="#github-logo"/></svg><span>Get Corrent on GitHub</span>
+        </a>
+        <a class="btn btn-ghost" href="#tour">
+          <span>Take the tour</span><svg class="i" aria-hidden="true"><use href="#arrow-down"/></svg>
+        </a>
+      </div>
+    </div>
+    <div class="wrap hero-shot">
+      <figure class="frame tilt">
+        <img src="img/list.webp" srcset="img/list-sm.webp 960w, img/list.webp 1920w"
+             sizes="(min-width: 1200px) 1120px, 94vw" width="1920" height="1200" fetchpriority="high"
+             alt="Corrent's main window: a sidebar with status, category and tag filters, a list of ten torrents such as Sintel and Debian downloading or seeding with progress bars, and details of the selected torrent below.">
+      </figure>
+    </div>
+  </section>
+
+  <!-- Principles -->
+  <section class="principles wrap" aria-labelledby="principles-title">
+    <h2 id="principles-title" class="sr-only">What Corrent stands for</h2>
+    <ul class="cards">
+      <li class="card reveal">
+        <svg class="i i-lg" aria-hidden="true"><use href="#feather"/></svg>
+        <h3>Calm by design</h3>
+        <p>One clean window. Clear states, readable numbers and motion that tells you what changed, never noise.</p>
+      </li>
+      <li class="card reveal" style="--d:1">
+        <svg class="i i-lg" aria-hidden="true"><use href="#shield-check"/></svg>
+        <h3>Stable to the core</h3>
+        <p>The interface never waits on your disk or network. Your data is written safely, and it picks up where it left off.</p>
+      </li>
+      <li class="card reveal" style="--d:2">
+        <svg class="i i-lg" aria-hidden="true"><use href="#lock-key"/></svg>
+        <h3>Private by default</h3>
+        <p>No accounts, no ads, no telemetry. Remote access is off until you turn it on, and then it needs a password.</p>
+      </li>
+      <li class="card reveal" style="--d:3">
+        <svg class="i i-lg" aria-hidden="true"><use href="#sliders-horizontal"/></svg>
+        <h3>Yours to tune</h3>
+        <p>Every limit, queue and schedule is a setting away, with sensible defaults so you never have to touch them.</p>
+      </li>
+    </ul>
+  </section>
+
+  <!-- Tour -->
+  <section class="tour" id="tour" aria-labelledby="tour-title">
+    <div class="wrap">
+      <header class="section-head reveal">
+        <p class="eyebrow">The tour</p>
+        <h2 id="tour-title">Everything you need,<br>exactly where you'd look.</h2>
+      </header>
+      <div class="tour-grid">
+        <ol class="steps">
+          <li class="step" data-shot="0">
+            <span class="step-n" aria-hidden="true">01</span>
+            <h3>The whole picture at a glance</h3>
+            <p>Two-line rows show what each torrent is doing, how fast and how long it has left. Filter by status, category, tag or tracker, with live counts.</p>
+            <img class="step-img" src="img/list-sm.webp" width="960" height="600" loading="lazy" alt="The torrent list with status filters and categories in the sidebar.">
+          </li>
+          <li class="step" data-shot="1">
+            <span class="step-n" aria-hidden="true">02</span>
+            <h3>Every peer, live</h3>
+            <p>See who you're trading with, over which protocol, and how fast, updated every second.</p>
+            <img class="step-img" src="img/peers-sm.webp" width="960" height="600" loading="lazy" alt="The Peers tab: a table of connected peers with their client, protocol and transfer speeds.">
+          </li>
+          <li class="step" data-shot="2">
+            <span class="step-n" aria-hidden="true">03</span>
+            <h3>Watch the pieces arrive</h3>
+            <p>A piece map shows what you have and what's still missing. Files download in order, so videos can play while they download.</p>
+            <img class="step-img" src="img/pieces-sm.webp" width="960" height="600" loading="lazy" alt="The Pieces tab: a grid of squares, filled for pieces already downloaded.">
+          </li>
+          <li class="step" data-shot="3">
+            <span class="step-n" aria-hidden="true">04</span>
+            <h3>Speed you can read</h3>
+            <p>Smooth graphs for one torrent or all of them, plus tiny activity lines right in the status bar.</p>
+            <img class="step-img" src="img/speed-sm.webp" width="960" height="600" loading="lazy" alt="The Speed tab: a download speed graph over the last two and a half minutes.">
+          </li>
+          <li class="step" data-shot="4">
+            <span class="step-n" aria-hidden="true">05</span>
+            <h3>Only the files you want</h3>
+            <p>Pick files and folders before or during a download, set priorities, and play them straight from the list.</p>
+            <img class="step-img" src="img/files-sm.webp" width="960" height="600" loading="lazy" alt="The Files tab: a file tree with checkboxes, per-file progress and a Play button.">
+          </li>
+        </ol>
+        <div class="stage" aria-hidden="true">
+          <figure class="frame stage-frame">
+            <img class="shot is-on" src="img/list.webp" srcset="img/list-sm.webp 960w, img/list.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
+            <img class="shot" src="img/peers.webp" srcset="img/peers-sm.webp 960w, img/peers.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
+            <img class="shot" src="img/pieces.webp" srcset="img/pieces-sm.webp 960w, img/pieces.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
+            <img class="shot" src="img/speed.webp" srcset="img/speed-sm.webp 960w, img/speed.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
+            <img class="shot" src="img/files.webp" srcset="img/files-sm.webp 960w, img/files.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
+          </figure>
+          <div class="dots"><span class="is-on"></span><span></span><span></span><span></span><span></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Make it yours -->
+  <section class="yours wrap" aria-labelledby="yours-title">
+    <header class="section-head reveal">
+      <p class="eyebrow">Make it yours</p>
+      <h2 id="yours-title">Light or dark. Your colors.<br>Your language.</h2>
+      <p class="sub">Five palettes, including Nord, Solarized and high contrast, six accents or your own, and a theme editor for the rest.</p>
+    </header>
+    <div class="duo">
+      <figure class="frame reveal">
+        <img src="img/light.webp" srcset="img/light-sm.webp 960w, img/light.webp 1920w" sizes="(min-width: 1000px) 560px, 94vw" width="1920" height="1200" loading="lazy"
+             alt="Corrent in the light theme with a violet accent.">
+      </figure>
+      <figure class="frame reveal" style="--d:1">
+        <img src="img/settings.webp" srcset="img/settings-sm.webp 960w, img/settings.webp 1920w" sizes="(min-width: 1000px) 560px, 94vw" width="1920" height="1200" loading="lazy"
+             alt="The Appearance settings: language, theme, accent color and palette choices.">
+      </figure>
+    </div>
+    <ul class="chips reveal" aria-label="Accessibility and comfort">
+      <li><svg class="i" aria-hidden="true"><use href="#person-arms-spread"/></svg>Screen-reader support</li>
+      <li><svg class="i" aria-hidden="true"><use href="#keyboard"/></svg>Keyboard all the way</li>
+      <li><svg class="i" aria-hidden="true"><use href="#eye"/></svg>Follows your contrast theme</li>
+      <li><svg class="i" aria-hidden="true"><use href="#translate"/></svg>English and Turkish</li>
+      <li><svg class="i" aria-hidden="true"><use href="#gauge"/></svg>Interface scaling</li>
+    </ul>
+  </section>
+
+  <!-- Media -->
+  <section class="media" id="media" aria-labelledby="media-title">
+    <div class="wrap media-grid">
+      <div>
+        <header class="section-head left reveal">
+          <p class="eyebrow">More than a torrent client</p>
+          <h2 id="media-title">Your own media server, built in.</h2>
+          <p class="sub">Point Corrent at your movies, shows and music. It organizes them into a library you can watch here, in a browser, or on the TV.</p>
+        </header>
+        <ul class="feature-list">
+          <li class="reveal"><svg class="i" aria-hidden="true"><use href="#play-circle"/></svg><div><strong>Play while it downloads.</strong> A built-in player with subtitles, audio tracks and picture in picture.</div></li>
+          <li class="reveal" style="--d:1"><svg class="i" aria-hidden="true"><use href="#television"/></svg><div><strong>TV mode.</strong> A big-screen interface you drive with a remote.</div></li>
+          <li class="reveal" style="--d:2"><svg class="i" aria-hidden="true"><use href="#users-three"/></svg><div><strong>Watch together.</strong> Share a room code and stay in sync with friends.</div></li>
+          <li class="reveal" style="--d:3"><svg class="i" aria-hidden="true"><use href="#browser"/></svg><div><strong>Any device.</strong> Run the headless server at home and use the app or the web client from anywhere on your network.</div></li>
+          <li class="reveal" style="--d:4"><svg class="i" aria-hidden="true"><use href="#wifi-high"/></svg><div><strong>Finds itself.</strong> The app spots your server on the network and pairs with a short code.</div></li>
+        </ul>
+      </div>
+      <div class="posters" aria-hidden="true">
+        <div class="poster p1 reveal"><span>Sintel</span><small>2010 · Animation</small></div>
+        <div class="poster p2 reveal" style="--d:1"><span>Big Buck Bunny</span><small>2008 · Comedy</small></div>
+        <div class="poster p3 reveal" style="--d:2"><span>Tears of Steel</span><small>2012 · Sci-fi</small></div>
+        <div class="poster p4 reveal" style="--d:3"><span>Elephants Dream</span><small>2006 · Surreal</small></div>
+        <div class="poster p5 reveal" style="--d:4"><span>Cosmos Laundromat</span><small>2015 · Fantasy</small></div>
+        <div class="poster p6 reveal" style="--d:5"><span>Spring</span><small>2019 · Fantasy</small></div>
+        <div class="player reveal" style="--d:3">
+          <div class="player-bar"><span class="player-fill"></span></div>
+          <div class="player-row"><svg class="i" aria-hidden="true"><use href="#play-circle"/></svg><span>Sintel</span><span class="mono">06:41 / 14:48</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Automation -->
+  <section class="auto wrap" aria-labelledby="auto-title">
+    <header class="section-head reveal">
+      <p class="eyebrow">Hands-off</p>
+      <h2 id="auto-title">Set it up once. Let it run.</h2>
+    </header>
+    <ul class="grid3">
+      <li class="tile reveal"><svg class="i i-lg" aria-hidden="true"><use href="#rss"/></svg><h3>Feeds and rules</h3><p>Follow RSS feeds and download what matches: words or patterns, episode ranges, one release per episode.</p></li>
+      <li class="tile reveal" style="--d:1"><svg class="i i-lg" aria-hidden="true"><use href="#magnifying-glass"/></svg><h3>Search</h3><p>Search the Torznab providers you add, such as Jackett or Prowlarr, without leaving the app.</p></li>
+      <li class="tile reveal" style="--d:2"><svg class="i i-lg" aria-hidden="true"><use href="#plug"/></svg><h3>Works with your tools</h3><p>A qBittorrent-compatible API, so Sonarr, Radarr and friends can use Corrent as their download client.</p></li>
+      <li class="tile reveal"><svg class="i i-lg" aria-hidden="true"><use href="#folder-open"/></svg><h3>Watch folders</h3><p>Drop a .torrent into a folder and it starts, with its own category and save location.</p></li>
+      <li class="tile reveal" style="--d:1"><svg class="i i-lg" aria-hidden="true"><use href="#queue"/></svg><h3>Queue and schedules</h3><p>Limits for active torrents, seeding goals, and slower speeds on a weekly schedule.</p></li>
+      <li class="tile reveal" style="--d:2"><svg class="i i-lg" aria-hidden="true"><use href="#robot"/></svg><h3>AI-ready</h3><p>An optional MCP bridge lets AI assistants check on and manage your downloads.</p></li>
+    </ul>
+  </section>
+
+  <!-- Stability -->
+  <section class="stability" id="stability" aria-labelledby="stability-title">
+    <div class="wrap">
+      <header class="section-head reveal">
+        <p class="eyebrow">Built not to break</p>
+        <h2 id="stability-title">Quietly reliable.</h2>
+        <p class="sub">A torrent client runs for weeks at a time and holds files you care about. Corrent is engineered and tested for exactly that.</p>
+      </header>
+      <ul class="facts">
+        <li class="fact reveal"><span class="fact-k">Never blocks</span><span class="fact-v">The window never waits on your disk or network. The engine runs on its own and the interface only reads snapshots of it.</span></li>
+        <li class="fact reveal" style="--d:1"><span class="fact-k">Fast resume</span><span class="fact-v">Restart and pick up where you left off. Nothing downloads twice.</span></li>
+        <li class="fact reveal" style="--d:2"><span class="fact-k">Safe writes</span><span class="fact-v">Settings and data are saved atomically with backups. Tests kill the app at every single write and check nothing is lost.</span></li>
+        <li class="fact reveal"><span class="fact-k">Self-healing</span><span class="fact-v">If the engine ever stops, one click restarts it and replays what you asked for. Damaged files are restored from backups.</span></li>
+        <li class="fact reveal" style="--d:1"><span class="fact-k">Fuzzed</span><span class="fact-v">The parsers that read data from the network and disk are fuzz- and property-tested.</span></li>
+        <li class="fact reveal" style="--d:2"><span class="fact-k">Honest reports</span><span class="fact-v">Health checks warn you before a full disk does, and crash reports stay on your machine.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- Open source -->
+  <section class="open wrap" id="open" aria-labelledby="open-title">
+    <div class="open-card reveal">
+      <img src="img/corrent-256.png" alt="" width="96" height="96" class="open-logo">
+      <h2 id="open-title">Free. Open. Yours.</h2>
+      <p class="sub">Corrent is open source under the MIT or Apache 2.0 license, built in Rust on
+        <a href="https://github.com/ikatson/rqbit">librqbit</a> and <a href="https://github.com/emilk/egui">egui</a>.
+        Windows is ready today; Linux and macOS builds are on their way.</p>
+      <ul class="platforms" aria-label="Platforms">
+        <li><svg class="i" aria-hidden="true"><use href="#windows-logo"/></svg>Windows</li>
+        <li><svg class="i" aria-hidden="true"><use href="#linux-logo"/></svg>Linux <em>soon</em></li>
+        <li><svg class="i" aria-hidden="true"><use href="#apple-logo"/></svg>macOS <em>soon</em></li>
+      </ul>
+      <div class="cta center">
+        <a class="btn btn-primary" href="https://github.com/ulaas/corrent">
+          <svg class="i" aria-hidden="true"><use href="#github-logo"/></svg><span>Source on GitHub</span>
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/ulaas/corrent/releases">
+          <svg class="i" aria-hidden="true"><use href="#download-simple"/></svg><span>Releases</span>
+        </a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-row">
+    <p>Corrent · MIT or Apache 2.0</p>
+    <p class="dim">Screenshots use demo data with freely licensed films and Linux ISOs.</p>
+    <a href="#top" class="to-top">Back to top <svg class="i" aria-hidden="true"><use href="#arrow-right"/></svg></a>
+  </div>
+</footer>
+</body>
+</html>

@@ -44,11 +44,13 @@ corrent --diagnostics <zip> | --symbolize <crash report>   # S10: support bundle
 
 Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_TAB=general|files|peers|trackers|pieces|speed`,
-`CORRENT_DEV_OPEN=settings|remote|magnet|about|log|stats|streams|diagnostics|creator|import|feeds|rules|remove|remove-undo`,
+`CORRENT_DEV_OPEN=settings|remote|appearance|magnet|about|log|stats|streams|diagnostics|creator|import|feeds|rules|remove|remove-undo`,
 `CORRENT_DEV_STREAM_URL=<file>` (writes the first torrent's stream URL prefix; play it with `curl`),
 `CORRENT_DEV_PANIC=ui|engine|torrent` (torrent: a task next to the engine, which the app survives), `CORRENT_DEV_HANG=ipc` (the primary takes forwarded launches but never confirms them) `|ui` (the UI thread sleeps 15 s) `|engine` (the engine is busy 40 s; both write `logs/hang-*.txt`), `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
 Media/server hooks (run without torrents): `CORRENT_DEV_VIEW=media|libraries`, `CORRENT_DEV_PROFILES=1`, `CORRENT_DEV_SERVER_FS=1` (with a paired server), `CORRENT_DEV_ITEM=<id>`, `CORRENT_DEV_PLAY=<id>`,
 `CORRENT_DEV_SHOT=<png>` (+ `CORRENT_DEV_SHOT_DELAY=<s>`, `CORRENT_DEV_EXIT=1`; works on Linux too),
+`CORRENT_DEV_DEMO=1` (made-up torrents, folders and documentation-range peers instead of the engine's: the website's screenshots,
+`scripts/site-shots.ps1` then `python scripts/site-images.py`),
 `CORRENT_DEV_LIBRARY=<folder>[;kind[;name]]|…` (adds those libraries to the profile; make test media with
 `powershell -File scripts/dev-media.ps1 -Out <scratch>`), `CORRENT_DEV_PAGE=library:<id>|row:<id>|agent`, `CORRENT_DEV_PAUSE=<s>` (pauses the hooked playback so the controls stay up), `CORRENT_DEV_CONNECT=<pairing link>` (fills the Connect dialog), `CORRENT_DEV_FOUND=<name>[;<ip>]|…` (servers announced as if on the network: the notice), `CORRENT_DEV_PAIR=<pairing link>` (pairs and switches —
 writes `servers.toml` into the test profile; delete it afterwards). `CORRENT_DEV_OPEN` also takes `connect`. TV mode: `--tv`, and `CORRENT_DEV_KEYS=ArrowDown,ArrowRight,Enter` presses keys
@@ -102,6 +104,7 @@ vendor/librqbit-dht/        Patched DHT (keeps running on Windows WSAECONNRESET)
 vendor/librqbit-bencode/    librqbit-bencode 9.0.1 with bounded nesting and checked numbers — see CORRENT-PATCH.md
 vendor/librqbit/            librqbit 9.0.1 + runtime limits/group limiter/file order — see CORRENT-PATCH.md;
                             diffs for upstream PRs in docs/upstream/
+site/                       Static website (GitHub Pages via .github/workflows/pages.yml); screenshots from CORRENT_DEV_DEMO
 docs/                       research.md, PLAN.md, ROADMAP.md (with status), STABILITY.md, PACKAGING.md, PERFORMANCE.md,
                             PLATFORM-TESTING.md, DEPENDENCIES.md, upstream/
 ```

@@ -4,6 +4,8 @@ mod actions;
 mod batch;
 pub mod connect;
 mod creator;
+#[cfg(debug_assertions)]
+mod demo;
 mod details;
 mod diagnostics_ui;
 mod dialogs;
@@ -1129,6 +1131,10 @@ impl eframe::App for CorrentApp {
         let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
         corrent_core::watchdog::ui_frame(!self.window_hidden && !minimized);
         self.snap = self.engine.snapshot();
+        #[cfg(debug_assertions)]
+        if std::env::var_os("CORRENT_DEV_DEMO").is_some() {
+            self.snap = Arc::new(demo::snapshot(self.detail_hash()));
+        }
         if self.snap.generation != self.last_snapshot.0 {
             self.last_snapshot = (self.snap.generation, std::time::Instant::now());
         }
@@ -1227,6 +1233,7 @@ impl CorrentApp {
             match w.as_str() {
                 "settings" => self.open_settings(),
                 "remote" => self.open_settings_at(settings_window::Page::Remote),
+                "appearance" => self.open_settings_at(settings_window::Page::Appearance),
                 "magnet" => self.open_magnet_dialog(),
                 "about" => self.extras.about = true,
                 "creator" => self.open_creator(),
