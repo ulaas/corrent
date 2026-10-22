@@ -397,11 +397,17 @@ pub struct CorrentApp {
     icon_tex: Option<egui::TextureHandle>,
     #[cfg(debug_assertions)]
     dev_done: bool,
+    #[cfg(debug_assertions)]
     media_dev_done: bool,
+    #[cfg(debug_assertions)]
     media_dev_played: bool,
+    #[cfg(debug_assertions)]
     media_dev_shot_sent: bool,
+    #[cfg(debug_assertions)]
     media_dev_started: Option<std::time::Instant>,
+    #[cfg(debug_assertions)]
     media_dev_pair: Option<media::client::Slot<crate::link::ServerEntry>>,
+    #[cfg(debug_assertions)]
     media_dev_profiles: bool,
     /// CORRENT_DEV_LIBRARY: libraries being set up, then shown.
     #[cfg(debug_assertions)]
@@ -580,9 +586,13 @@ impl CorrentApp {
             icon_tex: None,
             #[cfg(debug_assertions)]
             dev_done: false,
+            #[cfg(debug_assertions)]
             media_dev_done: false,
+            #[cfg(debug_assertions)]
             media_dev_played: false,
+            #[cfg(debug_assertions)]
             media_dev_shot_sent: false,
+            #[cfg(debug_assertions)]
             media_dev_started: None,
             media: Default::default(),
             server,
@@ -593,7 +603,9 @@ impl CorrentApp {
             pending_local: false,
             connect: None,
             discover: Default::default(),
+            #[cfg(debug_assertions)]
             media_dev_pair: None,
+            #[cfg(debug_assertions)]
             media_dev_profiles: false,
             #[cfg(debug_assertions)]
             media_dev_library: None,

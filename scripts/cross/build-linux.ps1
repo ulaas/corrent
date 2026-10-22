@@ -6,7 +6,7 @@
 #   rustup target add x86_64-unknown-linux-gnu
 #
 # Usage:  powershell -File scripts/cross/build-linux.ps1 [-Release] [-CheckOnly] [-Clippy]
-#         -Clippy runs clippy on all targets with warnings denied, like the Linux CI job.
+#         -Clippy runs clippy on the workspace's targets with warnings denied, like the Linux CI job.
 # Output: target/linux-check/x86_64-unknown-linux-gnu/<profile>/corrent
 param([switch]$Release, [switch]$CheckOnly, [switch]$Clippy, [string]$Python = "")
 
@@ -27,8 +27,16 @@ $env:CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = Join-Path $wrappers "zcc.bat
 $env:CARGO_TARGET_DIR = Join-Path $root "target\linux-check"
 
 $cmd = if ($Clippy) { "clippy" } elseif ($CheckOnly) { "check" } else { "build" }
+if ($Clippy -or $CheckOnly) {
+    # Nothing is linked, so system libraries found through pkg-config (libudev for gamepads)
+    # only need to be "found": a stub answers for them. A full build needs a Linux sysroot.
+    $stub = Join-Path $wrappers "pkgconfig.bat"
+    Set-Content -Encoding ascii $stub "@echo -ludev"
+    $env:PKG_CONFIG_x86_64_unknown_linux_gnu = $stub
+    $env:PKG_CONFIG_ALLOW_CROSS = "1"
+}
 $cargoArgs = @($cmd, "--target", "x86_64-unknown-linux-gnu")
 if ($Release) { $cargoArgs += "--release" }
-if ($Clippy) { $cargoArgs += @("--all-targets", "--", "-D", "warnings") }
+if ($Clippy) { $cargoArgs += @("--workspace", "--all-targets", "--", "-D", "warnings") }
 Push-Location $root
 try { cargo @cargoArgs; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } finally { Pop-Location }

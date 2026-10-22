@@ -636,10 +636,17 @@ async fn wait_for_shutdown() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
+        // Without a SIGTERM handler (it can't fail in practice), Ctrl+C and STOP still work.
+        let mut term = signal(SignalKind::terminate()).inspect_err(|e| tracing::warn!("SIGTERM handler: {e}")).ok();
+        let terminated = async {
+            match term.as_mut() {
+                Some(t) => _ = t.recv().await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
-            _ = term.recv() => {}
+            _ = terminated => {}
             _ = STOP.notified() => {}
         }
     }

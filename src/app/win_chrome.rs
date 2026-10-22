@@ -62,7 +62,7 @@ pub fn fullscreen(window: &impl raw_window_handle::HasWindowHandle, on: bool) {
 }
 
 #[cfg(not(windows))]
-pub fn fullscreen(_window: &impl raw_window_handle::HasWindowHandle, _on: bool) {}
+pub fn fullscreen<W>(_window: &W, _on: bool) {}
 
 /// Mica spike (roadmap B5b, debug builds only, `CORRENT_DEV_MICA=1`): ask DWM for the Mica
 /// backdrop and extend it into the client area. Needs a transparent window and clear color.

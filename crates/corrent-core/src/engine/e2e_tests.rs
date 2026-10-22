@@ -775,6 +775,8 @@ async fn torrents_with_impossible_sizes_are_refused() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+// DevPanic exists in debug builds only.
+#[cfg(debug_assertions)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn engine_panic_stops_the_old_session() {
     let dir = temp_dir("panic-session");
