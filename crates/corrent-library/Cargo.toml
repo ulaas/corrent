@@ -2,7 +2,7 @@
 name = "corrent-library"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.96"
 description = "Corrent's media library: scanning, parsing, probing, tags, artwork, search, watch state"
 license = "MIT OR Apache-2.0"
 publish = false

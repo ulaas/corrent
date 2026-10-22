@@ -94,7 +94,7 @@ A beautiful, stable, cross-platform BitTorrent client written in Rust with an
 
 ## Building
 
-Requires Rust 1.95 or newer.
+Requires Rust 1.96 or newer.
 
 ```sh
 cargo build --release

@@ -1,6 +1,7 @@
 # Dependency policy
 
-- **MSRV:** Rust 1.95 (`rust-version` in `Cargo.toml`), enforced by the `msrv` CI job. Raise it only
+- **MSRV:** Rust 1.96 (`rust-version` in `Cargo.toml`; raised from 1.95 on 2026-10-22 because wasmtime 49,
+  used by the plugins, needs 1.96), enforced by the `msrv` CI job. Raise it only
   in a dedicated commit, when a dependency requires it.
 - **Pinned exactly:** `egui`, `eframe`, `egui_extras` (UI API churns between minors) and `librqbit`
   (engine behavior and its on-disk `session/` format). Upgrade them by hand in a dedicated commit:
