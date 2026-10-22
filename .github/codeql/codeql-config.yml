@@ -1,0 +1,8 @@
+name: Corrent CodeQL
+# Vendored upstream code, build output and dependencies are not ours to fix here.
+paths-ignore:
+  - vendor
+  - web/dist
+  - web/node_modules
+  - site/fonts
+  - target

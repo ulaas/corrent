@@ -1,7 +1,13 @@
 # Corrent
 
+[![CI](https://github.com/ulaas/corrent/actions/workflows/ci.yml/badge.svg)](https://github.com/ulaas/corrent/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/ulaas/corrent/actions/workflows/codeql.yml/badge.svg)](https://github.com/ulaas/corrent/actions/workflows/codeql.yml)
+[![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-blue)](#license)
+
 A beautiful, stable, cross-platform BitTorrent client written in Rust with an
 [egui](https://github.com/emilk/egui) interface and the [librqbit](https://github.com/ikatson/rqbit) engine.
+Website: **[ulaas.github.io/corrent](https://ulaas.github.io/corrent/)** · Downloads:
+[Releases](https://github.com/ulaas/corrent/releases) · Changes: [CHANGELOG.md](CHANGELOG.md)
 
 ## Features
 
@@ -152,5 +158,7 @@ per-file download order (see each `CORRENT-PATCH.md`; diffs for upstream in `doc
 
 ## License
 
-MIT or Apache-2.0. Bundled fonts: Inter and JetBrains Mono (SIL Open Font License, see
+MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache-2.0 ([LICENSE-APACHE](LICENSE-APACHE)), at your option.
+Contributions are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md); please report security problems
+privately as described in [SECURITY.md](SECURITY.md). Bundled fonts: Inter and JetBrains Mono (SIL Open Font License, see
 `assets/fonts`). Icons: Phosphor (MIT).

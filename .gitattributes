@@ -8,3 +8,7 @@ tests/fuzz-corpus/** binary
 tests/fuzz-corpus/README.md text
 proptest-regressions/** -text
 **/proptest-regressions/** -text
+
+vendor/** linguist-vendored
+site/** linguist-documentation
+*.webp binary
