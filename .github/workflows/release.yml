@@ -142,7 +142,7 @@ jobs:
           cp artifacts/windows/*.zip artifacts/windows/*.msi artifacts/linux/*.AppImage artifacts/linux/*.tar.gz             artifacts/macos/*.dmg artifacts/macos/*.tar.gz upload/
           (cd upload && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
       - name: Draft release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           body_path: notes.md
