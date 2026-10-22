@@ -2824,7 +2824,9 @@ async fn a_download_goes_into_a_library_with_clean_names() {
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{v}");
-        libs.push((v["id"].as_i64().unwrap(), folder));
+        // The server stores the resolved folder: the plan names it in that form, which differs
+        // from the temp dir when it has a short (8.3) name, as on GitHub's Windows runners.
+        libs.push((v["id"].as_i64().unwrap(), crate::paths::resolve(&folder).unwrap()));
     }
     let url = format!("/api/v1/torrents/{}/import", s.hash.to_hex());
     let movie = std::path::Path::new("Sintel (2010)");
