@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 # Universal (Apple silicon + Intel) app.
 rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
-cargo bundle --release --target aarch64-apple-darwin
+cargo bundle --release -p corrent --bin corrent --target aarch64-apple-darwin
 cargo build --release --locked --target x86_64-apple-darwin
 for t in aarch64-apple-darwin x86_64-apple-darwin; do
   cargo build --release --locked -p corrent-mpv --bin corrent-mpvw --target $t

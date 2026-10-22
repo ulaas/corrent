@@ -115,10 +115,14 @@ identifier = "io.github.ulaas.Corrent"
 icon = ["assets/icon/corrent-256.png", "assets/icon/corrent-512.png"]
 category = "public.app-category.utilities"
 short_description = "A beautiful, stable BitTorrent client"
-osx_url_name = "Magnet link"
-osx_url_schemes = ["magnet"]
-osx_info_plist_exts = ["packaging/macos/Info.plist.ext"]
-linux_mime_types = ["x-scheme-handler/magnet", "application/x-bittorrent"]
+
+# cargo-bundle 0.12 layout (release.yml pins that version).
+[package.metadata.bundle.osx]
+url_schemes = ["magnet"]
+info_plist_exts = ["packaging/macos/Info.plist.ext"]
+
+[package.metadata.bundle.linux]
+mime_types = ["x-scheme-handler/magnet", "application/x-bittorrent"]
 
 [patch.crates-io]
 # Keeps the DHT alive on Windows; see vendor/librqbit-dht/CORRENT-PATCH.md.

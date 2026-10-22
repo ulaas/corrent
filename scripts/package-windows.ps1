@@ -34,7 +34,7 @@ if (Test-Path $szip) { Remove-Item $szip }
 Compress-Archive -Path $server -DestinationPath $szip
 Write-Host "built $szip"
 if ($Msi) {
-    cargo wix --no-build --nocapture --output "dist\Corrent-$version-x86_64.msi"
+    cargo wix --package corrent --no-build --nocapture --output "dist\Corrent-$version-x86_64.msi"
     if ($LASTEXITCODE -ne 0) { throw 'cargo wix failed' }
     Write-Host "built dist\Corrent-$version-x86_64.msi"
 }
