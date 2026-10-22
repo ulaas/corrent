@@ -70,12 +70,21 @@ pub fn this_image() -> Option<Image> {
         let exe = std::fs::canonicalize("/proc/self/exe").ok()?;
         let stamp = std::fs::metadata(&exe).ok()?.len();
         let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+        // The loader maps the executable as one contiguous run (lines are sorted by address);
+        // later mappings of the same file elsewhere, such as the backtrace crate reading its
+        // debug info, are not part of the image.
         let (mut lo, mut hi) = (usize::MAX, 0usize);
         for l in maps.lines().filter(|l| l.ends_with(&*exe.to_string_lossy())) {
             let range = l.split(' ').next()?;
             let (a, b) = range.split_once('-')?;
-            lo = lo.min(usize::from_str_radix(a, 16).ok()?);
-            hi = hi.max(usize::from_str_radix(b, 16).ok()?);
+            let (a, b) = (usize::from_str_radix(a, 16).ok()?, usize::from_str_radix(b, 16).ok()?);
+            if lo == usize::MAX {
+                (lo, hi) = (a, b);
+            } else if a == hi {
+                hi = b;
+            } else {
+                break;
+            }
         }
         (lo < hi).then(|| Image { name, base: lo, size: hi - lo, stamp })
     }

@@ -36,7 +36,10 @@ pub fn run(job: &EncodeJob, timeout: Duration, progress: Progress<'_>) -> Result
     let mpv = Mpv::new(crate::Library::get()?, &opts)?;
     match &job.audio_file {
         // `%len%` quoting keeps `:` and `,` in URLs out of mpv's option-list parser.
-        Some(a) => mpv.command(&["loadfile", &job.input, "replace", "-1", &format!("audio-file=%{}%{a}", a.len())])?,
+        Some(a) => {
+            let args = mpv.loadfile_args(&job.input, &format!("audio-file=%{}%{a}", a.len()));
+            mpv.command(&args.iter().map(String::as_str).collect::<Vec<_>>())?
+        }
         None => mpv.command(&["loadfile", &job.input])?,
     }
     let deadline = Instant::now() + timeout;

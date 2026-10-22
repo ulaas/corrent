@@ -481,7 +481,8 @@ impl Player {
         let Some(e) = self.current().cloned() else { return };
         if let Some(url) = &e.stream {
             let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
-            let _ = self.mpv.command_async(0, &["loadfile", url, "replace", "-1", &title]);
+            let args = self.mpv.loadfile_args(url, &title);
+            let _ = self.mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
             return;
         }
         if let Some(path) = &e.local {
@@ -492,9 +493,8 @@ impl Player {
             self.sheets.clear();
             let start = format!("start={}", e.resume_ms as f64 / 1000.0);
             let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
-            let _ = self
-                .mpv
-                .command_async(0, &["loadfile", &path.to_string_lossy(), "replace", "-1", &format!("{start},{title}")]);
+            let args = self.mpv.loadfile_args(&path.to_string_lossy(), &format!("{start},{title}"));
+            let _ = self.mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
             {
                 let mut s = crate::util::lock(&self.status);
                 s.pos = e.resume_ms as f64 / 1000.0;
@@ -541,7 +541,8 @@ impl Player {
                     let url = client.url(&info.url);
                     let start = format!("start={}", e.resume_ms as f64 / 1000.0);
                     let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
-                    let _ = mpv.command(&["loadfile", &url, "replace", "-1", &format!("{start},{title}")]);
+                    let args = mpv.loadfile_args(&url, &format!("{start},{title}"));
+                    let _ = mpv.command(&args.iter().map(String::as_str).collect::<Vec<_>>());
                     for s in info.subtitles.iter().filter_map(|s| s.url.as_ref().map(|u| (u, s))) {
                         let _ = mpv.command(&[
                             "sub-add",

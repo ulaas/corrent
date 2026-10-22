@@ -314,6 +314,7 @@ pub struct Mpv {
     handle: *mut ffi::mpv_handle,
     events: Mutex<()>,
     wake: Mutex<Option<Box<WakeBox>>>,
+    loadfile_index: std::sync::OnceLock<bool>,
 }
 
 // SAFETY: the libmpv client API is thread-safe for a handle; `wait_event` is serialized.
@@ -356,7 +357,13 @@ impl Mpv {
         if handle.is_null() {
             return Err(Error::Mpv { what: "mpv_create".into(), code: -2, message: "out of memory".into() });
         }
-        let mpv = Mpv { lib, handle, events: Mutex::new(()), wake: Mutex::new(None) };
+        let mpv = Mpv {
+            lib,
+            handle,
+            events: Mutex::new(()),
+            wake: Mutex::new(None),
+            loadfile_index: std::sync::OnceLock::new(),
+        };
         for (k, v) in options {
             mpv.set_option(k, v)?;
         }
@@ -469,6 +476,28 @@ impl Mpv {
         // SAFETY: NULL-terminated array of valid strings that outlive the call.
         let rc = unsafe { (self.lib.api.command)(self.handle, ptrs.as_mut_ptr()) };
         self.check(&format!("command {}", args.first().unwrap_or(&"")), rc)
+    }
+
+    /// The `loadfile` arguments for `url` with per-file `options` (`start=10,force-media-title=…`).
+    /// mpv 0.38 added a playlist index before the options; older versions (Ubuntu 24.04 ships
+    /// 0.37) refuse that form, so this asks mpv's `command-list` once which one it takes.
+    pub fn loadfile_args(&self, url: &str, options: &str) -> Vec<String> {
+        let index = *self.loadfile_index.get_or_init(|| {
+            self.get("command-list").is_ok_and(|list| {
+                list.as_array().iter().any(|c| {
+                    c.get("name").and_then(Node::as_str) == Some("loadfile")
+                        && c.get("args").is_some_and(|a| {
+                            a.as_array().iter().any(|a| a.get("name").and_then(Node::as_str) == Some("index"))
+                        })
+                })
+            })
+        });
+        let mut args = vec!["loadfile".to_string(), url.to_string(), "replace".to_string()];
+        if index {
+            args.push("-1".into());
+        }
+        args.push(options.to_string());
+        args
     }
 
     /// Runs a command asynchronously; completion arrives as [`Event::CommandReply`].

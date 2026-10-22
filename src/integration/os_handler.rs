@@ -36,6 +36,8 @@ pub struct HandlerStatus {
     pub torrent: HandlerState,
 }
 
+/// macOS registers the app bundle through Launch Services, not a path.
+#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
 pub fn exe_path() -> String {
     // Inside an AppImage the binary runs from a temporary mount; register the AppImage itself.
     if cfg!(target_os = "linux")

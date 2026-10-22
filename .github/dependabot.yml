@@ -14,6 +14,9 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    # The msrv job's toolchain tag is the minimum Rust version, raised by hand with rust-version.
+    ignore:
+      - dependency-name: "dtolnay/rust-toolchain"
   - package-ecosystem: npm
     directory: /web
     schedule:
