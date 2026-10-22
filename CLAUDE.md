@@ -145,7 +145,7 @@ translation + language setting, web interface, Mica spike (no-go) (M27).
 Fable reviews of every milestone range and a final roadmap audit were addressed. Default save folder: `Downloads/Corrent`.
 
 Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S10 done 2026-10-21, S11 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
-upstreaming the librqbit patches (docs/upstream/). v0.1.0 tagged locally 2026-10-22 (release notes: CHANGELOG.md;
+upstreaming the librqbit patches (docs/upstream/). v0.3.0 (the first public release) tagged locally 2026-10-22 (release notes: CHANGELOG.md;
 the owner pushes the tag, release.yml drafts the release).
 
 Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.

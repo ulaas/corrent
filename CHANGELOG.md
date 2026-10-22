@@ -3,7 +3,7 @@
 All notable changes to Corrent. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may break things).
 
-## [0.1.0] — 2026-10-22
+## [0.3.0] — 2026-10-22
 
 The first public release.
 
@@ -50,4 +50,4 @@ The first public release.
 - Linux and macOS builds are produced by CI but have not been tested on real machines yet.
 - The engine (librqbit) has no protocol encryption and no BitTorrent v2.
 
-[0.1.0]: https://github.com/ulaas/corrent/releases/tag/v0.1.0
+[0.3.0]: https://github.com/ulaas/corrent/releases/tag/v0.3.0
