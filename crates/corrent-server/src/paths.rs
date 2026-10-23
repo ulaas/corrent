@@ -119,7 +119,9 @@ mod tests {
         {
             std::os::unix::fs::symlink("/etc", d.join("a/link")).unwrap();
             let r = resolve(&d.join("a/link/passwd")).unwrap();
-            assert!(r.starts_with("/etc"), "symlinks resolve to their target: {}", r.display());
+            // The target's real path: on macOS /etc is itself a link to /private/etc.
+            let etc = std::fs::canonicalize("/etc").unwrap();
+            assert!(r.starts_with(&etc), "symlinks resolve to their target: {}", r.display());
         }
         #[cfg(windows)]
         {
