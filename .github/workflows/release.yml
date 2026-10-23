@@ -65,7 +65,7 @@ jobs:
     needs: ci-gate
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install WiX 3 and cargo-wix
@@ -110,7 +110,7 @@ jobs:
     needs: ci-gate
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build dependencies
@@ -139,7 +139,7 @@ jobs:
       # `secrets` can't be used in step conditions directly.
       HAS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Cargo.toml's [package.metadata.bundle] uses this version's layout.
@@ -177,7 +177,7 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
