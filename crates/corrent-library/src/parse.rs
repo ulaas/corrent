@@ -509,18 +509,31 @@ pub fn show_folder<'a>(root: &Path, file: &'a Path) -> Option<&'a str> {
 pub fn show_dir(root: &Path, file: &Path) -> Option<PathBuf> {
     let rel = file.strip_prefix(root).ok()?;
     let dirs: Vec<&std::ffi::OsStr> = rel.parent()?.iter().collect();
+    let file_title = norm_title(&parse_name(file.file_stem().and_then(|s| s.to_str()).unwrap_or_default()).title);
     let idx = dirs.iter().enumerate().rposition(|(i, c)| {
         let Some(name) = c.to_str() else { return false };
         let p = parse_name(name);
-        // Inside another folder, a plain number is a year or a season ("Show/2024"); at the top
-        // it is the show ("24", "1883"). Likewise a name with a season in it is a release or
-        // season folder inside a show's, but a season pack's own folder at the top.
-        let inner = i > 0;
-        season_folder(name).is_none()
-            && !is_extras_folder(name)
-            && !p.title.is_empty()
-            && !(inner && (p.season.is_some() || p.episode.is_some()))
-            && !(inner && !name.chars().any(char::is_alphabetic))
+        let title = norm_title(&p.title);
+        if season_folder(name).is_some() || is_extras_folder(name) || title.is_empty() {
+            return false;
+        }
+        // A release or episode folder inside the show's ("Show/Show.S01.1080p.WEB",
+        // "The Office (US)/The.Office.US.S01E01.720p") names the folder above it; one inside a
+        // grouping folder is the show ("Anime/Dr. Stone S2").
+        if p.season.is_some() || p.episode.is_some() {
+            let outer_names_it = dirs[..i].iter().filter_map(|d| d.to_str()).any(|d| {
+                let o = norm_title(&parse_name(d).title);
+                !o.is_empty() && (o.contains(title.as_str()) || title.contains(o.as_str()))
+            });
+            if outer_names_it {
+                return false;
+            }
+        }
+        // A plain number holding the episodes, inside another folder, is a year ("Show/2024"),
+        // unless the episodes are named after it ("Western/1883/1883.S01E01.mkv"); higher up
+        // or at the top it is the show ("Drama/9-1-1/Season 1", "24").
+        let number = !name.chars().any(char::is_alphabetic);
+        !(number && i > 0 && i + 1 == dirs.len() && title != file_title)
     })?;
     Some(dirs[..=idx].iter().collect())
 }

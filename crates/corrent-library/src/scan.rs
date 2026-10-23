@@ -248,7 +248,7 @@ fn place(
                     && (parse::is_generic_name(&st)
                         || cx.alone
                             && from_file.year.is_none()
-                            && (d.year.is_some() || !ft.is_empty() && dt.contains(ft.as_str())))
+                            && (d.year.is_some() || ft.chars().count() >= 3 && dt.contains(ft.as_str())))
             };
             let p = if weak && role == "main" {
                 let from_dir = parse::parse_name(&dir_name);
@@ -1398,6 +1398,14 @@ fn group_key(p: &Placement) -> Option<Titled> {
     }
 }
 
+/// Whether files with these keys are of different movies or shows, the way `same_item` tells:
+/// different titles, or two different years (a file without one goes with either).
+fn mixed(keys: &[Titled]) -> bool {
+    let titles: HashSet<&str> = keys.iter().map(|(t, _)| t.as_str()).collect();
+    let years: HashSet<i32> = keys.iter().filter_map(|(_, y)| *y).collect();
+    titles.len() > 1 || years.len() > 1
+}
+
 fn group_title(p: &Placement) -> Option<Titled> {
     match p {
         Placement::Movie { title, year, role: "main" } => Some((title.clone(), *year)),
@@ -1523,8 +1531,12 @@ async fn repair(
     // Items that held several movies or shows, and unmatched ones the old rules misnamed.
     let mut tainted: HashSet<i64> = renamed;
     for (g, files) in &by_group {
-        let keys: HashSet<_> = files.iter().filter_map(|r| new_place.get(&r.file).and_then(group_key)).collect();
-        if keys.len() > 1 {
+        // Looked at already: what is in it now, the current rules put there.
+        if files.iter().all(|r| r.done) {
+            continue;
+        }
+        let keys: Vec<Titled> = files.iter().filter_map(|r| new_place.get(&r.file).and_then(group_key)).collect();
+        if mixed(&keys) {
             tainted.insert(*g);
         }
     }
@@ -1533,7 +1545,8 @@ async fn repair(
         let is_extra = matches!(new_place.get(&r.file), Some(Placement::Movie { role, .. }) if *role != "main");
         let why = match r.group {
             Some(g) if tainted.contains(&g) => Some(Redo::Item),
-            _ if is_extra => Some(Redo::Extra),
+            // An extra whose movie was looked at is where it belongs.
+            _ if is_extra && !r.done => Some(Redo::Extra),
             None => Some(Redo::Loose),
             Some(_) => None,
         };
@@ -1869,6 +1882,27 @@ mod tests {
         assert_eq!(show("/tv/Show.Name.S01-S05.Complete/Season 1/Show.Name.S01E01.mkv"), "Show Name");
         assert_eq!(parse::season_folder("Season 2024"), Some(2024));
         assert_eq!(parse::season_folder("Book of Boba Fett"), None);
+    }
+
+    #[test]
+    fn a_file_without_a_year_is_not_another_movie() {
+        let k = |t: &str, y: Option<i32>| (t.to_string(), y);
+        assert!(!mixed(&[k("show", Some(2005)), k("show", None)]));
+        assert!(mixed(&[k("dune", Some(1984)), k("dune", Some(2021))]));
+        assert!(mixed(&[k("ironman", None), k("thor", None)]));
+        assert!(!mixed(&[]));
+    }
+
+    #[test]
+    fn number_shows_inside_grouping_folders() {
+        assert_eq!(show("/tv/Drama/9-1-1/Season 1/9-1-1.S01E01.mkv"), "9-1-1");
+        assert_eq!(show("/tv/Anime/86/Season 1/86 - 01.mkv"), "86");
+        assert_eq!(show("/tv/Western/1883/1883.S01E01.mkv"), "1883");
+        assert_eq!(show("/tv/Anime/Dr. Stone S2/Dr.Stone.S02E01.mkv"), "Dr Stone");
+        // Still: year folders and release folders inside a show's.
+        assert_eq!(show("/tv/The Daily Show/2024/The Daily Show - 2024-05-01 - Guest.mkv"), "The Daily Show");
+        assert_eq!(show("/tv/The Office (US)/The.Office.US.S01E01.720p/The.Office.US.S01E01.mkv"), "The Office (US)");
+        assert_eq!(movie("/m/Comedy/Me.mkv", ONE).0, "Me", "a short title isn't found inside a folder's name");
     }
 
     #[test]

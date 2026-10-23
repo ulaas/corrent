@@ -353,6 +353,8 @@ async fn repair_splits_what_older_rules_merged() {
                 [a],
             )?;
             t.execute("UPDATE items SET title = 'Wrong episode', overview = 'wrong' WHERE id = ?1", [ep_a])?;
+            // Items an older version made carry no mark of the current rules.
+            t.execute("UPDATE items SET extra = json_remove(extra, '$.placement')", [])?;
             t.execute("UPDATE libraries SET placement = 0", [])?;
             Ok((iron, amelie))
         })
