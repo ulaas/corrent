@@ -432,21 +432,62 @@ pub fn parse_name(stem: &str) -> Parsed {
     p
 }
 
-/// `Season 2`, `S02`, `Staffel 3`, `Specials` → season number.
+/// `Season 2`, `S02`, `Staffel 3`, `Specials`, `Season 2024` (a daily show's year) → season number.
 pub fn season_folder(name: &str) -> Option<u32> {
-    let l = name.trim().to_ascii_lowercase();
+    let l = name.trim().to_lowercase();
     if l == "specials" || l == "extras specials" {
         return Some(0);
     }
-    for pre in ["season", "series", "staffel", "saison", "temporada", "sezon", "s"] {
+    for pre in [
+        "season",
+        "series",
+        "staffel",
+        "saison",
+        "temporada",
+        "temporadas",
+        "stagione",
+        "seizoen",
+        "sæson",
+        "säsong",
+        "sesong",
+        "kausi",
+        "sezon",
+        "sezona",
+        "sezóna",
+        "évad",
+        "сезон",
+        "book",
+        "s",
+    ] {
         if let Some(rest) = l.strip_prefix(pre) {
             let n = rest.trim_start_matches([' ', '.', '_', '-']);
-            if !n.is_empty() && n.len() <= 3 && n.chars().all(|c| c.is_ascii_digit()) {
+            if !n.is_empty() && n.len() <= 4 && n.chars().all(|c| c.is_ascii_digit()) {
                 return n.parse().ok();
             }
         }
     }
     None
+}
+
+/// A title by its letters and digits only, without articles ("The Matrix" = "matrix").
+pub fn norm_title(s: &str) -> String {
+    sort_title(s).chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// The folder a movie file stands for: its own, or the one above a disc structure
+/// (`Film (2005)/VIDEO_TS/VTS_01_1.VOB`, `Film/BDMV/STREAM/00000.m2ts`).
+pub fn movie_dir(file: &Path) -> Option<&Path> {
+    let mut d = file.parent()?;
+    while let Some(n) = d.file_name().and_then(|n| n.to_str()) {
+        if !matches!(
+            n.to_ascii_lowercase().as_str(),
+            "video_ts" | "bdmv" | "stream" | "playlist" | "clipinf" | "backup"
+        ) {
+            break;
+        }
+        d = d.parent()?;
+    }
+    Some(d)
 }
 
 /// For a file in a shows library: the show folder's name (the folder directly under the
@@ -468,14 +509,18 @@ pub fn show_folder<'a>(root: &Path, file: &'a Path) -> Option<&'a str> {
 pub fn show_dir(root: &Path, file: &Path) -> Option<PathBuf> {
     let rel = file.strip_prefix(root).ok()?;
     let dirs: Vec<&std::ffi::OsStr> = rel.parent()?.iter().collect();
-    let idx = dirs.iter().rposition(|c| {
+    let idx = dirs.iter().enumerate().rposition(|(i, c)| {
         let Some(name) = c.to_str() else { return false };
         let p = parse_name(name);
+        // Inside another folder, a plain number is a year or a season ("Show/2024"); at the top
+        // it is the show ("24", "1883"). Likewise a name with a season in it is a release or
+        // season folder inside a show's, but a season pack's own folder at the top.
+        let inner = i > 0;
         season_folder(name).is_none()
-            && p.season.is_none()
-            && p.episode.is_none()
-            && !p.title.is_empty()
             && !is_extras_folder(name)
+            && !p.title.is_empty()
+            && !(inner && (p.season.is_some() || p.episode.is_some()))
+            && !(inner && !name.chars().any(char::is_alphabetic))
     })?;
     Some(dirs[..=idx].iter().collect())
 }
@@ -500,8 +545,14 @@ const EXTRAS_FOLDERS: [&str; 8] =
 pub fn is_generic_name(stem: &str) -> bool {
     let l = stem.trim().to_ascii_lowercase();
     let p = parse_name(stem);
-    p.title.chars().filter(|c| c.is_alphanumeric()).count() < 3
-        || matches!(p.title.to_ascii_lowercase().as_str(), "movie" | "film" | "video" | "feature" | "main" | "title")
+    let alnum: String = p.title.chars().filter(|c| c.is_alphanumeric()).collect();
+    // One character is no title ("Up" and "It" are); five digits are a disc's stream number.
+    alnum.chars().count() < 2
+        || alnum.len() >= 5 && alnum.chars().all(|c| c.is_ascii_digit())
+        || matches!(
+            p.title.to_ascii_lowercase().as_str(),
+            "movie" | "film" | "video" | "feature" | "main" | "title" | "video ts"
+        )
         || l.starts_with("vts_")
         || l.starts_with("title_t")
 }
