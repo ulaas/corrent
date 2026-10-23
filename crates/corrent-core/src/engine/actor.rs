@@ -165,6 +165,9 @@ pub struct Actor {
     failed: HashMap<InfoHash, super::restore::FailedRestore>,
     undo_pending: HashMap<InfoHash, UndoEntry>,
     undo: HashMap<InfoHash, UndoEntry>,
+    /// Undo asked for while the removal was still finishing (the row leaves the list before the
+    /// engine's delete call returns): done as soon as it has.
+    undo_wanted: HashSet<InfoHash>,
     /// Pruning the store waits until failed restores have been identified.
     restore_checked: bool,
     /// While the session starts: what it is doing (published in the snapshot).
@@ -280,6 +283,7 @@ impl Actor {
             failed: HashMap::new(),
             undo_pending: HashMap::new(),
             undo: HashMap::new(),
+            undo_wanted: HashSet::new(),
             restore_checked: false,
             prune_refused: None,
             calls: None,
@@ -609,35 +613,7 @@ impl Actor {
             }
             EngineCommand::UndoRemove(hashes) => {
                 for hash in hashes {
-                    let Some(e) = self.undo.remove(&hash) else { continue };
-                    if e.at.elapsed() > UNDO_WINDOW {
-                        continue;
-                    }
-                    let Some(sess) = self.session.clone() else {
-                        self.undo.insert(hash, e);
-                        continue;
-                    };
-                    let tx = self.internal_tx.clone();
-                    let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
-                    self.busy.insert(hash, t!("Restoring…").into());
-                    tokio::spawn(async move {
-                        let opts = AddTorrentOptions {
-                            peer_limit,
-                            paused: e.paused,
-                            only_files: e.only_files.clone(),
-                            output_folder: Some(e.output.to_string_lossy().into_owned()),
-                            overwrite: true,
-                            trackers: (!e.trackers.is_empty()).then(|| e.trackers.clone()),
-                            ..Default::default()
-                        };
-                        let result = match sess.add_torrent(AddTorrent::from_bytes(e.bytes.clone()), Some(opts)).await {
-                            Ok(AddTorrentResponse::Added(..)) => Ok(true),
-                            Ok(AddTorrentResponse::AlreadyManaged(..)) => Ok(false),
-                            Ok(AddTorrentResponse::ListOnly(_)) => Err("unexpected response from engine".to_string()),
-                            Err(err) => Err(format!("{err:#}")),
-                        };
-                        let _ = tx.send(Internal::UndoFinished { hash, entry: Box::new(e), result }).await;
-                    });
+                    self.undo_remove(hash);
                 }
             }
             EngineCommand::CancelAdd(hash) => {
@@ -1104,6 +1080,44 @@ impl Actor {
         }
     }
 
+    /// Bring back a torrent removed without its files (within the undo window).
+    fn undo_remove(&mut self, hash: InfoHash) {
+        let Some(e) = self.undo.remove(&hash) else {
+            if self.undo_pending.contains_key(&hash) {
+                self.undo_wanted.insert(hash);
+            }
+            return;
+        };
+        if e.at.elapsed() > UNDO_WINDOW {
+            return;
+        }
+        let Some(sess) = self.session.clone() else {
+            self.undo.insert(hash, e);
+            return;
+        };
+        let tx = self.internal_tx.clone();
+        let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
+        self.busy.insert(hash, t!("Restoring…").into());
+        tokio::spawn(async move {
+            let opts = AddTorrentOptions {
+                peer_limit,
+                paused: e.paused,
+                only_files: e.only_files.clone(),
+                output_folder: Some(e.output.to_string_lossy().into_owned()),
+                overwrite: true,
+                trackers: (!e.trackers.is_empty()).then(|| e.trackers.clone()),
+                ..Default::default()
+            };
+            let result = match sess.add_torrent(AddTorrent::from_bytes(e.bytes.clone()), Some(opts)).await {
+                Ok(AddTorrentResponse::Added(..)) => Ok(true),
+                Ok(AddTorrentResponse::AlreadyManaged(..)) => Ok(false),
+                Ok(AddTorrentResponse::ListOnly(_)) => Err("unexpected response from engine".to_string()),
+                Err(err) => Err(format!("{err:#}")),
+            };
+            let _ = tx.send(Internal::UndoFinished { hash, entry: Box::new(e), result }).await;
+        });
+    }
+
     fn delete(&mut self, hash: InfoHash, with_data: bool) {
         self.delete_with(hash, with_data, true);
     }
@@ -1134,6 +1148,10 @@ impl Actor {
         tokio::spawn(async move {
             let result =
                 sess.delete(TorrentIdOrHash::Hash(Id20::new(hash.0)), with_data).await.map_err(|e| format!("{e:#}"));
+            // Tests: a slow disk — the torrent has left the list, the result is still on its way.
+            if let Some(d) = crate::faults::call_delay(hash.0) {
+                tokio::time::sleep(d).await;
+            }
             let _ = tx.send(Internal::Deleted { hash, result }).await;
         });
     }
@@ -1933,8 +1951,12 @@ impl Actor {
                         None => false,
                     };
                     self.emit(EngineEvent::Removed { hash, name, undoable });
+                    if self.undo_wanted.remove(&hash) {
+                        self.undo_remove(hash);
+                    }
                 } else {
                     self.undo_pending.remove(&hash);
+                    self.undo_wanted.remove(&hash);
                 }
                 self.maybe_apply_deferred();
             }
@@ -1989,6 +2011,7 @@ impl Actor {
             ("failed", self.failed.len()),
             ("undo_pending", self.undo_pending.len()),
             ("undo", self.undo.len()),
+            ("undo_wanted", self.undo_wanted.len()),
             ("pause_sent", self.pause_sent.len()),
             ("stream_rates", self.stream_rates.len()),
             ("stream_haves", self.stream_haves.len()),

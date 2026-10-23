@@ -136,6 +136,27 @@ async fn delete_keeps_or_removes_files() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_undo_sent_while_the_removal_is_still_finishing_is_not_lost() {
+    // The row leaves the list as soon as the engine forgets the torrent, before its delete call
+    // returns; a client that undoes right then (the API, or a test on a slow disk) must still win.
+    let dir = temp_dir("undo-race");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    let path = download(&l, &s, &dir).await.content_path;
+    // The delete's result reaches the engine 3 s after the torrent left the list.
+    crate::faults::set_call_delay(s.hash.0, Duration::from_secs(3));
+    l.engine.send(EngineCommand::Delete { hashes: vec![s.hash], with_data: false });
+    wait_for(&l, "removed", 20, |sn| find(sn, s.hash).is_none()).await;
+    l.engine.send(EngineCommand::UndoRemove(vec![s.hash]));
+    crate::faults::clear_call_delay(s.hash.0);
+    let snap = wait_for(&l, "undo after an immediate removal", 30, |sn| complete(sn, s.hash)).await;
+    assert_eq!(find(&snap, s.hash).unwrap().category.as_deref(), Some("Tests"), "app data restored");
+    assert!(path.exists(), "files kept");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restart_restores_without_redownload() {
     let dir = temp_dir("restart");
     let s = seeder(&dir).await;
