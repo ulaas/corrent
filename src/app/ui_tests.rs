@@ -1116,3 +1116,24 @@ fn diagnostics_shows_what_it_saves_and_writes_it() {
     };
     assert!(names.iter().any(|n| n == "metrics.txt") && names.iter().any(|n| n == "settings.toml"), "{names:?}");
 }
+
+#[test]
+fn playing_without_mpv_offers_to_get_it() {
+    let (_f, app) = app("getmpv", vec![torrent(1, "a", TorrentState::Seeding)]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().open_get_mpv(true);
+    h.run_steps(3);
+    h.get_by_label("Get mpv for playback");
+    h.get_by_label("Playing needs mpv, which isn't installed yet.");
+    if super::get_mpv::CAN_DOWNLOAD {
+        // Where it comes from, before anything is downloaded.
+        h.get_by_label(corrent_core::mpv_get::PROJECT_URL);
+        assert!(h.query_all_by_label_contains("Download").count() >= 1);
+        h.get_by_label("Cancel").click();
+    } else {
+        h.get_by_label("Close").click();
+    }
+    h.run_steps(2);
+    assert!(h.state().get_mpv.is_none(), "the dialog closes without downloading");
+}

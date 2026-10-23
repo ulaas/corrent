@@ -141,6 +141,7 @@ impl CorrentApp {
         self.streams_window(ctx, p);
         self.log_window(ctx, p);
         self.diagnostics_window(ctx, p);
+        self.get_mpv_window(ctx, p);
     }
 
     fn about_window(&mut self, ctx: &Context, p: &Palette) {

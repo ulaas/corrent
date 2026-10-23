@@ -13,6 +13,7 @@ mod discover_ui;
 mod dnd;
 mod extras;
 mod feeds;
+mod get_mpv;
 pub mod icon;
 mod import_dialog;
 mod integration_ui;
@@ -364,6 +365,8 @@ pub struct CorrentApp {
     task_panic_told: Option<std::time::Instant>,
     /// ⋮ → Save diagnostics… while open (O4).
     diagnostics: Option<diagnostics_ui::DiagnosticsDialog>,
+    /// Getting mpv for playback (Windows: a download), while open.
+    get_mpv: Option<get_mpv::GetMpvDialog>,
     pub data_notes: Vec<String>,
     /// Free space per folder typed in a dialog: (measured at, bytes), filled in the background.
     pub free_cache: Arc<std::sync::Mutex<FreeSpaceCache>>,
@@ -561,6 +564,7 @@ impl CorrentApp {
             task_panics_seen: crate::crash::task_panics().0,
             task_panic_told: None,
             diagnostics: None,
+            get_mpv: None,
             data_notes: Vec::new(),
             free_cache: Default::default(),
             free_inflight: Default::default(),
@@ -1261,6 +1265,7 @@ impl CorrentApp {
                 "stats" => self.extras.stats = true,
                 "streams" => self.extras.streams = true,
                 "diagnostics" => self.open_diagnostics(),
+                "mpv" => self.open_get_mpv(true),
                 "remove" | "remove-undo" => {
                     if let Some(t) = self.snap.torrents.first() {
                         self.engine

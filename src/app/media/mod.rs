@@ -574,6 +574,10 @@ impl CorrentApp {
                 p.offline = offline.map(|s| (s, client.base().to_string()));
                 self.media.player = Some(p)
             }
+            // mpv isn't installed: offer to get it rather than only saying so.
+            Err(_) if corrent_mpv::Library::get().is_err_and(|e| super::get_mpv::is_missing(&e)) => {
+                self.open_get_mpv(true)
+            }
             Err(e) => self.toasts.push(crate::engine::ToastKind::Error, t!("Can't play: {why}", why = e)),
         }
     }

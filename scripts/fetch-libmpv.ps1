@@ -8,7 +8,8 @@
 #   powershell -File scripts/fetch-libmpv.ps1 -Latest    # the newest release (GitHub's digest)
 #
 # libmpv is not bundled with release packages (docs/PACKAGING.md); this is for development and
-# the owner's own builds. The project prunes old releases: when the pinned one is gone, use
+# the owner's own builds. The app's own download (crates/corrent-core/src/mpv_get.rs) pins the same
+# build: change both together. The project prunes old releases: when the pinned one is gone, use
 # -Latest and update $Tag/$Sha256 below.
 
 param([switch]$Latest, [switch]$Force)

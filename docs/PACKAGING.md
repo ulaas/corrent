@@ -19,6 +19,13 @@ workflow uploads all artifacts to a **draft** GitHub release; nothing is publish
 Every package also carries **`corrent-mpvw`**, the libmpv worker the media library uses for
 probing, thumbnails and transcoding (next to the main executable). libmpv itself is not bundled
 (licensing and size): the app plays and probes when the system has it and says so otherwise.
+On Windows, where no package manager provides it, the app offers to download it on request
+(*Get mpv for playback*, also in Settings › Playback): the pinned build from
+shinchiro/mpv-winbuild-cmake that `scripts/fetch-libmpv.ps1` uses, checked against its SHA-256
+(the newest release with GitHub's digest when the pinned one has been pruned), unpacked with
+Windows' own `tar.exe` into `corrent-lib\` next to `corrent.exe`, where the player and
+`corrent-mpvw` look first (`crates/corrent-core/src/mpv_get.rs`). Corrent never redistributes it.
+Keep the pin in `mpv_get.rs` in step with the script.
 Server installation (systemd, launchd, Windows service, Docker) is in `docs/SERVER.md`.
 
 ## Windows

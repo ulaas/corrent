@@ -22,6 +22,7 @@ pub mod lock;
 pub mod logbuf;
 pub mod logfile;
 pub mod migrate;
+pub mod mpv_get;
 pub mod retention;
 pub mod rss;
 pub mod search;
