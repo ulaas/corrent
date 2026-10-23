@@ -6,6 +6,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      skip_ci_gate:
+        description: "Build without waiting for a green CI run on this commit (emergencies only)"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,7 +19,50 @@ permissions:
   contents: write
 
 jobs:
+  # Waits for ci.yml on the same commit, so the commit and the tag can be pushed together: the
+  # builds start once a CI run on that commit is green. Fails if CI fails or is cancelled, or if
+  # no CI run shows up for the commit within 10 minutes.
+  ci-gate:
+    name: Wait for CI on this commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      actions: read
+    steps:
+      - name: Wait for a green CI run
+        if: inputs.skip_ci_gate != true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          waited=0
+          while :; do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=50" \
+              --jq '[.workflow_runs[] | {status, conclusion, url: .html_url}]')
+            total=$(jq length <<<"$runs")
+            if jq -e 'any(.[]; .conclusion == "success")' <<<"$runs" >/dev/null; then
+              echo "CI passed on $SHA: $(jq -r 'first(.[] | select(.conclusion == "success") | .url)' <<<"$runs")"
+              exit 0
+            fi
+            if (( total > 0 )) && ! jq -e 'any(.[]; .status != "completed")' <<<"$runs" >/dev/null; then
+              echo "::error::CI did not pass on $SHA (re-run it, then re-run this release):"
+              jq -r '.[] | "  \(.conclusion): \(.url)"' <<<"$runs"
+              exit 1
+            fi
+            if (( total == 0 && waited >= 600 )); then
+              echo "::error::No CI run for $SHA after 10 minutes. Push the commit to main first (or run CI on it by hand)."
+              exit 1
+            fi
+            echo "Waiting for CI on $SHA ($total run(s), ${waited}s so far)"
+            sleep 60; waited=$((waited + 60))
+          done
+      - name: CI gate skipped
+        if: inputs.skip_ci_gate == true
+        run: echo "::warning::Release built without waiting for CI (skip_ci_gate)."
+
   windows:
+    needs: ci-gate
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,6 +107,7 @@ jobs:
             target/release/correntd.pdb
 
   linux:
+    needs: ci-gate
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -84,6 +133,7 @@ jobs:
           path: dist/**
 
   macos:
+    needs: ci-gate
     runs-on: macos-latest
     env:
       # `secrets` can't be used in step conditions directly.

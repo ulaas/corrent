@@ -86,6 +86,8 @@ Without them the dmg is unsigned and opens after right-click › Open.
 1. Bump `version` in `Cargo.toml` and the `<release>` in the metainfo; `cargo build` to update the lock file.
 2. Run the gates (`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo deny check && cargo test`)
    and `scripts/release-hygiene.ps1` (no debug hooks or test code in the release binaries).
-3. Commit, tag `vX.Y.Z`, push the tag (owner).
+3. Commit, tag `vX.Y.Z`, push the tag (owner). The Release workflow's `ci-gate` job waits until CI has
+   passed on the tagged commit before building, and fails if that CI run fails or is cancelled (re-run CI, then the
+   release). A manual run can tick `skip_ci_gate` in an emergency.
 4. Check the draft release's artifacts on each platform (`docs/PLATFORM-TESTING.md`), then publish.
 5. Submit the winget manifests, and keep the `symbols-windows` artifact with the release.
