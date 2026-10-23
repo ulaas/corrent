@@ -1,7 +1,7 @@
 //! Names → structure: what a file name and its folders say about the media (title, year,
 //! season/episode, quality). Pure functions; the scanner combines them with tags and probes.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -460,6 +460,52 @@ pub fn show_folder<'a>(root: &Path, file: &'a Path) -> Option<&'a str> {
     first.as_os_str().to_str()
 }
 
+/// For a file in a shows library: the show's folder, relative to the root. The deepest folder
+/// above the file that isn't a season folder (`Season 1`, `Specials`), a release folder that
+/// names a season or episode (`Show.S01.1080p`), or an extras folder, so a grouping folder
+/// (`Anime/Show A/Season 1/x.mkv`) is not taken for the show. `None` when every folder is one of
+/// those (a season pack straight under the root) or the file is in the root.
+pub fn show_dir(root: &Path, file: &Path) -> Option<PathBuf> {
+    let rel = file.strip_prefix(root).ok()?;
+    let dirs: Vec<&std::ffi::OsStr> = rel.parent()?.iter().collect();
+    let idx = dirs.iter().rposition(|c| {
+        let Some(name) = c.to_str() else { return false };
+        let p = parse_name(name);
+        season_folder(name).is_none()
+            && p.season.is_none()
+            && p.episode.is_none()
+            && !p.title.is_empty()
+            && !is_extras_folder(name)
+    })?;
+    Some(dirs[..=idx].iter().collect())
+}
+
+/// Where a show's own files are (`tvshow.nfo`, `poster.jpg`): its folder, else the folder
+/// directly under the root (a season pack's folder).
+pub fn show_home(root: &Path, file: &Path) -> Option<PathBuf> {
+    show_dir(root, file).or_else(|| show_folder(root, file).map(PathBuf::from))
+}
+
+pub fn is_extras_folder(name: &str) -> bool {
+    let l = name.trim().to_ascii_lowercase();
+    EXTRAS_FOLDERS.contains(&l.as_str())
+        || matches!(l.as_str(), "sample" | "samples" | "trailers" | "subs" | "subtitles")
+}
+
+const EXTRAS_FOLDERS: [&str; 8] =
+    ["extras", "featurettes", "behind the scenes", "deleted scenes", "interviews", "scenes", "shorts", "other"];
+
+/// A file name that says nothing about the movie (`movie.mkv`, `VTS_01_1`, `title_t00`): the
+/// folder's name is used instead.
+pub fn is_generic_name(stem: &str) -> bool {
+    let l = stem.trim().to_ascii_lowercase();
+    let p = parse_name(stem);
+    p.title.chars().filter(|c| c.is_alphanumeric()).count() < 3
+        || matches!(p.title.to_ascii_lowercase().as_str(), "movie" | "film" | "video" | "feature" | "main" | "title")
+        || l.starts_with("vts_")
+        || l.starts_with("title_t")
+}
+
 /// `01 - Title`, `1-03 Title`, `03. Title`, `Artist - 05 - Title` → (disc, track, title).
 pub fn track_name(stem: &str) -> (Option<u32>, Option<u32>, String) {
     let s = stem.trim();
@@ -526,16 +572,7 @@ pub fn is_extra(path: &Path) -> Option<&'static str> {
     if stem.ends_with("-trailer") || stem == "trailer" || in_dir(&["trailers"]) {
         return Some("trailer");
     }
-    if in_dir(&[
-        "extras",
-        "featurettes",
-        "behind the scenes",
-        "deleted scenes",
-        "interviews",
-        "scenes",
-        "shorts",
-        "other",
-    ]) {
+    if in_dir(&EXTRAS_FOLDERS) {
         return Some("extra");
     }
     if stem == "theme" || stem.ends_with("-theme") {

@@ -105,6 +105,35 @@ pub fn quick_hash(path: &Path, size: u64) -> std::io::Result<String> {
 
 // ------------------------------------------------------------------ placement
 
+/// Placement rules this build applies. Libraries placed by an older version are repaired once
+/// (`repair`): files the old rules put in the wrong item move to the right one.
+pub const PLACEMENT_VERSION: i64 = 1;
+
+/// What a file's placement may use besides its own name.
+#[derive(Clone, Copy, Debug, Default)]
+struct Context {
+    /// The only main video in its folder: the folder's name, `movie.nfo` and `poster.jpg`
+    /// describe it (in a folder of several movies they describe none of them).
+    alone: bool,
+    /// The rules before placement version 1, only to find what the repair must move.
+    legacy: bool,
+}
+
+/// Main videos per folder (extras don't count), for `Context::alone`.
+fn videos_per_folder<'a>(paths: impl Iterator<Item = &'a Path>) -> HashMap<PathBuf, usize> {
+    let mut n = HashMap::new();
+    for p in paths.filter(|p| parse::is_extra(p).is_none()) {
+        if let Some(d) = p.parent() {
+            *n.entry(d.to_path_buf()).or_insert(0) += 1;
+        }
+    }
+    n
+}
+
+fn context(per_folder: &HashMap<PathBuf, usize>, f: &Path) -> Context {
+    Context { alone: f.parent().and_then(|d| per_folder.get(d)).is_none_or(|n| *n <= 1), legacy: false }
+}
+
 /// Where a file goes in the item tree.
 #[derive(Clone, Debug, PartialEq)]
 enum Placement {
@@ -165,6 +194,8 @@ struct Analyzed {
     placement: Placement,
     art: Vec<(ArtTarget, &'static str, artwork::Stored, String)>,
     external_subs: Vec<(PathBuf, Option<String>, bool)>,
+    /// Re-placed by the repair: an existing episode takes the file's title again.
+    retitle: bool,
 }
 
 fn stem(p: &Path) -> String {
@@ -184,15 +215,30 @@ fn root_of<'a>(roots: &'a [PathBuf], p: &Path) -> &'a Path {
         .unwrap_or(Path::new("/"))
 }
 
-fn place(kind: LibraryKind, roots: &[PathBuf], f: &Path, tags: Option<&AudioTags>, nfo: Option<&Nfo>) -> Placement {
+fn place(
+    kind: LibraryKind,
+    roots: &[PathBuf],
+    f: &Path,
+    tags: Option<&AudioTags>,
+    nfo: Option<&Nfo>,
+    cx: Context,
+) -> Placement {
     let st = stem(f);
     match kind {
         LibraryKind::Movies => {
             let role = parse::is_extra(f).unwrap_or("main");
             let from_file = parse::parse_name(&st);
-            // Generic file names ("movie.mkv", "VTS_01_1") take the folder's name.
-            let weak = from_file.title.len() < 3
-                || from_file.year.is_none() && !folder_name(f).is_empty() && f.parent() != Some(root_of(roots, f));
+            let in_folder = !folder_name(f).is_empty() && f.parent() != Some(root_of(roots, f));
+            // Generic file names ("movie.mkv", "VTS_01_1") take the folder's name, and so does a
+            // file without a year alone in a folder that has one ("Dune (2021)/dune.mkv"). A
+            // folder that groups movies ("Marvel/Thor.mkv", "4K/Avatar.mkv") names none of them.
+            let weak = if cx.legacy {
+                from_file.title.len() < 3 || from_file.year.is_none() && in_folder
+            } else {
+                in_folder
+                    && (parse::is_generic_name(&st)
+                        || cx.alone && from_file.year.is_none() && parse::parse_name(&folder_name(f)).year.is_some())
+            };
             let p = if weak && role == "main" {
                 let from_dir = parse::parse_name(&folder_name(f));
                 if from_dir.title.is_empty() { from_file } else { from_dir }
@@ -206,7 +252,11 @@ fn place(kind: LibraryKind, roots: &[PathBuf], f: &Path, tags: Option<&AudioTags
         LibraryKind::Shows => {
             let root = root_of(roots, f);
             let p = parse::parse_name(&st);
-            let show_dir = parse::show_folder(root, f).map(parse::parse_name);
+            let show_dir = if cx.legacy {
+                parse::show_folder(root, f).map(parse::parse_name)
+            } else {
+                parse::show_dir(root, f).and_then(|d| d.file_name().and_then(|n| n.to_str()).map(parse::parse_name))
+            };
             let (show, show_year) = match &show_dir {
                 Some(sd) if !sd.title.is_empty() => (sd.title.clone(), sd.year.map(|y| y as i32)),
                 _ => (p.title.clone(), p.year.map(|y| y as i32)),
@@ -292,7 +342,7 @@ fn podcast_episode(stem: &str) -> (i64, String) {
 }
 
 /// Local artwork next to a file or in its folders.
-fn local_art(kind: LibraryKind, roots: &[PathBuf], f: &Path) -> Vec<(ArtTarget, &'static str, PathBuf)> {
+fn local_art(kind: LibraryKind, roots: &[PathBuf], f: &Path, cx: Context) -> Vec<(ArtTarget, &'static str, PathBuf)> {
     let dir = f.parent().unwrap_or(Path::new("/"));
     let st = stem(f);
     let first =
@@ -305,19 +355,30 @@ fn local_art(kind: LibraryKind, roots: &[PathBuf], f: &Path) -> Vec<(ArtTarget, 
         LibraryKind::Movies => {
             let sp = format!("{st}-poster");
             let sf = format!("{st}-fanart");
-            if let Some(p) = first(dir, &imgs(&[&sp, "poster", "folder", "cover", "movie"])) {
+            let sl = format!("{st}-logo");
+            // Folder-wide images only for the folder's one movie.
+            let (posters, backdrops, logos): (Vec<&str>, Vec<&str>, Vec<&str>) = if cx.alone {
+                (
+                    vec![&sp, "poster", "folder", "cover", "movie"],
+                    vec![&sf, "fanart", "backdrop", "background"],
+                    vec![&sl, "logo", "clearlogo"],
+                )
+            } else {
+                (vec![&sp], vec![&sf], vec![&sl])
+            };
+            if let Some(p) = first(dir, &imgs(&posters)) {
                 out.push((ArtTarget::Main, "poster", p));
             }
-            if let Some(p) = first(dir, &imgs(&[&sf, "fanart", "backdrop", "background"])) {
+            if let Some(p) = first(dir, &imgs(&backdrops)) {
                 out.push((ArtTarget::Main, "backdrop", p));
             }
-            if let Some(p) = first(dir, &imgs(&["logo", "clearlogo"])) {
+            if let Some(p) = first(dir, &imgs(&logos)) {
                 out.push((ArtTarget::Main, "logo", p));
             }
         }
         LibraryKind::Shows => {
             let root = root_of(roots, f);
-            if let Some(show) = parse::show_folder(root, f).map(|s| root.join(s)) {
+            if let Some(show) = parse::show_home(root, f).map(|s| root.join(s)) {
                 if let Some(p) = first(&show, &imgs(&["poster", "folder", "cover"])) {
                     out.push((ArtTarget::Show, "poster", p));
                 }
@@ -406,20 +467,31 @@ fn external_subs(f: &Path) -> Vec<(PathBuf, Option<String>, bool)> {
     out
 }
 
+/// A `.nfo` someone else wrote. Ours only repeat what the library already has, and reading them
+/// back would keep a wrong match forever (its title would place the file).
 fn read_nfo(p: &Path) -> Option<Nfo> {
     let text = std::fs::read(p).ok()?;
-    crate::nfo::parse(&String::from_utf8_lossy(&text))
+    let text = String::from_utf8_lossy(&text);
+    if text.contains(crate::nfo::MARK) {
+        return None;
+    }
+    crate::nfo::parse(&text)
 }
 
 /// The .nfo for a file, and for its container (tvshow.nfo).
-fn nfos(kind: LibraryKind, roots: &[PathBuf], f: &Path) -> (Option<Nfo>, Option<Nfo>) {
+fn nfos(kind: LibraryKind, roots: &[PathBuf], f: &Path, cx: Context) -> (Option<Nfo>, Option<Nfo>) {
     let dir = f.parent().unwrap_or(Path::new("/"));
     let own = read_nfo(&f.with_extension("nfo"));
     match kind {
-        LibraryKind::Movies => (own.or_else(|| read_nfo(&dir.join("movie.nfo"))), None),
+        // `movie.nfo` describes the folder's one movie, not each of several.
+        LibraryKind::Movies => {
+            (own.or_else(|| (cx.alone || cx.legacy).then(|| read_nfo(&dir.join("movie.nfo"))).flatten()), None)
+        }
         LibraryKind::Shows => {
             let root = root_of(roots, f);
-            let show = parse::show_folder(root, f).and_then(|s| read_nfo(&root.join(s).join("tvshow.nfo")));
+            let home =
+                if cx.legacy { parse::show_folder(root, f).map(PathBuf::from) } else { parse::show_home(root, f) };
+            let show = home.and_then(|s| read_nfo(&root.join(s).join("tvshow.nfo")));
             (own, show)
         }
         _ => (None, None),
@@ -439,7 +511,8 @@ fn find_or_create(
     now: i64,
 ) -> rusqlite::Result<i64> {
     let sort = parse::sort_title(title);
-    // Containers with an index (seasons) match on it; everything else on the sort title.
+    // Containers with an index (seasons) match on it; everything else on the title the scanner
+    // gave it (`placed`: a provider may have renamed it since) or its current one.
     let existing: Option<i64> = if kind == ItemKind::Season {
         t.query_row(
             "SELECT id FROM items WHERE library_id = ?1 AND kind = ?2 AND parent_id IS ?3 AND index_no IS ?4",
@@ -448,26 +521,89 @@ fn find_or_create(
         )
         .optional()?
     } else {
-        t.query_row(
-            "SELECT id FROM items WHERE library_id = ?1 AND kind = ?2 AND parent_id IS ?3 AND sort_title = ?4 \
-             AND (?5 IS NULL OR year IS NULL OR year = ?5) ORDER BY id LIMIT 1",
-            params![library_id, kind.as_str(), parent, sort, year],
-            |r| r.get(0),
-        )
-        .optional()?
+        let mut st = t.prepare_cached(
+            "SELECT id, year FROM items WHERE library_id = ?1 AND kind = ?2 AND parent_id IS ?3 \
+             AND (sort_title = ?4 OR json_extract(extra, '$.placed') = ?4) ORDER BY id",
+        )?;
+        let same: Vec<(i64, Option<i32>)> = st
+            .query_map(params![library_id, kind.as_str(), parent, sort], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        same_item(&same, year)
     };
     if let Some(id) = existing {
         if year.is_some() {
             t.execute("UPDATE items SET year = coalesce(year, ?1) WHERE id = ?2", params![year, id])?;
         }
+        if kind != ItemKind::Season {
+            t.execute(
+                "UPDATE items SET extra = json_set(extra, '$.placed', coalesce(json_extract(extra, '$.placed'), ?1)) \
+                 WHERE id = ?2",
+                params![sort, id],
+            )?;
+        }
         return Ok(id);
     }
+    let extra =
+        if kind == ItemKind::Season { "{}".to_string() } else { serde_json::json!({ "placed": sort }).to_string() };
     t.execute(
-        "INSERT INTO items(library_id, kind, parent_id, title, sort_title, year, index_no, added_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-        params![library_id, kind.as_str(), parent, title, sort, year, index, now],
+        "INSERT INTO items(library_id, kind, parent_id, title, sort_title, year, index_no, added_at, updated_at, extra) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
+        params![library_id, kind.as_str(), parent, title, sort, year, index, now, extra],
     )?;
     Ok(t.last_insert_rowid())
+}
+
+/// Which of the items with the same title, as (id, year), a file with `year` belongs to: the one
+/// with that year, else the only one if it has no year. Without a year: the only one, else the
+/// only one without a year. Never a guess between remakes ("Dune" 1984 and 2021).
+fn same_item(same: &[(i64, Option<i32>)], year: Option<i32>) -> Option<i64> {
+    let yearless: Vec<i64> = same.iter().filter(|(_, y)| y.is_none()).map(|(id, _)| *id).collect();
+    match year {
+        Some(y) => same
+            .iter()
+            .find(|(_, iy)| *iy == Some(y))
+            .map(|(id, _)| *id)
+            .or_else(|| (same.len() == 1 && yearless.len() == 1).then(|| yearless[0])),
+        None => match (same, yearless.as_slice()) {
+            ([(id, _)], _) => Some(*id),
+            (_, [id]) => Some(*id),
+            _ => None,
+        },
+    }
+}
+
+/// The movie an extra (trailer, sample, featurette) belongs to: the one whose main file is in
+/// the extra's folder (or the folder above `Trailers/`, `Extras/`…). Several there: the one
+/// whose file name starts the extra's ("Movie-trailer.mkv" → "Movie.mkv"); else none.
+fn movie_of_extra(t: &Transaction, library_id: i64, path: &Path) -> rusqlite::Result<Option<i64>> {
+    let Some(mut dir) = path.parent() else { return Ok(None) };
+    if dir.file_name().and_then(|n| n.to_str()).is_some_and(parse::is_extras_folder)
+        && let Some(up) = dir.parent()
+    {
+        dir = up;
+    }
+    let prefix = format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR);
+    let mut st = t.prepare_cached(
+        "SELECT i.id, x.path FROM items i JOIN item_files f ON f.item_id = i.id AND f.role = 'main' \
+         JOIN files x ON x.id = f.file_id \
+         WHERE i.library_id = ?1 AND i.kind = 'movie' AND substr(x.path, 1, length(?2)) = ?2 \
+         AND instr(substr(x.path, length(?2) + 1), '/') = 0 AND instr(substr(x.path, length(?2) + 1), '\\') = 0 \
+         ORDER BY i.id",
+    )?;
+    let mains: Vec<(i64, String)> =
+        st.query_map(params![library_id, prefix], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let mut items: Vec<i64> = mains.iter().map(|(id, _)| *id).collect();
+    items.dedup();
+    if let [one] = items.as_slice() {
+        return Ok(Some(*one));
+    }
+    let extra = stem(path).to_lowercase();
+    Ok(mains
+        .iter()
+        .map(|(id, p)| (*id, stem(Path::new(p)).to_lowercase()))
+        .filter(|(_, s)| !s.is_empty() && extra.starts_with(s.as_str()))
+        .max_by_key(|(_, s)| s.len())
+        .map(|(id, _)| id))
 }
 
 fn locked(t: &Transaction, item: i64) -> rusqlite::Result<HashSet<String>> {
@@ -644,26 +780,17 @@ fn apply(t: &Transaction, library_id: i64, a: &Analyzed) -> rusqlite::Result<Vec
     let mut targets: HashMap<ArtTarget, i64> = HashMap::new();
     match &a.placement {
         Placement::Movie { title, year, role } => {
-            // Extras attach to the movie in the same folder.
+            // Extras attach to their movie, never to a movie of their own or a guessed one.
             let item = if *role != "main" {
-                let dir = a
-                    .path
-                    .parent()
-                    .map(|d| format!("{}{}", d.display(), std::path::MAIN_SEPARATOR))
-                    .unwrap_or_default();
-                t.query_row(
-                    "SELECT i.id FROM items i JOIN item_files f ON f.item_id = i.id AND f.role = 'main' JOIN files x ON x.id = f.file_id \
-                     WHERE i.library_id = ?1 AND i.kind = 'movie' AND substr(x.path, 1, length(?2)) = ?2 LIMIT 1",
-                    params![library_id, dir],
-                    |r| r.get::<_, i64>(0),
-                )
-                .optional()?
+                match movie_of_extra(t, library_id, &a.path)? {
+                    Some(i) => i,
+                    None => {
+                        t.execute("DELETE FROM item_files WHERE file_id = ?1", [file_id])?;
+                        return Ok(touched);
+                    }
+                }
             } else {
-                None
-            };
-            let item = match item {
-                Some(i) => i,
-                None => find_or_create(t, library_id, ItemKind::Movie, None, title, *year, None, now)?,
+                find_or_create(t, library_id, ItemKind::Movie, None, title, *year, None, now)?
             };
             link(t, item, file_id, role)?;
             if *role == "main" {
@@ -717,6 +844,10 @@ fn apply(t: &Transaction, library_id: i64, a: &Analyzed) -> rusqlite::Result<Vec
                 "UPDATE items SET runtime_ms = coalesce(?1, runtime_ms), index2 = coalesce(?2, index2) WHERE id = ?3",
                 params![runtime, episode_end, ep],
             )?;
+            // Re-placed by the repair: the title a wrong show's provider gave it goes.
+            if a.retitle && !locked(t, ep)?.contains("title") {
+                t.execute("UPDATE items SET title = ?1 WHERE id = ?2", params![ep_title, ep])?;
+            }
             if let Some(n) = &a.nfo {
                 apply_nfo(t, ep, n, now)?;
             }
@@ -937,6 +1068,31 @@ pub(crate) async fn scan(lib: &Library, library_id: i64, cancel: &AtomicBool) ->
         .await?;
 
     let seen: HashSet<String> = found.iter().map(|f| f.path.display().to_string()).collect();
+    let per_folder = videos_per_folder(found.iter().map(|f| f.path.as_path()));
+
+    // 2b. Libraries placed by older rules: move what they put in the wrong item (once).
+    let version: i64 = lib
+        .db()
+        .read(move |c| c.query_row("SELECT placement FROM libraries WHERE id = ?1", [library_id], |r| r.get(0)))
+        .await?;
+    let mut repaired = version >= PLACEMENT_VERSION;
+    let mut touched_all: Vec<i64> = Vec::new();
+    if !repaired {
+        if matches!(kind, LibraryKind::Movies | LibraryKind::Shows) {
+            status.phase = "repair".into();
+            lib.set_status(status.clone());
+            match repair(lib, library_id, kind, &roots, &per_folder, &seen, cancel).await {
+                Ok(t) => {
+                    touched_all.extend(t);
+                    repaired = offline.is_empty();
+                }
+                Err(e) => tracing::warn!("library {library_id}: repairing placements failed: {e}"),
+            }
+        } else {
+            repaired = true;
+        }
+    }
+
     let mut todo: Vec<Found> = found
         .into_iter()
         .filter(|f| match known.get(&f.path.display().to_string()) {
@@ -944,7 +1100,8 @@ pub(crate) async fn scan(lib: &Library, library_id: i64, cancel: &AtomicBool) ->
             None => true,
         })
         .collect();
-    todo.sort_by(|a, b| a.path.cmp(&b.path));
+    // Main files first: extras look for their movie.
+    todo.sort_by_key(|f| (parse::is_extra(&f.path).is_some(), f.path.clone()));
     // Gone: known, not seen, and not under an offline folder.
     let gone: Vec<(&String, &Known)> = known
         .iter()
@@ -964,7 +1121,6 @@ pub(crate) async fn scan(lib: &Library, library_id: i64, cancel: &AtomicBool) ->
         .collect();
     let mut moved_ids = HashSet::new();
 
-    let mut touched_all: Vec<i64> = Vec::new();
     for (n, f) in todo.into_iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             status.error = Some("cancelled".into());
@@ -994,7 +1150,8 @@ pub(crate) async fn scan(lib: &Library, library_id: i64, cancel: &AtomicBool) ->
             status.done = n as u64 + 1;
             continue;
         }
-        let analyzed = analyze(lib, kind, &roots, f, qh).await;
+        let cx = context(&per_folder, &f.path);
+        let analyzed = analyze(lib, kind, &roots, f, qh, cx, true).await;
         let is_new = !known.contains_key(&analyzed.path.display().to_string());
         let touched = lib.db().write(move |t| {
             let touched = apply(t, library_id, &analyzed)?;
@@ -1042,6 +1199,9 @@ pub(crate) async fn scan(lib: &Library, library_id: i64, cancel: &AtomicBool) ->
             }
             prune(t, library_id)?;
             t.execute("UPDATE libraries SET scanned_at = ?1 WHERE id = ?2", params![now, library_id])?;
+            if repaired {
+                t.execute("UPDATE libraries SET placement = ?1 WHERE id = ?2", params![PLACEMENT_VERSION, library_id])?;
+            }
             Ok(removed)
         })
         .await?;
@@ -1052,10 +1212,41 @@ pub(crate) async fn scan(lib: &Library, library_id: i64, cancel: &AtomicBool) ->
     Ok(())
 }
 
-/// Reads everything about one file (blocking work on the pool, probing in the worker).
-async fn analyze(lib: &Library, kind: LibraryKind, roots: &[PathBuf], f: Found, quick_hash: String) -> Analyzed {
+/// What a name-parser plugin makes of a file without an .nfo (movies, shows, videos).
+async fn hook_nfo(lib: &Library, kind: LibraryKind, path: &Path) -> Option<Nfo> {
+    if !matches!(kind, LibraryKind::Movies | LibraryKind::Shows | LibraryKind::Videos) {
+        return None;
+    }
+    let hook = lib.name_hook()?;
+    hook(stem(path)).await.map(|h| {
+        let episodic = kind == LibraryKind::Shows;
+        Nfo {
+            kind: "plugin".into(),
+            // For episodes the title an .nfo carries is the episode's: the show comes from the
+            // folders.
+            title: (!episodic && !h.title.is_empty()).then_some(h.title),
+            year: h.year,
+            season: h.season,
+            episode: h.episode,
+            ..Default::default()
+        }
+    })
+}
+
+/// Reads everything about one file (blocking work on the pool, probing in the worker; `probe`
+/// false keeps what the file row has, for the repair).
+async fn analyze(
+    lib: &Library,
+    kind: LibraryKind,
+    roots: &[PathBuf],
+    f: Found,
+    quick_hash: String,
+    cx: Context,
+    probe: bool,
+) -> Analyzed {
     let fk = parse::file_kind(&f.path);
     let probe = match fk {
+        _ if !probe => None,
         FileKind::Video | FileKind::Audio => match lib.prober().probe(&f.path).await {
             Ok(p) => Some(p),
             Err(e) => {
@@ -1068,33 +1259,19 @@ async fn analyze(lib: &Library, kind: LibraryKind, roots: &[PathBuf], f: Found, 
     let (path, roots2) = (f.path.clone(), roots.to_vec());
     let (tags, nfo, parent_nfo, art_files, subs) = tokio::task::spawn_blocking(move || {
         let tags = (fk == FileKind::Audio).then(|| crate::tags::read(&path).ok()).flatten();
-        let (nfo, parent) = nfos(kind, &roots2, &path);
-        let art = local_art(kind, &roots2, &path);
+        let (nfo, parent) = nfos(kind, &roots2, &path, cx);
+        let art = local_art(kind, &roots2, &path, cx);
         let subs = if fk == FileKind::Video { external_subs(&path) } else { Vec::new() };
         (tags, nfo, parent, art, subs)
     })
     .await
     .unwrap_or_default();
     // No .nfo: a name-parser plugin may know the naming scheme better than the built-in parser.
-    let nfo = match (nfo, lib.name_hook()) {
-        (None, Some(hook)) if matches!(kind, LibraryKind::Movies | LibraryKind::Shows | LibraryKind::Videos) => {
-            hook(stem(&f.path)).await.map(|h| {
-                let episodic = kind == LibraryKind::Shows;
-                Nfo {
-                    kind: "plugin".into(),
-                    // For episodes the title an .nfo carries is the episode's: the show comes
-                    // from the folders.
-                    title: (!episodic && !h.title.is_empty()).then_some(h.title),
-                    year: h.year,
-                    season: h.season,
-                    episode: h.episode,
-                    ..Default::default()
-                }
-            })
-        }
-        (nfo, _) => nfo,
+    let nfo = match nfo {
+        Some(n) => Some(n),
+        None => hook_nfo(lib, kind, &f.path).await,
     };
-    let placement = place(kind, roots, &f.path, tags.as_ref(), nfo.as_ref());
+    let placement = place(kind, roots, &f.path, tags.as_ref(), nfo.as_ref(), cx);
 
     // Artwork: local files, else the embedded cover of a track.
     let mut art = Vec::new();
@@ -1137,27 +1314,343 @@ async fn analyze(lib: &Library, kind: LibraryKind, roots: &[PathBuf], f: Found, 
         placement,
         art,
         external_subs: subs,
+        retitle: false,
     }
+}
+
+// ------------------------------------------------------------------ repair
+
+/// A file of the library as the repair sees it.
+struct Row {
+    file: i64,
+    path: PathBuf,
+    size: i64,
+    mtime: i64,
+    quick_hash: String,
+    /// The movie, or the show of the episode, the file is in now.
+    group: Option<i64>,
+}
+
+/// A title and its year.
+type Titled = (String, Option<i32>);
+
+/// What a placement puts a file under: the movie or the show, by title (letters and digits
+/// only) and year. Extras have none.
+fn group_key(p: &Placement) -> Option<Titled> {
+    let norm = |s: &str| parse::sort_title(s).chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+    match p {
+        Placement::Movie { title, year, role: "main" } => Some((norm(title), *year)),
+        Placement::Episode { show, show_year, .. } => Some((norm(show), *show_year)),
+        _ => None,
+    }
+}
+
+fn group_title(p: &Placement) -> Option<Titled> {
+    match p {
+        Placement::Movie { title, year, role: "main" } => Some((title.clone(), *year)),
+        Placement::Episode { show, show_year, .. } => Some((show.clone(), *show_year)),
+        _ => None,
+    }
+}
+
+/// Moves the files earlier placement rules put in the wrong movie or show (a grouping folder
+/// taken for the movie, two shows under one folder, `movie.nfo` and `poster.jpg` given to every
+/// movie of a folder, extras made movies of their own) and resets what was fetched for the items
+/// that held them, so it is identified again. Items the old and new rules agree on keep
+/// everything, including a match the user chose. Returns the items to refresh in the index.
+async fn repair(
+    lib: &Library,
+    library_id: i64,
+    kind: LibraryKind,
+    roots: &[PathBuf],
+    per_folder: &HashMap<PathBuf, usize>,
+    on_disk: &HashSet<String>,
+    cancel: &AtomicBool,
+) -> Result<Vec<i64>> {
+    let rows: Vec<Row> = lib
+        .db()
+        .read(move |c| {
+            let mut st = c.prepare(
+                "SELECT f.id, f.path, f.size, f.mtime, f.quick_hash, \
+                 CASE i.kind WHEN 'episode' THEN (SELECT s.parent_id FROM items s WHERE s.id = i.parent_id) ELSE i.id END \
+                 FROM files f LEFT JOIN item_files x ON x.file_id = f.id LEFT JOIN items i ON i.id = x.item_id \
+                 WHERE f.library_id = ?1 AND f.missing_since IS NULL ORDER BY f.path",
+            )?;
+            st.query_map([library_id], |r| {
+                Ok(Row {
+                    file: r.get(0)?,
+                    path: PathBuf::from(r.get::<_, String>(1)?),
+                    size: r.get(2)?,
+                    mtime: r.get(3)?,
+                    quick_hash: r.get(4)?,
+                    group: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .await?;
+    let rows: Vec<Row> = rows.into_iter().filter(|r| on_disk.contains(&r.path.display().to_string())).collect();
+
+    // Where the old and the new rules put each file.
+    let legacy = Context { alone: true, legacy: true };
+    let mut new_place: HashMap<i64, Placement> = HashMap::new();
+    let mut redo: HashSet<i64> = HashSet::new();
+    for r in &rows {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(LibError::Invalid("cancelled".into()));
+        }
+        let cx = context(per_folder, &r.path);
+        let (path, roots2) = (r.path.clone(), roots.to_vec());
+        let (nfo_new, nfo_old, folder_art) = tokio::task::spawn_blocking(move || {
+            let (n, _) = nfos(kind, &roots2, &path, cx);
+            let (o, _) = nfos(kind, &roots2, &path, legacy);
+            let all = Context { alone: true, legacy: false };
+            let folder_art =
+                !cx.alone && local_art(kind, &roots2, &path, all).len() > local_art(kind, &roots2, &path, cx).len();
+            (n, o, folder_art)
+        })
+        .await
+        .map_err(|e| LibError::Db(e.to_string()))?;
+        let hooked = if nfo_new.is_none() || nfo_old.is_none() { hook_nfo(lib, kind, &r.path).await } else { None };
+        let sidecar_gone = nfo_old.is_some() && nfo_new.is_none();
+        let new = place(kind, roots, &r.path, None, nfo_new.or(hooked.clone()).as_ref(), cx);
+        let old = place(kind, roots, &r.path, None, nfo_old.or(hooked).as_ref(), legacy);
+        let extra = matches!(new, Placement::Movie { role, .. } if role != "main");
+        if extra || r.group.is_none() || group_key(&new) != group_key(&old) || folder_art || sidecar_gone {
+            redo.insert(r.file);
+        }
+        new_place.insert(r.file, new);
+    }
+
+    // An item whose files the new rules put under different titles held several movies or shows.
+    let mut by_group: HashMap<i64, Vec<&Row>> = HashMap::new();
+    for r in &rows {
+        if let Some(g) = r.group {
+            by_group.entry(g).or_default().push(r);
+        }
+    }
+    for files in by_group.values() {
+        let keys: HashSet<_> = files.iter().filter_map(|r| new_place.get(&r.file).and_then(group_key)).collect();
+        if keys.len() > 1 {
+            redo.extend(files.iter().map(|r| r.file));
+        }
+    }
+    // Every item that loses or may lose a file is reset, and all its files placed again.
+    let tainted: HashSet<i64> = rows.iter().filter(|r| redo.contains(&r.file)).filter_map(|r| r.group).collect();
+    for g in &tainted {
+        redo.extend(by_group.get(g).into_iter().flatten().map(|r| r.file));
+    }
+
+    // The title most of an item's files give it: a reset item keeps it, so they find it again.
+    let dominant = |files: &[&Row]| -> Option<Titled> {
+        let mut n: HashMap<Titled, (usize, String)> = HashMap::new();
+        for r in files {
+            if let Some(p) = new_place.get(&r.file)
+                && let (Some(k), Some((title, _))) = (group_key(p), group_title(p))
+            {
+                n.entry(k).or_insert((0, title)).0 += 1;
+            }
+        }
+        n.into_iter().max_by(|a, b| a.1.0.cmp(&b.1.0).then(b.0.cmp(&a.0))).map(|((_, y), (_, t))| (t, y))
+    };
+    let resets: Vec<(i64, Option<Titled>)> =
+        tainted.iter().map(|g| (*g, dominant(by_group.get(g).map(Vec::as_slice).unwrap_or_default()))).collect();
+    let placed: Vec<(i64, String)> = by_group
+        .iter()
+        .filter(|(g, _)| !tainted.contains(g))
+        .filter_map(|(g, files)| dominant(files).map(|(t, _)| (*g, parse::sort_title(&t))))
+        .collect();
+    if !resets.is_empty() {
+        tracing::info!("library {library_id}: placing {} files of {} items again", redo.len(), resets.len());
+    }
+    lib.db()
+        .write(move |t| {
+            for (g, title) in &resets {
+                reset_item(t, *g, title.as_ref())?;
+            }
+            for (g, sort) in &placed {
+                t.execute(
+                    "UPDATE items SET extra = json_set(extra, '$.placed', coalesce(json_extract(extra, '$.placed'), ?1)) \
+                     WHERE id = ?2",
+                    params![sort, g],
+                )?;
+            }
+            Ok(())
+        })
+        .await?;
+
+    // Main files first: extras look for their movie.
+    let mut todo: Vec<&Row> = rows.iter().filter(|r| redo.contains(&r.file)).collect();
+    todo.sort_by_key(|r| (parse::is_extra(&r.path).is_some(), r.path.clone()));
+    let mut touched = Vec::new();
+    for r in todo {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(LibError::Invalid("cancelled".into()));
+        }
+        let f = Found { path: r.path.clone(), size: r.size as u64, mtime: r.mtime };
+        let mut a = analyze(lib, kind, roots, f, r.quick_hash.clone(), context(per_folder, &r.path), false).await;
+        a.retitle = true;
+        touched.extend(
+            lib.db()
+                .write(move |t| {
+                    let touched = apply(t, library_id, &a)?;
+                    refresh_fts(t, &touched)?;
+                    Ok(touched)
+                })
+                .await?,
+        );
+    }
+    Ok(touched)
+}
+
+/// Forgets what was fetched or guessed for an item that held files of several movies or shows
+/// (fields the user locked stay), names it after the files it keeps, and lets it be identified
+/// again. A show's seasons and episodes lose their fetched images, overviews and dates too.
+fn reset_item(t: &Transaction, item: i64, title: Option<&Titled>) -> rusqlite::Result<()> {
+    let lock = locked(t, item)?;
+    let free = |f: &str| !lock.contains(f);
+    if let Some((title, year)) = title {
+        if free("title") {
+            t.execute(
+                "UPDATE items SET title = ?1, sort_title = ?2 WHERE id = ?3",
+                params![title, parse::sort_title(title), item],
+            )?;
+        }
+        if free("year") {
+            t.execute("UPDATE items SET year = ?1 WHERE id = ?2", params![year, item])?;
+        }
+    }
+    for field in ["original_title", "overview", "rating", "official_rating", "premiered"] {
+        if free(field) {
+            t.execute(&format!("UPDATE items SET {field} = NULL WHERE id = ?1"), [item])?;
+        }
+    }
+    if free("genres") {
+        t.execute("DELETE FROM item_genres WHERE item_id = ?1", [item])?;
+    }
+    if free("people") {
+        t.execute("DELETE FROM item_people WHERE item_id = ?1", [item])?;
+    }
+    t.execute("DELETE FROM collection_items WHERE item_id = ?1", [item])?;
+    let placed = title.map(|(t, _)| parse::sort_title(t));
+    t.execute(
+        "UPDATE items SET provider_ids = '{}', \
+         extra = json_remove(extra, '$.meta_checked', '$.meta_provider', '$.ratings', '$.thumb_tried', '$.placed') \
+         WHERE id = ?1",
+        [item],
+    )?;
+    if let Some(p) = placed {
+        t.execute("UPDATE items SET extra = json_set(extra, '$.placed', ?1) WHERE id = ?2", params![p, item])?;
+    }
+    t.execute(
+        "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION ALL SELECT i.id FROM items i JOIN tree ON i.parent_id = tree.id) \
+         DELETE FROM images WHERE owner_kind = 'item' AND locked = 0 AND owner_id IN (SELECT id FROM tree)",
+        [item],
+    )?;
+    t.execute(
+        "WITH RECURSIVE tree(id) AS (SELECT id FROM items WHERE parent_id = ?1 \
+           UNION ALL SELECT i.id FROM items i JOIN tree ON i.parent_id = tree.id) \
+         UPDATE items SET \
+           overview = CASE WHEN instr(locked_fields, 'overview') > 0 THEN overview END, \
+           premiered = CASE WHEN instr(locked_fields, 'premiered') > 0 THEN premiered END, \
+           extra = json_remove(extra, '$.thumb_tried') \
+         WHERE id IN (SELECT id FROM tree)",
+        [item],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const ONE: Context = Context { alone: true, legacy: false };
+    const MANY: Context = Context { alone: false, legacy: false };
+
+    fn movie(f: &str, cx: Context) -> (String, Option<i32>) {
+        match place(LibraryKind::Movies, &[PathBuf::from("/m")], Path::new(f), None, None, cx) {
+            Placement::Movie { title, year, .. } => (title, year),
+            p => panic!("{p:?}"),
+        }
+    }
+
+    fn show(f: &str) -> String {
+        match place(LibraryKind::Shows, &[PathBuf::from("/tv")], Path::new(f), None, None, ONE) {
+            Placement::Episode { show, .. } => show,
+            p => panic!("{p:?}"),
+        }
+    }
+
+    #[test]
+    fn grouping_folders_name_no_movie() {
+        // A folder of several movies names none of them.
+        assert_eq!(movie("/m/Marvel/Iron Man.mkv", MANY).0, "Iron Man");
+        assert_eq!(movie("/m/Marvel/Thor.mkv", MANY).0, "Thor");
+        // Nor does a folder without a year that holds one.
+        assert_eq!(movie("/m/4K/Avatar.mkv", ONE).0, "Avatar");
+        // A folder with a year names its one movie; a release name keeps its own.
+        assert_eq!(movie("/m/Dune (2021)/dune.mkv", ONE), ("Dune".into(), Some(2021)));
+        assert_eq!(movie("/m/Dune (2021)/abc-dune-1080p.mkv", ONE).1, Some(2021));
+        assert_eq!(movie("/m/Collection/Heat.1995.mkv", MANY), ("Heat".into(), Some(1995)));
+        // Generic names always take the folder's.
+        assert_eq!(movie("/m/Sintel (2010)/movie.mkv", MANY), ("Sintel".into(), Some(2010)));
+        assert_eq!(movie("/m/Some Film/VTS_01_1.vob", ONE).0, "Some Film");
+        // The old rules (only for the repair) took the grouping folder.
+        assert_eq!(movie("/m/Marvel/Thor.mkv", Context { alone: false, legacy: true }).0, "Marvel");
+    }
+
+    #[test]
+    fn the_show_is_the_folder_above_its_seasons() {
+        assert_eq!(show("/tv/Anime/Show A/Season 1/Show.A.S01E01.mkv"), "Show A");
+        assert_eq!(show("/tv/Anime/Show B/Season 1/Show.B.S01E01.mkv"), "Show B");
+        assert_eq!(show("/tv/Anime/Show C/Show.C.S01E01.mkv"), "Show C");
+        assert_eq!(show("/tv/The Office (2005)/Season 1/The.Office.S01E01.mkv"), "The Office");
+        // Release folders inside the show's are not the show.
+        assert_eq!(show("/tv/Show/Show.S01.1080p.WEB/Show.S01E02.mkv"), "Show");
+        assert_eq!(show("/tv/Show/Season 1/Show.S01E03.720p/Show.S01E03.mkv"), "Show");
+        assert_eq!(show("/tv/Show/Specials/Show.S00E01.mkv"), "Show");
+        // A season pack straight under the root: the file's name.
+        assert_eq!(show("/tv/Great.Show.S01.1080p/Great.Show.S01E01.mkv"), "Great Show");
+        assert_eq!(
+            parse::show_home(Path::new("/tv"), Path::new("/tv/Great.Show.S01.1080p/Great.Show.S01E01.mkv")),
+            Some(PathBuf::from("Great.Show.S01.1080p"))
+        );
+    }
+
+    #[test]
+    fn same_titles_match_only_without_doubt() {
+        let remakes = [(1, Some(1984)), (2, Some(2021))];
+        assert_eq!(same_item(&remakes, Some(2021)), Some(2));
+        assert_eq!(same_item(&remakes, None), None, "no guess between remakes");
+        assert_eq!(same_item(&remakes, Some(2000)), None);
+        assert_eq!(same_item(&[(1, None)], Some(2021)), Some(1));
+        assert_eq!(same_item(&[(1, Some(1984))], None), Some(1));
+        assert_eq!(same_item(&[(1, Some(1984)), (3, None)], None), Some(3));
+        assert_eq!(same_item(&[(1, Some(1984)), (3, None)], Some(2021)), None);
+        assert_eq!(same_item(&[], None), None);
+    }
+
     #[test]
     fn placements() {
         let roots = vec![PathBuf::from("/m")];
         assert_eq!(
-            place(LibraryKind::Movies, &roots, Path::new("/m/The Matrix (1999)/The.Matrix.1999.1080p.mkv"), None, None),
+            place(
+                LibraryKind::Movies,
+                &roots,
+                Path::new("/m/The Matrix (1999)/The.Matrix.1999.1080p.mkv"),
+                None,
+                None,
+                ONE
+            ),
             Placement::Movie { title: "The Matrix".into(), year: Some(1999), role: "main" }
         );
         // A generic file name takes the folder's.
         assert_eq!(
-            place(LibraryKind::Movies, &roots, Path::new("/m/Sintel (2010)/movie.mkv"), None, None),
+            place(LibraryKind::Movies, &roots, Path::new("/m/Sintel (2010)/movie.mkv"), None, None, ONE),
             Placement::Movie { title: "Sintel".into(), year: Some(2010), role: "main" }
         );
         assert!(matches!(
-            place(LibraryKind::Movies, &roots, Path::new("/m/Sintel (2010)/sample.mkv"), None, None),
+            place(LibraryKind::Movies, &roots, Path::new("/m/Sintel (2010)/sample.mkv"), None, None, ONE),
             Placement::Movie { role: "sample", .. }
         ));
         let roots = vec![PathBuf::from("/tv")];
@@ -1167,7 +1660,8 @@ mod tests {
                 &roots,
                 Path::new("/tv/Doctor Who (2005)/Season 1/Doctor.Who.S01E02.mkv"),
                 None,
-                None
+                None,
+                ONE
             ),
             Placement::Episode {
                 show: "Doctor Who".into(),
@@ -1179,7 +1673,7 @@ mod tests {
             }
         );
         assert_eq!(
-            place(LibraryKind::Shows, &roots, Path::new("/tv/Show/Season 2/05 - Name.mkv"), None, None),
+            place(LibraryKind::Shows, &roots, Path::new("/tv/Show/Season 2/05 - Name.mkv"), None, None, ONE),
             Placement::Episode {
                 show: "Show".into(),
                 show_year: None,
@@ -1198,7 +1692,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            place(LibraryKind::Music, &roots, Path::new("/music/A/Album/04 - Song.flac"), Some(&tags), None),
+            place(LibraryKind::Music, &roots, Path::new("/music/A/Album/04 - Song.flac"), Some(&tags), None, ONE),
             Placement::Track {
                 artist: "A".into(),
                 album: "Album".into(),
@@ -1210,7 +1704,7 @@ mod tests {
         );
         // No tags: folders and the file name.
         assert_eq!(
-            place(LibraryKind::Music, &roots, Path::new("/music/Artist X/Best Of/1-03 Hit.mp3"), None, None),
+            place(LibraryKind::Music, &roots, Path::new("/music/Artist X/Best Of/1-03 Hit.mp3"), None, None, ONE),
             Placement::Track {
                 artist: "Artist X".into(),
                 album: "Best Of".into(),
