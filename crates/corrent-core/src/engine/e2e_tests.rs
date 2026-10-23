@@ -136,6 +136,27 @@ async fn delete_keeps_or_removes_files() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_undo_sent_while_the_removal_is_still_finishing_is_not_lost() {
+    // The row leaves the list as soon as the engine forgets the torrent, before its delete call
+    // returns; a client that undoes right then (the API, or a test on a slow disk) must still win.
+    let dir = temp_dir("undo-race");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    let path = download(&l, &s, &dir).await.content_path;
+    // The delete's result reaches the engine 3 s after the torrent left the list.
+    crate::faults::set_call_delay(s.hash.0, Duration::from_secs(3));
+    l.engine.send(EngineCommand::Delete { hashes: vec![s.hash], with_data: false });
+    wait_for(&l, "removed", 20, |sn| find(sn, s.hash).is_none()).await;
+    l.engine.send(EngineCommand::UndoRemove(vec![s.hash]));
+    crate::faults::clear_call_delay(s.hash.0);
+    let snap = wait_for(&l, "undo after an immediate removal", 30, |sn| complete(sn, s.hash)).await;
+    assert_eq!(find(&snap, s.hash).unwrap().category.as_deref(), Some("Tests"), "app data restored");
+    assert!(path.exists(), "files kept");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restart_restores_without_redownload() {
     let dir = temp_dir("restart");
     let s = seeder(&dir).await;
@@ -592,6 +613,7 @@ async fn many_adds_at_once_all_arrive() {
     let dir = temp_dir("batch-add");
     let l = start(&dir);
     let n = 40;
+    let began = Instant::now();
     for i in 0..n {
         let name = format!("batch-{i:03}.bin");
         let mut info =
@@ -616,6 +638,7 @@ async fn many_adds_at_once_all_arrive() {
         })));
     }
     wait_for(&l, "every torrent", 60, |sn| sn.torrents.len() == n && sn.torrents.iter().all(|t| !t.pending)).await;
+    let adding = began.elapsed();
     // The store is saved on the writer thread with a 2 s debounce: a batch costs a write or two,
     // not one (plus an fsync) per torrent on the engine's thread.
     // The writer thread is shared with the other tests (some of which slow their own disk down):
@@ -627,7 +650,10 @@ async fn many_adds_at_once_all_arrive() {
     }
     tokio::time::sleep(Duration::from_secs(3)).await;
     let writes = crate::writer::global().writes(&l.paths.store_file());
-    assert!((1..=5).contains(&writes), "{writes} store writes for {n} adds");
+    // At most one per 2 s while the adds kept coming (a slow CI machine takes a while to add
+    // 40), plus the last: far from one per torrent.
+    let most = 2 + adding.as_secs() / 2;
+    assert!((1..=most).contains(&writes) && writes < n as u64 / 2, "{writes} store writes for {n} adds in {adding:?}");
     let paths = stop(l).await;
     let store: crate::store::StoreData = serde_json::from_slice(&std::fs::read(paths.store_file()).unwrap()).unwrap();
     assert_eq!(store.torrents.len(), n, "all of them saved");
@@ -1201,8 +1227,15 @@ async fn after_a_power_loss_only_recently_written_torrents_are_checked() {
     let notices = notices_until(&l, 30, |sn| find(sn, tiny).is_some_and(|t| !t.pending) && complete(sn, s.hash)).await;
     assert!(notices.iter().any(|n| n.contains("Checking 1 download")), "{notices:?}");
     assert!(!paths.log_dir().join("power-loss.pending").exists(), "taken once");
+    // The engine writes the piece state when the full check is done, a moment after the torrent
+    // is back in the list (longer on a slow machine).
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !bitv(tiny).exists() {
+        assert!(Instant::now() < deadline, "rebuilt by the full check");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     stop(l).await;
-    assert!(bitv(tiny).exists(), "rebuilt by the full check");
+    assert!(bitv(tiny).exists(), "kept when the engine stops");
     assert_eq!(
         std::fs::read(find_file(&dir.join("dl"), "data.bin")).unwrap(),
         s.content,

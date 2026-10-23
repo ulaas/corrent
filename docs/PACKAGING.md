@@ -19,6 +19,13 @@ workflow uploads all artifacts to a **draft** GitHub release; nothing is publish
 Every package also carries **`corrent-mpvw`**, the libmpv worker the media library uses for
 probing, thumbnails and transcoding (next to the main executable). libmpv itself is not bundled
 (licensing and size): the app plays and probes when the system has it and says so otherwise.
+On Windows, where no package manager provides it, the app offers to download it on request
+(*Get mpv for playback*, also in Settings › Playback): the pinned build from
+shinchiro/mpv-winbuild-cmake that `scripts/fetch-libmpv.ps1` uses, checked against its SHA-256
+(the newest release with GitHub's digest when the pinned one has been pruned), unpacked with
+Windows' own `tar.exe` into `corrent-lib\` next to `corrent.exe`, where the player and
+`corrent-mpvw` look first (`crates/corrent-core/src/mpv_get.rs`). Corrent never redistributes it.
+Keep the pin in `mpv_get.rs` in step with the script.
 Server installation (systemd, launchd, Windows service, Docker) is in `docs/SERVER.md`.
 
 ## Windows
@@ -79,6 +86,8 @@ Without them the dmg is unsigned and opens after right-click › Open.
 1. Bump `version` in `Cargo.toml` and the `<release>` in the metainfo; `cargo build` to update the lock file.
 2. Run the gates (`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo deny check && cargo test`)
    and `scripts/release-hygiene.ps1` (no debug hooks or test code in the release binaries).
-3. Commit, tag `vX.Y.Z`, push the tag (owner).
+3. Commit, tag `vX.Y.Z`, push the tag (owner). The Release workflow's `ci-gate` job waits until CI has
+   passed on the tagged commit before building, and fails if that CI run fails or is cancelled (re-run CI, then the
+   release). A manual run can tick `skip_ci_gate` in an emergency.
 4. Check the draft release's artifacts on each platform (`docs/PLATFORM-TESTING.md`), then publish.
 5. Submit the winget manifests, and keep the `symbols-windows` artifact with the release.

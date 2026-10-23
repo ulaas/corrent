@@ -27,18 +27,34 @@ fn norm(s: &str) -> String {
     corrent_library::parse::sort_title(s).chars().filter(|c| c.is_alphanumeric()).collect()
 }
 
-/// The candidate that is clearly the item: same title (ignoring case, articles and punctuation)
-/// and the same year (±1) when both are known; a lone result with the same title also counts.
+/// The candidate that is clearly the item, or none: the only result with the same title
+/// (ignoring case, articles and punctuation) and the same year; else the only one a year off (a
+/// release date in another country). Without a year, only a lone result with the same title.
+/// Two that fit as well as each other are a question for "Identify…", never a guess.
 pub fn confident<'a>(p: &Pending, found: &'a [Candidate]) -> Option<&'a Candidate> {
     let title = norm(&p.title);
+    if title.is_empty() {
+        return None;
+    }
     let same: Vec<&Candidate> = found.iter().filter(|c| norm(&c.title) == title).collect();
-    let year_ok = |c: &&Candidate| match (p.year, c.year) {
-        (Some(a), Some(b)) => (a - b as i32).abs() <= 1,
-        _ => true,
+    let Some(year) = p.year else {
+        return match same.as_slice() {
+            [one] => Some(one),
+            _ => None,
+        };
     };
-    match same.iter().filter(|c| year_ok(c)).collect::<Vec<_>>().as_slice() {
-        [one] => Some(one),
-        [first, ..] if p.year.is_some() => Some(first),
+    for off in [0, 1] {
+        let near: Vec<&Candidate> =
+            same.iter().copied().filter(|c| c.year.is_some_and(|y| (y as i32 - year).abs() <= off)).collect();
+        match near.as_slice() {
+            [one] => return Some(one),
+            [] => {}
+            _ => return None,
+        }
+    }
+    // A provider that doesn't know the year: only its lone result with the title.
+    match same.as_slice() {
+        [one] if one.year.is_none() => Some(one),
         _ => None,
     }
 }
@@ -191,7 +207,7 @@ pub async fn write_nfo(st: &AppState, item: i64) {
         let Some(root) = roots.iter().filter(|r| file.starts_with(r)).max_by_key(|r| r.as_os_str().len()) else {
             return;
         };
-        let Some(show) = corrent_library::parse::show_folder(root, &file) else { return };
+        let Some(show) = corrent_library::parse::show_home(root, &file) else { return };
         root.join(show).join("tvshow.nfo")
     } else {
         file.with_extension("nfo")
@@ -291,6 +307,13 @@ pub async fn identify(st: &AppState, host: &Arc<PluginHost>, p: &Pending, langua
         let Ok(found) = host.metadata_search(&provider, q).await else { continue };
         answered = true;
         if let Some(c) = confident(p, &found) {
+            // The search took a while: a scan may have moved the item's files since it was
+            // listed, or removed it and given its id to another item. Only the item that was
+            // searched for gets the result.
+            match st.library.pending_item(p.id).await {
+                Ok(now) if same_item(&now, p) => {}
+                _ => return false,
+            }
             match apply(st, host, p.id, p.kind, &provider, &c.id, language).await {
                 Ok(()) => return true,
                 Err(e) => tracing::debug!("metadata from {provider} for {}: {e}", p.title),
@@ -301,6 +324,15 @@ pub async fn identify(st: &AppState, host: &Arc<PluginHost>, p: &Pending, langua
         let _ = st.library.mark_meta_checked(p.id, Some(String::new())).await;
     }
     false
+}
+
+/// Still the item a search was made for (its provider ids may have grown meanwhile).
+fn same_item(now: &Pending, then: &Pending) -> bool {
+    now.library_id == then.library_id
+        && now.kind == then.kind
+        && now.title == then.title
+        && now.year == then.year
+        && now.artist == then.artist
 }
 
 /// A provider became usable (a key entered, turned on): items no provider matched before are
@@ -403,5 +435,15 @@ mod tests {
         let remakes = [c("Dune", Some(1984)), c("Dune", Some(2021))];
         assert!(confident(&p("Dune", None), &remakes).is_none(), "ambiguous without a year");
         assert_eq!(confident(&p("Dune", Some(2021)), &remakes).map(|c| c.year), Some(Some(2021)));
+        // The exact year wins over one a year off; two a year off (or two exact) are a question.
+        let close = [c("Heat", Some(1995)), c("Heat", Some(1996))];
+        assert_eq!(confident(&p("Heat", Some(1995)), &close).map(|c| c.year), Some(Some(1995)));
+        assert!(confident(&p("Heat", Some(1994)), &[c("Heat", Some(1993)), c("Heat", Some(1995))]).is_none());
+        assert!(confident(&p("Heat", Some(1995)), &[c("Heat", Some(1995)), c("Heat", Some(1995))]).is_none());
+        assert_eq!(confident(&p("Heat", Some(1996)), &[c("Heat", Some(1995))]).map(|c| c.year), Some(Some(1995)));
+        // Results without a year count only alone.
+        assert!(confident(&p("Heat", Some(1995)), &[c("Heat", None)]).is_some());
+        assert!(confident(&p("Heat", Some(1995)), &[c("Heat", None), c("Heat", None)]).is_none());
+        assert!(confident(&p("", None), &[c("", None)]).is_none(), "an empty title matches nothing");
     }
 }

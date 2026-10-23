@@ -193,11 +193,15 @@ fn remuxed_hls_plays_and_seeks() {
             }
             Some(corrent_mpv::Event::PlaybackRestart) if loaded && !seeked => {
                 seeked = true;
+                // Paused: `untimed` plays as fast as it can, and a fast machine could reach the
+                // end before the position is read (mpv then has none).
+                mpv.set_flag("pause", true).unwrap();
                 mpv.command(&["seek", "13", "absolute"]).unwrap();
             }
             Some(corrent_mpv::Event::PlaybackRestart) if seeked => {
                 let pos = mpv.get_f64("time-pos").unwrap().unwrap_or(-1.0);
                 assert!((12.0..14.5).contains(&pos), "after seeking: {pos}");
+                mpv.set_flag("pause", false).unwrap();
             }
             Some(corrent_mpv::Event::EndFile(reason)) => break reason,
             None => panic!("mpv stopped answering"),

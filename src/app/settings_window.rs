@@ -1645,6 +1645,42 @@ impl CorrentApp {
                     });
                     toggle(ui, p, t!("Gapless albums"), t!("No pause between tracks of an album."), &mut pb.gapless);
                 });
+                // mpv itself (the sound devices above come from it): which one, or how to get it.
+                let missing = matches!(&devices, Some(Err(e)) if e.starts_with("libmpv is not available"));
+                let mut get = false;
+                ui.add_space(12.0);
+                card(p).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    heading(ui, p, t!("Media player"));
+                    let (state, help) = match &devices {
+                        None => (t!("Checking…").to_string(), String::new()),
+                        Some(Ok(_)) => match corrent_mpv::Library::get() {
+                            Ok(l) => {
+                                (t!("mpv {version}", version = l.version_string()), l.path().display().to_string())
+                            }
+                            Err(e) => (e.to_string(), String::new()),
+                        },
+                        Some(Err(_)) if missing && super::get_mpv::CAN_DOWNLOAD => (
+                            t!("Not installed").to_string(),
+                            t!("Corrent can download mpv for you from its makers.").to_string(),
+                        ),
+                        Some(Err(_)) if missing => (
+                            t!("Not installed").to_string(),
+                            t!("Install mpv with your system's package manager (on macOS: brew install mpv).")
+                                .to_string(),
+                        ),
+                        Some(Err(e)) => (e.clone(), String::new()),
+                    };
+                    row(ui, p, t!("mpv"), &help, |ui| {
+                        if missing && super::get_mpv::CAN_DOWNLOAD && ui.button(t!("Download mpv…")).clicked() {
+                            get = true;
+                        }
+                        ui.label(RichText::new(state).color(if missing { p.warn } else { p.text_dim }));
+                    });
+                });
+                if get {
+                    self.open_get_mpv(false);
+                }
             }
             Page::Advanced => {
                 card(p).show(ui, |ui| {

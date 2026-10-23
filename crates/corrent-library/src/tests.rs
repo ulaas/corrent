@@ -254,3 +254,280 @@ async fn scans_movies_shows_and_music() {
     assert_eq!(lib.search(user, "sintel").await.unwrap().items.len(), 0);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Older placement rules merged movies under a grouping folder, two shows under one folder, and
+/// made extras into movies of their own; a library scanned with them is repaired on its next
+/// scan, and items both rules agree on keep everything (a match the user chose included).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repair_splits_what_older_rules_merged() {
+    use corrent_db::rusqlite::params;
+    let (dir, lib, user) = setup("repair").await;
+    let movies = dir.join("M");
+    let shows = dir.join("S");
+    for f in [
+        movies.join("Marvel/Iron Man.mkv"),
+        movies.join("Marvel/Thor.mkv"),
+        movies.join("Amelie.2001.mkv"),
+        movies.join("Heat (1995)/Heat.mkv"),
+        movies.join("Heat (1995)/Trailers/teaser.mkv"),
+        shows.join("Anime/Show A/Season 1/Show.A.S01E01.mkv"),
+        shows.join("Anime/Show B/Season 1/Show.B.S01E01.mkv"),
+    ] {
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, b"not really a video").unwrap();
+    }
+    png(&movies.join("Marvel/poster.png"));
+    let mk = |name: &str, kind, folder: &Path| NewLibrary {
+        name: name.into(),
+        kind,
+        folders: vec![folder.display().to_string()],
+        settings: LibrarySettings::defaults(),
+    };
+    let lm = lib.create(mk("Movies", LibraryKind::Movies, &movies)).await.unwrap().id;
+    let ls = lib.create(mk("Shows", LibraryKind::Shows, &shows)).await.unwrap().id;
+    lib.scan_now(lm).await.unwrap();
+    lib.scan_now(ls).await.unwrap();
+
+    let titles = |lib_id: i64| {
+        let lib = lib.clone();
+        async move {
+            let q = ItemQuery { library_id: Some(lib_id), ..Default::default() };
+            let mut t: Vec<String> = lib.items(user, q).await.unwrap().items.into_iter().map(|i| i.title).collect();
+            t.sort();
+            t
+        }
+    };
+    assert_eq!(titles(lm).await, ["Amelie", "Heat", "Iron Man", "Thor"]);
+    assert_eq!(titles(ls).await, ["Show A", "Show B"]);
+
+    // What the old rules and a wrong match made of it.
+    let (iron, amelie) = lib
+        .db()
+        .write(move |t| {
+            let id = |sql: &str| t.query_row(sql, [], |r| r.get::<_, i64>(0));
+            let iron = id("SELECT id FROM items WHERE title = 'Iron Man'")?;
+            let thor = id("SELECT id FROM items WHERE title = 'Thor'")?;
+            let heat = id("SELECT id FROM items WHERE title = 'Heat'")?;
+            let amelie = id("SELECT id FROM items WHERE title = 'Amelie'")?;
+            t.execute("UPDATE item_files SET item_id = ?1 WHERE item_id = ?2", params![iron, thor])?;
+            t.execute("DELETE FROM items WHERE id = ?1", [thor])?;
+            t.execute(
+                "UPDATE items SET title = 'Marvel', sort_title = 'marvel', overview = 'wrong', \
+                 provider_ids = '{\"tmdb\":\"1\"}', extra = json_set(extra, '$.meta_checked', 1, '$.placed', 'marvel') \
+                 WHERE id = ?1",
+                [iron],
+            )?;
+            t.execute(
+                "INSERT INTO images(owner_kind, owner_id, kind, sha256, width, height, source) \
+                 VALUES ('item', ?1, 'poster', 'x', 1, 1, 'https://image.tmdb.org/wrong.jpg')",
+                [iron],
+            )?;
+            // The trailer made a movie of its own.
+            t.execute(
+                "INSERT INTO items(library_id, kind, title, sort_title, added_at, updated_at) \
+                 VALUES (?1, 'movie', 'teaser', 'teaser', 0, 0)",
+                [lm],
+            )?;
+            let junk = t.last_insert_rowid();
+            t.execute("UPDATE item_files SET item_id = ?1 WHERE item_id = ?2 AND role = 'trailer'", params![junk, heat])?;
+            // A match the user chose: kept.
+            t.execute(
+                "UPDATE items SET title = 'Amélie', overview = 'kept', extra = json_set(extra, '$.meta_checked', 1) \
+                 WHERE id = ?1",
+                [amelie],
+            )?;
+            // Show B's episode in show A's, named after the grouping folder.
+            let a = id("SELECT id FROM items WHERE title = 'Show A'")?;
+            let b = id("SELECT id FROM items WHERE title = 'Show B'")?;
+            let ep_a = id("SELECT e.id FROM items e JOIN items s ON s.id = e.parent_id JOIN items sh ON sh.id = s.parent_id \
+                           WHERE sh.title = 'Show A' AND e.kind = 'episode'")?;
+            t.execute(
+                "UPDATE item_files SET item_id = ?1 WHERE item_id IN (SELECT e.id FROM items e JOIN items s ON s.id = e.parent_id \
+                 WHERE s.parent_id = ?2)",
+                params![ep_a, b],
+            )?;
+            t.execute("DELETE FROM items WHERE id = ?1", [b])?;
+            t.execute(
+                "UPDATE items SET title = 'Anime', sort_title = 'anime', overview = 'wrong', \
+                 extra = json_set(extra, '$.meta_checked', 1, '$.placed', 'anime') WHERE id = ?1",
+                [a],
+            )?;
+            t.execute("UPDATE items SET title = 'Wrong episode', overview = 'wrong' WHERE id = ?1", [ep_a])?;
+            // Items an older version made carry no mark of the current rules.
+            t.execute("UPDATE items SET extra = json_remove(extra, '$.placement')", [])?;
+            t.execute("UPDATE libraries SET placement = 0", [])?;
+            Ok((iron, amelie))
+        })
+        .await
+        .unwrap();
+    assert_eq!(titles(lm).await, ["Amélie", "Heat", "Marvel", "teaser"]);
+
+    lib.scan_now(lm).await.unwrap();
+    lib.scan_now(ls).await.unwrap();
+
+    assert_eq!(titles(lm).await, ["Amélie", "Heat", "Iron Man", "Thor"], "split, junk gone, the match kept");
+    assert_eq!(titles(ls).await, ["Show A", "Show B"]);
+    let d = lib.item(user, iron).await.unwrap();
+    assert_eq!(d.item.title, "Iron Man", "the item keeps its id and the files it still has");
+    assert_eq!(d.overview, None, "what was fetched for the merged item is gone");
+    assert!(d.provider_ids.is_empty(), "{:?}", d.provider_ids);
+    assert!(d.item.images.is_empty(), "no wrong poster, no folder poster: {:?}", d.item.images);
+    let pending: Vec<i64> = lib.items_needing_metadata(lm, 10).await.unwrap().into_iter().map(|p| p.id).collect();
+    assert!(pending.contains(&iron), "identified again");
+    assert!(!pending.contains(&amelie), "the user's match stays");
+    assert_eq!(lib.item(user, amelie).await.unwrap().overview.as_deref(), Some("kept"));
+    let (trailer_owner, placement, ep_titles): (String, i64, Vec<String>) = lib
+        .db()
+        .read(|c| {
+            let owner = c.query_row(
+                "SELECT i.title FROM item_files x JOIN items i ON i.id = x.item_id WHERE x.role = 'trailer'",
+                [],
+                |r| r.get(0),
+            )?;
+            let placement = c.query_row("SELECT min(placement) FROM libraries", [], |r| r.get(0))?;
+            let mut st = c.prepare("SELECT title FROM items WHERE kind = 'episode' ORDER BY title")?;
+            let eps = st.query_map([], |r| r.get(0))?.collect::<corrent_db::rusqlite::Result<Vec<String>>>()?;
+            Ok((owner, placement, eps))
+        })
+        .await
+        .unwrap();
+    assert_eq!(trailer_owner, "Heat");
+    assert_eq!(placement, crate::scan::PLACEMENT_VERSION);
+    assert_eq!(ep_titles, ["Episode 1", "Episode 1"], "the wrong show's episode title is gone");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// What the repair must never do: reset a movie because of its trailer or sample, undo a match
+/// (maybe the user's own), or reset again on the next scan while a folder is offline. A file
+/// that moves to an item of its own takes its watch state along; extras scanned before their
+/// movie, or nested in extras folders, find it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repair_keeps_what_is_right() {
+    use corrent_db::rusqlite::params;
+    let (dir, lib, user) = setup("repair-keeps").await;
+    let movies = dir.join("M");
+    for f in [
+        "Heat (1995)/Heat.mkv",
+        "Heat (1995)/Sample/sample.mkv",
+        "Heat (1995)/Heat-trailer.mkv",
+        "Heat (1995)/Extras/Deleted Scenes/cut.mkv",
+        "Picked/some.release.mkv",
+        "Marvel/Iron Man.mkv",
+        "Marvel/Thor.mkv",
+    ] {
+        let f = movies.join(f);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, b"not really a video").unwrap();
+    }
+    // A second folder that is offline: the library can't be marked repaired.
+    let offline = dir.join("unplugged");
+    let l = lib
+        .create(NewLibrary {
+            name: "Movies".into(),
+            kind: LibraryKind::Movies,
+            folders: vec![movies.display().to_string(), offline.display().to_string()],
+            settings: LibrarySettings::defaults(),
+        })
+        .await
+        .unwrap()
+        .id;
+    lib.scan_now(l).await.unwrap();
+    let extras: i64 = lib
+        .db()
+        .read(|c| {
+            c.query_row(
+                "SELECT count(*) FROM item_files x JOIN items i ON i.id = x.item_id WHERE i.title = 'Heat' AND x.role != 'main'",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(extras, 3, "the sample, the trailer and the nested deleted scene belong to Heat");
+
+    // As an older version left it: matches, one picked by hand under a name the old rules gave,
+    // Iron Man and Thor merged with someone's progress on the merged item.
+    let (heat, picked, merged) = lib
+        .db()
+        .write(move |t| {
+            let id = |sql: &str| t.query_row(sql, [], |r| r.get::<_, i64>(0));
+            let heat = id("SELECT id FROM items WHERE title = 'Heat'")?;
+            let picked = id("SELECT id FROM items WHERE title = 'some release'")?;
+            let iron = id("SELECT id FROM items WHERE title = 'Iron Man'")?;
+            let thor = id("SELECT id FROM items WHERE title = 'Thor'")?;
+            let matched = "json_set(extra, '$.meta_checked', 1, '$.meta_provider', 'tmdb', '$.placement', 0)";
+            t.execute(
+                &format!("UPDATE items SET overview = 'fetched', provider_ids = '{{\"tmdb\":\"949\"}}', extra = {matched} WHERE id = ?1"),
+                [heat],
+            )?;
+            t.execute(
+                &format!("UPDATE items SET title = 'Picked', sort_title = 'picked', overview = 'by hand', extra = {matched} WHERE id = ?1"),
+                [picked],
+            )?;
+            t.execute("UPDATE item_files SET item_id = ?1 WHERE item_id = ?2", params![iron, thor])?;
+            t.execute("DELETE FROM items WHERE id = ?1", [thor])?;
+            t.execute("UPDATE items SET title = 'Marvel', sort_title = 'marvel' WHERE id = ?1", [iron])?;
+            t.execute(
+                "INSERT INTO watch_state(user_id, item_id, position_ms, played, play_count) VALUES (1, ?1, 60000, 0, 1)",
+                [iron],
+            )?;
+            t.execute("UPDATE items SET extra = json_remove(extra, '$.placement')", [])?;
+            t.execute("UPDATE libraries SET placement = 0", [])?;
+            Ok((heat, picked, iron))
+        })
+        .await
+        .unwrap();
+
+    lib.scan_now(l).await.unwrap();
+    let d = lib.item(user, heat).await.unwrap();
+    assert_eq!(d.overview.as_deref(), Some("fetched"), "a movie with extras keeps its match");
+    assert_eq!(d.provider_ids.get("tmdb").map(String::as_str), Some("949"));
+    let d = lib.item(user, picked).await.unwrap();
+    assert_eq!((d.item.title.as_str(), d.overview.as_deref()), ("Picked", Some("by hand")), "a match is never undone");
+    let q = ItemQuery { library_id: Some(l), ..Default::default() };
+    let items = lib.items(user, q.clone()).await.unwrap().items;
+    let thor = items.iter().find(|i| i.title == "Thor").expect("Thor split out");
+    let iron = items.iter().find(|i| i.title == "Iron Man").expect("Iron Man keeps the item");
+    assert_eq!(iron.id, merged);
+    assert_eq!(thor.state.position_ms, 60000, "progress on the merged item goes along");
+    let placement: i64 = lib
+        .db()
+        .read(move |c| c.query_row("SELECT placement FROM libraries WHERE id = ?1", [l], |r| r.get(0)))
+        .await
+        .unwrap();
+    assert_eq!(placement, 0, "a folder was offline: not marked repaired");
+
+    // The next scan repairs again (the folder is still offline), and changes nothing.
+    lib.db()
+        .write(|t| t.execute("UPDATE items SET overview = 'fetched again' WHERE kind = 'movie'", []))
+        .await
+        .unwrap();
+    lib.scan_now(l).await.unwrap();
+    let after = lib.items(user, q).await.unwrap().items;
+    assert_eq!(after.len(), items.len());
+    for i in &after {
+        assert_eq!(lib.item(user, i.id).await.unwrap().overview.as_deref(), Some("fetched again"), "{}", i.title);
+    }
+
+    // A trailer scanned before its movie finds it once the movie comes.
+    let late = movies.join("Late (2020)");
+    std::fs::create_dir_all(&late).unwrap();
+    std::fs::write(late.join("Late-trailer.mkv"), b"x").unwrap();
+    lib.scan_now(l).await.unwrap();
+    std::fs::write(late.join("Late.mkv"), b"x").unwrap();
+    lib.scan_now(l).await.unwrap();
+    let owner: String = lib
+        .db()
+        .read(|c| {
+            c.query_row(
+                "SELECT i.title FROM files f JOIN item_files x ON x.file_id = f.id JOIN items i ON i.id = x.item_id \
+                 WHERE f.path LIKE '%Late-trailer.mkv'",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(owner, "Late");
+    let _ = std::fs::remove_dir_all(dir);
+}

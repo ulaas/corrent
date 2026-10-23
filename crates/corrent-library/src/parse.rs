@@ -1,7 +1,7 @@
 //! Names → structure: what a file name and its folders say about the media (title, year,
 //! season/episode, quality). Pure functions; the scanner combines them with tags and probes.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -432,21 +432,62 @@ pub fn parse_name(stem: &str) -> Parsed {
     p
 }
 
-/// `Season 2`, `S02`, `Staffel 3`, `Specials` → season number.
+/// `Season 2`, `S02`, `Staffel 3`, `Specials`, `Season 2024` (a daily show's year) → season number.
 pub fn season_folder(name: &str) -> Option<u32> {
-    let l = name.trim().to_ascii_lowercase();
+    let l = name.trim().to_lowercase();
     if l == "specials" || l == "extras specials" {
         return Some(0);
     }
-    for pre in ["season", "series", "staffel", "saison", "temporada", "sezon", "s"] {
+    for pre in [
+        "season",
+        "series",
+        "staffel",
+        "saison",
+        "temporada",
+        "temporadas",
+        "stagione",
+        "seizoen",
+        "sæson",
+        "säsong",
+        "sesong",
+        "kausi",
+        "sezon",
+        "sezona",
+        "sezóna",
+        "évad",
+        "сезон",
+        "book",
+        "s",
+    ] {
         if let Some(rest) = l.strip_prefix(pre) {
             let n = rest.trim_start_matches([' ', '.', '_', '-']);
-            if !n.is_empty() && n.len() <= 3 && n.chars().all(|c| c.is_ascii_digit()) {
+            if !n.is_empty() && n.len() <= 4 && n.chars().all(|c| c.is_ascii_digit()) {
                 return n.parse().ok();
             }
         }
     }
     None
+}
+
+/// A title by its letters and digits only, without articles ("The Matrix" = "matrix").
+pub fn norm_title(s: &str) -> String {
+    sort_title(s).chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// The folder a movie file stands for: its own, or the one above a disc structure
+/// (`Film (2005)/VIDEO_TS/VTS_01_1.VOB`, `Film/BDMV/STREAM/00000.m2ts`).
+pub fn movie_dir(file: &Path) -> Option<&Path> {
+    let mut d = file.parent()?;
+    while let Some(n) = d.file_name().and_then(|n| n.to_str()) {
+        if !matches!(
+            n.to_ascii_lowercase().as_str(),
+            "video_ts" | "bdmv" | "stream" | "playlist" | "clipinf" | "backup"
+        ) {
+            break;
+        }
+        d = d.parent()?;
+    }
+    Some(d)
 }
 
 /// For a file in a shows library: the show folder's name (the folder directly under the
@@ -458,6 +499,75 @@ pub fn show_folder<'a>(root: &Path, file: &'a Path) -> Option<&'a str> {
     // A file directly in the root has no show folder.
     comps.next()?;
     first.as_os_str().to_str()
+}
+
+/// For a file in a shows library: the show's folder, relative to the root. The deepest folder
+/// above the file that isn't a season folder (`Season 1`, `Specials`), a release folder that
+/// names a season or episode (`Show.S01.1080p`), or an extras folder, so a grouping folder
+/// (`Anime/Show A/Season 1/x.mkv`) is not taken for the show. `None` when every folder is one of
+/// those (a season pack straight under the root) or the file is in the root.
+pub fn show_dir(root: &Path, file: &Path) -> Option<PathBuf> {
+    let rel = file.strip_prefix(root).ok()?;
+    let dirs: Vec<&std::ffi::OsStr> = rel.parent()?.iter().collect();
+    let file_title = norm_title(&parse_name(file.file_stem().and_then(|s| s.to_str()).unwrap_or_default()).title);
+    let idx = dirs.iter().enumerate().rposition(|(i, c)| {
+        let Some(name) = c.to_str() else { return false };
+        let p = parse_name(name);
+        let title = norm_title(&p.title);
+        if season_folder(name).is_some() || is_extras_folder(name) || title.is_empty() {
+            return false;
+        }
+        // A release or episode folder inside the show's ("Show/Show.S01.1080p.WEB",
+        // "The Office (US)/The.Office.US.S01E01.720p") names the folder above it; one inside a
+        // grouping folder is the show ("Anime/Dr. Stone S2").
+        if p.season.is_some() || p.episode.is_some() {
+            let outer_names_it = dirs[..i].iter().filter_map(|d| d.to_str()).any(|d| {
+                let o = norm_title(&parse_name(d).title);
+                !o.is_empty() && (o.contains(title.as_str()) || title.contains(o.as_str()))
+            });
+            if outer_names_it {
+                return false;
+            }
+        }
+        // A plain number holding the episodes, inside another folder, is a year ("Show/2024"),
+        // unless the episodes are named after it ("Western/1883/1883.S01E01.mkv"); higher up
+        // or at the top it is the show ("Drama/9-1-1/Season 1", "24").
+        let number = !name.chars().any(char::is_alphabetic);
+        !(number && i > 0 && i + 1 == dirs.len() && title != file_title)
+    })?;
+    Some(dirs[..=idx].iter().collect())
+}
+
+/// Where a show's own files are (`tvshow.nfo`, `poster.jpg`): its folder, else the folder
+/// directly under the root (a season pack's folder).
+pub fn show_home(root: &Path, file: &Path) -> Option<PathBuf> {
+    show_dir(root, file).or_else(|| show_folder(root, file).map(PathBuf::from))
+}
+
+pub fn is_extras_folder(name: &str) -> bool {
+    let l = name.trim().to_ascii_lowercase();
+    EXTRAS_FOLDERS.contains(&l.as_str())
+        || matches!(l.as_str(), "sample" | "samples" | "trailers" | "subs" | "subtitles")
+}
+
+const EXTRAS_FOLDERS: [&str; 8] =
+    ["extras", "featurettes", "behind the scenes", "deleted scenes", "interviews", "scenes", "shorts", "other"];
+
+/// A file name that says nothing about the movie (`movie.mkv`, `VTS_01_1`, `title_t00`): the
+/// folder's name is used instead.
+pub fn is_generic_name(stem: &str) -> bool {
+    let l = stem.trim().to_ascii_lowercase();
+    let p = parse_name(stem);
+    let alnum: String = p.title.chars().filter(|c| c.is_alphanumeric()).collect();
+    // One character is no title ("Up" and "It" are); five digits are a disc's stream number.
+    alnum.chars().count() < 2
+        || alnum.len() >= 5 && alnum.chars().all(|c| c.is_ascii_digit())
+        || matches!(
+            p.title.to_ascii_lowercase().as_str(),
+            "movie" | "film" | "video" | "feature" | "main" | "title" | "video ts"
+        )
+        || l.starts_with("vts_")
+        || l.starts_with("title_t")
 }
 
 /// `01 - Title`, `1-03 Title`, `03. Title`, `Artist - 05 - Title` → (disc, track, title).
@@ -526,16 +636,7 @@ pub fn is_extra(path: &Path) -> Option<&'static str> {
     if stem.ends_with("-trailer") || stem == "trailer" || in_dir(&["trailers"]) {
         return Some("trailer");
     }
-    if in_dir(&[
-        "extras",
-        "featurettes",
-        "behind the scenes",
-        "deleted scenes",
-        "interviews",
-        "scenes",
-        "shorts",
-        "other",
-    ]) {
+    if in_dir(&EXTRAS_FOLDERS) {
         return Some("extra");
     }
     if stem == "theme" || stem.ends_with("-theme") {

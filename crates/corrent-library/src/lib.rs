@@ -222,9 +222,10 @@ impl Library {
             .inner
             .db
             .write(move |t| {
+                // Placed by the current rules from the start: nothing to repair.
                 t.execute(
-                    "INSERT INTO libraries(name, kind, settings, created_at) VALUES (?1, ?2, ?3, ?4)",
-                    params![name, l.kind.as_str(), settings, now],
+                    "INSERT INTO libraries(name, kind, settings, created_at, placement) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![name, l.kind.as_str(), settings, now, crate::scan::PLACEMENT_VERSION],
                 )?;
                 let id = t.last_insert_rowid();
                 for f in &folders {

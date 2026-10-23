@@ -10,12 +10,6 @@
     remembers the previous handler and gives it back on uninstall.
   - User data (%APPDATA%\Corrent) is never removed by the uninstaller.
 -->
-<?if $(sys.BUILDARCH) = x64 ?>
-    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
-<?else ?>
-    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
-<?endif ?>
-
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
     <Product
         Id="*"
@@ -37,9 +31,9 @@
             InstallScope="perUser"
             SummaryCodepage="1252" />
 
-        <!-- Per-user install into %LOCALAPPDATA%\Programs (no UAC prompt). -->
-        <Property Id="ALLUSERS" Value="2" />
-        <Property Id="MSIINSTALLPERUSER" Value="1" />
+        <!-- Per-user install into %LOCALAPPDATA%\Programs (no UAC prompt). Everything is in the
+             user's profile, so each component has a fixed GUID and an HKCU key path (ICE38), and
+             the folders it creates are removed on uninstall (ICE64). -->
 
         <MajorUpgrade
             Schedule="afterInstallInitialize"
@@ -49,24 +43,28 @@
         <Property Id="DiskPrompt" Value="Corrent Installation" />
 
         <Directory Id="TARGETDIR" Name="SourceDir">
-            <Directory Id="$(var.PlatformProgramFilesFolder)" Name="PFiles">
-                <Directory Id="APPLICATIONFOLDER" Name="Corrent">
-                    <Component Id="MainExecutable" Guid="*">
-                        <File Id="CorrentExe" Name="corrent.exe" DiskId="1" Source="$(var.CargoTargetBinDir)\corrent.exe" />
-                        <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="InstallDir" Type="string" Value="[APPLICATIONFOLDER]" KeyPath="yes" />
-                        <RemoveFolder Id="RemoveAppFolder" On="uninstall" />
-                    </Component>
-                    <Component Id="MpvWorker" Guid="*">
-                        <File Id="MpvWorkerExe" Name="corrent-mpvw.exe" DiskId="1" Source="$(var.CargoTargetBinDir)\corrent-mpvw.exe" />
-                    </Component>
-                    <Component Id="License" Guid="*">
-                        <File Id="LicenseMd" Name="LICENSE.txt" DiskId="1" Source="wix\License.txt" />
-                        <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="License" Type="integer" Value="1" KeyPath="yes" />
-                    </Component>
+            <Directory Id="LocalAppDataFolder">
+                <Directory Id="UserPrograms" Name="Programs">
+                    <Directory Id="APPLICATIONFOLDER" Name="Corrent">
+                        <Component Id="MainExecutable" Guid="D61CF5C3-EAEE-4CFC-826C-FB40B99972E7">
+                            <File Id="CorrentExe" Name="corrent.exe" DiskId="1" Source="$(var.CargoTargetBinDir)\corrent.exe" />
+                            <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="InstallDir" Type="string" Value="[APPLICATIONFOLDER]" KeyPath="yes" />
+                            <RemoveFolder Id="RemoveAppFolder" On="uninstall" />
+                            <RemoveFolder Id="RemoveUserPrograms" Directory="UserPrograms" On="uninstall" />
+                        </Component>
+                        <Component Id="MpvWorker" Guid="6AAE98FB-E179-4663-8197-7885B18C25FB">
+                            <File Id="MpvWorkerExe" Name="corrent-mpvw.exe" DiskId="1" Source="$(var.CargoTargetBinDir)\corrent-mpvw.exe" />
+                            <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="MpvWorker" Type="integer" Value="1" KeyPath="yes" />
+                        </Component>
+                        <Component Id="License" Guid="0B95C27A-517B-49A0-999C-6F7C73760005">
+                            <File Id="LicenseMd" Name="LICENSE.txt" DiskId="1" Source="wix\License.txt" />
+                            <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="License" Type="integer" Value="1" KeyPath="yes" />
+                        </Component>
+                    </Directory>
                 </Directory>
             </Directory>
             <Directory Id="ProgramMenuFolder">
-                <Component Id="StartMenuShortcut" Guid="*">
+                <Component Id="StartMenuShortcut" Guid="720D0A92-86C8-4255-88B0-862AD21B40C4">
                     <Shortcut
                         Id="CorrentShortcut"
                         Name="Corrent"
@@ -88,7 +86,7 @@
             <ComponentRef Id="StartMenuShortcut" />
             <Feature Id="Associations" Title="Open magnet links and .torrent files with Corrent" Level="1" AllowAdvertise="no">
                 <!-- Feature with no files: its state drives the custom actions below. -->
-                <Component Id="AssociationsMarker" Directory="APPLICATIONFOLDER" Guid="*">
+                <Component Id="AssociationsMarker" Directory="APPLICATIONFOLDER" Guid="35791626-FD0E-4E0D-9A43-612554CA2EE6">
                     <RegistryValue Root="HKCU" Key="Software\Corrent\Installer" Name="Associations" Type="integer" Value="1" KeyPath="yes" />
                 </Component>
             </Feature>

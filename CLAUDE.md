@@ -44,7 +44,7 @@ corrent --diagnostics <zip> | --symbolize <crash report>   # S10: support bundle
 
 Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_TAB=general|files|peers|trackers|pieces|speed`,
-`CORRENT_DEV_OPEN=settings|remote|appearance|magnet|about|log|stats|streams|diagnostics|creator|import|feeds|rules|remove|remove-undo`,
+`CORRENT_DEV_OPEN=settings|remote|appearance|magnet|about|log|stats|streams|diagnostics|creator|import|feeds|rules|remove|remove-undo|mpv`,
 `CORRENT_DEV_STREAM_URL=<file>` (writes the first torrent's stream URL prefix; play it with `curl`),
 `CORRENT_DEV_PANIC=ui|engine|torrent` (torrent: a task next to the engine, which the app survives), `CORRENT_DEV_HANG=ipc` (the primary takes forwarded launches but never confirms them) `|ui` (the UI thread sleeps 15 s) `|engine` (the engine is busy 40 s; both write `logs/hang-*.txt`), `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
 Media/server hooks (run without torrents): `CORRENT_DEV_VIEW=media|libraries`, `CORRENT_DEV_PROFILES=1`, `CORRENT_DEV_SERVER_FS=1` (with a paired server), `CORRENT_DEV_ITEM=<id>`, `CORRENT_DEV_PLAY=<id>`,
@@ -145,7 +145,8 @@ translation + language setting, web interface, Mica spike (no-go) (M27).
 Fable reviews of every milestone range and a final roadmap audit were addressed. Default save folder: `Downloads/Corrent`.
 
 Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S10 done 2026-10-21, S11 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
-upstreaming the librqbit patches (docs/upstream/). v0.3.0 (the first public release) tagged locally 2026-10-22 (release notes: CHANGELOG.md;
+upstreaming the librqbit patches (docs/upstream/). v0.3.0 (the first public release) tagged locally 2026-10-22, v0.3.1 (library metadata fix, mpv download
+on Windows) 2026-10-23, v0.3.2 (tokio security update) 2026-10-23 (release notes: CHANGELOG.md;
 the owner pushes the tag, release.yml drafts the release).
 
 Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.

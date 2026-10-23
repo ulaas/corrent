@@ -3,6 +3,43 @@
 All notable changes to Corrent. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may break things).
 
+## [0.3.2] — 2026-10-23
+
+### Security
+
+- tokio 1.53.3 (RUSTSEC-2026-0386: `AsyncFd` constructors violated I/O safety).
+
+## [0.3.1] — 2026-10-23
+
+### Fixed
+
+- Media library: details and artwork of one movie or show no longer end up on another. The
+  scanner used to put several titles into one item: movies in a folder that groups them
+  (`Marvel/Thor.mkv`), two shows under one folder (`Anime/Show A`, `Anime/Show B`), every movie of
+  a folder sharing its `movie.nfo` and `poster.jpg`, trailers and samples made into movies of
+  their own, and remakes without a year merged with each other.
+- Existing libraries are repaired once, on their next scan: files move to the right movie or
+  show, items that held several titles are identified again, and watch progress, playlists and
+  followed shows go along. Matches you picked by hand are kept.
+- Show folders: `Season 2024` (daily shows), year folders, season folders in other languages and
+  release folders inside a show's folder are no longer taken for the show; multi-part and
+  multi-version movies keep their folder's title and year; DVD and Blu-ray folder structures take
+  the movie folder's name.
+- Automatic identification only applies a match that is clearly the item (same title and year),
+  and checks the item is still the same one before applying it.
+- Undoing a removal right after removing a torrent no longer gets lost (the server's undo).
+
+### Added
+
+- Windows: when playback needs mpv, Corrent offers to download it from the mpv-winbuild-cmake
+  project (about 30 MB, checked against a known checksum) into its own folder; also in
+  Settings › Playback, which now shows the mpv in use.
+
+### Security
+
+- ctutils 0.4.5 (RUSTSEC-2026-0385: secret-dependent branches, under password hashing and
+  signing); clipboard-win 5.4.3 (5.4.1 was yanked).
+
 ## [0.3.0] — 2026-10-22
 
 The first public release.
@@ -50,4 +87,6 @@ The first public release.
 - Linux and macOS builds are produced by CI but have not been tested on real machines yet.
 - The engine (librqbit) has no protocol encryption and no BitTorrent v2.
 
+[0.3.2]: https://github.com/ulaas/corrent/releases/tag/v0.3.2
+[0.3.1]: https://github.com/ulaas/corrent/releases/tag/v0.3.1
 [0.3.0]: https://github.com/ulaas/corrent/releases/tag/v0.3.0
