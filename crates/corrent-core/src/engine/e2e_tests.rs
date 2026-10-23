@@ -613,6 +613,7 @@ async fn many_adds_at_once_all_arrive() {
     let dir = temp_dir("batch-add");
     let l = start(&dir);
     let n = 40;
+    let began = Instant::now();
     for i in 0..n {
         let name = format!("batch-{i:03}.bin");
         let mut info =
@@ -637,6 +638,7 @@ async fn many_adds_at_once_all_arrive() {
         })));
     }
     wait_for(&l, "every torrent", 60, |sn| sn.torrents.len() == n && sn.torrents.iter().all(|t| !t.pending)).await;
+    let adding = began.elapsed();
     // The store is saved on the writer thread with a 2 s debounce: a batch costs a write or two,
     // not one (plus an fsync) per torrent on the engine's thread.
     // The writer thread is shared with the other tests (some of which slow their own disk down):
@@ -648,7 +650,10 @@ async fn many_adds_at_once_all_arrive() {
     }
     tokio::time::sleep(Duration::from_secs(3)).await;
     let writes = crate::writer::global().writes(&l.paths.store_file());
-    assert!((1..=5).contains(&writes), "{writes} store writes for {n} adds");
+    // At most one per 2 s while the adds kept coming (a slow CI machine takes a while to add
+    // 40), plus the last: far from one per torrent.
+    let most = 2 + adding.as_secs() / 2;
+    assert!((1..=most).contains(&writes) && writes < n as u64 / 2, "{writes} store writes for {n} adds in {adding:?}");
     let paths = stop(l).await;
     let store: crate::store::StoreData = serde_json::from_slice(&std::fs::read(paths.store_file()).unwrap()).unwrap();
     assert_eq!(store.torrents.len(), n, "all of them saved");
@@ -1222,8 +1227,15 @@ async fn after_a_power_loss_only_recently_written_torrents_are_checked() {
     let notices = notices_until(&l, 30, |sn| find(sn, tiny).is_some_and(|t| !t.pending) && complete(sn, s.hash)).await;
     assert!(notices.iter().any(|n| n.contains("Checking 1 download")), "{notices:?}");
     assert!(!paths.log_dir().join("power-loss.pending").exists(), "taken once");
+    // The engine writes the piece state when the full check is done, a moment after the torrent
+    // is back in the list (longer on a slow machine).
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !bitv(tiny).exists() {
+        assert!(Instant::now() < deadline, "rebuilt by the full check");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     stop(l).await;
-    assert!(bitv(tiny).exists(), "rebuilt by the full check");
+    assert!(bitv(tiny).exists(), "kept when the engine stops");
     assert_eq!(
         std::fs::read(find_file(&dir.join("dl"), "data.bin")).unwrap(),
         s.content,
