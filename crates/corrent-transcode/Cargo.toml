@@ -1,6 +1,6 @@
 [package]
 name = "corrent-transcode"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 rust-version = "1.96"
 description = "Corrent's playback decisions, HLS transcoding sessions (libmpv), subtitles and trickplay"
