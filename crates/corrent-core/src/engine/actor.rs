@@ -2778,6 +2778,8 @@ impl Actor {
         let old = self.snapshot.load_full();
         let mut snap = (*old).clone();
         snap.engine_state = self.engine_state.clone();
+        // Else a started engine keeps showing its last start phase until the next tick.
+        snap.start_phase = self.start_phase;
         snap.categories = self.store.data.categories.clone();
         snap.tags = self.store.data.tags.clone();
         snap.session.alt_speed = self.alt;

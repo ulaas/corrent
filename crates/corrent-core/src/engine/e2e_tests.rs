@@ -427,7 +427,11 @@ async fn rss_rule_adds_matching_item_exactly_once() {
     });
     let l = start(&dir);
     l.engine.send(EngineCommand::ApplySettings(Box::new(cfg.clone())));
-    let snap = wait_for(&l, "rule to add the torrent", 30, |sn| find(sn, s.hash).is_some()).await;
+    // The engine lists the torrent before the add has finished (and given it its category).
+    let snap = wait_for(&l, "rule to add the torrent", 30, |sn| {
+        find(sn, s.hash).is_some() && !sn.torrents.iter().any(|t| t.pending)
+    })
+    .await;
     let t = find(&snap, s.hash).unwrap();
     assert_eq!(t.category.as_deref(), Some("Shows"));
     assert!(t.tags.contains(&"rss".to_string()));
@@ -1403,9 +1407,9 @@ async fn a_hanging_blocklist_server_does_not_hold_up_the_start() {
     let l = start_with(&dir, cfg);
     wait_for(&l, "a running engine", 5, |sn| sn.engine_state == super::types::EngineState::Running).await;
     assert!(started.elapsed() < Duration::from_secs(5));
-    let snap = l.engine.snapshot();
-    assert_eq!(snap.start_phase, None);
-    assert!(snap.session.blocked_ranges > 0, "the cached list is in use");
+    assert_eq!(l.engine.snapshot().start_phase, None);
+    // Session statistics come with the next tick.
+    wait_for(&l, "the cached list in use", 5, |sn| sn.session.blocked_ranges > 0).await;
     stop(l).await;
     keep.abort();
     let _ = std::fs::remove_dir_all(dir);

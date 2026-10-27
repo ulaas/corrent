@@ -177,6 +177,9 @@ fn remuxed_hls_plays_and_seeks() {
     }
     let mpv = corrent_mpv::Mpv::headless(&[("vo", "null"), ("ao", "null"), ("untimed", "yes")]).unwrap();
     mpv.request_log_messages("error").unwrap();
+    // Paused from the start: `untimed` plays as fast as it can, and a slow machine could reach
+    // the end before the seek (mpv then has no position).
+    mpv.set_flag("pause", true).unwrap();
     mpv.command(&["loadfile", &out.join("index.m3u8").display().to_string()]).unwrap();
     let mut errors = Vec::new();
     let mut loaded = false;
@@ -193,9 +196,6 @@ fn remuxed_hls_plays_and_seeks() {
             }
             Some(corrent_mpv::Event::PlaybackRestart) if loaded && !seeked => {
                 seeked = true;
-                // Paused: `untimed` plays as fast as it can, and a fast machine could reach the
-                // end before the position is read (mpv then has none).
-                mpv.set_flag("pause", true).unwrap();
                 mpv.command(&["seek", "13", "absolute"]).unwrap();
             }
             Some(corrent_mpv::Event::PlaybackRestart) if seeked => {

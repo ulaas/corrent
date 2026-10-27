@@ -33,6 +33,7 @@ powershell -File scripts/fetch-libmpv.ps1   # once: libmpv-2.dll into .cache/lib
 cargo test --workspace      # unit + loopback engine integration tests (crates/corrent-core/src/engine/e2e_tests.rs)
 cargo test -p corrent-core --features testkit --test durability -- --ignored --nocapture   # kill at every write (~2 min)
 powershell -File scripts/fault-matrix.ps1   # S8 fault tests (fm_*), timing ones 20x in a row
+powershell -File scripts/stress-tests.ps1 [-Runs 3] [-Cores 2] [-Package a,b]   # tests on few cores, repeated: flakes CI shows (gate.ps1 -Stress)
 powershell -File scripts/fuzz-long.ps1 [-Minutes 30] [-Cases 1000000]   # S9: fuzz targets and property tests, long
 # fuzz targets: crates/corrent-core/src/fuzz.rs (corpus tests/fuzz-corpus/, cargo-fuzz in fuzz/), property tests: crates/corrent-core/src/prop_tests.rs
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo deny check   # CI gates
@@ -119,6 +120,10 @@ Key invariants:
   re-verifies (never re-downloads); always keep a metainfo backup until the re-add succeeds.
 - Fast resume must stay on by default; never rewrite the engine's `session.json` while it runs.
 - Fonts in `assets/fonts` are subset without Private-Use-Area glyphs (they shadowed Phosphor icons).
+- Tests that wait on the engine (`wait_for`) wait for the state their assertions read, not just its
+  first sign: a torrent is listed before its add finishes (category, tags), session stats come with
+  the next tick. Players under `untimed` start paused. CI runners are slow; after changing such
+  tests run `scripts/stress-tests.ps1` (or `gate.ps1 -Stress`).
 
 ## Media server work and handover (2026-10-19)
 
