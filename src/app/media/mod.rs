@@ -322,6 +322,8 @@ impl CorrentApp {
                 poster: None,
                 local: None,
                 stream: None,
+                audio_track: None,
+                subtitle_track: None,
             };
             self.play_queue(vec![e], false);
         }
@@ -591,6 +593,8 @@ impl CorrentApp {
             poster: i.images.first().map(|im| im.sha.clone()),
             local: None,
             stream: None,
+            audio_track: i.state.audio_track,
+            subtitle_track: i.state.subtitle_track,
         }
     }
 

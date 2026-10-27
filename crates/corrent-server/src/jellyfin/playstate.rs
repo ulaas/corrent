@@ -139,6 +139,7 @@ fn update_of(b: &Value) -> StateUpdate {
         favorite: field(b, "IsFavorite").and_then(Value::as_bool),
         position_ms: field(b, "PlaybackPositionTicks").and_then(Value::as_i64).map(ids::ms),
         rating: field(b, "Rating").and_then(Value::as_f64).map(|r| r as f32),
+        ..Default::default()
     }
 }
 

@@ -57,6 +57,8 @@
   const audioTracks = $derived(file?.streams.filter((s) => s.kind === 'audio') ?? []);
   const subStreams = $derived(file?.streams.filter((s) => s.kind === 'subtitle') ?? []);
   const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+  /** External subtitle formats the server serves as WebVTT (`TEXT_SUBS` in v1/playback.rs). */
+  const TEXT_SUBS = ['srt', 'subrip', 'ass', 'ssa', 'vtt', 'webvtt'];
 
   async function start(itemId: number, o: PlaybackOptions, at: number | null) {
     error = '';
@@ -65,12 +67,25 @@
     clearCountdown();
     const el = video!;
     try {
+      let restoredBurn = false;
       if (!item || item.id !== itemId) {
         item = await api.get<ItemDetail>(`/items/${itemId}`);
         if (music.playing) music.pause();
+        o = restoreTracks(item, o);
+        restoredBurn = o.burn_subtitle != null;
+        opts = o;
       }
       const old = info;
-      info = await resolveSource(itemId, o);
+      try {
+        info = await resolveSource(itemId, o);
+      } catch (e) {
+        // Burning the remembered subtitle isn't possible (no transcoding): play without it.
+        if (!restoredBurn) throw e;
+        o = { ...o, burn_subtitle: undefined };
+        opts = o;
+        subtitle = null;
+        info = await resolveSource(itemId, o);
+      }
       stopSession(old && old.session_id !== info.session_id ? old : null);
       detach?.();
       detach = await attachSource(el, info, (msg) => {
@@ -105,6 +120,29 @@
       error = errorText(e);
       waiting = false;
     }
+  }
+
+  /** The audio and subtitle tracks chosen last time for this item, when the file still has them.
+   *  Subtitles the browser can't show as text (embedded or image ones) are burned in, as when
+   *  chosen from the menu. */
+  function restoreTracks(it: ItemDetail, o: PlaybackOptions): PlaybackOptions {
+    const streams = (it.files.find((f) => f.role === 'main') ?? it.files[0])?.streams ?? [];
+    const { audio_track: a, subtitle_track: s } = it.state;
+    if (a != null && o.audio_track == null && streams.some((x) => x.kind === 'audio' && x.index === a)) o = { ...o, audio_track: a };
+    const sub = streams.find((x) => x.kind === 'subtitle' && x.index === s);
+    if (sub && o.burn_subtitle == null) {
+      subtitle = sub.index;
+      if (!(sub.external && TEXT_SUBS.includes(sub.codec ?? ''))) o = { ...o, burn_subtitle: sub.index };
+    }
+    return o;
+  }
+
+  /** Remembers the track chosen for the item (on every device). */
+  function rememberTrack(body: { audio_track?: number; subtitle_track?: number }) {
+    const it = item;
+    if (!it) return;
+    it.state = { ...it.state, ...body };
+    void api.put(`/items/${it.id}/state`, body).catch(() => {});
   }
 
   async function loadTrickplay() {
@@ -393,6 +431,7 @@
   function chooseSubtitle(idx: number | null) {
     menu = '';
     subtitle = idx;
+    rememberTrack({ subtitle_track: idx ?? 0 });
     const track = idx == null ? null : info?.subtitles.find((s) => s.index === idx);
     if (idx != null && track && !track.url) {
       // Image subtitles: have the server burn them into the picture.
@@ -416,6 +455,7 @@
 
   function chooseAudio(idx: number) {
     menu = '';
+    rememberTrack({ audio_track: idx });
     opts = { ...opts, audio_track: idx };
     void start(item!.id, opts, time);
   }

@@ -250,6 +250,8 @@ impl CorrentApp {
                 poster: None,
                 local: None,
                 stream: Some(s.url),
+                audio_track: None,
+                subtitle_track: None,
             };
             self.play_queue(vec![e], true);
         }

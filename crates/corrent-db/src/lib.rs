@@ -25,6 +25,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("agent", include_str!("../migrations/0012_agent.sql")),
     ("placement", include_str!("../migrations/0013_placement.sql")),
     ("placed_index", include_str!("../migrations/0014_placed_index.sql")),
+    ("track_choice", include_str!("../migrations/0015_track_choice.sql")),
 ];
 
 pub fn schema_version() -> u32 {

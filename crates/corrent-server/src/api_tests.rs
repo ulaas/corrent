@@ -2192,6 +2192,12 @@ async fn library_endpoints() {
     let (s, v, _) =
         send(app, Method::PUT, &format!("/api/v1/items/{id}/state"), &admin, json!({ "favorite": true })).await;
     assert_eq!((s, v["favorite"].as_bool()), (StatusCode::OK, Some(true)));
+    // The tracks chosen while playing come back with the item (for every client).
+    let body = json!({ "audio_track": 2, "subtitle_track": 0 });
+    let (s, _, _) = send(app, Method::PUT, &format!("/api/v1/items/{id}/state"), &admin, body).await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, v, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
+    assert_eq!((v["state"]["audio_track"].as_i64(), v["state"]["subtitle_track"].as_i64()), (Some(2), Some(0)));
     let (_, v, _) = get(app, "/api/v1/library/search?q=fore", &admin).await;
     assert_eq!(v["items"][0]["title"], "forest");
     let (_, v, _) = get(app, "/api/v1/home", &admin).await;

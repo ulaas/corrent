@@ -1706,8 +1706,10 @@ fn carry_over(t: &Transaction, file: i64, old_item: Option<i64>, old_group: i64)
         return Ok(());
     }
     t.execute(
-        "INSERT OR IGNORE INTO watch_state(user_id, item_id, position_ms, played, play_count, last_played_at, favorite, rating) \
-         SELECT user_id, ?1, position_ms, played, play_count, last_played_at, favorite, rating FROM watch_state WHERE item_id = ?2",
+        "INSERT OR IGNORE INTO watch_state(user_id, item_id, position_ms, played, play_count, last_played_at, favorite, rating, \
+         audio_track, subtitle_track) \
+         SELECT user_id, ?1, position_ms, played, play_count, last_played_at, favorite, rating, audio_track, subtitle_track \
+         FROM watch_state WHERE item_id = ?2",
         params![new, old],
     )?;
     t.execute(

@@ -20,7 +20,8 @@ const ITEM_SELECT: &str = "SELECT i.id, i.library_id, i.kind, i.parent_id, i.tit
        WHEN 'show' THEN (SELECT count(*) FROM items e JOIN items s ON e.parent_id = s.id WHERE s.parent_id = i.id AND NOT EXISTS \
             (SELECT 1 FROM watch_state w WHERE w.item_id = e.id AND w.user_id = ?1 AND w.played = 1)) \
        ELSE NULL END, \
-     p.parent_id, p.index_no, CASE WHEN i.kind = 'track' THEN json_extract(i.extra, '$.work') END \
+     p.parent_id, p.index_no, CASE WHEN i.kind = 'track' THEN json_extract(i.extra, '$.work') END, \
+     ws.audio_track, ws.subtitle_track \
      FROM items i LEFT JOIN items p ON p.id = i.parent_id LEFT JOIN items gp ON gp.id = p.parent_id \
      LEFT JOIN watch_state ws ON ws.item_id = i.id AND ws.user_id = ?1";
 
@@ -61,6 +62,8 @@ fn item_row(r: &Row) -> rusqlite::Result<RawItem> {
                 favorite: r.get::<_, Option<i64>>(15)?.unwrap_or(0) != 0,
                 rating: r.get(16)?,
                 unplayed: r.get(18)?,
+                audio_track: r.get(22)?,
+                subtitle_track: r.get(23)?,
             },
             child_count: Some(r.get::<_, i64>(17)?).filter(|n| *n > 0),
             partial: false,
@@ -660,6 +663,15 @@ impl Library {
                 if let Some(r) = u.rating {
                     t.execute("UPDATE watch_state SET rating = ?1 WHERE user_id = ?2 AND item_id = ?3", params![r, user, id])?;
                 }
+                if let Some(a) = u.audio_track {
+                    t.execute("UPDATE watch_state SET audio_track = ?1 WHERE user_id = ?2 AND item_id = ?3", params![a, user, id])?;
+                }
+                if let Some(st) = u.subtitle_track {
+                    t.execute(
+                        "UPDATE watch_state SET subtitle_track = ?1 WHERE user_id = ?2 AND item_id = ?3",
+                        params![st, user, id],
+                    )?;
+                }
                 let mut played = u.played;
                 if let Some(pos) = u.position_ms {
                     let pos = pos.max(0);
@@ -700,7 +712,8 @@ impl Library {
                     }
                 }
                 t.query_row(
-                    "SELECT position_ms, played, play_count, last_played_at, favorite, rating FROM watch_state WHERE user_id = ?1 AND item_id = ?2",
+                    "SELECT position_ms, played, play_count, last_played_at, favorite, rating, audio_track, subtitle_track \
+                     FROM watch_state WHERE user_id = ?1 AND item_id = ?2",
                     params![user, id],
                     |r| {
                         Ok(UserState {
@@ -711,6 +724,8 @@ impl Library {
                             favorite: r.get::<_, i64>(4)? != 0,
                             rating: r.get(5)?,
                             unplayed: None,
+                            audio_track: r.get(6)?,
+                            subtitle_track: r.get(7)?,
                         })
                     },
                 )

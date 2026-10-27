@@ -3,6 +3,13 @@
 All notable changes to Corrent. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may break things).
 
+## [Unreleased]
+
+### Added
+
+- Media player (app and web): the audio track and subtitles chosen for a video are remembered
+  and chosen again the next time it plays, on every device of the same user.
+
 ## [0.3.2] — 2026-10-23
 
 ### Security

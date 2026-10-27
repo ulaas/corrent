@@ -218,6 +218,17 @@ async fn scans_movies_shows_and_music() {
     let st =
         lib.set_state(user, sintel.id, StateUpdate { position_ms: Some(2900), ..Default::default() }).await.unwrap();
     assert!(st.played, "{st:?}");
+    // The chosen tracks are kept (subtitles off = 0), without touching the progress.
+    let st = lib
+        .set_state(user, sintel.id, StateUpdate { audio_track: Some(2), subtitle_track: Some(0), ..Default::default() })
+        .await
+        .unwrap();
+    assert_eq!((st.audio_track, st.subtitle_track, st.played), (Some(2), Some(0), true));
+    let st =
+        lib.set_state(user, sintel.id, StateUpdate { subtitle_track: Some(1001), ..Default::default() }).await.unwrap();
+    assert_eq!((st.audio_track, st.subtitle_track), (Some(2), Some(1001)));
+    let d = lib.item(user, sintel.id).await.unwrap();
+    assert_eq!((d.item.state.audio_track, d.item.state.subtitle_track), (Some(2), Some(1001)));
     // Marking the show played marks every episode.
     lib.set_state(user, show.id, StateUpdate { played: Some(true), ..Default::default() }).await.unwrap();
     let show_now = lib.items(user, ItemQuery { library_id: Some(ls.id), ..Default::default() }).await.unwrap();

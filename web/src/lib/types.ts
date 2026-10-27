@@ -389,6 +389,10 @@ export interface UserState {
   favorite: boolean;
   rating?: number;
   unplayed?: number;
+  /** The audio track last chosen (stream index). */
+  audio_track?: number;
+  /** The subtitle track last chosen (stream index; 0 = off). */
+  subtitle_track?: number;
 }
 
 export interface Item {

@@ -267,6 +267,12 @@ pub struct UserState {
     /// Containers: how many playable children are not played yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unplayed: Option<i64>,
+    /// The audio track last chosen (`Stream::index`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_track: Option<i64>,
+    /// The subtitle track last chosen (`Stream::index`; 0 = off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtitle_track: Option<i64>,
 }
 
 /// An item in lists and grids.
@@ -468,6 +474,10 @@ pub struct StateUpdate {
     pub played: Option<bool>,
     pub favorite: Option<bool>,
     pub rating: Option<f32>,
+    /// The audio track chosen while playing (`Stream::index`).
+    pub audio_track: Option<i64>,
+    /// The subtitle track chosen while playing (`Stream::index`; 0 = off).
+    pub subtitle_track: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

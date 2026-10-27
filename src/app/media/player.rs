@@ -28,6 +28,9 @@ pub struct QueueEntry {
     pub local: Option<std::path::PathBuf>,
     /// A live stream (internet radio): played as it is, no progress kept.
     pub stream: Option<String>,
+    /// The tracks chosen last time (`Stream::index`; subtitle 0 = off).
+    pub audio_track: Option<i64>,
+    pub subtitle_track: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -36,6 +39,8 @@ pub struct Track {
     pub kind: String,
     pub title: String,
     pub selected: bool,
+    /// The file or URL of a subtitle added with `sub-add`.
+    pub external: Option<String>,
 }
 
 #[derive(Default)]
@@ -60,6 +65,36 @@ struct Status {
     audio_delay: f64,
     sub_scale: f64,
     stats: Stats,
+    /// Tracks to select once the file is loaded (the choice remembered for the item).
+    want: Option<(Option<i64>, Option<i64>)>,
+    loaded: bool,
+    /// The server's external subtitles added to mpv: (URL, `Stream::index`).
+    ext_subs: Vec<(String, i64)>,
+}
+
+impl Status {
+    /// Selects the remembered tracks when the file's tracks are known (those it still has).
+    /// External subtitles are selected as they are added.
+    fn apply_wanted(&mut self, mpv: &Mpv) {
+        if !self.loaded || self.tracks.is_empty() {
+            return;
+        }
+        let Some((aid, sid)) = self.want.take() else { return };
+        let has =
+            |kind: &str, id: i64| self.tracks.iter().any(|t| t.kind == kind && t.id == id && t.external.is_none());
+        if let Some(a) = aid.filter(|a| has("audio", *a)) {
+            let _ = mpv.command_async(0, &["set", "aid", &a.to_string()]);
+        }
+        match sid {
+            Some(0) => {
+                let _ = mpv.command_async(0, &["set", "sid", "no"]);
+            }
+            Some(s) if has("sub", s) => {
+                let _ = mpv.command_async(0, &["set", "sid", &s.to_string()]);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// "Stats for nerds".
@@ -198,6 +233,7 @@ fn track_list(n: &Node) -> Vec<Track> {
                 kind,
                 title: if label.is_empty() { format!("#{id}") } else { label },
                 selected: t.get("selected").and_then(Node::as_bool) == Some(true),
+                external: t.get("external-filename").and_then(Node::as_str).map(str::to_string),
             })
         })
         .collect()
@@ -398,7 +434,10 @@ impl Player {
                             "pause" => s.paused = value.as_bool().unwrap_or(false),
                             "volume" => s.volume = value.as_f64().unwrap_or(100.0),
                             "mute" => s.muted = value.as_bool().unwrap_or(false),
-                            "track-list" => s.tracks = track_list(&value),
+                            "track-list" => {
+                                s.tracks = track_list(&value);
+                                s.apply_wanted(&m);
+                            }
                             "chapter-list" => {
                                 s.chapters = value
                                     .as_array()
@@ -428,6 +467,8 @@ impl Player {
                         Event::FileLoaded => {
                             s.ended = false;
                             s.error = None;
+                            s.loaded = true;
+                            s.apply_wanted(&m);
                         }
                         Event::EndFile(EndReason::Eof) => s.ended = true,
                         Event::EndFile(EndReason::Error(code)) => s.error = Some(format!("playback failed ({code})")),
@@ -479,6 +520,15 @@ impl Player {
 
     fn load_current(&mut self) {
         let Some(e) = self.current().cloned() else { return };
+        {
+            let mut s = crate::util::lock(&self.status);
+            s.tracks.clear();
+            s.ext_subs.clear();
+            s.loaded = false;
+            // External subtitles (1000 and up) only come from the server, selected as added.
+            let sid = e.subtitle_track.filter(|i| *i < 1000);
+            s.want = (e.stream.is_none() && (e.audio_track.is_some() || sid.is_some())).then_some((e.audio_track, sid));
+        }
         if let Some(url) = &e.stream {
             let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
             let args = self.mpv.loadfile_args(url, &title);
@@ -544,10 +594,12 @@ impl Player {
                     let args = mpv.loadfile_args(&url, &format!("{start},{title}"));
                     let _ = mpv.command(&args.iter().map(String::as_str).collect::<Vec<_>>());
                     for s in info.subtitles.iter().filter_map(|s| s.url.as_ref().map(|u| (u, s))) {
+                        let url = client.url(s.0);
+                        crate::util::lock(&status).ext_subs.push((url.clone(), s.1.index));
                         let _ = mpv.command(&[
                             "sub-add",
-                            &client.url(s.0),
-                            "auto",
+                            &url,
+                            if e.subtitle_track == Some(s.1.index) { "select" } else { "auto" },
                             s.1.title.as_deref().unwrap_or(""),
                             s.1.lang.as_deref().unwrap_or(""),
                         ]);
@@ -570,6 +622,39 @@ impl Player {
     /// The folder of the video when it plays from this computer, to start the picker there.
     pub fn local_folder(&self) -> Option<std::path::PathBuf> {
         self.current()?.local.as_ref()?.parent().map(std::path::Path::to_path_buf)
+    }
+
+    /// Remembers a track chosen in the menu for the item (`None`: subtitles off). A subtitle file
+    /// from this computer isn't remembered (the server doesn't know it).
+    fn remember_track(&mut self, kind: &str, track: Option<&Track>) {
+        let index = match track {
+            None => Some(0),
+            Some(t) => match &t.external {
+                Some(f) => {
+                    crate::util::with_lock(&self.status, |s| s.ext_subs.iter().find(|(u, _)| u == f).map(|(_, i)| *i))
+                }
+                None => Some(t.id),
+            },
+        };
+        let Some(index) = index else { return };
+        let Some(e) = self.queue.get_mut(self.index).filter(|e| e.stream.is_none() && e.item_id > 0) else { return };
+        let body = if kind == "audio" {
+            e.audio_track = Some(index);
+            serde_json::json!({ "audio_track": index })
+        } else {
+            e.subtitle_track = Some(index);
+            serde_json::json!({ "subtitle_track": index })
+        };
+        let (client, id, offline) = (self.client.clone(), e.item_id, self.offline.clone());
+        self.rt.spawn(async move {
+            let r: Result<serde_json::Value, String> =
+                client.send(reqwest::Method::PUT, &format!("/api/v1/items/{id}/state"), &body).await;
+            if r.is_err()
+                && let Some((store, server)) = offline
+            {
+                store.queue_state(&server, id, body);
+            }
+        });
     }
 
     /// Commands from the UI thread are asynchronous: the UI never waits for mpv's core.
@@ -1250,6 +1335,7 @@ impl Player {
         let tracks = crate::util::with_lock(&self.status, |s| s.tracks.clone());
         let mpv = self.mpv.clone();
         let mut pick = false;
+        let mut chosen = None;
         crate::ui::widgets::popup(egui::Popup::from_toggle_button_response(&r), |ui| {
             ui.set_min_width(260.0);
             for (kind, label, prop) in [("audio", t!("Audio"), "aid"), ("sub", t!("Subtitles"), "sid")] {
@@ -1258,10 +1344,12 @@ impl Player {
                     && ui.selectable_label(!tracks.iter().any(|t| t.kind == "sub" && t.selected), t!("Off")).clicked()
                 {
                     let _ = mpv.command_async(0, &["set", "sid", "no"]);
+                    chosen = Some((kind, None));
                 }
                 for tr in tracks.iter().filter(|t| t.kind == kind) {
                     if ui.selectable_label(tr.selected, &tr.title).clicked() {
                         let _ = mpv.command_async(0, &["set", prop, &tr.id.to_string()]);
+                        chosen = Some((kind, Some(tr)));
                     }
                 }
                 if kind == "sub"
@@ -1272,6 +1360,9 @@ impl Player {
                 ui.separator();
             }
         });
+        if let Some((kind, tr)) = chosen {
+            self.remember_track(kind, tr);
+        }
         if pick {
             action = PlayerAction::PickSubtitle;
         }
