@@ -3,6 +3,13 @@
 All notable changes to Corrent. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may break things).
 
+## [0.3.5] — 2026-10-28
+
+### Fixed
+
+- Media server: when several players started the same video at once, a little bookkeeping for
+  that file could stay in memory for as long as the server ran.
+
 ## [0.3.4] — 2026-10-28
 
 ### Fixed
@@ -101,6 +108,7 @@ The first public release.
 - Linux and macOS builds are produced by CI but have not been tested on real machines yet.
 - The engine (librqbit) has no protocol encryption and no BitTorrent v2.
 
+[0.3.5]: https://github.com/ulaas/corrent/releases/tag/v0.3.5
 [0.3.4]: https://github.com/ulaas/corrent/releases/tag/v0.3.4
 [0.3.3]: https://github.com/ulaas/corrent/releases/tag/v0.3.3
 [0.3.2]: https://github.com/ulaas/corrent/releases/tag/v0.3.2

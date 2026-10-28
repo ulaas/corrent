@@ -1,6 +1,6 @@
 [package]
 name = "corrent-fuzz"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 rust-version = "1.96"
 description = "Seeded random inputs for Corrent's robustness tests (no nightly, no dependencies)"
