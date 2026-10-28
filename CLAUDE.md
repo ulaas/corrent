@@ -124,6 +124,9 @@ Key invariants:
   first sign: a torrent is listed before its add finishes (category, tags), session stats come with
   the next tick. Players under `untimed` start paused. CI runners are slow; after changing such
   tests run `scripts/stress-tests.ps1` (or `gate.ps1 -Stress`).
+- mpv tests also run on Ubuntu's older libmpv in CI (not reproducible here): react to an event once
+  (it may repeat, e.g. `PlaybackRestart` at HLS segment switches), and make audio fixtures without a
+  video track (its A/V sync drops samples there). Check `gh run list` / `gh run view <id> --log-failed`.
 
 ## Media server work and handover (2026-10-19)
 

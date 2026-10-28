@@ -351,8 +351,11 @@ impl Cache {
             }
         };
         let mut b = self.building.lock().unwrap_or_else(|e| e.into_inner());
-        // Ours and the map's: nobody else is waiting.
-        if Arc::strong_count(&lock) == 2 {
+        // Ours goes under the map's lock (clones are only taken under it): when only the map's is
+        // left, nobody else is waiting. Dropped after the check, two finishing requests could each
+        // see the other's and leave the entry behind.
+        drop(lock);
+        if b.get(&file.path).is_some_and(|l| Arc::strong_count(l) == 1) {
             b.remove(&file.path);
         }
         result

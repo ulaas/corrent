@@ -1064,17 +1064,14 @@ async fn intros_are_found_by_their_sound() {
         let audio = [noise(n * 10, before), theme.clone(), noise(n * 10 + 1, after)].concat();
         let w = h.dir.join(format!("ep{n}.wav"));
         wav(&w, &audio);
-        let secs = (before + 30.0 + after) as u32;
+        // Audio only, and lossless: with a video track mpv's encoder keeps the audio in sync with
+        // it, and Linux builds drop or stretch samples doing so (the theme then matches only in
+        // part). The scanner takes the file by its extension.
         let job = corrent_mpv::encode::EncodeJob {
-            input: format!("av://lavfi:testsrc=duration={secs}:size=160x120:rate=5,format=yuv420p"),
-            audio_file: Some(w.display().to_string()),
+            input: w.display().to_string(),
+            audio_file: None,
             output: season.join(format!("Theme Show - S01E0{n}.mkv")).display().to_string(),
-            options: vec![
-                ("of".into(), "matroska".into()),
-                ("ovc".into(), "libx264".into()),
-                ("ovcopts".into(), "preset=ultrafast".into()),
-                ("oac".into(), "aac".into()),
-            ],
+            options: vec![("of".into(), "matroska".into()), ("oac".into(), "flac".into())],
         };
         corrent_mpv::encode::run(&job, std::time::Duration::from_secs(120), &mut |_| true).unwrap();
     }

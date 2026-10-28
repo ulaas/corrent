@@ -184,6 +184,7 @@ fn remuxed_hls_plays_and_seeks() {
     let mut errors = Vec::new();
     let mut loaded = false;
     let mut seeked = false;
+    let mut checked = false;
     let end = loop {
         match mpv.wait_event(10.0) {
             Some(corrent_mpv::Event::Log { prefix, text, .. }) => errors.push(format!("{prefix}: {text}")),
@@ -198,7 +199,10 @@ fn remuxed_hls_plays_and_seeks() {
                 seeked = true;
                 mpv.command(&["seek", "13", "absolute"]).unwrap();
             }
-            Some(corrent_mpv::Event::PlaybackRestart) if seeked => {
+            // Once, at the seek's restart: Linux builds of mpv restart again while playing (HLS
+            // segment switches) and, near the end, have no position to read.
+            Some(corrent_mpv::Event::PlaybackRestart) if seeked && !checked => {
+                checked = true;
                 let pos = mpv.get_f64("time-pos").unwrap().unwrap_or(-1.0);
                 assert!((12.0..14.5).contains(&pos), "after seeking: {pos}");
                 mpv.set_flag("pause", false).unwrap();
@@ -208,6 +212,7 @@ fn remuxed_hls_plays_and_seeks() {
             _ => {}
         }
     };
+    assert!(checked, "no restart after the seek");
     assert!(matches!(end, corrent_mpv::EndReason::Eof), "ended with {end:?}");
     assert!(errors.is_empty(), "mpv errors: {errors:?}");
     let _ = std::fs::remove_dir_all(dir);
