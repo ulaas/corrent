@@ -55,3 +55,13 @@ describe('trickplay', () => {
     expect(cueAt(cues, 25)).toBeNull();
   });
 });
+
+import { initials } from '../src/lib/media';
+describe('card initials', () => {
+  it('takes the first letters of the first two words', () => {
+    expect(initials("A Bug's Life")).toBe('AB');
+    expect(initials('sintel.2010.1080p')).toBe('S2');
+    expect(initials('Élan vital')).toBe('ÉV');
+    expect(initials('— !')).toBe('');
+  });
+});

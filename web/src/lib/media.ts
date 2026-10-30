@@ -180,3 +180,14 @@ export function skipAt(chapters: { start_ms: number; title?: string | null }[], 
   const end = i + 1 < chapters.length ? chapters[i + 1].start_ms / 1000 : duration;
   return end - pos > 2 ? { kind, end } : null;
 }
+
+/** "AB" for "A Bug's Life", for a card without a picture (as on the desktop). */
+export function initials(title: string): string {
+  return title
+    .split(/[\s._-]+/)
+    .map((w) => [...w].find((c) => /[\p{L}\p{N}]/u.test(c)) ?? '')
+    .filter(Boolean)
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
+}

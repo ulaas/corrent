@@ -90,7 +90,8 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
   aspect, stats (hls.js), reset. Not possible in browsers: audio delay, screenshot.
 - [x] **S10 AI agent page** (done 2026-10-30; it creates a token for the agent): proposals with Approve/Reject; the server's MCP endpoint instead of
   the desktop's stdio command.
-- [ ] **S11 Torrent polish**: drag to reorder the queue (`POST /torrents/queue`,
+- [x] **S11 Torrent polish** (done 2026-10-30; the speed history is collected while the torrent
+  list is open): drag to reorder the queue (`POST /torrents/queue`,
   TORRENTS_MANAGE_ALL), speed sparkline in details (collected from deltas), initials placeholder
   on cards. (Undo after remove exists already.)
 

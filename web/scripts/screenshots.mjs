@@ -46,6 +46,10 @@ for (const size of sizes) {
           if (kind === 'rclick') await page.click(decodeURIComponent(arg), { button: 'right' }).catch((e) => errors.push(`rclick ${arg}: ${e.message}`));
           if (kind === 'hover') await page.hover(decodeURIComponent(arg)).catch((e) => errors.push(`hover ${arg}: ${e.message}`));
           if (kind === 'wait') await page.waitForTimeout(+arg);
+          if (kind === 'drag') {
+            const [from, to] = decodeURIComponent(arg).split('|');
+            await page.dragAndDrop(from, to, { targetPosition: { x: 40, y: 4 } }).catch((e) => errors.push(`drag ${arg}: ${e.message}`));
+          }
           if (kind === 'key') await page.keyboard.press(arg);
         }
         await page.waitForTimeout(600);

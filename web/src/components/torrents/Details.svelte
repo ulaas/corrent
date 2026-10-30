@@ -10,12 +10,19 @@
   import { t, tk } from '../../lib/i18n.svelte';
   import type { FileEntry, Torrent, TorrentDetail } from '../../lib/types';
   import { contextMenu, type MenuItem } from '../../lib/contextmenu.svelte';
+  import { points, speeds } from '../../lib/speedhistory.svelte';
 
   let {
     torrent,
     onclose,
     initialTab = 'general',
-  }: { torrent: Torrent; onclose: () => void; initialTab?: 'general' | 'files' | 'peers' | 'trackers' | 'pieces' } = $props();
+  }: { torrent: Torrent; onclose: () => void; initialTab?: 'general' | 'files' | 'peers' | 'trackers' | 'pieces' | 'speed' } = $props();
+
+  // The Speed tab (as on the desktop): this torrent's or all torrents' last minutes.
+  let scope = $state<'torrent' | 'all'>('torrent');
+  const hist = $derived(scope === 'torrent' ? (speeds.per[torrent.hash] ?? []) : speeds.all);
+  const peak = $derived(Math.max(1024, ...hist.map(([d, u]) => Math.max(d, u))));
+  const CW = 600, CH = 160;
 
   const TABS = [
     { id: 'general', label: tk('General') },
@@ -23,6 +30,7 @@
     { id: 'peers', label: tk('Peers') },
     { id: 'trackers', label: tk('Trackers') },
     { id: 'pieces', label: tk('Pieces') },
+    { id: 'speed', label: tk('Speed') },
   ] as const;
   // svelte-ignore state_referenced_locally
   let tab = $state<(typeof TABS)[number]['id']>(initialTab);
@@ -237,6 +245,27 @@
           </tbody>
         </table>
       {/if}
+    {:else if tab === 'speed'}
+      <div class="speedhead">
+        <div class="seg" role="radiogroup" aria-label={t('Speed')}>
+          <button role="radio" aria-checked={scope === 'torrent'} class:on={scope === 'torrent'} onclick={() => (scope = 'torrent')}>{t('This torrent')}</button>
+          <button role="radio" aria-checked={scope === 'all'} class:on={scope === 'all'} onclick={() => (scope = 'all')}>{t('All torrents')}</button>
+        </div>
+        {#if hist.length}
+          {@const [d, u] = hist[hist.length - 1]}
+          <span class="num down">↓ {rate(d)}</span><span class="num up">↑ {rate(u)}</span>
+        {/if}
+      </div>
+      {#if hist.length < 3}
+        <p class="muted center">{t('Collecting speed data…')}</p>
+      {:else}
+        <svg class="chart" viewBox="0 0 {CW} {CH}" preserveAspectRatio="none" role="img" aria-label={t('Speed')}>
+          <line x1="0" x2={CW} y1={CH / 2} y2={CH / 2} class="grid" />
+          <polyline class="down" points={points(hist.map((s) => s[0]), peak, CW, CH)} />
+          <polyline class="up" points={points(hist.map((s) => s[1]), peak, CW, CH)} />
+        </svg>
+        <div class="axis caption muted"><span>{t('Download')} / {t('Upload')} · {rate(peak)}</span><span>{t('now')}</span></div>
+      {/if}
     {:else if tab === 'peers'}
       {#if !detail}
         <div class="center"><Spinner /></div>
@@ -431,5 +460,58 @@
     border-radius: var(--r-sm);
     display: block;
     margin-bottom: 8px;
+  }
+  .speedhead {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+    font-size: var(--fs-small);
+  }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    margin-right: auto;
+  }
+  .seg button {
+    padding: 4px 10px;
+    font-size: var(--fs-small);
+    color: var(--text-dim);
+  }
+  .seg button.on {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+  .speedhead .down,
+  .chart .down {
+    color: var(--accent);
+    stroke: var(--accent);
+  }
+  .speedhead .up,
+  .chart .up {
+    color: var(--success);
+    stroke: var(--success);
+  }
+  .chart {
+    width: 100%;
+    height: 160px;
+    display: block;
+  }
+  .chart polyline {
+    fill: none;
+    stroke-width: 1.8;
+    vector-effect: non-scaling-stroke;
+  }
+  .chart .grid {
+    stroke: var(--border);
+    stroke-dasharray: 4 4;
+    vector-effect: non-scaling-stroke;
+  }
+  .axis {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
   }
 </style>

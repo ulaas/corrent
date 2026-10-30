@@ -31,12 +31,14 @@
   import { can, session } from '../lib/session.svelte';
   import { closeMenuFor, contextMenu, ctxmenu } from '../lib/contextmenu.svelte';
   import { isMedia, menuFor, type TorrentMenuActions } from '../lib/torrentmenu';
+  import { useSpeedHistory } from '../lib/speedhistory.svelte';
   import { ms, prefs } from '../lib/prefs.svelte';
   import { t } from '../lib/i18n.svelte';
   import { Perm, type FileEntry, type Torrent, type TorrentDetail } from '../lib/types';
   import type { IconName } from '../lib/icons';
 
   $effect(() => useTorrents());
+  $effect(() => useSpeedHistory());
 
   let selected = $state<Set<string>>(new Set());
   let anchor = $state<string | null>(null);
@@ -247,6 +249,44 @@
       await api.post('/server/alt-speed', { on: !stats?.alt_speed });
     } catch (e) {
       toast(errorText(e), 'error');
+    }
+  }
+
+  // ---- dragging rows to reorder the queue (as on the desktop: sorted by queue, ascending) ----
+  const reorder = $derived(canAll && !phone && view.sort === 'queue' && !view.desc);
+  let dragging = $state<string[] | null>(null);
+  let drop = $state<{ y: number; before: string | null } | null>(null);
+  function dragStart(e: DragEvent, x: Torrent) {
+    if (!reorder || x.pending) return e.preventDefault();
+    dragging = selected.has(x.hash) ? sel.filter((h) => !byHash.get(h)?.pending) : [x.hash];
+    e.dataTransfer?.setData('application/x-corrent-torrents', dragging.join(','));
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  }
+  function dragOver(e: DragEvent) {
+    if (!dragging || !scroller) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const y = e.clientY - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    const i = Math.max(0, Math.min(rows.length - 1, Math.floor(y / ROW)));
+    const upper = y - i * ROW < ROW / 2;
+    // Before this row, or before the next one that isn't still being added (none: the end).
+    let j = upper ? i : i + 1;
+    while (j < rows.length && rows[j].pending) j++;
+    const before = j < rows.length ? rows[j].hash : null;
+    drop = before && dragging.includes(before) ? null : { y: (upper ? i : i + 1) * ROW, before };
+  }
+  async function dropRows(e: DragEvent) {
+    if (!dragging) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const hashes = dragging, target = drop;
+    dragging = null;
+    drop = null;
+    if (!target) return;
+    try {
+      await api.post('/torrents/queue', { hashes, before: target.before });
+    } catch (err) {
+      toast(errorText(err), 'error');
     }
   }
 
@@ -494,6 +534,9 @@
       aria-rowcount={rows.length}
       aria-multiselectable="true"
       use:contextMenu={{ items: listMenu, before: selectFor, key: sel[0], title: t('Torrents') }}
+      ondragover={dragOver}
+      ondragleave={(e) => { if (e.target === e.currentTarget) drop = null; }}
+      ondrop={dropRows}
       onkeydown={onListKey}>
       {#if !live.loaded}
         <div class="center"><Spinner size={26} /></div>
@@ -511,12 +554,17 @@
         </div>
       {:else}
         <div class="spacer-h" style:height="{rows.length * ROW}px">
+          {#if drop}<div class="dropline" style:transform="translateY({drop.y - 1}px)"></div>{/if}
           {#each visible as x, i (x.hash)}
             {@const idx = first + i}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus (keys are handled by the grid) -->
             <div
               class="trow"
               data-hash={x.hash}
+              draggable={reorder && !x.pending}
+              ondragstart={(e) => dragStart(e, x)}
+              ondragend={() => ((dragging = null), (drop = null))}
+              class:dragged={dragging?.includes(x.hash)}
               class:sel={selected.has(x.hash)}
               class:focus={focusHash === x.hash}
               class:detail={detailHash === x.hash}
@@ -796,6 +844,19 @@
     cursor: default;
     user-select: none;
     transition: background var(--dur-micro);
+  }
+  .trow.dragged {
+    opacity: 0.5;
+  }
+  .dropline {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 2px;
+    background: var(--accent);
+    z-index: 25;
+    pointer-events: none;
   }
   .trow:hover {
     background: var(--hover);

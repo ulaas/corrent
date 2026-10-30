@@ -2,7 +2,7 @@
   import Icon from './Icon.svelte';
   import Img from './Img.svelte';
   import { link, go } from '../lib/router.svelte';
-  import { cardImage, isPlayable, itemHref, playHref, subtitle, watched, type Shape, LIBRARY_ICON } from '../lib/media';
+  import { cardImage, initials, isPlayable, itemHref, playHref, subtitle, watched, type Shape, LIBRARY_ICON } from '../lib/media';
   import { toggleFavorite } from '../lib/itemstate';
   import { contextMenu } from '../lib/contextmenu.svelte';
   import { itemMenu } from '../lib/itemmenu';
@@ -43,7 +43,8 @@
     {#if img}
       <Img image={img} w={shape === 'landscape' ? 400 : 400} alt="" />
     {:else}
-      <div class="ph"><Icon name={fallbackIcon} size={36} /></div>
+      {@const ini = initials(item.title)}
+      <div class="ph">{#if ini}<span class="ini">{ini}</span><Icon name={fallbackIcon} size={18} />{:else}<Icon name={fallbackIcon} size={36} />{/if}</div>
     {/if}
     <div class="shade"></div>
     {#if item.state.played}
@@ -127,6 +128,16 @@
     place-items: center;
     color: var(--text-mute);
     background: linear-gradient(160deg, var(--bg3), var(--bg2));
+  }
+  .ph:has(.ini) {
+    align-content: center;
+    gap: 6px;
+  }
+  .ini {
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
   }
   .shade {
     position: absolute;
