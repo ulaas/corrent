@@ -133,6 +133,9 @@ Key invariants:
 The media server (plan `docs/MEDIASERVER.md`, all milestones done) was built on Linux; development
 continues on Windows. Start with `docs/HANDOVER.md`: Windows build steps, open items (including the
 remuxer review list) and conventions. Gate: `scripts/gate.ps1` (Windows) / `scripts/gate.sh`.
+The web client follows the desktop app (decision 2026-10-30: keep both, no wasm/Tauri rewrite):
+`docs/WEB-PARITY.md` lists what was ported (context menus, columns, Identify, profiles, player…)
+and what intentionally differs; new desktop features need their web counterpart.
 
 ## Status (2026-10-08)
 
