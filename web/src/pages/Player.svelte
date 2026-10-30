@@ -41,7 +41,78 @@
   let trick = $state<TrickCue[]>([]);
   let nextUp = $state<Item | null>(null);
   let countdown = $state(0);
-  let menu = $state<'' | 'speed' | 'subs' | 'audio' | 'cast'>('');
+  let menu = $state<'' | 'speed' | 'subs' | 'audio' | 'cast' | 'settings'>('');
+
+  // ---- playback settings (as the desktop's, src/app/media/player.rs; browsers can't delay
+  // audio or take mpv's screenshots) ----
+  let subDelay = $state(0);
+  let subScale = $state(1);
+  type Aspect = '' | '16:9' | '4:3' | '2.35:1' | 'fill';
+  let aspect = $state<Aspect>('');
+  const RATIO: Record<string, number> = { '16:9': 16 / 9, '4:3': 4 / 3, '2.35:1': 2.35 };
+  let stats = $state(false);
+  let statsText = $state('');
+  // Subtitle cues as they came, so the delay can be changed again.
+  const cueTimes = new WeakMap<TextTrackCue, [number, number]>();
+  function shiftCues() {
+    if (!video) return;
+    for (const tt of Array.from(video.textTracks)) {
+      for (const c of Array.from(tt.cues ?? [])) {
+        let o = cueTimes.get(c);
+        if (!o) {
+          o = [c.startTime, c.endTime];
+          cueTimes.set(c, o);
+        }
+        c.startTime = Math.max(0, o[0] + subDelay);
+        c.endTime = Math.max(0, o[1] + subDelay);
+      }
+    }
+  }
+  $effect(() => {
+    void subDelay;
+    shiftCues();
+  });
+  const round1 = (x: number) => Math.round(x * 10) / 10;
+  function resetSettings() {
+    subDelay = 0;
+    subScale = 1;
+    aspect = '';
+    setRate(1);
+  }
+  $effect(() => {
+    if (!stats) return;
+    const tick = () => {
+      if (!video) return;
+      const q = video.getVideoPlaybackQuality?.();
+      let ahead = 0;
+      for (let i = 0; i < video.buffered.length; i++) {
+        if (video.buffered.start(i) <= video.currentTime && video.currentTime <= video.buffered.end(i)) ahead = video.buffered.end(i) - video.currentTime;
+      }
+      statsText = [
+        `${video.videoWidth}×${video.videoHeight}`,
+        info?.method ?? '',
+        q ? `${q.droppedVideoFrames}/${q.totalVideoFrames} dropped` : '',
+        `${ahead.toFixed(1)} s buffered`,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  });
+  // "Use this frame as the thumbnail" (T): taken on the server from the file, locked against
+  // providers.
+  const canThumb = $derived(!!item && (item.kind === 'movie' || item.kind === 'episode' || item.kind === 'video'));
+  async function setThumbnail() {
+    if (!item || !canThumb) return;
+    try {
+      await api.post(`/items/${item.id}/thumbnail`, { at_ms: Math.round(time * 1000), lock: true });
+      toast(t('Thumbnail updated.'), 'success');
+    } catch (e) {
+      toast(t("Couldn't set the thumbnail: {why}", { why: errorText(e) }), 'error');
+    }
+  }
   let showTitle = $state(true);
 
   let detach: (() => void) | null = null;
@@ -481,6 +552,7 @@
     else if (k === 'f') void toggleFullscreen();
     else if (k === 'm') toggleMute();
     else if (k === 'n' && nextUp) playNext();
+    else if (k === 't' && canThumb) void setThumbnail();
     else if (k === 'escape') {
       if (menu) menu = '';
       else if (!document.fullscreenElement) close();
@@ -525,6 +597,10 @@
   <!-- svelte-ignore a11y_media_has_caption -->
   <video
     bind:this={video}
+    class:fill={aspect === 'fill'}
+    class:forced={!!RATIO[aspect]}
+    style:--ratio={RATIO[aspect] ?? null}
+    style:--sub-scale={subScale}
     playsinline
     onclick={toggle}
     ondblclick={toggleFullscreen}
@@ -540,9 +616,11 @@
     onerror={onError}
     onloadedmetadata={() => (applyTracks(), room?.apply())}>
     {#each info?.subtitles.filter((s) => s.url) ?? [] as s (s.index)}
-      <track id="sub-{s.index}" kind="subtitles" src={s.url} srclang={s.lang ?? undefined} label={subLabel(s)} />
+      <track id="sub-{s.index}" kind="subtitles" src={s.url} srclang={s.lang ?? undefined} label={subLabel(s)} onload={shiftCues} />
     {/each}
   </video>
+
+  {#if stats && statsText}<div class="stats num">{statsText}</div>{/if}
 
   {#if waiting && !error}
     <div class="center" transition:fade={{ duration: ms(150) }}><Spinner size={44} /></div>
@@ -632,6 +710,39 @@
             {#each speeds as s (s)}
               <button class="mi" role="menuitemradio" aria-checked={rate === s} onclick={() => setRate(s)}>{s === 1 ? t('Normal') : `${s}×`}{#if rate === s}<Icon name="check" size={14} />{/if}</button>
             {/each}
+          </div>
+        {/if}
+      </div>
+
+      <div class="pop">
+        <button class="btn ghost icon" aria-haspopup="menu" aria-expanded={menu === 'settings'} aria-label={t('Playback settings')} title={t('Playback settings')} onclick={() => (menu = menu === 'settings' ? '' : 'settings')}><Icon name="sliders-horizontal" size={20} /></button>
+        {#if menu === 'settings'}
+          <div class="menu settings" role="menu" transition:fly={{ y: 8, duration: ms(140) }}>
+            <div class="mh">{t('Playback settings')}</div>
+            <div class="adj">
+              <span class="grow">{t('Subtitle delay')}</span>
+              <button class="btn ghost icon sm" aria-label="−0.1 s" onclick={() => (subDelay = round1(subDelay - 0.1))}><Icon name="minus" size={14} /></button>
+              <span class="num val">{subDelay > 0 ? '+' : ''}{subDelay.toFixed(1)} s</span>
+              <button class="btn ghost icon sm" aria-label="+0.1 s" onclick={() => (subDelay = round1(subDelay + 0.1))}><Icon name="plus" size={14} /></button>
+            </div>
+            <div class="adj">
+              <span class="grow">{t('Subtitle size')}</span>
+              <button class="btn ghost icon sm" aria-label="−10%" disabled={subScale <= 0.5} onclick={() => (subScale = round1(subScale - 0.1))}><Icon name="minus" size={14} /></button>
+              <span class="num val">{Math.round(subScale * 100)}%</span>
+              <button class="btn ghost icon sm" aria-label="+10%" disabled={subScale >= 3} onclick={() => (subScale = round1(subScale + 0.1))}><Icon name="plus" size={14} /></button>
+            </div>
+            <div class="mh">{t('Picture')}</div>
+            <div class="chips">
+              {#each [['', t('Original')], ['16:9', '16:9'], ['4:3', '4:3'], ['2.35:1', '2.35:1'], ['fill', t('Fill')]] as [v, l] (v)}
+                <button class="chip" class:on={aspect === v} aria-pressed={aspect === v} onclick={() => (aspect = v as Aspect)}>{l}</button>
+              {/each}
+            </div>
+            <div class="sep"></div>
+            {#if canThumb}
+              <button class="mi" role="menuitem" onclick={() => ((menu = ''), void setThumbnail())}><span>{t('Use this frame as the thumbnail (T)')}</span><Icon name="image" size={14} /></button>
+            {/if}
+            <button class="mi" role="menuitemcheckbox" aria-checked={stats} onclick={() => (stats = !stats)}>{t('Stats')}{#if stats}<Icon name="check" size={14} />{/if}</button>
+            <button class="mi" role="menuitem" onclick={resetSettings}>{t('Reset')}</button>
           </div>
         {/if}
       </div>
@@ -756,10 +867,68 @@
     object-fit: contain;
     display: block;
   }
+  video.fill {
+    object-fit: cover;
+  }
+  video.forced {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: min(100%, calc(100dvh * var(--ratio)));
+    height: min(100%, calc(100vw / var(--ratio)));
+    object-fit: fill;
+  }
   video::cue {
     font-family: var(--font-sans);
     background: rgba(0, 0, 0, 0.6);
-    font-size: 1.1em;
+    font-size: calc(1.1em * var(--sub-scale, 1));
+  }
+  .stats {
+    position: absolute;
+    top: 64px;
+    left: 16px;
+    padding: 6px 10px;
+    border-radius: var(--r-sm);
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 12px;
+    pointer-events: none;
+  }
+  .settings {
+    min-width: 320px;
+  }
+  .adj {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    font-size: 14px;
+  }
+  .val {
+    min-width: 56px;
+    text-align: center;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 10px 8px;
+  }
+  .chip {
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    font-size: 12px;
+    color: #fff;
+  }
+  .chip.on {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .menu .sep {
+    height: 1px;
+    margin: 6px 4px;
+    background: rgba(255, 255, 255, 0.12);
   }
   .center {
     position: absolute;

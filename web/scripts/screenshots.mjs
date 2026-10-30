@@ -40,7 +40,8 @@ for (const size of sizes) {
       await page.waitForTimeout(Number(process.env.WAIT ?? 900));
       if (action) {
         for (const step of action.split('&')) {
-          const [kind, arg] = step.split('=');
+          const at = step.indexOf('=');
+          const [kind, arg] = at < 0 ? [step, ''] : [step.slice(0, at), step.slice(at + 1)];
           if (kind === 'click') await page.click(decodeURIComponent(arg)).catch((e) => errors.push(`click ${arg}: ${e.message}`));
           if (kind === 'rclick') await page.click(decodeURIComponent(arg), { button: 'right' }).catch((e) => errors.push(`rclick ${arg}: ${e.message}`));
           if (kind === 'hover') await page.hover(decodeURIComponent(arg)).catch((e) => errors.push(`hover ${arg}: ${e.message}`));

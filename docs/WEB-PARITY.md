@@ -86,7 +86,7 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
 - [x] **S7 Person page and "See all" rows** (done 2026-10-30) (`/items?person_id=`, home row pages).
 - [x] **S8 Profiles** (done 2026-10-30; from the account menu, as on the desktop): "Who's watching?" after sign-in when there are several, PIN, Switch
   profile.
-- [ ] **S9 Player gaps**: T / "Use this frame as the thumbnail", subtitle delay and size, picture
+- [x] **S9 Player gaps** (done 2026-10-30): T / "Use this frame as the thumbnail", subtitle delay and size, picture
   aspect, stats (hls.js), reset. Not possible in browsers: audio delay, screenshot.
 - [ ] **S10 AI agent page**: proposals with Approve/Reject; the server's MCP endpoint instead of
   the desktop's stdio command.
