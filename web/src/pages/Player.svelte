@@ -360,6 +360,20 @@
     });
   });
   onDestroy(() => room?.leave());
+  // Closing the tab ends the server's transcode now (else it encodes on until it idles out);
+  // a page brought back from the browser's cache starts over.
+  $effect(() => {
+    const bye = () => stopSession(info, true);
+    const back = (e: PageTransitionEvent) => {
+      if (e.persisted) location.reload();
+    };
+    addEventListener('pagehide', bye);
+    addEventListener('pageshow', back);
+    return () => {
+      removeEventListener('pagehide', bye);
+      removeEventListener('pageshow', back);
+    };
+  });
   // Closing the tab leaves too (else the room counts a ghost until it idles out).
   $effect(() => {
     const bye = () => room?.leave();

@@ -82,6 +82,57 @@ async fn hls_session_serves_and_seeks() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hls_encoder_pauses_ahead_of_the_player() {
+    if !corrent_mpv::Library::available() {
+        eprintln!("libmpv not found; skipping");
+        return;
+    }
+    let dir = scratch("hls-pace");
+    // 300 s: 75 segments of 4 s, far more than the encoder may run ahead.
+    let input = source(&dir, 300);
+    let m = HlsManager::new(HlsConfig { root: dir.join("sessions"), worker: None, ..Default::default() });
+    let id = m
+        .create(SessionSpec {
+            input,
+            duration_ms: 300_000,
+            fps: Some(25.0),
+            video: Some(VideoTarget { height: None, bitrate: 500_000 }),
+            audio: Some(AudioTarget { track: None, channels: 2, bitrate: 96_000 }),
+            burn_subtitle: None,
+            burn_subtitle_file: None,
+            user: "u".into(),
+            title: "t".into(),
+            item_id: None,
+        })
+        .unwrap();
+    // The player asks for the first segment, then stops asking (paused, or the tab closed).
+    m.segment(&id, 0).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let paused_at = loop {
+        let (on, n) = m.encoding(&id).await;
+        if !on {
+            break n;
+        }
+        assert!(std::time::Instant::now() < deadline, "the encoder still runs with {n} segments");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    assert!((40..75).contains(&paused_at), "paused about three minutes ahead, not at the end: {paused_at}");
+    // The player moves on: the encoder starts again before it gets there.
+    m.segment(&id, 30).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let (_, n) = m.encoding(&id).await;
+        if n > paused_at + 5 {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "resumed: {n} segments");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    m.stop(&id).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn encoder_detection_and_trickplay() {
     if !corrent_mpv::Library::available() {
         eprintln!("libmpv not found; skipping");

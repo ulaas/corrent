@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,6 +22,10 @@ use crate::decide::{AudioTarget, VideoTarget};
 /// Segments this far ahead of what the encoder produced are waited for, not restarted.
 const AHEAD_SEGMENTS: u64 = 8;
 const IDLE: Duration = Duration::from_secs(90);
+/// The encoder pauses this many segments (about three minutes) ahead of the player — a paused
+/// or closed player stops costing CPU — and starts again when the player is this close.
+const PAUSE_AHEAD: u64 = 45;
+const RESUME_AHEAD: u64 = 20;
 const SEGMENT_WAIT: Duration = Duration::from_secs(60);
 /// Below this much free space on the cache's disk no new transcode starts (a full disk would
 /// also break the library database and downloads).
@@ -117,6 +121,8 @@ struct Session {
     done: Mutex<BTreeSet<u64>>,
     running: tokio::sync::Mutex<Option<Running>>,
     last_access: Mutex<Instant>,
+    /// The last segment the player asked for (`u64::MAX`: none yet).
+    wanted: AtomicU64,
 }
 
 impl Session {
@@ -189,15 +195,22 @@ fn random_id() -> String {
 }
 
 impl HlsManager {
-    /// Creates the manager and its reaper (idle sessions are stopped and deleted).
+    /// Creates the manager and its reaper (idle sessions are stopped and deleted, encoders
+    /// paced to the players).
     pub fn new(cfg: HlsConfig) -> Arc<HlsManager> {
         let _ = std::fs::remove_dir_all(&cfg.root);
         let m = Arc::new(HlsManager { cfg: Mutex::new(cfg), sessions: Mutex::new(HashMap::new()) });
         let weak = Arc::downgrade(&m);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                tokio::time::sleep(Duration::from_secs(2)).await;
                 let Some(m) = weak.upgrade() else { break };
+                let all: Vec<Arc<Session>> =
+                    m.sessions.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+                let cfg = m.config();
+                for s in &all {
+                    pace(&cfg, s).await;
+                }
                 let idle: Vec<String> = m
                     .sessions
                     .lock()
@@ -260,6 +273,7 @@ impl HlsManager {
                 done: Mutex::new(BTreeSet::new()),
                 running: tokio::sync::Mutex::new(None),
                 last_access: Mutex::new(Instant::now()),
+                wanted: AtomicU64::new(u64::MAX),
             }),
         );
         Ok(id)
@@ -275,6 +289,16 @@ impl HlsManager {
         if let Ok(s) = self.get(id) {
             s.touch();
         }
+    }
+
+    /// Tests: whether the session's encoder runs, and how many segments are encoded.
+    #[cfg(test)]
+    pub(crate) async fn encoding(&self, id: &str) -> (bool, usize) {
+        let Ok(s) = self.get(id) else { return (false, 0) };
+        s.refresh_done();
+        let running = s.running.lock().await;
+        let on = running.as_ref().is_some_and(|r| r.ended.lock().unwrap_or_else(|e| e.into_inner()).is_none());
+        (on, s.done.lock().unwrap_or_else(|e| e.into_inner()).len())
     }
 
     /// The owner of a session (the server checks it against the requesting user).
@@ -307,6 +331,7 @@ impl HlsManager {
             return Err(HlsError::NotFound);
         }
         s.touch();
+        s.wanted.store(n, Ordering::Relaxed);
         let path = s.dir.join(format!("seg{n:05}.ts"));
         let cfg = self.config();
         let deadline = Instant::now() + SEGMENT_WAIT;
@@ -374,6 +399,44 @@ impl HlsManager {
                 idle_secs: s.idle().as_secs(),
             })
             .collect()
+    }
+}
+
+/// Keeps a session's encoder a few minutes ahead of its player: paused when far ahead (a
+/// paused player, or a closed one not reaped yet), started again before the player gets to
+/// what isn't encoded.
+async fn pace(cfg: &HlsConfig, s: &Session) {
+    let wanted = s.wanted.load(Ordering::Relaxed);
+    if wanted == u64::MAX {
+        return;
+    }
+    s.refresh_done();
+    let next = {
+        let done = s.done.lock().unwrap_or_else(|e| e.into_inner());
+        (wanted..s.segments).find(|n| !done.contains(n))
+    };
+    let Some(next) = next else { return };
+    let mut running = s.running.lock().await;
+    let state = running.as_ref().map(|r| *r.ended.lock().unwrap_or_else(|e| e.into_inner()));
+    let ahead = next - wanted;
+    match state {
+        // Encoding: far enough ahead for now.
+        Some(None) if ahead >= PAUSE_AHEAD => {
+            if let Some(r) = running.take() {
+                r.encoder.stop();
+            }
+        }
+        // A failed encoder is reported by the next segment request, not retried here.
+        Some(Some(true)) | Some(None) => {}
+        // Paused (or done with its part): the player is getting close.
+        Some(Some(false)) | None => {
+            if ahead < RESUME_AHEAD && s.idle() < IDLE {
+                match start_encoder(cfg, s, next) {
+                    Ok(r) => *running = Some(r),
+                    Err(e) => tracing::debug!("transcode {}: {e}", s.id),
+                }
+            }
+        }
     }
 }
 

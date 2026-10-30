@@ -56,9 +56,10 @@ export async function resolveSource(itemId: number, o: PlaybackOptions = {}): Pr
   }
 }
 
-/** Ends a server transcode session (fire and forget). */
-export function stopSession(info: PlaybackInfo | null | undefined) {
-  if (info?.session_id) void api.del(`/playback/sessions/${info.session_id}`).catch(() => {});
+/** Ends a server transcode session (fire and forget). `leaving`: the page is closing (the
+ * request is kept alive past it), else the server stops the encoder only when it idles out. */
+export function stopSession(info: PlaybackInfo | null | undefined, leaving = false) {
+  if (info?.session_id) void api.del(`/playback/sessions/${info.session_id}`, { keepalive: leaving }).catch(() => {});
 }
 
 type HlsLike = { destroy(): void; loadSource(u: string): void; attachMedia(el: HTMLMediaElement): void; on(ev: string, f: (e: string, d: { fatal?: boolean; type?: string }) => void): void; recoverMediaError(): void; startLoad(): void };
@@ -351,6 +352,11 @@ class Music {
     this.order = order;
   }
 
+  /** The page is closing: the server's transcode ends now. */
+  leave() {
+    stopSession(this.info, true);
+  }
+
   close() {
     this.el?.pause();
     this.detach?.();
@@ -396,3 +402,6 @@ class Music {
 }
 
 export const music = new Music();
+
+// Closing the tab ends the music's transcode on the server too.
+if (typeof window !== 'undefined') addEventListener('pagehide', () => music.leave());

@@ -128,7 +128,7 @@ export const api = {
   post: <T>(path: string, body?: unknown, o?: RequestOptions) => request<T>('POST', path, { ...o, body }),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, { body }),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, { body }),
-  del: <T>(path: string) => request<T>('DELETE', path),
+  del: <T>(path: string, o?: RequestOptions) => request<T>('DELETE', path, { ...o }),
 };
 
 /** Artwork URL for a width bucket the server caches (200, 400, 800); none = the original. */
