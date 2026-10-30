@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use corrent_library::meta::{MetaDetails, Pending, Replace};
 use corrent_plugins::{Candidate, ItemDetails, Kind, MediaKind, PluginHost, SearchQuery};
-use corrent_proto::library::ItemKind;
+use corrent_proto::library::{ItemKind, MetadataRun, ProviderError, ProviderTest, RefreshMode, RefreshOutcome};
 
 use crate::state::AppState;
 
@@ -113,13 +113,28 @@ pub async fn apply(
     id: &str,
     language: &str,
 ) -> Result<(), String> {
+    apply_with(st, host, item, kind, provider, id, language, Replace::IfMissingOrFrame).await
+}
+
+/// `apply`, with how the provider's artwork may replace the item's (`Always` for a refresh).
+#[allow(clippy::too_many_arguments)]
+async fn apply_with(
+    st: &AppState,
+    host: &Arc<PluginHost>,
+    item: i64,
+    kind: ItemKind,
+    provider: &str,
+    id: &str,
+    language: &str,
+    art: Replace,
+) -> Result<(), String> {
     let mk = media_kind(kind).ok_or("this kind of item has no provider metadata")?;
     let d =
         host.metadata_details(provider, mk, id.to_string(), language.to_string()).await.map_err(|e| e.to_string())?;
     st.library.apply_details(item, to_meta(&d, provider, id)).await.map_err(|e| e.to_string())?;
     for a in &d.artwork {
         if let Some(bytes) = fetch_image(st, &a.url).await {
-            let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, Replace::IfMissingOrFrame, false).await;
+            let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, art, false).await;
         }
     }
     // Supplementing providers (fanart.tv) add the kinds of artwork the main one lacks.
@@ -150,7 +165,7 @@ pub async fn apply(
         let _ = st.library.set_ratings(item, ratings).await;
         for a in extra.artwork.iter().filter(|a| !have.contains(&a.kind)) {
             if let Some(bytes) = fetch_image(st, &a.url).await {
-                let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, Replace::IfMissingOrFrame, false).await;
+                let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, art, false).await;
             }
         }
     }
@@ -290,12 +305,41 @@ pub async fn candidates(
 }
 
 /// Identifies one item automatically: the first provider with a confident match wins.
-pub async fn identify(st: &AppState, host: &Arc<PluginHost>, p: &Pending, language: &str) -> bool {
-    let Some(mk) = media_kind(p.kind) else { return false };
+/// `again` (a refresh of everything): an item a provider identified before gets that
+/// provider's current record by its id, without a search, and its artwork is replaced too.
+pub async fn identify(
+    st: &AppState,
+    host: &Arc<PluginHost>,
+    p: &Pending,
+    language: &str,
+    again: bool,
+) -> RefreshOutcome {
+    let mut out = RefreshOutcome::default();
+    let Some(mk) = media_kind(p.kind) else { return out };
+    let providers = providers_for(host, mk).await;
+    out.no_providers = providers.is_empty();
+    let art = if again { Replace::Always } else { Replace::IfMissingOrFrame };
+    let matched_before = p.provider.as_deref().filter(|s| !s.is_empty());
+    if again
+        && let Some(prov) = matched_before
+        && providers.iter().any(|x| x == prov)
+        && let Some(pid) = p.ids.get(prov)
+    {
+        if !still_same(st, p).await {
+            return out;
+        }
+        match apply_with(st, host, p.id, p.kind, prov, pid, language, art).await {
+            Ok(()) => {
+                out.provider = Some(prov.to_string());
+                return out;
+            }
+            Err(e) => out.errors.push(ProviderError { provider: prov.to_string(), error: e }),
+        }
+    }
     // Checked (not asked again on its own) only when a provider answered: without one (no key
     // yet, offline) the item is tried again later.
     let mut answered = false;
-    for provider in providers_for(host, mk).await {
+    for provider in providers {
         let q = SearchQuery {
             kind: mk,
             title: p.title.clone(),
@@ -304,26 +348,42 @@ pub async fn identify(st: &AppState, host: &Arc<PluginHost>, p: &Pending, langua
             ids: p.ids.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             artist: p.artist.clone(),
         };
-        let Ok(found) = host.metadata_search(&provider, q).await else { continue };
+        let found = match host.metadata_search(&provider, q).await {
+            Ok(found) => found,
+            Err(e) => {
+                out.errors.push(ProviderError { provider, error: e.to_string() });
+                continue;
+            }
+        };
         answered = true;
         if let Some(c) = confident(p, &found) {
             // The search took a while: a scan may have moved the item's files since it was
             // listed, or removed it and given its id to another item. Only the item that was
             // searched for gets the result.
-            match st.library.pending_item(p.id).await {
-                Ok(now) if same_item(&now, p) => {}
-                _ => return false,
+            if !still_same(st, p).await {
+                return out;
             }
-            match apply(st, host, p.id, p.kind, &provider, &c.id, language).await {
-                Ok(()) => return true,
-                Err(e) => tracing::debug!("metadata from {provider} for {}: {e}", p.title),
+            match apply_with(st, host, p.id, p.kind, &provider, &c.id, language, art).await {
+                Ok(()) => {
+                    out.provider = Some(provider);
+                    return out;
+                }
+                Err(e) => {
+                    tracing::debug!("metadata from {provider} for {}: {e}", p.title);
+                    out.errors.push(ProviderError { provider, error: e });
+                }
             }
         }
     }
-    if answered {
+    // An item matched before (perhaps by hand) keeps its match when a refresh finds none.
+    if answered && matched_before.is_none() {
         let _ = st.library.mark_meta_checked(p.id, Some(String::new())).await;
     }
-    false
+    out
+}
+
+async fn still_same(st: &AppState, p: &Pending) -> bool {
+    matches!(st.library.pending_item(p.id).await, Ok(now) if same_item(&now, p))
 }
 
 /// Still the item a search was made for (its provider ids may have grown meanwhile).
@@ -338,48 +398,192 @@ fn same_item(now: &Pending, then: &Pending) -> bool {
 /// A provider became usable (a key entered, turned on): items no provider matched before are
 /// tried again, in every library.
 pub async fn retry_unmatched(st: Arc<AppState>) {
-    match st.library.reset_unmatched().await {
+    match st.library.reset_unmatched(None).await {
         Ok(n) if n > 0 => tracing::info!("metadata: trying {n} unmatched items again"),
         Ok(_) => {}
         Err(e) => tracing::warn!("metadata: {e}"),
     }
     for l in st.library.list().await.unwrap_or_default() {
-        refresh_library(st.clone(), l.id).await;
+        refresh_library(st.clone(), l.id, RefreshMode::Missing, false).await;
     }
 }
 
-/// Fetches metadata for a library's items that never had it (one at a time).
-pub async fn refresh_library(st: Arc<AppState>, library_id: i64) {
-    let Some(host) = st.plugins.clone() else { return };
-    let Ok(lib) = st.library.get(library_id).await else { return };
-    if !lib.settings.fetch_metadata {
+/// The library's running or last metadata refresh.
+pub fn run_of(st: &AppState, library_id: i64) -> Option<MetadataRun> {
+    st.metadata_runs.lock().unwrap_or_else(|e| e.into_inner()).get(&library_id).cloned()
+}
+
+fn publish(st: &AppState, run: &MetadataRun) {
+    st.metadata_runs.lock().unwrap_or_else(|e| e.into_inner()).insert(run.library_id, run.clone());
+    st.hub.publish(corrent_proto::event::Event::MetadataStatus { status: run.clone() });
+}
+
+/// A refresh asked for by hand, shown as running until `refresh_library` (started next) takes
+/// over: it may wait for another library's run first.
+pub fn queue(st: &AppState, library_id: i64, mode: RefreshMode) -> MetadataRun {
+    let run = MetadataRun { library_id, running: true, mode, started_at: now(), ..Default::default() };
+    publish(st, &run);
+    run
+}
+
+/// Looks up metadata for a library's items, one at a time: those that never had it (`Missing`;
+/// asked `by_hand`, also those no provider matched before), or every item again (`All`).
+/// Automatic runs respect the library's "fetch metadata" setting; one asked for by hand runs
+/// anyway.
+pub async fn refresh_library(st: Arc<AppState>, library_id: i64, mode: RefreshMode, by_hand: bool) {
+    let (Some(host), Ok(lib)) = (st.plugins.clone(), st.library.get(library_id).await) else {
+        if by_hand {
+            let started_at = now();
+            let run = MetadataRun { library_id, mode, started_at, finished_at: Some(started_at), ..Default::default() };
+            publish(&st, &run);
+        }
+        return;
+    };
+    if !lib.settings.fetch_metadata && !by_hand {
         return;
     }
     let language = if lib.settings.language.is_empty() { "en".to_string() } else { lib.settings.language.clone() };
     let _one = st.metadata_slot.lock().await;
-    let mut done = 0;
-    // Each pending item once per run: one no provider could answer stays pending (for the next
-    // run), so asking for "what is pending" again would return it forever.
-    let mut tried: Vec<i64> = Vec::new();
-    loop {
-        let batch = st.library.items_needing_metadata_except(library_id, &tried, 200).await.unwrap_or_default();
-        if batch.is_empty() {
+    if by_hand && mode == RefreshMode::Missing {
+        let _ = st.library.reset_unmatched(Some(library_id)).await;
+    }
+    // The list as it is now: items a scan adds meanwhile get the run after that scan.
+    let items = match mode {
+        RefreshMode::Missing => st.library.items_needing_metadata_except(library_id, &[], 1_000_000).await,
+        RefreshMode::All => st.library.items_for_metadata_except(library_id, &[], 1_000_000).await,
+    }
+    .unwrap_or_default();
+    if items.is_empty() && !by_hand {
+        return;
+    }
+    // An automatic run doesn't cover one asked for by hand that waits for it.
+    let quiet = !by_hand && run_of(&st, library_id).is_some_and(|r| r.running);
+    let show = |run: &MetadataRun| {
+        if !quiet {
+            publish(&st, run)
+        }
+    };
+    let mut run = MetadataRun {
+        library_id,
+        running: true,
+        mode,
+        total: items.len() as u64,
+        started_at: now(),
+        ..Default::default()
+    };
+    show(&run);
+    let mut shown = std::time::Instant::now();
+    for p in items {
+        if *st.stopping.borrow() {
             break;
         }
-        tried.extend(batch.iter().map(|p| p.id));
-        for p in batch {
-            if *st.stopping.borrow() {
-                return;
-            }
-            if identify(&st, &host, &p, &language).await {
-                done += 1;
+        let o = identify(&st, &host, &p, &language, mode == RefreshMode::All).await;
+        run.done += 1;
+        run.no_providers |= o.no_providers;
+        if o.provider.is_some() {
+            run.matched += 1;
+        } else if !o.no_providers && o.errors.is_empty() {
+            run.unmatched += 1;
+        }
+        for e in o.errors {
+            if !run.errors.iter().any(|x| x.provider == e.provider) {
+                tracing::warn!("metadata: {} failed: {}", e.provider, e.error);
+                run.errors.push(e);
             }
         }
+        if shown.elapsed() > Duration::from_millis(500) {
+            shown = std::time::Instant::now();
+            show(&run);
+        }
     }
-    if done > 0 {
-        tracing::info!("metadata: {done} items in {} identified", lib.name);
+    run.running = false;
+    run.finished_at = Some(now());
+    show(&run);
+    if run.matched > 0 {
+        tracing::info!("metadata: {} items in {} identified", run.matched, lib.name);
         st.library.emit_changed(library_id);
     }
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// One real lookup of a well-known title (Settings → Metadata → Test): whether a provider and
+/// its key work, in the provider's own words when they don't.
+pub async fn test_provider(host: &Arc<PluginHost>, id: &str) -> ProviderTest {
+    let mut t = ProviderTest::default();
+    let Some(info) = host.list().into_iter().find(|p| p.manifest.id == id) else {
+        t.error = Some("no such plugin".into());
+        return t;
+    };
+    let ids = |list: &[(&str, &str)]| list.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+    let matrix = [("imdb", "tt0133093"), ("tmdb", "603")];
+    if info.manifest.kinds.contains(&Kind::Subtitles) && !info.manifest.kinds.contains(&Kind::Metadata) {
+        t.query = "The Matrix (1999)".into();
+        let q = corrent_plugins::SubtitleQuery {
+            title: "The Matrix".into(),
+            year: Some(1999),
+            season: None,
+            episode: None,
+            languages: vec!["en".into()],
+            ids: ids(&matrix),
+            file_hash: None,
+            file_size: None,
+        };
+        match host.subtitles_search(id, q).await {
+            Ok(found) => {
+                t.results = found.len() as u32;
+                t.found = found.first().map(|s| s.name.clone());
+                t.ok = !found.is_empty();
+            }
+            Err(e) => t.error = Some(e.to_string()),
+        }
+        return t;
+    }
+    let kinds = match host.metadata_kinds(id).await {
+        Ok(k) => k,
+        Err(e) => {
+            t.error = Some(e.to_string());
+            return t;
+        }
+    };
+    let (kind, title, year, known, artist) = if kinds.contains(&MediaKind::Movie) {
+        (MediaKind::Movie, "The Matrix", Some(1999), ids(&matrix), None)
+    } else if kinds.contains(&MediaKind::Show) {
+        let bb = [("tvdb", "81189"), ("imdb", "tt0903747"), ("tmdb", "1396")];
+        (MediaKind::Show, "Breaking Bad", Some(2008), ids(&bb), None)
+    } else if kinds.contains(&MediaKind::Album) {
+        (MediaKind::Album, "Abbey Road", Some(1969), Vec::new(), Some("The Beatles".to_string()))
+    } else {
+        (MediaKind::Artist, "The Beatles", None, Vec::new(), None)
+    };
+    t.query = match year {
+        Some(y) => format!("{title} ({y})"),
+        None => title.to_string(),
+    };
+    let q = SearchQuery { kind, title: title.into(), year, language: "en".into(), ids: known, artist };
+    let found = match host.metadata_search(id, q).await {
+        Ok(f) => f,
+        Err(e) => {
+            t.error = Some(e.to_string());
+            return t;
+        }
+    };
+    t.results = found.len() as u32;
+    let Some(first) = found.first() else { return t };
+    // Some providers (fanart.tv, OMDb) only reach their service for the details.
+    match host.metadata_details(id, kind, first.id.clone(), "en".into()).await {
+        Ok(d) => {
+            t.ok = true;
+            t.found = Some(d.title.clone().unwrap_or_else(|| first.title.clone()));
+            t.year = d.year.or(first.year);
+            t.artwork = d.artwork.len() as u32;
+            t.credits = d.credits.len() as u32;
+        }
+        Err(e) => t.error = Some(e.to_string()),
+    }
+    t
 }
 
 /// After every finished scan, look for metadata.
@@ -397,7 +601,7 @@ pub fn start(st: Arc<AppState>) {
             };
             match ev {
                 Ok(corrent_library::LibraryEvent::Scan(s)) if !s.running && s.error.is_none() => {
-                    tokio::spawn(refresh_library(st.clone(), s.library_id));
+                    tokio::spawn(refresh_library(st.clone(), s.library_id, RefreshMode::Missing, false));
                     crate::thumbs::start(&st);
                 }
                 Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -424,6 +628,7 @@ mod tests {
             year,
             ids: Default::default(),
             artist: None,
+            provider: None,
         }
     }
 

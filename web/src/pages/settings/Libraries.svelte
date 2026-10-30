@@ -13,7 +13,29 @@
   import { toast } from '../../lib/toast.svelte';
   import { ago, num } from '../../lib/format';
   import { t } from '../../lib/i18n.svelte';
-  import type { Library, LibraryKind, LibrarySettings } from '../../lib/types';
+  import RefreshMenu from '../../components/RefreshMenu.svelte';
+  import { runLines } from '../../lib/metadata';
+  import type { Library, LibraryKind, LibrarySettings, MetadataRun, RefreshMode } from '../../lib/types';
+
+  // Each library's last metadata refresh (then kept up to date by `metadata_status` events).
+  const asked = new Set<number>();
+  $effect(() => {
+    for (const l of libs.list) {
+      if (asked.has(l.id)) continue;
+      asked.add(l.id);
+      api.get<MetadataRun>(`/libraries/${l.id}/refresh-metadata`).then((r) => {
+        if (!libs.metadata[l.id]) libs.metadata[l.id] = r;
+      }, () => {});
+    }
+  });
+
+  async function refreshMetadata(l: Library, mode: RefreshMode) {
+    try {
+      libs.metadata[l.id] = await api.post<MetadataRun>(`/libraries/${l.id}/refresh-metadata`, { mode });
+    } catch (e) {
+      toast(errorText(e), 'error');
+    }
+  }
 
   $effect(() => useTorrents());
 
@@ -128,6 +150,7 @@
           {:else}
             <button class="btn sm" onclick={() => scan(l)}><Icon name="arrows-clockwise" size={14} />{t('Scan now')}</button>
           {/if}
+          <RefreshMenu busy={!!libs.metadata[l.id]?.running} onpick={(mode) => refreshMetadata(l, mode)} />
           <button class="btn sm icon" aria-label={t('Edit')} title={t('Edit')} onclick={() => open(l)}><Icon name="pencil-simple" size={16} /></button>
           <button class="btn sm icon danger" aria-label={t('Delete')} title={t('Delete')} onclick={() => remove(l)}><Icon name="trash" size={16} /></button>
         </div>
@@ -138,6 +161,17 @@
           </div>
         {:else if sc?.error}
           <p class="form-error scan">{sc.error}</p>
+        {/if}
+        {#if libs.metadata[l.id]}
+          {@const run = libs.metadata[l.id]}
+          <div class="scan">
+            {#if run.running && run.total}
+              <Progress value={run.done / run.total} height={5} label={t('Refresh metadata')} />
+            {/if}
+            {#each runLines(run) as [tone, text], i (i)}
+              <span class="caption num" class:muted={tone === 'muted'} class:warn={tone === 'warn'} class:form-error={tone === 'error'}>{text}</span>
+            {/each}
+          </div>
         {/if}
         <ul class="folders">{#each l.folders as f (f)}<li class="mono caption"><Icon name="folder" size={14} />{f}</li>{/each}</ul>
       </div>
@@ -238,6 +272,9 @@
     flex-direction: column;
     gap: 6px;
     padding: 4px 20px 8px;
+  }
+  .warn {
+    color: var(--warn);
   }
   .folders {
     list-style: none;

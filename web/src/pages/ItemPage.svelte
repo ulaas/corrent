@@ -21,6 +21,9 @@
   import { Perm } from '../lib/types';
   import { extensions } from '../lib/extensions.svelte';
   import AddToPlaylist from '../components/AddToPlaylist.svelte';
+  import RefreshMenu from '../components/RefreshMenu.svelte';
+  import { outcomeText } from '../lib/metadata';
+  import type { RefreshMode, RefreshOutcome } from '../lib/types';
   import type { Item, ItemDetail, Page } from '../lib/types';
 
   // Following a show: aired episodes it lacks go on the wanted list.
@@ -97,6 +100,22 @@
   const id = $derived(+params.id);
 
   let item = $state<ItemDetail | null>(null);
+
+  // Looking the item up again with the metadata providers.
+  let refreshing = $state(false);
+  async function refresh(id: number, mode: RefreshMode) {
+    refreshing = true;
+    try {
+      const o = await api.post<RefreshOutcome>(`/items/${id}/refresh-metadata`, { mode });
+      const [kind, text] = outcomeText(o);
+      toast(text, kind);
+      if (o.provider && item?.id === id) void load(id);
+    } catch (e) {
+      toast(errorText(e), 'error');
+    } finally {
+      refreshing = false;
+    }
+  }
   let children = $state<Item[]>([]);
   let parent = $state<ItemDetail | null>(null);
   let season = $state<number | null>(null);
@@ -270,6 +289,9 @@
             {/if}
             {#if isPlayable(item.kind) || item.kind === 'album' || item.kind === 'season'}
               <AddToPlaylist items={[item.id]} big />
+            {/if}
+            {#if ['movie', 'show', 'video', 'album', 'artist'].includes(item.kind) && can(Perm.LIBRARY_MANAGE)}
+              <RefreshMenu big busy={refreshing} onpick={(mode) => refresh(item!.id, mode)} />
             {/if}
             {#each extensions.itemActions as x (x.id)}
               <button class="btn lg" onclick={() => Promise.resolve(x.run($state.snapshot(item!) as ItemDetail)).catch((e) => toast(errorText(e), 'error'))}><Icon name="puzzle-piece" />{x.label}</button>

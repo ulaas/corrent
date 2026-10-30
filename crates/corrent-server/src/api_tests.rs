@@ -2619,6 +2619,42 @@ async fn plugins_identify_library_items() {
     let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
     assert_eq!(d["provider_ids"]["example"], "ex-big-buck-bunny");
 
+    // Testing a provider: one real lookup with its saved settings.
+    let (s, t, _) = send(app, Method::POST, "/api/v1/plugins/example/test", &admin, json!({})).await;
+    assert_eq!(s, StatusCode::OK, "{t}");
+    assert_eq!((t["ok"].as_bool(), t["query"].as_str()), (Some(true), Some("The Matrix (1999)")), "{t}");
+    assert!(t["found"].is_string(), "{t}");
+    let (s, t, _) = send(app, Method::POST, "/api/v1/plugins/nope/test", &admin, json!({})).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{t}");
+    // Refreshing an item replaces what its provider gave by its id: the match made by hand stays.
+    let (s, o, _) =
+        send(app, Method::POST, &format!("/api/v1/items/{id}/refresh-metadata"), &admin, json!({ "mode": "all" }))
+            .await;
+    assert_eq!((s, o["provider"].as_str()), (StatusCode::OK, Some("example")), "{o}");
+    let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
+    assert_eq!(d["provider_ids"]["example"], "ex-big-buck-bunny");
+    assert_eq!(d["extra"]["meta_provider"], "example");
+    // A whole library, followed until it is done.
+    let (s, r, _) =
+        send(app, Method::POST, &format!("/api/v1/libraries/{lib}/refresh-metadata"), &admin, json!({ "mode": "all" }))
+            .await;
+    assert_eq!((s, r["running"].as_bool()), (StatusCode::OK, Some(true)), "{r}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let run = loop {
+        let (_, r, _) = get(app, &format!("/api/v1/libraries/{lib}/refresh-metadata"), &admin).await;
+        if r["finished_at"].is_i64() {
+            break r;
+        }
+        assert!(std::time::Instant::now() < deadline, "refresh finished: {r}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert_eq!(
+        (run["mode"].as_str(), run["total"].as_u64(), run["matched"].as_u64()),
+        (Some("all"), Some(1), Some(1)),
+        "{run}"
+    );
+    assert_eq!(run["errors"], json!([]), "{run}");
+
     // A followed show: the aired episodes it lacks become wanted (the example lists two
     // seasons of three episodes, aired in 2020).
     let shows = h.dir.join("dl/Shows");

@@ -169,6 +169,7 @@ export type ServerEvent =
   | { t: 'log'; level: string; target: string; message: string; time: number }
   | { t: 'library_changed'; library_id: number }
   | { t: 'scan_status'; status: ScanStatus }
+  | { t: 'metadata_status'; status: MetadataRun }
   | { t: 'sync_play'; room: RoomState }
   | { t: 'bye' };
 
@@ -283,6 +284,8 @@ export interface PluginInfo {
     kinds: string[];
     permissions: { hosts: string[]; allow_local_network: boolean; rate_per_sec?: number | null };
     settings: PluginSettingDef[];
+    /** Adds to what another provider identified (ratings, artwork); identifies nothing alone. */
+    supplements?: boolean;
   };
   enabled: boolean;
   builtin: boolean;
@@ -501,6 +504,48 @@ export interface ScanStatus {
   added: number;
   updated: number;
   removed: number;
+  error?: string;
+}
+
+/** What a metadata refresh replaces: only what is missing, or everything providers gave. */
+export type RefreshMode = 'missing' | 'all';
+
+export interface ProviderError {
+  provider: string;
+  error: string;
+}
+
+/** `POST /items/{id}/refresh-metadata`. */
+export interface RefreshOutcome {
+  provider?: string;
+  no_providers: boolean;
+  errors: ProviderError[];
+}
+
+/** A library's running or last metadata refresh. */
+export interface MetadataRun {
+  library_id: number;
+  running: boolean;
+  mode: RefreshMode;
+  done: number;
+  total: number;
+  matched: number;
+  unmatched: number;
+  no_providers: boolean;
+  errors: ProviderError[];
+  started_at: number;
+  finished_at?: number;
+}
+
+/** `POST /plugins/{id}/test`: one lookup of a well-known title. */
+export interface ProviderTest {
+  ok: boolean;
+  query: string;
+  found?: string;
+  year?: number;
+  artwork: number;
+  credits: number;
+  results: number;
   error?: string;
 }
 

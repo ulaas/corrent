@@ -159,6 +159,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         thumb_again: Default::default(),
         plugins: plugin_host,
         metadata_slot: Default::default(),
+        metadata_runs: Default::default(),
         stopping: tokio::sync::watch::Sender::new(false),
         agent_changed: tokio::sync::watch::Sender::new(0),
         agent_key: std::sync::Mutex::new(None),

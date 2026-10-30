@@ -10,6 +10,7 @@ use axum::{Json, Router};
 use corrent_plugins::{Manifest, PluginInfo};
 use corrent_proto::ErrorCode;
 use corrent_proto::auth::Perms;
+use corrent_proto::library::{MetadataRun, ProviderTest, RefreshMode, RefreshOutcome, RefreshRequest};
 use serde::{Deserialize, Serialize};
 
 use super::library::lib_err;
@@ -26,9 +27,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/plugins/catalog/install", post(install_from_catalog))
         .route("/plugins/{id}/settings", put(settings))
         .route("/plugins/{id}/enabled", put(enabled))
+        .route("/plugins/{id}/test", post(test))
         .route("/items/{id}/identify", get(identify_candidates).post(identify))
         .route("/items/{id}/refresh-metadata", post(refresh_item))
-        .route("/libraries/{id}/refresh-metadata", post(refresh_library))
+        .route("/libraries/{id}/refresh-metadata", get(refresh_status).post(refresh_library))
 }
 
 fn host(st: &AppState) -> Result<&Arc<corrent_plugins::PluginHost>, ApiErr> {
@@ -262,29 +264,58 @@ async fn identify(
     Ok(Json(serde_json::json!({})))
 }
 
+/// Looks the item up again now (`mode`: only when it has no metadata, or replacing what
+/// providers gave before) and says what came of it.
 async fn refresh_item(
     State(st): State<Arc<AppState>>,
     auth: Auth,
     Path(id): Path<i64>,
-) -> ApiResult<serde_json::Value> {
+    body: Option<Json<RefreshRequest>>,
+) -> ApiResult<RefreshOutcome> {
     auth.require(Perms::LIBRARY_MANAGE)?;
+    let mode = body.map(|b| b.0.mode).unwrap_or_default();
     let h = host(&st)?.clone();
     let p = st.library.pending_item(id).await.map_err(lib_err)?;
     let lang = language_of(&st, p.library_id).await;
-    let found = crate::metadata::identify(&st, &h, &p, &lang).await;
+    let o = crate::metadata::identify(&st, &h, &p, &lang, mode == RefreshMode::All).await;
     st.library.emit_changed(p.library_id);
-    Ok(Json(serde_json::json!({ "identified": found })))
+    Ok(Json(o))
 }
 
+/// Starts a library's metadata refresh in the background (`GET` and `metadata_status` events
+/// follow it). One already running is returned as it is.
 async fn refresh_library(
     State(st): State<Arc<AppState>>,
     auth: Auth,
     Path(id): Path<i64>,
-) -> ApiResult<serde_json::Value> {
+    body: Option<Json<RefreshRequest>>,
+) -> ApiResult<MetadataRun> {
+    auth.require(Perms::LIBRARY_MANAGE)?;
+    let mode = body.map(|b| b.0.mode).unwrap_or_default();
+    st.library.get(id).await.map_err(lib_err)?;
+    if let Some(run) = crate::metadata::run_of(&st, id).filter(|r| r.running) {
+        return Ok(Json(run));
+    }
+    let run = crate::metadata::queue(&st, id, mode);
+    tokio::spawn(crate::metadata::refresh_library(st.clone(), id, mode, true));
+    Ok(Json(run))
+}
+
+/// The library's running or last metadata refresh (an empty one when there was none).
+async fn refresh_status(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<i64>) -> ApiResult<MetadataRun> {
     auth.require(Perms::LIBRARY_MANAGE)?;
     st.library.get(id).await.map_err(lib_err)?;
-    tokio::spawn(crate::metadata::refresh_library(st.clone(), id));
-    Ok(Json(serde_json::json!({})))
+    Ok(Json(crate::metadata::run_of(&st, id).unwrap_or(MetadataRun { library_id: id, ..Default::default() })))
+}
+
+/// One real lookup with the provider's saved settings: does the key work?
+async fn test(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<String>) -> ApiResult<ProviderTest> {
+    auth.require(Perms::PLUGINS_MANAGE)?;
+    let h = host(&st)?.clone();
+    if !h.list().iter().any(|p| p.manifest.id == id) {
+        return Err(err(ErrorCode::NotFound, "no such plugin"));
+    }
+    Ok(Json(crate::metadata::test_provider(&h, &id).await))
 }
 
 /// One plugin in a catalog index (`{"plugins": [...]}` at `plugin_catalog`).

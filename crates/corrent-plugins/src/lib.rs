@@ -206,7 +206,8 @@ impl PluginCtx {
         if let Some(b) = &req.body {
             rb = rb.body(b.clone());
         }
-        rb.send().await.map_err(|e| e.to_string())
+        // Without the URL: plugins put API keys in queries, and errors reach logs and clients.
+        rb.send().await.map_err(|e| e.without_url().to_string())
     }
 
     async fn http(&self, req: HttpRequest) -> Result<HttpResponse, String> {
@@ -231,7 +232,7 @@ impl PluginCtx {
             if res.content_length().is_some_and(|l| l as usize > MAX_BODY) {
                 return Err("response too large".into());
             }
-            let body = res.bytes().await.map_err(|e| e.to_string())?;
+            let body = res.bytes().await.map_err(|e| e.without_url().to_string())?;
             if body.len() > MAX_BODY {
                 return Err("response too large".into());
             }

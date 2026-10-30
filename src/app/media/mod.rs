@@ -16,6 +16,7 @@ pub mod offline;
 pub mod player;
 pub mod profiles;
 pub mod providers;
+mod refresh;
 pub mod subtitles;
 pub mod syncplay;
 
@@ -98,6 +99,8 @@ pub struct MediaState {
     pub library_form: Option<libraries::LibraryForm>,
     sub_finder: Option<subtitles::SubFinder>,
     identify: Option<identify::Identify>,
+    /// Metadata refreshes (an item's, libraries').
+    refresh: refresh::RefreshUi,
     /// Settings → Metadata.
     pub providers: providers::ProvidersUi,
     /// Media → AI agent.
@@ -676,6 +679,7 @@ impl CorrentApp {
         self.profiles_window(&ctx, p);
         self.subtitle_finder_window(&ctx, p);
         self.identify_window(&ctx, p);
+        self.refresh_tick(&client);
         egui::ScrollArea::vertical().id_salt(("media", format!("{page:?}"))).auto_shrink([false, false]).show(
             ui,
             |ui| {
@@ -1564,6 +1568,13 @@ impl CorrentApp {
                     .clicked()
             {
                 self.open_identify(it.id, &it.title, it.year);
+            }
+            if matches!(
+                it.kind,
+                ItemKind::Movie | ItemKind::Show | ItemKind::Video | ItemKind::Album | ItemKind::Artist
+            ) && let Some(mode) = refresh::refresh_menu(ui)
+            {
+                self.refresh_item(client, it.id, mode);
             }
             // Pages about it elsewhere (ids the providers gave).
             let tmdb_kind = if it.kind == ItemKind::Show { "tv" } else { "movie" };

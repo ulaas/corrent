@@ -1,12 +1,20 @@
 // The libraries the user can see, kept fresh by `library` events; scan progress per library.
 import { api } from './api';
 import { events } from './events.svelte';
-import type { Library, ScanStatus } from './types';
+import type { Library, MetadataRun, ScanStatus } from './types';
 
-export const libs = $state<{ list: Library[]; loaded: boolean; scans: Record<number, ScanStatus>; changed: number }>({
+export const libs = $state<{
+  list: Library[];
+  loaded: boolean;
+  scans: Record<number, ScanStatus>;
+  /** Each library's running or last metadata refresh. */
+  metadata: Record<number, MetadataRun>;
+  changed: number;
+}>({
   list: [],
   loaded: false,
   scans: {},
+  metadata: {},
   changed: 0,
 });
 
@@ -30,6 +38,8 @@ export function startLibraries() {
     if (e.t === 'scan_status') {
       libs.scans[e.status.library_id] = e.status;
       if (!e.status.running) refreshSoon();
+    } else if (e.t === 'metadata_status') {
+      libs.metadata[e.status.library_id] = e.status;
     } else if (e.t === 'library_changed') {
       libs.changed++;
       refreshSoon();

@@ -101,6 +101,10 @@ pub enum Event {
     ScanStatus {
         status: crate::library::ScanStatus,
     },
+    /// A library's metadata refresh progressed or finished.
+    MetadataStatus {
+        status: crate::library::MetadataRun,
+    },
     /// A watch-together room changed (play, pause, seek, people joining or leaving).
     SyncPlay {
         room: crate::library::RoomState,

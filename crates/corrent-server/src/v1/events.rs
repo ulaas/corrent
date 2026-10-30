@@ -141,7 +141,7 @@ impl Client {
                 }
                 _ = fallback.tick() => self.tick(&mut ws, false).await?,
                 ev = events.recv() => match ev {
-                    Ok(e @ (Event::LibraryChanged { .. } | Event::ScanStatus { .. })) => {
+                    Ok(e @ (Event::LibraryChanged { .. } | Event::ScanStatus { .. } | Event::MetadataStatus { .. })) => {
                         if self.topics.contains(&Topic::Library) {
                             self.send(&mut ws, &e).await?;
                         }

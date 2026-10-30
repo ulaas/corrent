@@ -494,6 +494,87 @@ pub struct ScanStatus {
     pub error: Option<String>,
 }
 
+/// What a metadata refresh replaces.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefreshMode {
+    /// Only items without metadata, including those no provider matched before.
+    #[default]
+    Missing,
+    /// Every item again: details and artwork from providers replace what they gave before
+    /// (locked fields and chosen images stay).
+    All,
+}
+
+/// `POST /api/v1/items/{id}/refresh-metadata` and `/libraries/{id}/refresh-metadata`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RefreshRequest {
+    pub mode: RefreshMode,
+}
+
+/// A provider that failed during a metadata lookup, with its own words.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProviderError {
+    pub provider: String,
+    pub error: String,
+}
+
+/// One item's refresh (`POST /api/v1/items/{id}/refresh-metadata`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RefreshOutcome {
+    /// The provider whose record was applied; none when nothing matched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// No metadata provider is set up for this kind of item.
+    pub no_providers: bool,
+    pub errors: Vec<ProviderError>,
+}
+
+/// A library's metadata refresh (`GET /api/v1/libraries/{id}/refresh-metadata`, and the
+/// `metadata_status` event): the running one, or the last one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetadataRun {
+    pub library_id: i64,
+    pub running: bool,
+    pub mode: RefreshMode,
+    pub done: u64,
+    pub total: u64,
+    /// Items a provider identified (or refreshed).
+    pub matched: u64,
+    /// Items providers answered for without a confident match ("Identify…" them by hand).
+    pub unmatched: u64,
+    pub no_providers: bool,
+    /// The first error of each provider that failed (a wrong key, the network…).
+    pub errors: Vec<ProviderError>,
+    /// Unix seconds.
+    pub started_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<i64>,
+}
+
+/// `POST /api/v1/plugins/{id}/test`: one real lookup with a well-known title.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProviderTest {
+    pub ok: bool,
+    /// What was looked up ("The Matrix (1999)").
+    pub query: String,
+    /// What the provider answered with, when it worked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub found: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year: Option<u32>,
+    /// Images, credits, subtitles… it returned (a sign the key reaches the details too).
+    pub artwork: u32,
+    pub credits: u32,
+    pub results: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// `POST /api/v1/playback/{item}`: how should this client play the item?
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

@@ -59,7 +59,7 @@ JSON objects tagged by `t`:
   `torrents_delta` (`upserted` rows sent whole, `patched` fields of fast-changing columns,
   `removed` hashes — applying them in order reproduces the list; a gap or reconnect gets a fresh
   `torrents_full`), `labels`, `session`, `torrent_detail`, `notice`, `added`, `completed`,
-  `removed`, `log`, `library_changed`, `scan_status`, `sync_play`, `bye`.
+  `removed`, `log`, `library_changed`, `scan_status`, `metadata_status`, `sync_play`, `bye`.
 
 Lists are sent as diffs of the server's state on each tick, so a slow client just gets larger
 deltas; discrete events (added, completed, notices) a client falls behind on are skipped. `bye`
@@ -166,10 +166,11 @@ bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a sess
 | GET | `/api/v1/plugins/{id}/web/{*path}` |
 | PUT | `/api/v1/plugins/{id}/settings` |
 | PUT | `/api/v1/plugins/{id}/enabled` |
+| POST | `/api/v1/plugins/{id}/test` |
 | GET POST | `/api/v1/items/{id}/identify` |
 | POST | `/api/v1/items/{id}/refresh-metadata` |
 | POST | `/api/v1/items/{id}/thumbnail` |
-| POST | `/api/v1/libraries/{id}/refresh-metadata` |
+| GET POST | `/api/v1/libraries/{id}/refresh-metadata` |
 
 ### Subtitles
 

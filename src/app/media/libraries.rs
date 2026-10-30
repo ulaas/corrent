@@ -92,10 +92,14 @@ impl CorrentApp {
                             for f in &l.folders {
                                 ui.label(RichText::new(f).small().monospace().color(p.text_mute));
                             }
+                            self.library_refresh_status(ui, p, client, l.id);
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button(format!("{}  {}", icons::TRASH, t!("Remove"))).clicked() {
                                 remove = Some((l.id, l.name.clone()));
+                            }
+                            if let Some(mode) = super::refresh::refresh_menu(ui) {
+                                self.refresh_library(client, l.id, mode);
                             }
                             if let Some(pct) = l.scanning {
                                 ui.label(RichText::new(t!("Scanning… {pct}%", pct = pct)).small().color(p.text_dim));

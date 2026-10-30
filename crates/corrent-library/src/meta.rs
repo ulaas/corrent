@@ -77,12 +77,15 @@ pub struct Pending {
     pub ids: BTreeMap<String, String>,
     /// Artist name (albums).
     pub artist: Option<String>,
+    /// The provider that identified it (`Some("")`: checked, no provider matched; `None`: never
+    /// checked or asked again).
+    pub provider: Option<String>,
 }
 
 impl Library {
     /// Movies, shows, albums and artists never checked against providers (or asked again).
     pub async fn items_needing_metadata(&self, library_id: i64, limit: i64) -> Result<Vec<Pending>> {
-        self.pending(Some(library_id), None, &[], limit).await
+        self.pending(Some(library_id), None, &[], false, limit).await
     }
 
     /// Like `items_needing_metadata`, leaving out `tried` (items asked this run that no provider
@@ -93,12 +96,18 @@ impl Library {
         tried: &[i64],
         limit: i64,
     ) -> Result<Vec<Pending>> {
-        self.pending(Some(library_id), None, tried, limit).await
+        self.pending(Some(library_id), None, tried, false, limit).await
+    }
+
+    /// Every movie, show, album and artist of a library, checked or not, leaving out `tried`
+    /// (a refresh that replaces what providers gave before).
+    pub async fn items_for_metadata_except(&self, library_id: i64, tried: &[i64], limit: i64) -> Result<Vec<Pending>> {
+        self.pending(Some(library_id), None, tried, true, limit).await
     }
 
     /// One item as a metadata search sees it (whether it was checked or not; nothing changes).
     pub async fn pending_item(&self, id: i64) -> Result<Pending> {
-        self.pending(None, Some(id), &[], 1).await?.into_iter().next().ok_or(crate::LibError::NotFound)
+        self.pending(None, Some(id), &[], false, 1).await?.into_iter().next().ok_or(crate::LibError::NotFound)
     }
 
     async fn pending(
@@ -106,6 +115,7 @@ impl Library {
         library_id: Option<i64>,
         only: Option<i64>,
         except: &[i64],
+        all: bool,
         limit: i64,
     ) -> Result<Vec<Pending>> {
         let except = serde_json::to_string(except).unwrap_or_else(|_| "[]".into());
@@ -113,16 +123,18 @@ impl Library {
             .db()
             .read(move |c| {
                 let mut st = c.prepare(
-                    "SELECT i.id, i.library_id, i.kind, i.title, i.year, i.provider_ids, p.title FROM items i \
+                    "SELECT i.id, i.library_id, i.kind, i.title, i.year, i.provider_ids, p.title, \
+                     CASE WHEN json_extract(i.extra, '$.meta_checked') IS NOT NULL \
+                          THEN coalesce(json_extract(i.extra, '$.meta_provider'), '') END FROM items i \
                      LEFT JOIN items p ON p.id = i.parent_id \
                      WHERE (?1 IS NULL OR i.library_id = ?1) \
                      AND (?2 IS NOT NULL AND i.id = ?2 \
                           OR ?2 IS NULL AND i.kind IN ('movie','show','album','artist') \
-                             AND json_extract(i.extra, '$.meta_checked') IS NULL) \
+                             AND (?5 OR json_extract(i.extra, '$.meta_checked') IS NULL)) \
                      AND i.id NOT IN (SELECT value FROM json_each(?3)) \
                      ORDER BY i.added_at DESC LIMIT ?4",
                 )?;
-                st.query_map(params![library_id, only, except, limit], |r| {
+                st.query_map(params![library_id, only, except, limit, all], |r| {
                     let kind: String = r.get(2)?;
                     let kind = ItemKind::parse(&kind).unwrap_or(ItemKind::Movie);
                     Ok(Pending {
@@ -137,6 +149,7 @@ impl Library {
                             .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
                             .collect(),
                         artist: (kind == ItemKind::Album).then(|| r.get::<_, Option<String>>(6)).transpose()?.flatten(),
+                        provider: r.get(7)?,
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()
@@ -373,16 +386,16 @@ impl Library {
             .await?)
     }
 
-    /// Items no provider matched are asked again (after a provider became usable). Returns how
-    /// many.
-    pub async fn reset_unmatched(&self) -> Result<usize> {
+    /// Items no provider matched are asked again (after a provider became usable; in one library
+    /// or all). Returns how many.
+    pub async fn reset_unmatched(&self, library_id: Option<i64>) -> Result<usize> {
         Ok(self
             .db()
-            .write(|t| {
+            .write(move |t| {
                 t.execute(
                     "UPDATE items SET extra = json_remove(extra, '$.meta_checked', '$.meta_provider') \
-                     WHERE json_extract(extra, '$.meta_provider') = ''",
-                    [],
+                     WHERE json_extract(extra, '$.meta_provider') = '' AND (?1 IS NULL OR library_id = ?1)",
+                    [library_id],
                 )
             })
             .await?)

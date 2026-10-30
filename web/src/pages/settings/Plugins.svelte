@@ -7,7 +7,22 @@
   import { confirm } from '../../lib/confirm.svelte';
   import { can } from '../../lib/session.svelte';
   import { t, tk } from '../../lib/i18n.svelte';
-  import { Perm, type PluginInfo } from '../../lib/types';
+  import { Perm, type PluginInfo, type ProviderTest } from '../../lib/types';
+  import { identifying, testText } from '../../lib/metadata';
+
+  // "Test": one lookup of a well-known title with the saved settings.
+  let tests = $state<Record<string, ProviderTest | { failed: string } | 'running'>>({});
+  async function test(p: PluginInfo) {
+    const id = p.manifest.id;
+    tests[id] = 'running';
+    try {
+      tests[id] = await api.post<ProviderTest>(`/plugins/${id}/test`, {});
+    } catch (e) {
+      tests[id] = { failed: errorText(e) };
+    }
+  }
+  const canTest = (p: PluginInfo) =>
+    p.enabled && !p.missing.length && (p.manifest.kinds.includes('metadata') || p.manifest.kinds.includes('subtitles'));
 
   const MASK = '••••••••';
   let plugins = $state<PluginInfo[] | null>(null);
@@ -95,6 +110,7 @@
     busy = true;
     try {
       replace(await api.put<PluginInfo>(`/plugins/${p.manifest.id}/settings`, edits[p.manifest.id]));
+      delete tests[p.manifest.id];
       open = null;
       toast(t('Settings saved'), 'success');
     } catch (e) {
@@ -159,7 +175,13 @@
 {:else if !plugins}
   <div class="center"><Spinner /></div>
 {:else}
+  {@const ids = identifying(plugins)}
   <div class="sgroup">
+    {#if ids.length}
+      <p class="sdesc">{t('Identifying titles: {providers}', { providers: ids.join(', ') })}</p>
+    {:else}
+      <p class="sdesc warn"><Icon name="warning" size={14} />{t('No provider can identify titles yet. Add a free TMDB key for movies and shows.')}</p>
+    {/if}
     {#each plugins as p (p.manifest.id)}
       <div class="srow plugin">
         <div class="stext">
@@ -173,6 +195,13 @@
           {#if p.manifest.permissions.hosts.length}
             <span class="shint mono small">{t('Reaches: {hosts}', { hosts: p.manifest.permissions.hosts.join(', ') })}</span>
           {/if}
+          {#if p.manifest.supplements}
+            <span class="shint">{t("Adds to titles another provider identified (TMDB or TVDB); it can't identify titles on its own.")}</span>
+          {/if}
+          {#if tests[p.manifest.id] && tests[p.manifest.id] !== 'running'}
+            {@const [ok, text] = testText(tests[p.manifest.id] as ProviderTest | { failed: string })}
+            <span class="shint" class:ok class:warn={!ok}>{text}</span>
+          {/if}
           {#if p.missing.length}
             <span class="shint warn"><Icon name="warning" size={14} />{t('Needs settings: {keys}', { keys: p.missing.join(', ') })}</span>
           {/if}
@@ -181,6 +210,11 @@
           {/if}
         </div>
         <div class="sctl">
+          {#if manage && canTest(p)}
+            <button class="btn sm" disabled={tests[p.manifest.id] === 'running'} title={t('Looks up a well-known title with the saved settings.')} onclick={() => test(p)}>
+              {#if tests[p.manifest.id] === 'running'}<Spinner size={12} />{:else}<Icon name="play-circle" size={14} />{/if}{t('Test')}
+            </button>
+          {/if}
           {#if p.manifest.settings.length && manage}
             <button class="btn sm" onclick={() => edit(p)}><Icon name="sliders-horizontal" size={14} />{t('Settings')}</button>
           {/if}
@@ -266,6 +300,9 @@
     display: inline-flex;
     gap: 4px;
     align-items: center;
+  }
+  .ok {
+    color: var(--success);
   }
   .end {
     justify-content: flex-end;
