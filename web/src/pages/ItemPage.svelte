@@ -23,6 +23,7 @@
   import AddToPlaylist from '../components/AddToPlaylist.svelte';
   import RefreshMenu from '../components/RefreshMenu.svelte';
   import { outcomeText } from '../lib/metadata';
+  import { identify } from '../lib/identify.svelte';
   import type { RefreshMode, RefreshOutcome } from '../lib/types';
   import type { Item, ItemDetail, Page } from '../lib/types';
 
@@ -100,6 +101,22 @@
   const id = $derived(+params.id);
 
   let item = $state<ItemDetail | null>(null);
+
+  // Rating sites (OMDb) when known, else the provider's own score (as on the desktop).
+  const site = (k: string): string | undefined => {
+    const r = item?.extra?.ratings as Record<string, unknown> | undefined;
+    const v = r?.[k];
+    return typeof v === 'string' ? v : undefined;
+  };
+  // Pages about it elsewhere (ids the providers gave).
+  const links = $derived.by(() => {
+    if (!item) return [];
+    const ids = item.provider_ids ?? {};
+    const out: { label: string; url: string }[] = [];
+    if (ids.imdb) out.push({ label: 'IMDb', url: `https://www.imdb.com/title/${ids.imdb}/` });
+    if (ids.tmdb) out.push({ label: 'TMDB', url: `https://www.themoviedb.org/${item.kind === 'show' ? 'tv' : 'movie'}/${ids.tmdb}` });
+    return out;
+  });
 
   // Looking the item up again with the metadata providers.
   let refreshing = $state(false);
@@ -239,7 +256,9 @@
               <span>{item.kind === 'show' ? (item.child_count === 1 ? t('1 season') : t('{n} seasons', { n: item.child_count })) : item.child_count === 1 ? t('1 album') : t('{n} albums', { n: item.child_count })}</span>
             {/if}
             {#if item.official_rating}<span class="rating">{item.official_rating}</span>{/if}
-            {#if item.rating}<span class="star"><Icon name="sparkle" size={14} />{item.rating.toFixed(1)}</span>{/if}
+            {#if site('imdb')}<span class="star">IMDb {site('imdb')}</span>{:else if item.rating}<span class="star"><Icon name="sparkle" size={14} />{item.rating.toFixed(1)}</span>{/if}
+            {#if site('rotten_tomatoes')}<span>Rotten Tomatoes {site('rotten_tomatoes')}</span>{/if}
+            {#if site('metacritic')}<span>Metacritic {site('metacritic')}</span>{/if}
             {#if video?.height}<span class="tag">{video.height >= 2000 ? '4K' : video.height >= 1000 ? 'HD 1080p' : video.height >= 700 ? 'HD 720p' : `${video.height}p`}</span>{/if}
             {#if item.partial}<span class="badge warn"><Icon name="download-simple" size={12} />{t('Still downloading')}</span>{/if}
           </p>
@@ -290,6 +309,14 @@
             {#if isPlayable(item.kind) || item.kind === 'album' || item.kind === 'season'}
               <AddToPlaylist items={[item.id]} big />
             {/if}
+            {#if (item.kind === 'movie' || item.kind === 'show' || item.kind === 'video') && can(Perm.LIBRARY_MANAGE)}
+              <button class="btn lg" title={t('Choose what this is from the metadata providers')} onclick={() => identify({ id: item!.id, title: item!.title, year: item!.year, done: () => void load(item!.id) })}>
+                <Icon name="magnifying-glass" />{t('Identify…')}
+              </button>
+            {/if}
+            {#each links as l (l.label)}
+              <a class="btn lg" href={l.url} target="_blank" rel="noreferrer noopener" title={l.url}><Icon name="arrow-square-out" />{l.label}</a>
+            {/each}
             {#if ['movie', 'show', 'video', 'album', 'artist'].includes(item.kind) && can(Perm.LIBRARY_MANAGE)}
               <RefreshMenu big busy={refreshing} onpick={(mode) => refresh(item!.id, mode)} />
             {/if}

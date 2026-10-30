@@ -81,7 +81,7 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
   (movie/show/video/album/artist), Open IMDb/TMDB (cards lack provider ids: a lazy submenu that
   fetches the item), Copy link, Cast; playlist rows add Move up/down, Remove. LIBRARY_MANAGE for
   identify/refresh/subtitles.
-- [ ] **S6 Identify… dialog** (`identify.rs`): title/year search, candidates, apply; IMDb/TMDB
+- [x] **S6 Identify… dialog** (done 2026-10-30) (`identify.rs`): title/year search, candidates, apply; IMDb/TMDB
   links and the ratings line on the item page.
 - [ ] **S7 Person page and "See all" rows** (`/items?person_id=`, home row pages).
 - [ ] **S8 Profiles**: "Who's watching?" after sign-in when there are several, PIN, Switch

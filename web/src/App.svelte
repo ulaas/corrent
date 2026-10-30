@@ -7,6 +7,7 @@
   import Toasts from './components/Toasts.svelte';
   import ConfirmHost from './components/ConfirmHost.svelte';
   import ContextMenu from './components/ContextMenu.svelte';
+  import IdentifyHost from './components/IdentifyHost.svelte';
   import MiniPlayer from './components/MiniPlayer.svelte';
   import BottomNav from './components/BottomNav.svelte';
   import Spinner from './components/Spinner.svelte';
@@ -156,6 +157,7 @@
 <Toasts />
 <ConfirmHost />
 <ContextMenu />
+<IdentifyHost />
 
 <style>
   .skip {
