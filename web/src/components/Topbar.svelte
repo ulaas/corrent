@@ -81,6 +81,8 @@
       .slice(0, 2)
       .toUpperCase(),
   );
+  import ProfilePicker from './ProfilePicker.svelte';
+  let switching = $state(false);
 </script>
 
 <header class="topbar">
@@ -152,11 +154,14 @@
       <button class="mi" role="menuitem" onclick={() => { close(); go('/settings/account'); }}><Icon name="user" />{t('Account')}</button>
       <button class="mi" role="menuitem" onclick={() => { close(); go('/settings/appearance'); }}><Icon name="palette" />{t('Appearance')}</button>
       <button class="mi" role="menuitem" onclick={() => { close(); go('/settings/devices'); }}><Icon name="devices" />{t('Devices')}</button>
+      <button class="mi" role="menuitem" onclick={() => { close(); switching = true; }}><Icon name="users" />{t('Switch profile')}</button>
       <div class="sep"></div>
       <button class="mi danger" role="menuitem" onclick={() => { close(); void logout(); }}><Icon name="sign-out" />{t('Sign out')}</button>
     {/snippet}
   </Menu>
 </header>
+
+{#if switching}<ProfilePicker onclose={() => (switching = false)} />{/if}
 
 <style>
   .topbar {

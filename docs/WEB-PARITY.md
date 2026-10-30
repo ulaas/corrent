@@ -84,7 +84,7 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
 - [x] **S6 Identify… dialog** (done 2026-10-30) (`identify.rs`): title/year search, candidates, apply; IMDb/TMDB
   links and the ratings line on the item page.
 - [x] **S7 Person page and "See all" rows** (done 2026-10-30) (`/items?person_id=`, home row pages).
-- [ ] **S8 Profiles**: "Who's watching?" after sign-in when there are several, PIN, Switch
+- [x] **S8 Profiles** (done 2026-10-30; from the account menu, as on the desktop): "Who's watching?" after sign-in when there are several, PIN, Switch
   profile.
 - [ ] **S9 Player gaps**: T / "Use this frame as the thumbnail", subtitle delay and size, picture
   aspect, stats (hls.js), reset. Not possible in browsers: audio delay, screenshot.

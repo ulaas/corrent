@@ -35,10 +35,13 @@ async fn profiles(State(st): State<Arc<AppState>>, _auth: Auth) -> ApiResult<Vec
 
 /// Switches this device to another profile: its PIN when it has one; without a PIN only kids'
 /// and guests' profiles (or any, for administrators). Wrong PINs count like wrong pairing codes.
+/// Apps get a device token for the profile; a browser gets a new session cookie, and its old
+/// session ends.
 async fn switch_profile(
     State(st): State<Arc<AppState>>,
     auth: Auth,
     ip: ClientIp,
+    headers: HeaderMap,
     Json(req): Json<corrent_proto::auth::ProfileSwitch>,
 ) -> Result<Response, ApiErr> {
     limited(&st)?;
@@ -64,6 +67,12 @@ async fn switch_profile(
     };
     if !allowed {
         return Err(err(ErrorCode::Forbidden, "this profile needs its password or a PIN"));
+    }
+    if auth.0.kind == crate::identity::SessionKind::Web {
+        let issued = st.identity.issue(target.id, None, ip.0.to_string(), user_agent(&headers)).await?;
+        st.identity.revoke_session(auth.0.session_id).await?;
+        st.identity.audit(Some(auth.name()), &ip.0.to_string(), "profile_switch", &target.name, true, "web").await;
+        return Ok(session_response(&st, target, issued, false));
     }
     let (user, issued) = st.identity.issue_profile(target.id, req.device, ip.0.to_string()).await?;
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "profile_switch", &user.name, true, "").await;

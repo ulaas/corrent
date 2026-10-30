@@ -234,6 +234,9 @@ pub struct ProfileSwitch {
     pub user_id: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin: Option<String>,
+    /// Apps: the device the new token is for. Browsers leave it out (they get a new session
+    /// cookie instead).
+    #[serde(default)]
     pub device: DeviceInfo,
 }
 

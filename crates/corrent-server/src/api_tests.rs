@@ -840,6 +840,34 @@ async fn profiles_and_pins() {
     assert_ne!(v1["token"], kid_token);
     let (s, _, _) = get(app, "/api/v1/auth/me", &kid_token).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED, "the old profile token was replaced");
+    // A browser gets a new session cookie for the profile (no token), and its old one ends.
+    let (_, v, hd) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call { body: Some(json!({ "username": "admin", "password": "correct horse" })), ..Default::default() },
+    )
+    .await;
+    let csrf = v["csrf"].as_str().unwrap().to_string();
+    let cookie_of = |hd: &HeaderMap| {
+        let c = hd.get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+        c.split(';').next().unwrap().split_once('=').unwrap().1.to_string()
+    };
+    let old = cookie_of(&hd);
+    let (s, v, hd) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/profile",
+        Call { cookie: Some(&old), csrf: Some(&csrf), body: Some(json!({ "user_id": kid })), ..Default::default() },
+    )
+    .await;
+    assert_eq!((s, v["user"]["name"].as_str()), (StatusCode::OK, Some("kid")), "{v}");
+    assert!(v["token"].is_null() && v["csrf"].is_string(), "{v}");
+    let new = cookie_of(&hd);
+    let (_, v, _) = call(app, Method::GET, "/api/v1/auth/me", Call { cookie: Some(&new), ..Default::default() }).await;
+    assert_eq!(v["user"]["name"], "kid");
+    let (s, _, _) = call(app, Method::GET, "/api/v1/auth/me", Call { cookie: Some(&old), ..Default::default() }).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "the browser's previous session ended");
     h.stop().await;
 }
 
