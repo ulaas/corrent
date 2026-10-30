@@ -3,6 +3,21 @@
 All notable changes to Corrent. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may break things).
 
+## [0.3.7] — 2026-10-31
+
+### Added
+
+- Web interface: a **Metadata** section in Settings, as in the app — the metadata and
+  subtitle providers with their status, API keys, a Test button and where to get a key. The
+  "no metadata provider" warning under a library links there.
+
+### Fixed
+
+- Media server: transcoding no longer keeps the CPU busy for a minute and a half after you
+  stop watching. The encoder now stays about three minutes ahead of the player and pauses
+  there (also while playback is paused), and the web player ends its transcode as soon as the
+  tab is closed or left.
+
 ## [0.3.6] — 2026-10-31
 
 ### Added
