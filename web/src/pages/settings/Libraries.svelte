@@ -6,6 +6,7 @@
   import Progress from '../../components/Progress.svelte';
   import PathField from '../../components/PathField.svelte';
   import { api, errorText } from '../../lib/api';
+  import { link } from '../../lib/router.svelte';
   import { libs, loadLibraries } from '../../lib/libraries.svelte';
   import { LIBRARY_ICON, LIBRARY_KIND_LABEL } from '../../lib/media';
   import { live, useTorrents } from '../../lib/torrents.svelte';
@@ -169,7 +170,11 @@
               <Progress value={run.done / run.total} height={5} label={t('Refresh metadata')} />
             {/if}
             {#each runLines(run) as [tone, text], i (i)}
-              <span class="caption num" class:muted={tone === 'muted'} class:warn={tone === 'warn'} class:form-error={tone === 'error'}>{text}</span>
+              {#if tone === 'warn'}
+                <a class="caption warn" href="/settings/metadata" use:link>{text}</a>
+              {:else}
+                <span class="caption num" class:muted={tone === 'muted'} class:form-error={tone === 'error'}>{text}</span>
+              {/if}
             {/each}
           </div>
         {/if}

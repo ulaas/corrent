@@ -1,0 +1,1 @@
+import{C as e,U as t,V as n,_ as r,d as i,gt as a,ht as o,o as s,tt as c}from"./i18n.svelte-D2h7VTVb.js";var l=t(`<span class="spinner svelte-15g82xt" role="status"></span>`);function u(t,u){a(u,!0);let d=i(u,`size`,3,20),f=i(u,`label`,3,``);var p=l();let m;c(t=>{r(p,`aria-label`,t),m=e(p,``,m,{"--s":`${d()??``}px`})},[()=>f()||s(`Loading…`)]),n(t,p),o()}export{u as t};

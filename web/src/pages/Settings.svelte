@@ -32,6 +32,7 @@
     { id: 'seeding', label: tk('Seeding'), icon: 'arrow-circle-up', group: tk('Server'), perm: Perm.SETTINGS_READ, load: server },
     { id: 'bittorrent', label: tk('BitTorrent'), icon: 'magnet', group: tk('Server'), perm: Perm.SETTINGS_READ, load: server },
     { id: 'search', label: tk('Search providers'), icon: 'magnifying-glass', group: tk('Server'), perm: Perm.SETTINGS_READ, load: server },
+    { id: 'metadata', label: tk('Metadata'), icon: 'film-slate', group: tk('Server'), perm: Perm.SETTINGS_READ, load: () => import('./settings/Metadata.svelte') },
     { id: 'rss', label: tk('RSS feeds and rules'), icon: 'rss', group: tk('Server'), perm: Perm.SETTINGS_READ, load: () => import('./settings/RssSettings.svelte') },
     { id: 'remote', label: tk('Remote access'), icon: 'globe', group: tk('Administration'), perm: Perm.SETTINGS_WRITE, load: () => import('./settings/Remote.svelte') },
     { id: 'plugins', label: tk('Plugins'), icon: 'puzzle-piece', group: tk('Administration'), perm: Perm.SETTINGS_READ, load: () => import('./settings/Plugins.svelte') },
