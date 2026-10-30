@@ -8,7 +8,23 @@
   import { t } from '../../lib/i18n.svelte';
   import type { Torrent } from '../../lib/types';
 
-  let { torrent, onclose }: { torrent: Torrent; onclose: () => void } = $props();
+  let {
+    torrent,
+    onclose,
+    focus = 'name',
+  }: { torrent: Torrent; onclose: () => void; focus?: 'name' | 'speed' | 'seed' } = $props();
+
+  // Opened for one part (Rename…, Speed limits…, Seeding limits…): that part has the focus.
+  let form: HTMLFormElement | undefined = $state();
+  $effect(() => {
+    const el = form?.querySelector<HTMLElement>(`[data-focus="${focus}"]`);
+    if (!el) return;
+    setTimeout(() => {
+      el.scrollIntoView({ block: 'nearest' });
+      el.focus();
+      if (el instanceof HTMLInputElement && focus === 'name') el.select();
+    }, 50);
+  });
 
   // svelte-ignore state_referenced_locally
   const orig = torrent;
@@ -48,10 +64,10 @@
 </script>
 
 <Modal title={t('Edit torrent')} size="md" {onclose}>
-  <form id="edit-form" class="stack" onsubmit={save}>
+  <form id="edit-form" class="stack" onsubmit={save} bind:this={form}>
     <label class="field">
       <span class="label">{t('Name')}</span>
-      <input class="input" bind:value={name} />
+      <input class="input" bind:value={name} data-focus="name" />
       <span class="hint">{t('Leave empty to use the name from the torrent.')}</span>
     </label>
     <label class="field">
@@ -63,12 +79,12 @@
     </label>
     <div class="field"><span class="label">{t('Tags')}</span><TagInput bind:tags known={live.labels.tags} /></div>
     <div class="grid2">
-      <label class="field"><span class="label">{t('Download limit (KiB/s)')}</span><input class="input num-input" type="number" min="0" bind:value={down} /><span class="hint">{t('0 = unlimited')}</span></label>
+      <label class="field"><span class="label">{t('Download limit (KiB/s)')}</span><input class="input num-input" type="number" min="0" bind:value={down} data-focus="speed" /><span class="hint">{t('0 = unlimited')}</span></label>
       <label class="field"><span class="label">{t('Upload limit (KiB/s)')}</span><input class="input num-input" type="number" min="0" bind:value={up} /><span class="hint">{t('0 = unlimited')}</span></label>
     </div>
     <fieldset class="field seed">
       <legend class="label">{t('Seeding limits')}</legend>
-      <label class="row"><input type="radio" bind:group={seedMode} value="keep" />{t('Leave as they are')}</label>
+      <label class="row"><input type="radio" bind:group={seedMode} value="keep" data-focus="seed" />{t('Leave as they are')}</label>
       <label class="row"><input type="radio" bind:group={seedMode} value="global" />{t('Use the global settings')}</label>
       <label class="row"><input type="radio" bind:group={seedMode} value="custom" />{t('Stop at')}</label>
       {#if seedMode === 'custom'}

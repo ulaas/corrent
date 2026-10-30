@@ -42,6 +42,8 @@ for (const size of sizes) {
         for (const step of action.split('&')) {
           const [kind, arg] = step.split('=');
           if (kind === 'click') await page.click(decodeURIComponent(arg)).catch((e) => errors.push(`click ${arg}: ${e.message}`));
+          if (kind === 'rclick') await page.click(decodeURIComponent(arg), { button: 'right' }).catch((e) => errors.push(`rclick ${arg}: ${e.message}`));
+          if (kind === 'hover') await page.hover(decodeURIComponent(arg)).catch((e) => errors.push(`hover ${arg}: ${e.message}`));
           if (kind === 'wait') await page.waitForTimeout(+arg);
           if (kind === 'key') await page.keyboard.press(arg);
         }

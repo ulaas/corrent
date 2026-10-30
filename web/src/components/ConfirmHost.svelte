@@ -5,6 +5,9 @@
 
   let checked = $state(false);
   const req = $derived(confirms[0]);
+  $effect(() => {
+    checked = req?.checked ?? false;
+  });
 
   function finish(ok: boolean) {
     const r = confirms.shift();

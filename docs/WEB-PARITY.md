@@ -33,7 +33,7 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
 
 - [x] **Metadata refresh** (done 2026-10-30): Refresh metadata ▸ on item pages and in
   Settings → Libraries with run status, provider Test button, supplement note.
-- [ ] **S1 ContextMenu component.** A store `web/src/lib/contextmenu.svelte.ts`
+- [x] **S1 ContextMenu component** (done 2026-10-30). A store `web/src/lib/contextmenu.svelte.ts`
   (`openMenu(items, at, {returnFocus, key})`, `closeMenu()`, items: item / submenu (lazy
   `() => Promise<MenuItem[]>` for Play ▸ files and IMDb/TMDB on cards) / sep / header) and one
   host `ContextMenu.svelte` mounted in `App.svelte` like `ConfirmHost.svelte`: fixed position,
@@ -49,7 +49,9 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
   Submenus flip near edges; long menus scroll (every menu must); phones get a bottom sheet
   (Modal's sheet styles). Tests (vitest runs in node, `web/tests/`): placement/flip math and the
   menu builders; interaction checked with `screenshots.mjs`.
-- [ ] **S2 Torrent row menu and shortcuts** (`Torrents.svelte`): right-click selects an
+- [x] **S2 Torrent row menu and shortcuts** (done 2026-10-30; left for later: Copy stream link,
+  speed/seeding limits for several torrents at once — the Edit dialog takes one; Add to library…
+  comes with S4) (`Torrents.svelte`): right-click selects an
   unselected row, then the `actions.rs` menu, including "Choose another folder…" (Move to…
   highlighted when the error is disk full / permission / not found: port `classify_io`).
   Play ▸ lists media files (port `engine::stream::is_media`; files from

@@ -277,6 +277,13 @@ async fn setup_login_and_permissions() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    // Stopping an add that is still waiting for metadata (a no-op once it finished): only for
+    // those who may manage torrents.
+    let cancel = json!({ "action": "cancel", "hashes": ["0202020202020202020202020202020202020202"] });
+    let (s, v, _) = send(app, Method::POST, "/api/v1/torrents/actions", &guest, cancel.clone()).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, v, _) = send(app, Method::POST, "/api/v1/torrents/actions", &admin, cancel).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
     let (s, _, _) =
         send(app, Method::POST, "/api/v1/torrents", &bob, json!({ "urls": ["http://127.0.0.1:9/x.torrent"] })).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "no fetching from the server's own network");

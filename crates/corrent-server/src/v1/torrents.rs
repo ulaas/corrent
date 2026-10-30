@@ -333,6 +333,8 @@ pub enum Action {
     PauseAll,
     ResumeAll,
     UndoRemove,
+    /// Stops adding torrents that are still being added (waiting for metadata).
+    Cancel,
 }
 
 #[derive(Deserialize)]
@@ -375,6 +377,12 @@ async fn action(
             ));
         }
     }
+    if r.action == Action::Cancel {
+        for h in &hashes {
+            st.engine.send(EngineCommand::CancelAdd(*h));
+        }
+        return ok();
+    }
     let queue = |mv| EngineCommand::QueueMove { hashes: hashes.clone(), mv };
     let cmd = match r.action {
         Action::Pause => EngineCommand::Pause(hashes.clone()),
@@ -390,6 +398,7 @@ async fn action(
         Action::PauseAll => EngineCommand::PauseAll,
         Action::ResumeAll => EngineCommand::ResumeAll,
         // The given torrents, or every one that can still be restored.
+        Action::Cancel => unreachable!("handled above"),
         Action::UndoRemove => {
             let snap = st.engine.snapshot();
             EngineCommand::UndoRemove(

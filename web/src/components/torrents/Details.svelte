@@ -10,7 +10,11 @@
   import { t, tk } from '../../lib/i18n.svelte';
   import type { FileEntry, Torrent, TorrentDetail } from '../../lib/types';
 
-  let { torrent, onclose }: { torrent: Torrent; onclose: () => void } = $props();
+  let {
+    torrent,
+    onclose,
+    initialTab = 'general',
+  }: { torrent: Torrent; onclose: () => void; initialTab?: 'general' | 'files' | 'peers' | 'trackers' | 'pieces' } = $props();
 
   const TABS = [
     { id: 'general', label: tk('General') },
@@ -19,7 +23,8 @@
     { id: 'trackers', label: tk('Trackers') },
     { id: 'pieces', label: tk('Pieces') },
   ] as const;
-  let tab = $state<(typeof TABS)[number]['id']>('general');
+  // svelte-ignore state_referenced_locally
+  let tab = $state<(typeof TABS)[number]['id']>(initialTab);
   let detail = $state<TorrentDetail | null>(null);
   let selectedFiles = $state<Set<number>>(new Set());
   let newTrackers = $state('');

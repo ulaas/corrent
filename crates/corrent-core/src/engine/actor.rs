@@ -90,6 +90,8 @@ struct PendingAdd {
     hash: InfoHash,
     started: i64,
     save_path: PathBuf,
+    /// The server account that asked for it (it may cancel it).
+    added_by: Option<String>,
     task: Option<JoinHandle<()>>,
 }
 
@@ -1198,6 +1200,7 @@ impl Actor {
                 hash,
                 started: now_unix(),
                 save_path: req.save_path.clone(),
+                added_by: req.added_by.clone(),
                 task: None,
             },
         );
@@ -2953,7 +2956,7 @@ fn pending_view(p: &PendingAdd) -> TorrentView {
         added_at: p.started,
         completed_at: None,
         queue_pos: u32::MAX,
-        added_by: None,
+        added_by: p.added_by.clone(),
         trackers: Vec::new(),
         has_metadata: false,
         file_count: 0,
@@ -2981,6 +2984,7 @@ fn failed_view(f: &super::restore::FailedRestore, m: Option<&crate::store::Torre
         hash: f.hash,
         started: m.map(|m| m.added_at).unwrap_or(0),
         save_path: f.output_folder.clone(),
+        added_by: None,
         task: None,
     });
     v.state = TorrentState::Error;

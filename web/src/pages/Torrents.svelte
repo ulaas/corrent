@@ -25,10 +25,12 @@
   import { bytes, duration, num, percent, rate } from '../lib/format';
   import { confirm } from '../lib/confirm.svelte';
   import { toast } from '../lib/toast.svelte';
-  import { can } from '../lib/session.svelte';
+  import { can, session } from '../lib/session.svelte';
+  import { closeMenuFor, contextMenu, ctxmenu } from '../lib/contextmenu.svelte';
+  import { isMedia, menuFor, type TorrentMenuActions } from '../lib/torrentmenu';
   import { ms } from '../lib/prefs.svelte';
   import { t, tk } from '../lib/i18n.svelte';
-  import { Perm, type Torrent } from '../lib/types';
+  import { Perm, type FileEntry, type Torrent, type TorrentDetail } from '../lib/types';
   import type { IconName } from '../lib/icons';
 
   $effect(() => useTorrents());
@@ -38,7 +40,8 @@
   let focusHash = $state<string | null>(null);
   let detailHash = $state<string | null>(null);
   let adding = $state<{ text: string; files: File[] } | null>(null);
-  let editing = $state<Torrent | null>(null);
+  let editing = $state<{ torrent: Torrent; focus: 'name' | 'speed' | 'seed' } | null>(null);
+  let detailTab = $state<'general' | 'trackers'>('general');
   let labels = $state(false);
   let moving = $state<string[] | null>(null);
   let dropping = $state(false);
@@ -140,15 +143,37 @@
       if (focusHash) detailHash = focusHash;
       return;
     } else if (e.key === 'Delete' && sel.length) {
-      void remove();
+      void remove(sel, e.shiftKey);
       return;
     } else if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       selected = new Set(rows.map((r) => r.hash));
       return;
-    } else if (e.key === ' ' && focusHash) {
+    } else if (e.key === ' ' && (e.ctrlKey || e.metaKey) && focusHash) {
       e.preventDefault();
       toggleOne(byHash.get(focusHash)!);
+      return;
+    } else if (e.key === ' ' && sel.length && canManage) {
+      // As on the desktop: pause what runs, else resume.
+      e.preventDefault();
+      const running = sel.some((h) => {
+        const st = byHash.get(h)?.state;
+        return st !== 'paused' && st !== 'queued' && st !== 'completed';
+      });
+      void act(running ? 'pause' : 'resume');
+      return;
+    } else if (e.key === 'F2' && sel.length === 1 && canManage) {
+      e.preventDefault();
+      const x = byHash.get(sel[0]);
+      if (x) editing = { torrent: x, focus: 'name' };
+      return;
+    } else if (e.key === 'Escape' && sel.length) {
+      e.preventDefault();
+      selected = new Set();
+      return;
+    } else if (e.key === 'i' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      detailHash = detailHash ? null : (focusHash ?? sel[0] ?? null);
       return;
     } else return;
     e.preventDefault();
@@ -179,7 +204,7 @@
     }
   }
 
-  async function remove(hashes = sel) {
+  async function remove(hashes = sel, withData = false) {
     if (!hashes.length) return;
     const one = hashes.length === 1 ? byHash.get(hashes[0]) : null;
     const r = await confirm({
@@ -188,6 +213,7 @@
       ok: t('Remove'),
       danger: true,
       check: t('Also delete the downloaded files'),
+      checked: withData,
     });
     if (!r.ok) return;
     await act(r.checked ? 'remove_with_data' : 'remove', hashes);
@@ -213,6 +239,71 @@
       toast(errorText(e), 'error');
     }
   }
+
+  // ---- context menu (as on the desktop, src/app/actions.rs) ----
+  async function patchEach(list: Torrent[], body: (x: Torrent) => Record<string, unknown>) {
+    try {
+      await Promise.all(list.map((x) => api.patch(`/torrents/${x.hash}`, body(x))));
+    } catch (e) {
+      toast(errorText(e), 'error');
+    }
+  }
+  const menuActions: TorrentMenuActions = {
+    act: (action, hashes) => void act(action, hashes, action === 'recheck' ? t('Checking…') : undefined),
+    move: (hashes) => (moving = hashes),
+    media: async (hash) => {
+      const d = await api.get<TorrentDetail>(`/torrents/${hash}/detail`);
+      return d.files.filter((f) => f.included && isMedia(f.path[f.path.length - 1] ?? '')).sort((a, b) => b.len - a.len);
+    },
+    play: (hash: string, f: FileEntry) => void open(`/api/v1/torrents/${hash}/files/${f.index}/stream`, '_blank', 'noopener'),
+    rename: (x) => (editing = { torrent: x, focus: 'name' }),
+    limits: (x, section) => (editing = { torrent: x, focus: section }),
+    setCategory: (list, category) => void patchEach(list, () => ({ category: category ?? '' })),
+    setTag: (list, tag, on) => void patchEach(list, (x) => ({ tags: on ? [...new Set([...x.tags, tag])] : x.tags.filter((g) => g !== tag) })),
+    clearTags: (list) => void patchEach(list, () => ({ tags: [] })),
+    labels: () => (labels = true),
+    trackers: (x) => {
+      detailTab = 'trackers';
+      detailHash = x.hash;
+    },
+    copy: (text) => void navigator.clipboard?.writeText(text).then(() => toast(t('Copied'), 'success')),
+    remove: (hashes, withData) => void remove(hashes, withData),
+  };
+
+  /** The row under the event (or the focused one, for the keyboard). */
+  function rowOf(e: Event): Torrent | undefined {
+    const h = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-hash]')?.dataset.hash ?? (e instanceof KeyboardEvent ? focusHash : null);
+    return h ? byHash.get(h) : undefined;
+  }
+  function listMenu(e: Event) {
+    const x = rowOf(e);
+    if (!x) return null;
+    const list = selected.has(x.hash) ? sel.map((h) => byHash.get(h)).filter((y): y is Torrent => !!y) : [x];
+    return menuFor(
+      list,
+      {
+        me: session.user?.name ?? null,
+        manageAll: canAll,
+        manageOwn: can(Perm.TORRENTS_MANAGE_OWN),
+        categories: Object.keys(live.labels.categories),
+        tags: live.labels.tags,
+      },
+      menuActions,
+    );
+  }
+  // Right-clicking a row that isn't selected selects only it (as on the desktop).
+  function selectFor(e: Event) {
+    const x = rowOf(e);
+    if (!x || selected.has(x.hash)) return;
+    selected = new Set([x.hash]);
+    anchor = x.hash;
+    focusHash = x.hash;
+  }
+  // A menu about torrents that are gone closes.
+  $effect(() => {
+    const k = ctxmenu.current?.key;
+    if (k && !byHash.has(k)) closeMenuFor(k);
+  });
 
   function sortBy(k: SortKey) {
     if (view.sort === k) view.desc = !view.desc;
@@ -240,6 +331,19 @@
     if (files.length || /^magnet:|^https?:/.test(text)) adding = { text: files.length ? '' : text, files };
   }
 
+  let filterInput: HTMLInputElement | undefined = $state();
+  function onPageKey(e: KeyboardEvent) {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    if (e.shiftKey && e.key.toLowerCase() === 's' && (canAll || can(Perm.SETTINGS_WRITE))) {
+      e.preventDefault();
+      void altSpeed();
+    } else if (!e.shiftKey && e.key.toLowerCase() === 'f') {
+      e.preventDefault();
+      filterInput?.focus();
+      filterInput?.select();
+    }
+  }
+
   function onpaste(e: ClipboardEvent) {
     if ((e.target as HTMLElement).closest('input, textarea') || adding || !canAdd) return;
     const text = e.clipboardData?.getData('text') ?? '';
@@ -247,7 +351,7 @@
   }
 </script>
 
-<svelte:window {onpaste} />
+<svelte:window {onpaste} onkeydown={onPageKey} />
 
 <div
   class="tpage"
@@ -295,7 +399,7 @@
       {/if}
       <div class="search">
         <Icon name="magnifying-glass" size={16} />
-        <input bind:value={view.filter.text} placeholder={t('Filter torrents')} aria-label={t('Filter torrents')} />
+        <input bind:this={filterInput} bind:value={view.filter.text} placeholder={t('Filter torrents')} aria-label={t('Filter torrents')} />
       </div>
       {#if sel.length && canManage}
         <div class="selbar" transition:fly={{ x: -10, duration: ms(160) }}>
@@ -310,7 +414,7 @@
               <button class="mi" role="menuitem" onclick={() => { close(); void act('recheck', sel, t('Checking…')); }}><Icon name="check-square" />{t('Verify files')}</button>
               <button class="mi" role="menuitem" onclick={() => { close(); moving = sel; }}><Icon name="folder-open" />{t('Move to…')}</button>
               {#if sel.length === 1}
-                <button class="mi" role="menuitem" onclick={() => { close(); editing = byHash.get(sel[0]) ?? null; }}><Icon name="pencil-simple" />{t('Edit…')}</button>
+                <button class="mi" role="menuitem" onclick={() => { close(); const x = byHash.get(sel[0]); editing = x ? { torrent: x, focus: 'name' } : null; }}><Icon name="pencil-simple" />{t('Edit…')}</button>
               {/if}
               <div class="sep"></div>
               <div class="mh">{t('Queue')}</div>
@@ -358,6 +462,7 @@
       aria-label={t('Torrents')}
       aria-rowcount={rows.length}
       aria-multiselectable="true"
+      use:contextMenu={{ items: listMenu, before: selectFor, key: sel[0], title: t('Torrents') }}
       onkeydown={onListKey}>
       {#if !live.loaded}
         <div class="center"><Spinner size={26} /></div>
@@ -380,6 +485,7 @@
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus (keys are handled by the grid) -->
             <div
               class="trow"
+              data-hash={x.hash}
               class:sel={selected.has(x.hash)}
               class:focus={focusHash === x.hash}
               class:detail={detailHash === x.hash}
@@ -428,7 +534,9 @@
 
     {#if detailTorrent}
       <div class="dpanel" transition:fly={{ y: 40, duration: ms(220) }}>
-        <Details torrent={detailTorrent} onclose={() => (detailHash = null)} />
+        {#key detailTorrent.hash + detailTab}
+          <Details torrent={detailTorrent} initialTab={detailTab} onclose={() => ((detailHash = null), (detailTab = 'general'))} />
+        {/key}
       </div>
     {/if}
 
@@ -461,7 +569,7 @@
 </div>
 
 {#if adding}<AddTorrent initialText={adding.text} initialFiles={adding.files} onclose={() => (adding = null)} />{/if}
-{#if editing}<EditTorrent torrent={editing} onclose={() => (editing = null)} />{/if}
+{#if editing}<EditTorrent torrent={editing.torrent} focus={editing.focus} onclose={() => (editing = null)} />{/if}
 {#if labels}<LabelsManager onclose={() => (labels = false)} />{/if}
 {#if moving}
   <FolderPicker title={moving.length === 1 ? t('Move 1 torrent to…') : t('Move {n} torrents to…', { n: moving.length })} start={byHash.get(moving[0])?.save_path ?? ''} onpick={move} onclose={() => (moving = null)} />

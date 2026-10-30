@@ -6,6 +6,8 @@ export interface ConfirmRequest {
   danger?: boolean;
   /** Optional checkbox (e.g. "also delete the files"). */
   check?: string;
+  /** The checkbox starts ticked. */
+  checked?: boolean;
   resolve: (r: { ok: boolean; checked: boolean }) => void;
 }
 
