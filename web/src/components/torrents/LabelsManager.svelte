@@ -8,12 +8,37 @@
   import { toast } from '../../lib/toast.svelte';
   import { t } from '../../lib/i18n.svelte';
 
-  let { onclose }: { onclose: () => void } = $props();
+  let {
+    onclose,
+    focus = null,
+    start = null,
+  }: {
+    onclose: () => void;
+    /** A category to bring into view (Edit… in its menu). */
+    focus?: string | null;
+    /** A new category with this name started (Add subcategory… → "parent/"). */
+    start?: string | null;
+  } = $props();
 
   let cats = $state(
     Object.entries(live.labels.categories).map(([name, c]) => ({ name, save_path: c.save_path ?? '', down: c.down_limit_kib, up: c.up_limit_kib })),
   );
+  // svelte-ignore state_referenced_locally
+  if (start != null) cats.push({ name: start, save_path: '', down: 0, up: 0 });
   let tags = $state([...live.labels.tags]);
+  let catList: HTMLDivElement | undefined = $state();
+  $effect(() => {
+    if (!catList || (focus == null && start == null)) return;
+    const i = start != null ? cats.length - 1 : cats.findIndex((c) => c.name === focus);
+    const input = catList.querySelectorAll<HTMLElement>('.cat')[i]?.querySelector<HTMLInputElement>('input.input');
+    if (!input) return;
+    setTimeout(() => {
+      input.scrollIntoView({ block: 'center' });
+      input.focus();
+      const end = input.value.length;
+      input.setSelectionRange(end, end);
+    }, 60);
+  });
   let newTag = $state('');
   let error = $state('');
   let busy = $state(false);
@@ -46,7 +71,7 @@
 
 <Modal title={t('Categories and tags')} size="lg" {onclose}>
   <h3 class="sub">{t('Categories')}</h3>
-  <div class="cats">
+  <div class="cats" bind:this={catList}>
     {#each cats as c, i (i)}
       <div class="cat panel">
         <label class="field"><span class="label">{t('Name')}</span><input class="input" bind:value={c.name} /></label>

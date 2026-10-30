@@ -9,6 +9,7 @@
   import { toast } from '../../lib/toast.svelte';
   import { t, tk } from '../../lib/i18n.svelte';
   import type { FileEntry, Torrent, TorrentDetail } from '../../lib/types';
+  import { contextMenu, type MenuItem } from '../../lib/contextmenu.svelte';
 
   let {
     torrent,
@@ -93,6 +94,32 @@
     } catch (e) {
       toast(errorText(e), 'error');
     }
+  }
+
+  // Right-click on a file (as on the desktop): Priority ▸, for the selected files when it is one of them.
+  function fileMenu(f: FileEntry) {
+    return (): MenuItem[] => {
+      const files = selectedFiles.has(f.index) ? [...selectedFiles] : [f.index];
+      const list = detail?.files.filter((x) => files.includes(x.index)) ?? [f];
+      const same = list.every((x) => x.priority === list[0].priority);
+      return [
+        {
+          kind: 'submenu',
+          label: t('Priority'),
+          icon: 'flag',
+          items: PRIO.map((p): MenuItem => ({
+            label: t(p.label),
+            radio: true,
+            checked: same && list[0].priority === p.v,
+            onselect: () => void setPriority(files, p.v),
+          })),
+        },
+        { kind: 'sep' },
+        list.every((x) => x.included)
+          ? { label: t("Don't download"), icon: 'minus-circle', onselect: () => void setPriority(files, 'skip') }
+          : { label: t('Download'), icon: 'download-simple', onselect: () => void setPriority(files, 'download') },
+      ];
+    };
   }
 
   async function choosePrio(f: FileEntry, v: string) {
@@ -194,7 +221,7 @@
           </tr></thead>
           <tbody>
             {#each detail.files as f (f.index)}
-              <tr class:skipped={!f.included}>
+              <tr class:skipped={!f.included} use:contextMenu={{ items: fileMenu(f), title: f.path[f.path.length - 1] }}>
                 <td><input type="checkbox" class="check" checked={selectedFiles.has(f.index)} aria-label={f.path.join('/')} onchange={() => { const s = new Set(selectedFiles); s.has(f.index) ? s.delete(f.index) : s.add(f.index); selectedFiles = s; }} /></td>
                 <td class="fname" title={f.path.join('/')}>{#if f.path.length > 1}<span class="faint">{f.path.slice(0, -1).join('/')}/</span>{/if}{f.path[f.path.length - 1]}</td>
                 <td class="r num">{bytes(f.len)}</td>

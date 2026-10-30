@@ -15,6 +15,7 @@
   import { isAdmin } from '../lib/session.svelte';
   import { t, tk } from '../lib/i18n.svelte';
   import type { SearchResult } from '../lib/types';
+  import { contextMenu, type MenuItem } from '../lib/contextmenu.svelte';
 
   $effect(() => useTorrents());
 
@@ -71,6 +72,21 @@
       toast(errorText(e), 'error');
     }
   }
+
+  // As on the desktop (src/app/search_view.rs): the result's page; adding, as the buttons do.
+  function resultMenu(r: SearchResult) {
+    return (): MenuItem[] | null => {
+      const rows: MenuItem[] = [];
+      const link = r.link;
+      if (link && !added.has(link)) {
+        rows.push({ label: t('Add…'), icon: 'plus', onselect: () => (adding = link) });
+        rows.push({ label: t('Add now'), icon: 'download-simple', onselect: () => void quickAdd(r) });
+      }
+      const page = r.page;
+      if (page) rows.push({ label: t('Open details page'), icon: 'globe', onselect: () => void open(page, '_blank', 'noopener') });
+      return rows.length ? rows : null;
+    };
+  }
 </script>
 
 <div class="page">
@@ -110,7 +126,7 @@
       </div>
       <ul class="results stagger">
         {#each rows as r, i (r.provider + r.title + (r.link ?? i))}
-          <li style:--i={i}>
+          <li style:--i={i} use:contextMenu={{ items: resultMenu(r), title: r.title }}>
             <div class="grow main">
               <span class="title">{r.title}</span>
               <span class="meta caption">

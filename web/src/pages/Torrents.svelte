@@ -42,7 +42,7 @@
   let adding = $state<{ text: string; files: File[] } | null>(null);
   let editing = $state<{ torrent: Torrent; focus: 'name' | 'speed' | 'seed' } | null>(null);
   let detailTab = $state<'general' | 'trackers'>('general');
-  let labels = $state(false);
+  let labels = $state<false | { focus?: string; start?: string }>(false);
   let moving = $state<string[] | null>(null);
   let dropping = $state(false);
   let railOpen = $state(false);
@@ -261,7 +261,7 @@
     setCategory: (list, category) => void patchEach(list, () => ({ category: category ?? '' })),
     setTag: (list, tag, on) => void patchEach(list, (x) => ({ tags: on ? [...new Set([...x.tags, tag])] : x.tags.filter((g) => g !== tag) })),
     clearTags: (list) => void patchEach(list, () => ({ tags: [] })),
-    labels: () => (labels = true),
+    labels: () => (labels = {}),
     trackers: (x) => {
       detailTab = 'trackers';
       detailHash = x.hash;
@@ -304,6 +304,34 @@
     const k = ctxmenu.current?.key;
     if (k && !byHash.has(k)) closeMenuFor(k);
   });
+
+  // ---- sidebar menus (as on the desktop, src/app/sidebar.rs) ----
+  async function removeCategory(c: string) {
+    const keep = Object.fromEntries(Object.entries(live.labels.categories).filter(([k]) => k !== c && !k.startsWith(`${c}/`)));
+    try {
+      await api.put('/torrents/categories', keep);
+      if (view.filter.category === c) view.filter.category = null;
+    } catch (e) {
+      toast(errorText(e), 'error');
+    }
+  }
+  async function removeTag(g: string) {
+    try {
+      await api.put('/torrents/tags', live.labels.tags.filter((x) => x !== g));
+      if (view.filter.tag === g) view.filter.tag = null;
+    } catch (e) {
+      toast(errorText(e), 'error');
+    }
+  }
+  const categoryMenu = (c: string) => () =>
+    canAll
+      ? [
+          { label: t('Edit…'), icon: 'pencil-simple' as const, onselect: () => (labels = { focus: c }) },
+          { label: t('Add subcategory…'), icon: 'folder-plus' as const, onselect: () => (labels = { start: `${c}/` }) },
+          { label: t('Remove category'), icon: 'trash' as const, onselect: () => void removeCategory(c) },
+        ]
+      : null;
+  const tagMenu = (g: string) => () => (canAll ? [{ label: t('Remove tag'), icon: 'trash' as const, onselect: () => void removeTag(g) }] : null);
 
   function sortBy(k: SortKey) {
     if (view.sort === k) view.desc = !view.desc;
@@ -374,7 +402,7 @@
       <button class="ritem" class:on={view.filter.category === null} onclick={() => (view.filter.category = null)}><Icon name="tag" size={17} /><span class="grow">{t('All')}</span></button>
       <button class="ritem" class:on={view.filter.category === ''} onclick={() => (view.filter.category = '')}><Icon name="minus" size={17} /><span class="grow">{t('Uncategorized')}</span><span class="cnt num">{catCounts[''] ?? 0}</span></button>
       {#each Object.keys(live.labels.categories) as c (c)}
-        <button class="ritem" class:on={view.filter.category === c} onclick={() => (view.filter.category = c)}><Icon name="folder" size={17} /><span class="grow ellipsis">{c}</span><span class="cnt num">{catCounts[c] ?? 0}</span></button>
+        <button class="ritem" class:on={view.filter.category === c} onclick={() => (view.filter.category = c)} use:contextMenu={{ items: categoryMenu(c), title: c }}><Icon name="folder" size={17} /><span class="grow ellipsis">{c}</span><span class="cnt num">{catCounts[c] ?? 0}</span></button>
       {/each}
     </div>
     {#if live.labels.tags.length}
@@ -382,12 +410,12 @@
       <div class="rail-group">
         <button class="ritem" class:on={view.filter.tag === null} onclick={() => (view.filter.tag = null)}><Icon name="tag" size={17} /><span class="grow">{t('All')}</span></button>
         {#each live.labels.tags as g (g)}
-          <button class="ritem" class:on={view.filter.tag === g} onclick={() => (view.filter.tag = g)}><Icon name="bookmark-simple" size={17} /><span class="grow ellipsis">{g}</span><span class="cnt num">{tagCounts[g] ?? 0}</span></button>
+          <button class="ritem" class:on={view.filter.tag === g} onclick={() => (view.filter.tag = g)} use:contextMenu={{ items: tagMenu(g), title: g }}><Icon name="bookmark-simple" size={17} /><span class="grow ellipsis">{g}</span><span class="cnt num">{tagCounts[g] ?? 0}</span></button>
         {/each}
       </div>
     {/if}
     {#if canAll}
-      <button class="btn ghost sm manage" onclick={() => (labels = true)}><Icon name="pencil-simple" size={14} />{t('Categories and tags')}</button>
+      <button class="btn ghost sm manage" onclick={() => (labels = {})}><Icon name="pencil-simple" size={14} />{t('Categories and tags')}</button>
     {/if}
   </aside>
 
@@ -434,7 +462,7 @@
             <button class="mi" role="menuitem" onclick={() => { close(); void act('resume_all', []); }}><Icon name="play" />{t('Resume all')}</button>
             <button class="mi" role="menuitem" onclick={() => { close(); void act('pause_all', []); }}><Icon name="pause" />{t('Pause all')}</button>
             <div class="sep"></div>
-            <button class="mi" role="menuitem" onclick={() => { close(); labels = true; }}><Icon name="tag" />{t('Categories and tags…')}</button>
+            <button class="mi" role="menuitem" onclick={() => { close(); labels = {}; }}><Icon name="tag" />{t('Categories and tags…')}</button>
           {/snippet}
         </Menu>
       {/if}
@@ -570,7 +598,7 @@
 
 {#if adding}<AddTorrent initialText={adding.text} initialFiles={adding.files} onclose={() => (adding = null)} />{/if}
 {#if editing}<EditTorrent torrent={editing.torrent} focus={editing.focus} onclose={() => (editing = null)} />{/if}
-{#if labels}<LabelsManager onclose={() => (labels = false)} />{/if}
+{#if labels}<LabelsManager focus={labels.focus} start={labels.start} onclose={() => (labels = false)} />{/if}
 {#if moving}
   <FolderPicker title={moving.length === 1 ? t('Move 1 torrent to…') : t('Move {n} torrents to…', { n: moving.length })} start={byHash.get(moving[0])?.save_path ?? ''} onpick={move} onclose={() => (moving = null)} />
 {/if}

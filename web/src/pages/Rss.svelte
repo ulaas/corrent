@@ -8,7 +8,8 @@
   import { toast } from '../lib/toast.svelte';
   import { can } from '../lib/session.svelte';
   import { t } from '../lib/i18n.svelte';
-  import { Perm, type Article, type RssView } from '../lib/types';
+  import { Perm, type Article, type RssSettings, type RssView } from '../lib/types';
+  import { contextMenu, type MenuItem } from '../lib/contextmenu.svelte';
 
   let view = $state<RssView | null>(null);
   let error = $state('');
@@ -72,6 +73,56 @@
     return out.sort((p, q) => (q.a.published ?? 0) - (p.a.published ?? 0));
   });
   const canAdd = $derived(can(Perm.TORRENTS_ADD));
+
+  // ---- menus (as on the desktop, src/app/feeds.rs) ----
+  async function changeFeeds(change: (c: RssSettings) => void) {
+    try {
+      const c = await api.get<RssSettings>('/rss/config');
+      change(c);
+      await api.put('/rss/config', c);
+      void load();
+    } catch (e) {
+      toast(errorText(e), 'error');
+    }
+  }
+  function feedMenu(url: string, enabled: boolean) {
+    return (): MenuItem[] => [
+      { label: t('Refresh'), icon: 'arrows-clockwise', onselect: () => void refresh(url) },
+      { label: t('Copy address'), icon: 'link', onselect: () => void navigator.clipboard?.writeText(url).then(() => toast(t('Copied'), 'success')) },
+      ...(can(Perm.SETTINGS_WRITE)
+        ? ([
+            {
+              label: enabled ? t('Pause updates') : t('Resume updates'),
+              icon: enabled ? 'pause' : 'play',
+              onselect: () =>
+                void changeFeeds((c) => {
+                  const f = c.feeds.find((x) => x.url === url);
+                  if (f) f.enabled = !f.enabled;
+                }),
+            },
+            { kind: 'sep' },
+            {
+              label: t('Remove feed'),
+              icon: 'trash',
+              danger: true,
+              onselect: () => {
+                if (feed === url) feed = '';
+                void changeFeeds((c) => (c.feeds = c.feeds.filter((x) => x.url !== url)));
+              },
+            },
+          ] satisfies MenuItem[])
+        : []),
+    ];
+  }
+  function articleMenu(x: { feed: string; a: Article; downloaded: boolean }) {
+    return (): MenuItem[] | null => {
+      const rows: MenuItem[] = [];
+      if (canAdd && x.a.torrent && !x.downloaded) rows.push({ label: t('Download'), icon: 'download-simple', onselect: () => void download(x.feed, x.a) });
+      const page = x.a.page;
+      if (page) rows.push({ label: t('Open web page'), icon: 'globe', onselect: () => void open(page, '_blank', 'noopener') });
+      return rows.length ? rows : null;
+    };
+  }
 </script>
 
 <div class="page">
@@ -102,7 +153,7 @@
           <span class="cnt num">{view.feeds.reduce((a, f) => a + f.articles.length, 0)}</span>
         </button>
         {#each view.feeds as f (f.url)}
-          <button class="fitem" class:on={feed === f.url} class:disabled={!f.enabled} onclick={() => (feed = f.url)} title={f.error ?? f.url}>
+          <button class="fitem" class:on={feed === f.url} class:disabled={!f.enabled} onclick={() => (feed = f.url)} title={f.error ?? f.url} use:contextMenu={{ items: feedMenu(f.url, f.enabled), title: f.title || f.url }}>
             {#if f.loading}<Spinner size={15} />{:else if f.error}<Icon name="warning-circle" size={17} class="err" />{:else}<Icon name="rss" size={17} />{/if}
             <span class="grow ellipsis">{f.title || f.url}</span>
             <span class="cnt num">{f.articles.length}</span>
@@ -125,7 +176,7 @@
         {:else}
           <ul class="alist">
             {#each articles as x (x.feed + x.a.guid)}
-              <li class:done={x.downloaded}>
+              <li class:done={x.downloaded} use:contextMenu={{ items: articleMenu(x), title: x.a.title }}>
                 <div class="grow main">
                   <span class="title">{x.a.title}</span>
                   <span class="caption muted meta">

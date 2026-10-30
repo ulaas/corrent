@@ -66,7 +66,7 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
   Ctrl+A, Ctrl+I details, Ctrl+F / "/", Ctrl+Shift+S alternative speeds, pasting a magnet or
   link adds it. Browser-owned shortcuts (Ctrl+N, Ctrl+O) stay the browser's. No Open/Open
   folder. A pure `menuFor(selection, perms)` builder with vitest coverage per state.
-- [ ] **S3 Other menus**: sidebar category/tag (PUT `/torrents/categories|tags`,
+- [x] **S3 Other menus** (done 2026-10-30; articles and results also offer Download / Add): sidebar category/tag (PUT `/torrents/categories|tags`,
   TORRENTS_MANAGE_ALL), RSS feed (refresh one feed: `POST /rss/refresh {url}`; pause/remove go
   through `PUT /rss/config`, SETTINGS_WRITE) and article, search result, file priority
   (`Details.svelte`, inside a modal).
