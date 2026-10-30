@@ -10,6 +10,7 @@ pub mod downloads;
 mod grid;
 mod identify;
 pub mod images;
+mod item_menu;
 pub mod libraries;
 pub mod lists;
 pub mod offline;
@@ -99,6 +100,8 @@ pub struct MediaState {
     pub library_form: Option<libraries::LibraryForm>,
     sub_finder: Option<subtitles::SubFinder>,
     identify: Option<identify::Identify>,
+    /// The item a card's menu asked for (its IMDb/TMDB ids).
+    menu_detail: Option<(i64, Slot<ItemDetail>)>,
     /// Metadata refreshes (an item's, libraries').
     refresh: refresh::RefreshUi,
     /// Settings → Metadata.
@@ -988,6 +991,9 @@ impl CorrentApp {
             line(subtitle_of(item), 12.0, p.text_dim, false),
             p.text_dim,
         );
+        if !self.tv.on {
+            self.item_menu(&resp, client, item, &[], None);
+        }
         if self.tv.on { resp } else { resp.on_hover_text(&item.title) }
     }
 
@@ -1642,7 +1648,7 @@ impl CorrentApp {
             }
             ItemKind::Album => {
                 let tracks = self.children(client, it.id).unwrap_or_default();
-                self.track_list(ui, p, &tracks);
+                self.track_list(ui, p, client, &tracks);
             }
             ItemKind::Artist => {
                 let albums = self.children(client, it.id).unwrap_or_default();
@@ -1754,7 +1760,7 @@ impl CorrentApp {
         }
     }
 
-    fn track_list(&mut self, ui: &mut Ui, p: &Palette, tracks: &[Item]) {
+    fn track_list(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, tracks: &[Item]) {
         let mut play: Option<Item> = None;
         for t in tracks {
             ui.horizontal(|ui| {
@@ -1769,6 +1775,7 @@ impl CorrentApp {
                 if resp.clicked() {
                     play = Some(t.clone());
                 }
+                self.item_menu(&resp, client, t, tracks, None);
                 if let Some(r) = t.runtime_ms {
                     ui.label(RichText::new(player::fmt_time(r as f64 / 1000.0)).color(p.text_dim));
                 }

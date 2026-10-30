@@ -126,9 +126,14 @@ impl CorrentApp {
             ui.horizontal(|ui| {
                 ui.add_space(24.0);
                 ui.label(RichText::new(format!("{:>3}", i + 1)).monospace().color(p.text_mute));
-                if ui.add(egui::Button::new(RichText::new(&it.title).color(p.text)).frame(false)).clicked() {
+                let resp = ui.add(egui::Button::new(RichText::new(&it.title).color(p.text)).frame(false));
+                if resp.clicked() {
                     play = Some((i, false));
                 }
+                // Playlists (not collections) can be reordered and trimmed from the menu.
+                let row =
+                    (!collection).then_some(super::item_menu::PlaylistRow { list: id, index: i, len: items.len() });
+                self.item_menu(&resp, client, it, &items, row);
                 if !it.context.is_empty() {
                     ui.label(RichText::new(it.context.join(" · ")).small().color(p.text_dim));
                 }

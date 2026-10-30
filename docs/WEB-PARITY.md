@@ -22,7 +22,8 @@ player tracks/settings/cast/room/lyrics). The right-click menus are in the **tor
 - File tree: Priority ▸ (`src/ui/file_tree.rs`).
 
 The web gets faithful ports of these, plus a context menu on media cards and rows that mirrors
-the desktop item page's buttons (a superset: the web has no other place for them on grids).
+the desktop item page's buttons; the desktop got the same card menu afterwards
+(`src/app/media/item_menu.rs`), so both work alike.
 
 ## Steps (each a commit after `cd web && npm run check`; `npm run build` and commit `web/dist`
 ## once per group of steps — it is 1.3 MB of hashed files, replaced whole every build)

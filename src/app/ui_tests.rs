@@ -675,6 +675,64 @@ fn perf_50k_grid() {
 }
 
 #[test]
+fn right_clicking_a_card_shows_the_item_menu() {
+    use corrent_proto::library::{Item, ItemKind};
+    let (_f, mut app) = app("card-menu", vec![]);
+    app.main_view = super::feeds::MainView::Media;
+    // A client to nowhere: the menu's lookups (playlists, provider ids) fail quietly.
+    app.media.client = Some(super::media::client::MediaClient::new("http://127.0.0.1:9", "t", None).unwrap());
+    let movie = |i: i64| Item {
+        id: i,
+        library_id: 1,
+        kind: ItemKind::Movie,
+        parent_id: None,
+        title: format!("Movie number {i}"),
+        year: Some(2000),
+        index: None,
+        runtime_ms: Some(5_400_000),
+        context: Vec::new(),
+        images: Vec::new(),
+        state: Default::default(),
+        added_at: i,
+        child_count: None,
+        partial: false,
+        grandparent_id: None,
+        parent_index: None,
+        work: None,
+    };
+    app.media.fill_grid(1, (0..3).map(movie).collect());
+    app.media.page = Some(super::media::Page::Library(1));
+    let mut h = harness(app);
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Identify").is_none(), "no menu yet");
+    let at = h.get_by_label("Movie number 1").rect().center();
+    h.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    for entry in [
+        "Play",
+        "Add to playlist",
+        "Mark as played",
+        "Add to favorites",
+        "Find subtitles",
+        "Identify",
+        "Refresh metadata",
+        "IMDb / TMDB",
+        "Copy link",
+    ] {
+        assert!(h.query_by_label_contains(entry).is_some(), "{entry} in the menu");
+    }
+}
+
+#[test]
 fn saving_settings_never_waits_on_the_disk() {
     let (f, mut app) = app("slow-save", vec![]);
     // Every write under this test's folder takes 3 s.
