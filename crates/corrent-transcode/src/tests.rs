@@ -117,12 +117,13 @@ async fn hls_encoder_pauses_ahead_of_the_player() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
     assert!((40..75).contains(&paused_at), "paused about three minutes ahead, not at the end: {paused_at}");
-    // The player moves on: the encoder starts again before it gets there.
-    m.segment(&id, 30).await.unwrap();
+    // The player moves on to near the end of what is ready (a fast encoder overshoots the pause
+    // point by a pacing tick): the encoder starts again before it gets there.
+    m.segment(&id, paused_at as u64 - 5).await.unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
         let (_, n) = m.encoding(&id).await;
-        if n > paused_at + 5 {
+        if n > paused_at || n == 75 {
             break;
         }
         assert!(std::time::Instant::now() < deadline, "resumed: {n} segments");

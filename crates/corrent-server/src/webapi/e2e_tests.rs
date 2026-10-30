@@ -94,7 +94,11 @@ async fn webapi_behaves_like_qbittorrent_for_sonarr() {
         .await
         .unwrap();
     assert_eq!(r.text().await.unwrap(), "Ok.");
-    wait_for(&l, "added via API", 20, |sn| find(sn, s.hash).is_some()).await;
+    // Listed before the add finishes: wait for the category too.
+    wait_for(&l, "added via API", 20, |sn| {
+        find(sn, s.hash).is_some_and(|t| t.category.as_deref() == Some("tv-sonarr"))
+    })
+    .await;
 
     let list: Vec<serde_json::Value> = get("torrents/info?category=tv-sonarr").await.unwrap().json().await.unwrap();
     assert_eq!(list.len(), 1);
