@@ -3,6 +3,51 @@
 All notable changes to Corrent. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may break things).
 
+## [0.3.6] — 2026-10-31
+
+### Added
+
+- Metadata: **Refresh metadata** for an item (its page, its right-click menu) or a whole library
+  (Settings → Libraries), either filling in what is missing — including titles no provider
+  matched before — or replacing everything the providers gave (fields you locked and matches
+  you chose with Identify… stay). A library shows how its refresh goes: how many titles were
+  identified, how many had no clear match, and each provider's own error ("TMDB refused the API
+  key").
+- Metadata: a **Test** button for each provider looks up a well-known title with the saved key
+  and shows what came back or why it failed. Settings → Metadata says which providers can
+  identify titles, and that OMDb and fanart.tv only add ratings and artwork to what TMDB or
+  TVDB found.
+- Right-click menus on media cards, episodes, album tracks and playlist rows (app and web):
+  play, add to a playlist, played and favorite, find subtitles, Identify…, refresh metadata,
+  IMDb/TMDB pages, copy link; playlist rows can be moved and removed.
+- Web interface, to work like the app:
+  - right-click (or long-press, or Shift+F10) menus for torrents — the app's full menu with
+    Play ▸, Category ▸, Tags ▸, Queue ▸, Copy ▸, Choose another folder… and more — and for
+    categories, tags, feeds, articles, search results and files (priority);
+  - the app's keyboard shortcuts on the torrent list (Space, F2, Shift+Del, Esc, Ctrl+I,
+    Ctrl+F, Ctrl+Shift+S);
+  - all of the app's torrent columns, chosen and ordered by right-clicking the header;
+  - Add to library… for a torrent; dragging torrents to a new queue place; a Speed tab in the
+    details;
+  - Identify…, IMDb/TMDB links and IMDb, Rotten Tomatoes and Metacritic scores on item pages;
+    person pages; "See all" for every home row;
+  - Switch profile ("Who's watching?") with a PIN pad;
+  - player: subtitle delay and size, picture shape, stats, and "Use this frame as the
+    thumbnail" (T);
+  - the AI agent page: approve or reject what agents propose, and connect one to the server.
+- Torrents that are still being added (waiting for metadata) can be cancelled from the web
+  interface and the API.
+
+### Changed
+
+- Failed metadata lookups are logged as warnings (once per provider and run) instead of being
+  hidden.
+
+### Security
+
+- Errors from plugins' web requests no longer include the request address, which can carry an
+  API key (OMDb puts it there), in logs and in what clients see.
+
 ## [0.3.5] — 2026-10-28
 
 ### Fixed

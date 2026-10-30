@@ -1,6 +1,6 @@
 [package]
 name = "corrent-mpv"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 rust-version = "1.96"
 description = "Runtime-loaded libmpv bindings for Corrent (playback, probing, encoding)"
