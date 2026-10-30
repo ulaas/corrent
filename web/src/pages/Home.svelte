@@ -77,7 +77,7 @@
 
   function rowHref(id: string): string | undefined {
     if (id.startsWith('recent:')) return `/library/${id.slice(7)}?sort=added&desc=1`;
-    return undefined;
+    return `/row/${encodeURIComponent(id)}`;
   }
 </script>
 

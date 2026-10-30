@@ -35,6 +35,8 @@
   define('playlists', '/playlists');
   define('playlist', '/playlist/:id');
   define('collection', '/collection/:id');
+  define('person', '/person/:id');
+  define('row', '/row/:id');
   define('settings', '/settings');
   define('settings', '/settings/:section');
 
@@ -51,6 +53,8 @@
     playlists: () => import('./pages/Playlists.svelte'),
     playlist: () => import('./pages/PlaylistPage.svelte'),
     collection: () => import('./pages/CollectionPage.svelte'),
+    person: () => import('./pages/Person.svelte'),
+    row: () => import('./pages/Row.svelte'),
     settings: () => import('./pages/Settings.svelte'),
     notfound: () => import('./pages/NotFound.svelte'),
   };

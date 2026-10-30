@@ -341,7 +341,7 @@
           {/if}
           {#if crew.length}
             <dl class="crew">
-              {#each crew as c (c.person_id + c.role)}<div><dt>{c.role}</dt><dd>{c.name}</dd></div>{/each}
+              {#each crew as c (c.person_id + c.role)}<div><dt>{c.role}</dt><dd><a class="plink" href="/person/{c.person_id}?name={encodeURIComponent(c.name)}" use:link>{c.name}</a></dd></div>{/each}
             </dl>
           {/if}
         </div>
@@ -421,11 +421,11 @@
         <h2 class="section-title">{t('Cast')}</h2>
         <div class="cast">
           {#each cast as c (c.person_id)}
-            <div class="person">
+            <a class="person" href="/person/{c.person_id}?name={encodeURIComponent(c.name)}" use:link>
               <span class="pavatar">{c.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2)}</span>
               <span class="pname ellipsis">{c.name}</span>
               {#if c.character}<span class="caption muted ellipsis">{c.character}</span>{/if}
-            </div>
+            </a>
           {/each}
         </div>
       {/if}
@@ -851,7 +851,14 @@
     overflow-x: auto;
     padding-bottom: 8px;
   }
+  .plink {
+    color: inherit;
+  }
+  .plink:hover {
+    text-decoration: underline;
+  }
   .person {
+    color: inherit;
     flex: none;
     width: 110px;
     display: flex;
