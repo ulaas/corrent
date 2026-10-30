@@ -3,6 +3,20 @@
 All notable changes to Corrent. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may break things).
 
+## [0.3.8] — 2026-10-31
+
+The 0.3.6 and 0.3.7 tags never got release builds (CI failed); this release carries their
+changes, listed below.
+
+### Security
+
+- Plugins: wasmtime 49.0.5, for RUSTSEC-2026-0420, -0422, -0423 and -0424 (type-check and
+  resource-handling flaws in the WASM runtime that runs metadata providers).
+
+### Fixed
+
+- Two tests that failed on slow or fast CI runners (HLS pacing, the qBittorrent API add).
+
 ## [0.3.7] — 2026-10-31
 
 ### Added

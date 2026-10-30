@@ -1,6 +1,6 @@
 [package]
 name = "corrent-library"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2024"
 rust-version = "1.96"
 description = "Corrent's media library: scanning, parsing, probing, tags, artwork, search, watch state"

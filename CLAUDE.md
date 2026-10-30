@@ -157,7 +157,7 @@ Fable reviews of every milestone range and a final roadmap audit were addressed.
 
 Next steps: the feature roadmap is implemented; hardening follows `docs/STABILITY.md` (S1–S10 done 2026-10-21, S11 next). Also real Linux/macOS runs (docs/PLATFORM-TESTING.md),
 upstreaming the librqbit patches (docs/upstream/). v0.3.0 (the first public release) tagged locally 2026-10-22, v0.3.1 (library metadata fix, mpv download
-on Windows) 2026-10-23, v0.3.2 (tokio security update) 2026-10-23, v0.3.3 (media player remembers audio/subtitle tracks) 2026-10-28, v0.3.4 (start-phase fix, CI flake fixes) 2026-10-28, v0.3.5 (Linux CI test fixes, remux lock-map leak) 2026-10-28, v0.3.6 (metadata refresh and provider tests, web/desktop parity) 2026-10-31, v0.3.7 (web Metadata settings, transcodes stop soon after viewing) 2026-10-31 (release notes: CHANGELOG.md;
+on Windows) 2026-10-23, v0.3.2 (tokio security update) 2026-10-23, v0.3.3 (media player remembers audio/subtitle tracks) 2026-10-28, v0.3.4 (start-phase fix, CI flake fixes) 2026-10-28, v0.3.5 (Linux CI test fixes, remux lock-map leak) 2026-10-28, v0.3.6 (metadata refresh and provider tests, web/desktop parity) 2026-10-31, v0.3.7 (web Metadata settings, transcodes stop soon after viewing; no binaries, CI failed) 2026-10-31, v0.3.8 (wasmtime security update, CI fixes; first build of 0.3.6/0.3.7 changes) 2026-10-31 (release notes: CHANGELOG.md;
 the owner pushes the tag, release.yml drafts the release).
 
 Known gaps: engine lacks protocol encryption (librqbit doesn't implement it); macOS/Linux builds are type-checked/cross-built only, never run; CI only runs once pushed.
