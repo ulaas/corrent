@@ -70,7 +70,8 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
   TORRENTS_MANAGE_ALL), RSS feed (refresh one feed: `POST /rss/refresh {url}`; pause/remove go
   through `PUT /rss/config`, SETTINGS_WRITE) and article, search result, file priority
   (`Details.svelte`, inside a modal).
-- [ ] **S3b Columns**: the desktop's extra columns (queue, category, tags, save path, tracker,
+- [x] **S3b Columns** (done 2026-10-30; columns that don't fit are left out from the end
+  instead of the desktop's horizontal scrolling): the desktop's extra columns (queue, category, tags, save path, tracker,
   added, completed), a dynamic grid template instead of the fixed nine columns, and the chooser
   (header right-click: show/hide, reorder, reset; saved in prefs; not on phones).
 - [ ] **S4 Add to library…** dialog: dry-run `POST /torrents/{hash}/import`, show the plan,

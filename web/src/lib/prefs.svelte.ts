@@ -22,6 +22,8 @@ export interface Prefs {
   /** Home row ids in the order shown ("continue", "next_up", "recent:<id>", "favorites"). */
   homeOrder: string[];
   homeHidden: string[];
+  /** Torrent list columns after the name, in order (see lib/torrentcols.ts). */
+  torrentColumns: string[];
   sidebarCollapsed: boolean;
   volume: number;
 }
@@ -38,6 +40,7 @@ const DEFAULTS: Prefs = {
   cardSize: 'medium',
   homeOrder: [],
   homeHidden: [],
+  torrentColumns: ['size', 'state', 'down', 'up', 'eta', 'ratio', 'peers'],
   sidebarCollapsed: false,
   volume: 1,
 };

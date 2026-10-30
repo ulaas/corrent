@@ -19,17 +19,19 @@
   import LabelsManager from '../components/torrents/LabelsManager.svelte';
   import Details from '../components/torrents/Details.svelte';
   import FolderPicker from '../components/FolderPicker.svelte';
+  import ColumnChooser from '../components/torrents/ColumnChooser.svelte';
+  import { cell, col, fit, known, template } from '../lib/torrentcols';
   import { api, errorText } from '../lib/api';
   import { live, useTorrents } from '../lib/torrents.svelte';
   import { filterTorrents, sortTorrents, statusCounts, STATUS_FILTERS, STATE_LABEL, stateColor } from '../lib/torrentlist';
-  import { bytes, duration, num, percent, rate } from '../lib/format';
+  import { bytes, duration, percent, rate } from '../lib/format';
   import { confirm } from '../lib/confirm.svelte';
   import { toast } from '../lib/toast.svelte';
   import { can, session } from '../lib/session.svelte';
   import { closeMenuFor, contextMenu, ctxmenu } from '../lib/contextmenu.svelte';
   import { isMedia, menuFor, type TorrentMenuActions } from '../lib/torrentmenu';
-  import { ms } from '../lib/prefs.svelte';
-  import { t, tk } from '../lib/i18n.svelte';
+  import { ms, prefs } from '../lib/prefs.svelte';
+  import { t } from '../lib/i18n.svelte';
   import { Perm, type FileEntry, type Torrent, type TorrentDetail } from '../lib/types';
   import type { IconName } from '../lib/icons';
 
@@ -46,6 +48,7 @@
   let moving = $state<string[] | null>(null);
   let dropping = $state(false);
   let railOpen = $state(false);
+  let choosing = $state(false);
 
   const rows = $derived(sortTorrents(filterTorrents(live.list, view.filter), view.sort, view.desc));
   const counts = $derived(statusCounts(live.list));
@@ -83,16 +86,21 @@
   let scroller: HTMLDivElement | undefined = $state();
   let scrollTop = $state(0);
   let viewH = $state(600);
+  let listW = $state(1200);
   let phone = $state(false);
   const ROW = $derived(phone ? 78 : 56);
   const first = $derived(Math.max(0, Math.floor(scrollTop / ROW) - 6));
   const last = $derived(Math.min(rows.length, Math.ceil((scrollTop + viewH) / ROW) + 6));
   const visible = $derived(rows.slice(first, last));
+  // The chosen columns that fit (phones show a summary line under the name instead).
+  const cols = $derived(phone ? [] : fit(known(prefs.torrentColumns), listW));
+  const grid = $derived(phone ? '36px 1fr' : template(cols));
 
   $effect(() => {
     if (!scroller) return;
     const ro = new ResizeObserver(() => {
       viewH = scroller!.clientHeight;
+      listW = scroller!.clientWidth;
       phone = innerWidth < 760;
     });
     ro.observe(scroller);
@@ -337,19 +345,9 @@
     if (view.sort === k) view.desc = !view.desc;
     else {
       view.sort = k;
-      view.desc = k !== 'name' && k !== 'queue' && k !== 'eta';
+      view.desc = !['name', 'queue', 'eta', 'category', 'tags', 'save_path', 'tracker'].includes(k);
     }
   }
-
-  const COLS: { k: SortKey; label: string; cls: string }[] = [
-    { k: 'size', label: tk('Size'), cls: 'c-size' },
-    { k: 'state', label: tk('Status'), cls: 'c-state' },
-    { k: 'down', label: tk('Down'), cls: 'c-rate' },
-    { k: 'up', label: tk('Up'), cls: 'c-rate' },
-    { k: 'eta', label: tk('ETA'), cls: 'c-eta' },
-    { k: 'ratio', label: tk('Ratio'), cls: 'c-ratio' },
-    { k: 'peers', label: tk('Peers'), cls: 'c-peers' },
-  ];
 
   function ondrop(e: DragEvent) {
     e.preventDefault();
@@ -468,15 +466,16 @@
       {/if}
     </div>
 
-    <div class="list-head" role="row">
+    <!-- svelte-ignore a11y_interactive_supports_focus (right-click opens the column chooser, as on the desktop) -->
+    <div class="list-head" role="row" style:grid-template-columns={grid} oncontextmenu={(e) => { e.preventDefault(); choosing = true; }}>
       <span class="c-check"><input type="checkbox" class="check" checked={allSel} indeterminate={sel.length > 0 && !allSel} onchange={toggleAll} aria-label={t('Select all')} /></span>
       <button class="c-name sortable" class:on={view.sort === 'name' || view.sort === 'queue'} onclick={() => sortBy(view.sort === 'name' ? 'name' : view.sort === 'queue' ? 'name' : 'queue')}>
         {view.sort === 'queue' ? t('Queue') : t('Name')}
         {#if view.sort === 'name' || view.sort === 'queue'}<Icon name={view.desc ? 'caret-down' : 'caret-up'} size={12} />{/if}
       </button>
-      {#each COLS as c (c.k + c.label)}
-        <button class="{c.cls} sortable" class:on={view.sort === c.k} onclick={() => sortBy(c.k)}>
-          {t(c.label)}{#if view.sort === c.k}<Icon name={view.desc ? 'caret-down' : 'caret-up'} size={12} />{/if}
+      {#each cols as id (id)}
+        <button class="cell sortable" class:right={col(id).right} class:on={view.sort === id} onclick={() => sortBy(id)}>
+          {t(col(id).label)}{#if view.sort === id}<Icon name={view.desc ? 'caret-down' : 'caret-up'} size={12} />{/if}
         </button>
       {/each}
     </div>
@@ -519,6 +518,7 @@
               class:detail={detailHash === x.hash}
               style:transform="translateY({idx * ROW}px)"
               style:height="{ROW}px"
+              style:grid-template-columns={grid}
               role="row"
               aria-rowindex={idx + 1}
               aria-selected={selected.has(x.hash)}
@@ -547,13 +547,16 @@
                   {#if x.eta_secs != null && x.state === 'downloading'}· {duration(x.eta_secs)}{/if}
                 </span>
               </span>
-              <span class="c-size num" role="gridcell">{bytes(x.size)}</span>
-              <span class="c-state" role="gridcell" style:color={stateColor(x.state)}>{x.error ? t('Error') : t(STATE_LABEL[x.state])}</span>
-              <span class="c-rate num" role="gridcell" class:live={x.down_bps > 0}>{rate(x.down_bps)}</span>
-              <span class="c-rate num" role="gridcell" class:live-up={x.up_bps > 0}>{rate(x.up_bps)}</span>
-              <span class="c-eta num" role="gridcell">{x.eta_secs != null && x.progress < 1 ? duration(x.eta_secs) : '–'}</span>
-              <span class="c-ratio num" role="gridcell">{num(x.ratio, 2)}</span>
-              <span class="c-peers num" role="gridcell">{x.peers_live}<span class="faint">/{x.peers_seen}</span></span>
+              {#each cols as id (id)}
+                {#if id === 'state'}
+                  <span class="cell state" role="gridcell" style:color={stateColor(x.state)}>{x.error ? t('Error') : t(STATE_LABEL[x.state])}</span>
+                {:else if id === 'peers'}
+                  <span class="cell right num" role="gridcell">{x.peers_live}<span class="faint">/{x.peers_seen}</span></span>
+                {:else}
+                  {@const text = cell(x, id)}
+                  <span class="cell num" class:right={col(id).right} class:live={id === 'down' && x.down_bps > 0} class:live-up={id === 'up' && x.up_bps > 0} role="gridcell" title={id === 'save_path' || id === 'tags' || id === 'tracker' ? text : undefined}>{text}</span>
+                {/if}
+              {/each}
             </div>
           {/each}
         </div>
@@ -598,6 +601,7 @@
 
 {#if adding}<AddTorrent initialText={adding.text} initialFiles={adding.files} onclose={() => (adding = null)} />{/if}
 {#if editing}<EditTorrent torrent={editing.torrent} focus={editing.focus} onclose={() => (editing = null)} />{/if}
+{#if choosing}<ColumnChooser onclose={() => (choosing = false)} />{/if}
 {#if labels}<LabelsManager focus={labels.focus} start={labels.start} onclose={() => (labels = false)} />{/if}
 {#if moving}
   <FolderPicker title={moving.length === 1 ? t('Move 1 torrent to…') : t('Move {n} torrents to…', { n: moving.length })} start={byHash.get(moving[0])?.save_path ?? ''} onpick={move} onclose={() => (moving = null)} />
@@ -709,7 +713,6 @@
   .list-head,
   .trow {
     display: grid;
-    grid-template-columns: 40px minmax(220px, 1fr) 84px 110px 88px 88px 76px 56px 70px;
     align-items: center;
     gap: 0 8px;
     padding: 0 16px 0 8px;
@@ -751,21 +754,19 @@
     max-width: 40%;
     overflow: hidden;
   }
-  .c-size,
-  .c-rate,
-  .c-eta,
-  .c-ratio,
-  .c-peers {
-    text-align: right;
-    justify-content: flex-end;
+  .cell {
+    min-width: 0;
     font-size: var(--fs-small);
-  }
-  .c-state {
-    font-size: var(--fs-small);
-    font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .cell.right {
+    text-align: right;
+    justify-content: flex-end;
+  }
+  .cell.state {
+    font-weight: 600;
   }
   .list {
     flex: 1;
@@ -907,16 +908,6 @@
     pointer-events: none;
   }
 
-  @media (max-width: 1300px) {
-    .list-head,
-    .trow {
-      grid-template-columns: 40px minmax(200px, 1fr) 84px 110px 90px 90px 80px;
-    }
-    .c-ratio,
-    .c-peers {
-      display: none;
-    }
-  }
   @media (max-width: 1000px) {
     .tpage {
       grid-template-columns: 1fr;
@@ -936,14 +927,6 @@
     .rail-btn {
       display: inline-flex;
     }
-    .list-head,
-    .trow {
-      grid-template-columns: 40px minmax(160px, 1fr) 80px 90px 90px;
-    }
-    .c-eta,
-    .c-state {
-      display: none;
-    }
   }
   @media (max-width: 760px) {
     .tpage {
@@ -955,12 +938,7 @@
     }
     .list-head,
     .trow {
-      grid-template-columns: 36px 1fr;
       padding: 0 12px 0 4px;
-    }
-    .c-size,
-    .c-rate {
-      display: none;
     }
     .pb {
       padding-left: 0;

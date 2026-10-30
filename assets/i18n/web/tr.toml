@@ -613,3 +613,4 @@
 "Direct stream" = "Doğrudan akış"
 "Nothing here" = "Burada bir şey yok"
 "Rename…" = "Yeniden adlandır…"
+"Columns that don’t fit the window are left out from the end." = "Pencereye sığmayan sütunlar sondan başlayarak gösterilmez."

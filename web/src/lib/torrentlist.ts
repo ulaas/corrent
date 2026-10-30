@@ -1,6 +1,7 @@
 // Filtering, sorting and counting the torrent list (pure functions; unit-tested).
 import { tk } from './i18n.svelte';
 import type { Torrent, TorrentState } from './types';
+import { trackerHost, type ColId } from './torrentcols';
 
 export type StatusFilter = 'all' | 'downloading' | 'seeding' | 'completed' | 'paused' | 'active' | 'inactive' | 'errored';
 
@@ -94,18 +95,7 @@ export function filterTorrents(list: Torrent[], f: ListFilter): Torrent[] {
   });
 }
 
-export type SortKey =
-  | 'queue'
-  | 'name'
-  | 'size'
-  | 'progress'
-  | 'state'
-  | 'down'
-  | 'up'
-  | 'eta'
-  | 'ratio'
-  | 'peers'
-  | 'added';
+export type SortKey = 'name' | ColId;
 
 const STATE_ORDER: TorrentState[] = ['downloading', 'metadata', 'checking', 'stalled', 'queued', 'seeding', 'completed', 'paused', 'error'];
 
@@ -133,6 +123,26 @@ function key(t: Torrent, k: SortKey): number | string {
       return t.peers_live;
     case 'added':
       return t.added_at;
+    case 'completed':
+      return t.completed_at ?? 0;
+    case 'category':
+      return (t.category ?? '').toLowerCase();
+    case 'tags':
+      return t.tags.join(' ').toLowerCase();
+    case 'downloaded':
+      return t.downloaded;
+    case 'uploaded':
+      return t.uploaded;
+    case 'save_path':
+      return t.save_path.toLowerCase();
+    case 'tracker':
+      return t.trackers[0] ? trackerHost(t.trackers[0]) : '';
+    case 'seed_time':
+      return t.seeding_secs;
+    case 'last_activity':
+      return t.last_activity;
+    case 'activity':
+      return t.down_bps + t.up_bps;
   }
 }
 

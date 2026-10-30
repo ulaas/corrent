@@ -1,1 +1,0 @@
-import{ct as e}from"./i18n.svelte-Bd_nZU9D.js";var t=e([]);function n(e){return new Promise(n=>t.push({...e,resolve:n}))}export{t as n,n as t};
