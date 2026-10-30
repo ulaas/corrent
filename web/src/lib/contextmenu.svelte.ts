@@ -116,7 +116,8 @@ export interface ContextMenuParams {
   items: (e: Event) => MenuItem[] | null;
   /** Runs before the menu opens (select the row that was right-clicked). */
   before?: (e: Event) => void;
-  key?: string;
+  /** What the menu is about, asked after `before` (it may change the selection). */
+  key?: () => string | undefined;
   title?: string;
   /** What gets the focus back (default: the element itself, when it can take it). */
   returnFocus?: () => HTMLElement | undefined;
@@ -140,7 +141,7 @@ export function contextMenu(node: HTMLElement, params: ContextMenuParams) {
     e.preventDefault();
     p.before?.(e);
     const focus = p.returnFocus?.() ?? (node.tabIndex >= 0 ? node : undefined);
-    openMenu(items, { x, y }, { key: p.key, returnFocus: focus, touch: byTouch, title: p.title });
+    openMenu(items, { x, y }, { key: p.key?.(), returnFocus: focus, touch: byTouch, title: p.title });
     opened = Date.now();
     return true;
   }
@@ -169,6 +170,7 @@ export function contextMenu(node: HTMLElement, params: ContextMenuParams) {
       timer = null;
       if (start && show(ev, start.x, start.y, true)) {
         swallowClick = true;
+        setTimeout(() => (swallowClick = false), 600);
         navigator.vibrate?.(10);
       }
     }, LONG_PRESS_MS);

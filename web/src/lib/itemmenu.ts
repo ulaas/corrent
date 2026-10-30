@@ -44,8 +44,8 @@ async function links(item: Item): Promise<MenuItem[]> {
   const ids = d.provider_ids ?? {};
   const out: MenuItem[] = [];
   const page = (url: string) => () => void open(url, '_blank', 'noopener');
-  if (ids.imdb) out.push({ label: 'IMDb', icon: 'arrow-square-out', onselect: page(`https://www.imdb.com/title/${ids.imdb}/`) });
-  if (ids.tmdb) out.push({ label: 'TMDB', icon: 'arrow-square-out', onselect: page(`https://www.themoviedb.org/${item.kind === 'show' ? 'tv' : 'movie'}/${ids.tmdb}`) });
+  if (ids.imdb) out.push({ label: 'IMDb', icon: 'arrow-square-out', onselect: page(`https://www.imdb.com/title/${encodeURIComponent(ids.imdb)}/`) });
+  if (ids.tmdb) out.push({ label: 'TMDB', icon: 'arrow-square-out', onselect: page(`https://www.themoviedb.org/${item.kind === 'show' ? 'tv' : 'movie'}/${encodeURIComponent(ids.tmdb)}`) });
   return out;
 }
 

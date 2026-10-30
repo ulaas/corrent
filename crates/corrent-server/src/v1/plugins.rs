@@ -283,7 +283,8 @@ async fn refresh_item(
 }
 
 /// Starts a library's metadata refresh in the background (`GET` and `metadata_status` events
-/// follow it). One already running is returned as it is.
+/// follow it), after an automatic one that may be running. One asked for by hand that is
+/// waiting or running already is returned as it is.
 async fn refresh_library(
     State(st): State<Arc<AppState>>,
     auth: Auth,
@@ -293,11 +294,11 @@ async fn refresh_library(
     auth.require(Perms::LIBRARY_MANAGE)?;
     let mode = body.map(|b| b.0.mode).unwrap_or_default();
     st.library.get(id).await.map_err(lib_err)?;
-    if let Some(run) = crate::metadata::run_of(&st, id).filter(|r| r.running) {
+    if let Some(run) = crate::metadata::by_hand_running(&st, id) {
         return Ok(Json(run));
     }
-    let run = crate::metadata::queue(&st, id, mode);
-    tokio::spawn(crate::metadata::refresh_library(st.clone(), id, mode, true));
+    let (run, owner) = crate::metadata::queue(&st, id, mode);
+    tokio::spawn(crate::metadata::refresh_library(st.clone(), id, mode, Some(owner)));
     Ok(Json(run))
 }
 

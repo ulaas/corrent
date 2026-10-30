@@ -1,5 +1,6 @@
 <script lang="ts">
   // Categories (with folder and speed limits) and the tag list.
+  import { untrack } from 'svelte';
   import Modal from '../Modal.svelte';
   import Icon from '../Icon.svelte';
   import PathField from '../PathField.svelte';
@@ -27,9 +28,11 @@
   if (start != null) cats.push({ name: start, save_path: '', down: 0, up: 0 });
   let tags = $state([...live.labels.tags]);
   let catList: HTMLDivElement | undefined = $state();
+  let focused = false;
   $effect(() => {
-    if (!catList || (focus == null && start == null)) return;
-    const i = start != null ? cats.length - 1 : cats.findIndex((c) => c.name === focus);
+    if (!catList || focused || (focus == null && start == null)) return;
+    focused = true;
+    const i = untrack(() => (start != null ? cats.length - 1 : cats.findIndex((c) => c.name === focus)));
     const input = catList.querySelectorAll<HTMLElement>('.cat')[i]?.querySelector<HTMLInputElement>('input.input');
     if (!input) return;
     setTimeout(() => {

@@ -60,7 +60,7 @@ pub struct AppState {
     /// One metadata refresh at a time.
     pub metadata_slot: tokio::sync::Mutex<()>,
     /// Each library's running or last metadata refresh.
-    pub metadata_runs: Mutex<HashMap<i64, corrent_proto::library::MetadataRun>>,
+    pub metadata_runs: Mutex<HashMap<i64, crate::metadata::RunEntry>>,
     /// LAN discovery, Corrent Connect and port mapping (see `remote.rs`).
     pub remote: tokio::sync::Mutex<crate::remote::Running>,
     /// Scheduled tasks running right now.

@@ -70,7 +70,10 @@ async fn switch_profile(
     }
     if auth.0.kind == crate::identity::SessionKind::Web {
         let issued = st.identity.issue(target.id, None, ip.0.to_string(), user_agent(&headers)).await?;
-        st.identity.revoke_session(auth.0.session_id).await?;
+        // The new session stands either way; the old one ends at its expiry if this fails.
+        if let Err(e) = st.identity.revoke_session(auth.0.session_id).await {
+            tracing::warn!("ending the previous session after a profile switch: {e:?}");
+        }
         st.identity.audit(Some(auth.name()), &ip.0.to_string(), "profile_switch", &target.name, true, "web").await;
         return Ok(session_response(&st, target, issued, false));
     }

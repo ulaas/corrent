@@ -94,7 +94,17 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
-    if (sub) return; // the submenu has the keys
+    if (sub) {
+      // A submenu opened by the keyboard has the keys; one opened by hovering doesn't.
+      if (sub.byKey) return;
+      if (e.key === 'Escape' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        e.stopPropagation();
+        void closeSub(true);
+        return;
+      }
+      sub = null;
+    }
     const k = e.key;
     if (k === 'ArrowDown') focusRow(step(enabled, active, 1));
     else if (k === 'ArrowUp') focusRow(step(enabled, active < 0 ? 0 : active, -1));

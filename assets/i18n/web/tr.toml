@@ -617,3 +617,5 @@
 "The agent signs in as you with a token of its own; remove it any time in Settings → Devices." = "Ajan, kendine ait bir anahtarla sizin adınıza oturum açar; istediğiniz zaman Ayarlar → Cihazlar bölümünden kaldırabilirsiniz."
 "Create a token for an agent" = "Ajan için anahtar oluştur"
 "Copy it now: the token is shown only once." = "Şimdi kopyalayın: anahtar yalnızca bir kez gösterilir."
+"{dropped}/{total} frames dropped" = "{dropped}/{total} kare düştü"
+"{s} s buffered" = "{s} sn arabellekte"

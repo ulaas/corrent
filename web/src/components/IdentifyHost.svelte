@@ -1,6 +1,7 @@
 <script lang="ts">
   // "Identify…" (as the desktop's, src/app/media/identify.rs): search the metadata providers by
   // title and year, then pick the right result.
+  import { untrack } from 'svelte';
   import Modal from './Modal.svelte';
   import Spinner from './Spinner.svelte';
   import Icon from './Icon.svelte';
@@ -25,11 +26,15 @@
   let applying = $state('');
   let n = 0;
 
+  // A new request fills the fields and searches once (typing must not start over).
   $effect(() => {
-    if (!req) return;
-    title = req.title;
-    year = req.year ? String(req.year) : '';
-    void search();
+    const r = req;
+    if (!r) return;
+    untrack(() => {
+      title = r.title;
+      year = r.year ? String(r.year) : '';
+      void search();
+    });
   });
 
   async function search(e?: Event) {

@@ -91,8 +91,8 @@
       statsText = [
         `${video.videoWidth}×${video.videoHeight}`,
         info?.method ?? '',
-        q ? `${q.droppedVideoFrames}/${q.totalVideoFrames} dropped` : '',
-        `${ahead.toFixed(1)} s buffered`,
+        q ? t('{dropped}/{total} frames dropped', { dropped: q.droppedVideoFrames, total: q.totalVideoFrames }) : '',
+        t('{s} s buffered', { s: ahead.toFixed(1) }),
       ]
         .filter(Boolean)
         .join(' · ');

@@ -157,7 +157,7 @@ async fn execute(st: &Arc<AppState>, id: &str) -> Result<String, String> {
         "refresh_metadata" => {
             let libs = st.library.list().await.map_err(|e| e.to_string())?;
             for l in &libs {
-                crate::metadata::refresh_library(st.clone(), l.id, corrent_proto::library::RefreshMode::Missing, false)
+                crate::metadata::refresh_library(st.clone(), l.id, corrent_proto::library::RefreshMode::Missing, None)
                     .await;
             }
             Ok(format!("{} libraries", libs.len()))

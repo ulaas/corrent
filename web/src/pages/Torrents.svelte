@@ -404,6 +404,8 @@
   let filterInput: HTMLInputElement | undefined = $state();
   function onPageKey(e: KeyboardEvent) {
     if (!(e.ctrlKey || e.metaKey)) return;
+    if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+    if (document.querySelector('.layer')) return;
     if (e.shiftKey && e.key.toLowerCase() === 's' && (canAll || can(Perm.SETTINGS_WRITE))) {
       e.preventDefault();
       void altSpeed();
@@ -533,7 +535,7 @@
       aria-label={t('Torrents')}
       aria-rowcount={rows.length}
       aria-multiselectable="true"
-      use:contextMenu={{ items: listMenu, before: selectFor, key: sel[0], title: t('Torrents') }}
+      use:contextMenu={{ items: listMenu, before: selectFor, key: () => sel[0], title: t('Torrents') }}
       ondragover={dragOver}
       ondragleave={(e) => { if (e.target === e.currentTarget) drop = null; }}
       ondrop={dropRows}
@@ -617,7 +619,7 @@
 
     {#if detailTorrent}
       <div class="dpanel" transition:fly={{ y: 40, duration: ms(220) }}>
-        {#key detailTorrent.hash + detailTab}
+        {#key detailTab}
           <Details torrent={detailTorrent} initialTab={detailTab} onclose={() => ((detailHash = null), (detailTab = 'general'))} />
         {/key}
       </div>

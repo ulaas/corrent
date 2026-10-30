@@ -123,8 +123,8 @@
     if (!item) return [];
     const ids = item.provider_ids ?? {};
     const out: { label: string; url: string }[] = [];
-    if (ids.imdb) out.push({ label: 'IMDb', url: `https://www.imdb.com/title/${ids.imdb}/` });
-    if (ids.tmdb) out.push({ label: 'TMDB', url: `https://www.themoviedb.org/${item.kind === 'show' ? 'tv' : 'movie'}/${ids.tmdb}` });
+    if (ids.imdb) out.push({ label: 'IMDb', url: `https://www.imdb.com/title/${encodeURIComponent(ids.imdb)}/` });
+    if (ids.tmdb) out.push({ label: 'TMDB', url: `https://www.themoviedb.org/${item.kind === 'show' ? 'tv' : 'movie'}/${encodeURIComponent(ids.tmdb)}` });
     return out;
   });
 

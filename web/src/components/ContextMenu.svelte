@@ -88,7 +88,7 @@
   {/key}
 {:else if cur}
   <div class="scrim" transition:fade={{ duration: ms(140) }} role="presentation" onclick={() => closeMenu(false)}></div>
-  <div class="sheet" role="menu" tabindex="-1" aria-label={cur.title} onkeydown={sheetKey} transition:fly={{ y: 40, duration: ms(180) }}>
+  <div class="sheet" role="menu" tabindex="-1" aria-label={cur.title} onkeydown={sheetKey} {@attach (el) => el.focus({ preventScroll: true })} transition:fly={{ y: 40, duration: ms(180) }}>
     <div class="grip" aria-hidden="true"></div>
     {#if level}
       <button class="row back" onclick={() => (stack = stack.slice(0, -1))}><Icon name="caret-left" size={18} /><span>{level.label}</span></button>

@@ -1,9 +1,9 @@
 // Metadata refreshes and provider tests, in words (the same as the desktop app's).
-import { t } from './i18n.svelte';
+import { t, tk } from './i18n.svelte';
 import type { ToastKind } from './toast.svelte';
 import type { MetadataRun, PluginInfo, ProviderTest, RefreshOutcome } from './types';
 
-const NO_PROVIDER = 'No metadata provider is set up. Add an API key in Settings → Metadata.';
+const NO_PROVIDER = tk('No metadata provider is set up. Add an API key in Settings → Metadata.');
 
 /** An item's refresh, as a toast. */
 export function outcomeText(o: RefreshOutcome): [ToastKind, string] {

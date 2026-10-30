@@ -530,6 +530,8 @@ pub struct RefreshOutcome {
     /// No metadata provider is set up for this kind of item.
     pub no_providers: bool,
     pub errors: Vec<ProviderError>,
+    /// The item changed (a scan moved or replaced it) while it was looked up: nothing applied.
+    pub skipped: bool,
 }
 
 /// A library's metadata refresh (`GET /api/v1/libraries/{id}/refresh-metadata`, and the

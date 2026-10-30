@@ -304,9 +304,9 @@ pub async fn candidates(
     out
 }
 
-/// Identifies one item automatically: the first provider with a confident match wins.
-/// `again` (a refresh of everything): an item a provider identified before gets that
-/// provider's current record by its id, without a search, and its artwork is replaced too.
+/// Identifies one item automatically: the first provider with a confident match wins. An item
+/// a provider identified before (perhaps by hand) gets that provider's current record by its
+/// id, without a search; `again` (a refresh of everything) also replaces its artwork.
 pub async fn identify(
     st: &AppState,
     host: &Arc<PluginHost>,
@@ -320,12 +320,12 @@ pub async fn identify(
     out.no_providers = providers.is_empty();
     let art = if again { Replace::Always } else { Replace::IfMissingOrFrame };
     let matched_before = p.provider.as_deref().filter(|s| !s.is_empty());
-    if again
-        && let Some(prov) = matched_before
+    if let Some(prov) = matched_before
         && providers.iter().any(|x| x == prov)
         && let Some(pid) = p.ids.get(prov)
     {
         if !still_same(st, p).await {
+            out.skipped = true;
             return out;
         }
         match apply_with(st, host, p.id, p.kind, prov, pid, language, art).await {
@@ -361,6 +361,7 @@ pub async fn identify(
             // listed, or removed it and given its id to another item. Only the item that was
             // searched for gets the result.
             if !still_same(st, p).await {
+                out.skipped = true;
                 return out;
             }
             match apply_with(st, host, p.id, p.kind, &provider, &c.id, language, art).await {
@@ -404,38 +405,76 @@ pub async fn retry_unmatched(st: Arc<AppState>) {
         Err(e) => tracing::warn!("metadata: {e}"),
     }
     for l in st.library.list().await.unwrap_or_default() {
-        refresh_library(st.clone(), l.id, RefreshMode::Missing, false).await;
+        refresh_library(st.clone(), l.id, RefreshMode::Missing, None).await;
     }
+}
+
+/// A library's shown metadata refresh and the run it belongs to.
+pub struct RunEntry {
+    pub run: MetadataRun,
+    owner: u64,
+    by_hand: bool,
+}
+
+fn next_owner() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The library's running or last metadata refresh.
 pub fn run_of(st: &AppState, library_id: i64) -> Option<MetadataRun> {
-    st.metadata_runs.lock().unwrap_or_else(|e| e.into_inner()).get(&library_id).cloned()
+    st.metadata_runs.lock().unwrap_or_else(|e| e.into_inner()).get(&library_id).map(|e| e.run.clone())
 }
 
-fn publish(st: &AppState, run: &MetadataRun) {
-    st.metadata_runs.lock().unwrap_or_else(|e| e.into_inner()).insert(run.library_id, run.clone());
+/// Whether a refresh asked for by hand is waiting or running in the library.
+pub fn by_hand_running(st: &AppState, library_id: i64) -> Option<MetadataRun> {
+    let runs = st.metadata_runs.lock().unwrap_or_else(|e| e.into_inner());
+    runs.get(&library_id).filter(|e| e.by_hand && e.run.running).map(|e| e.run.clone())
+}
+
+/// Shows a run's status (and sends it to clients) when the run may: a refresh asked for by hand
+/// owns the library's status from `queue` on; automatic runs never cover one.
+fn publish(st: &AppState, run: &MetadataRun, owner: u64, by_hand: bool) {
+    {
+        let mut runs = st.metadata_runs.lock().unwrap_or_else(|e| e.into_inner());
+        let may = match runs.get(&run.library_id) {
+            None => true,
+            Some(e) if e.owner == owner => true,
+            Some(e) => !by_hand && !e.by_hand,
+        };
+        if !may {
+            return;
+        }
+        runs.insert(run.library_id, RunEntry { run: run.clone(), owner, by_hand });
+    }
     st.hub.publish(corrent_proto::event::Event::MetadataStatus { status: run.clone() });
 }
 
-/// A refresh asked for by hand, shown as running until `refresh_library` (started next) takes
-/// over: it may wait for another library's run first.
-pub fn queue(st: &AppState, library_id: i64, mode: RefreshMode) -> MetadataRun {
+/// A refresh asked for by hand, shown as running from now on (it may wait for another run
+/// first). Returns the status and the owner to pass to `refresh_library`.
+pub fn queue(st: &AppState, library_id: i64, mode: RefreshMode) -> (MetadataRun, u64) {
+    let owner = next_owner();
     let run = MetadataRun { library_id, running: true, mode, started_at: now(), ..Default::default() };
-    publish(st, &run);
-    run
+    st.metadata_runs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(library_id, RunEntry { run: run.clone(), owner, by_hand: true });
+    st.hub.publish(corrent_proto::event::Event::MetadataStatus { status: run.clone() });
+    (run, owner)
 }
 
 /// Looks up metadata for a library's items, one at a time: those that never had it (`Missing`;
 /// asked `by_hand`, also those no provider matched before), or every item again (`All`).
-/// Automatic runs respect the library's "fetch metadata" setting; one asked for by hand runs
-/// anyway.
-pub async fn refresh_library(st: Arc<AppState>, library_id: i64, mode: RefreshMode, by_hand: bool) {
+/// Automatic runs respect the library's "fetch metadata" setting; one asked for by hand
+/// (`hand`: its owner from `queue`) runs anyway.
+pub async fn refresh_library(st: Arc<AppState>, library_id: i64, mode: RefreshMode, hand: Option<u64>) {
+    let by_hand = hand.is_some();
+    let owner = hand.unwrap_or_else(next_owner);
     let (Some(host), Ok(lib)) = (st.plugins.clone(), st.library.get(library_id).await) else {
         if by_hand {
             let started_at = now();
             let run = MetadataRun { library_id, mode, started_at, finished_at: Some(started_at), ..Default::default() };
-            publish(&st, &run);
+            publish(&st, &run, owner, true);
         }
         return;
     };
@@ -456,13 +495,7 @@ pub async fn refresh_library(st: Arc<AppState>, library_id: i64, mode: RefreshMo
     if items.is_empty() && !by_hand {
         return;
     }
-    // An automatic run doesn't cover one asked for by hand that waits for it.
-    let quiet = !by_hand && run_of(&st, library_id).is_some_and(|r| r.running);
-    let show = |run: &MetadataRun| {
-        if !quiet {
-            publish(&st, run)
-        }
-    };
+    let show = |run: &MetadataRun| publish(&st, run, owner, by_hand);
     let mut run = MetadataRun {
         library_id,
         running: true,
@@ -482,7 +515,7 @@ pub async fn refresh_library(st: Arc<AppState>, library_id: i64, mode: RefreshMo
         run.no_providers |= o.no_providers;
         if o.provider.is_some() {
             run.matched += 1;
-        } else if !o.no_providers && o.errors.is_empty() {
+        } else if !o.no_providers && !o.skipped && o.errors.is_empty() {
             run.unmatched += 1;
         }
         for e in o.errors {
@@ -601,7 +634,7 @@ pub fn start(st: Arc<AppState>) {
             };
             match ev {
                 Ok(corrent_library::LibraryEvent::Scan(s)) if !s.running && s.error.is_none() => {
-                    tokio::spawn(refresh_library(st.clone(), s.library_id, RefreshMode::Missing, false));
+                    tokio::spawn(refresh_library(st.clone(), s.library_id, RefreshMode::Missing, None));
                     crate::thumbs::start(&st);
                 }
                 Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
