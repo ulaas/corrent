@@ -1,1 +1,0 @@
-import{ct as e}from"./i18n.svelte-DlGAVJrD.js";var t=e({current:null});function n(e){t.current=e}export{t as n,n as t};

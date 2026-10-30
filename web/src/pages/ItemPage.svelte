@@ -7,7 +7,7 @@
   import PhotoViewer from '../components/PhotoViewer.svelte';
   import Modal from '../components/Modal.svelte';
   import { api, errorText } from '../lib/api';
-  import { back, go, link } from '../lib/router.svelte';
+  import { back, go, link, route, setQuery } from '../lib/router.svelte';
   import { backdrop, image, isPlayable, KIND_LABEL, playHref, shapeFor, watched } from '../lib/media';
   import { bytes, clock, runtime } from '../lib/format';
   import { toggleFavorite, togglePlayed } from '../lib/itemstate';
@@ -24,6 +24,8 @@
   import RefreshMenu from '../components/RefreshMenu.svelte';
   import { outcomeText } from '../lib/metadata';
   import { identify } from '../lib/identify.svelte';
+  import { contextMenu } from '../lib/contextmenu.svelte';
+  import { itemMenu } from '../lib/itemmenu';
   import type { RefreshMode, RefreshOutcome } from '../lib/types';
   import type { Item, ItemDetail, Page } from '../lib/types';
 
@@ -101,6 +103,14 @@
   const id = $derived(+params.id);
 
   let item = $state<ItemDetail | null>(null);
+
+  // "Find subtitles" from a card's menu lands here with ?subtitles=1.
+  $effect(() => {
+    if (item && route.query.get('subtitles') === '1') {
+      setQuery({ subtitles: null });
+      void findSubs(item.id);
+    }
+  });
 
   // Rating sites (OMDb) when known, else the provider's own score (as on the desktop).
   const site = (k: string): string | undefined => {
@@ -348,7 +358,7 @@
         <div class="episodes stagger">
           {#each episodes as e, i (e.id)}
             {@const thumb = image(e, 'thumb', 'backdrop')}
-            <a class="episode" href={playHref(e.id)} use:link style:--i={i}>
+            <a class="episode" href={playHref(e.id)} use:link style:--i={i} use:contextMenu={{ items: () => itemMenu(e, { manage: can(Perm.LIBRARY_MANAGE) }), title: e.title }}>
               <span class="ethumb">
                 {#if thumb}<Img image={thumb} w={400} />{:else}<span class="ph"><Icon name="television-simple" size={26} /></span>{/if}
                 <span class="eplay"><Icon name="play-fill" size={22} /></span>
@@ -379,7 +389,17 @@
         <ol class="tracks">
           {#each children as tr, i (tr.id)}
             {#if tr.work && tr.work !== children[i - 1]?.work}<li class="work" aria-hidden="true">{tr.work}</li>{/if}
-            <li class:current={isCurrent(tr.id)}>
+            <li
+              class:current={isCurrent(tr.id)}
+              use:contextMenu={{
+                items: () =>
+                  itemMenu(tr, {
+                    manage: can(Perm.LIBRARY_MANAGE),
+                    onplay: () => playAlbum(false, i),
+                    extra: [{ label: t('Add to queue'), icon: 'plus', onselect: () => music.enqueue([toEntry(tr, item!)]) }],
+                  }),
+                title: tr.title,
+              }}>
               <button class="track" onclick={() => playAlbum(false, i)}>
                 <span class="tn num">
                   {#if isCurrent(tr.id) && music.playing}<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>{:else}<span class="idx">{tr.index ?? i + 1}</span><Icon name="play-fill" size={14} />{/if}

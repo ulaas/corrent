@@ -76,7 +76,7 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
   (header right-click: show/hide, reorder, reset; saved in prefs; not on phones).
 - [x] **S4 Add to library…** (done 2026-10-30) dialog: dry-run `POST /torrents/{hash}/import`, show the plan,
   confirm.
-- [ ] **S5 Media card/row menu**: Play, Play from start, Add to playlist ▸, Mark played/unplayed,
+- [x] **S5 Media card/row menu** (done 2026-10-30; no Cast entry — casting starts from the player): Play, Play from start, Add to playlist ▸, Mark played/unplayed,
   Favorite, Find subtitles… (movie/episode/video), Identify… (movie/show/video), Refresh metadata ▸
   (movie/show/video/album/artist), Open IMDb/TMDB (cards lack provider ids: a lazy submenu that
   fetches the item), Copy link, Cast; playlist rows add Move up/down, Remove. LIBRARY_MANAGE for

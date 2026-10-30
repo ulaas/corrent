@@ -9,6 +9,10 @@
   import { toast } from '../lib/toast.svelte';
   import { playList } from '../lib/lists';
   import { t } from '../lib/i18n.svelte';
+  import { contextMenu, type MenuItem } from '../lib/contextmenu.svelte';
+  import { itemMenu } from '../lib/itemmenu';
+  import { can } from '../lib/session.svelte';
+  import { Perm } from '../lib/types';
   import type { Collection, Item, Playlist } from '../lib/types';
 
   let { params, collection = false }: { params: Record<string, string>; collection?: boolean } = $props();
@@ -91,7 +95,22 @@
     </div>
     <ol class="rows">
       {#each items as it, i (it.id + '-' + i)}
-        <li>
+        <li
+          use:contextMenu={{
+            items: () =>
+              itemMenu(it, {
+                manage: can(Perm.LIBRARY_MANAGE),
+                onplay: () => playList(items, i),
+                extra: mine
+                  ? ([
+                      { label: t('Move up'), icon: 'arrow-up', disabled: i === 0, onselect: () => void move(i, i - 1) },
+                      { label: t('Move down'), icon: 'arrow-down', disabled: i === items.length - 1, onselect: () => void move(i, i + 1) },
+                      { label: t('Remove'), icon: 'x', danger: true, onselect: () => void removeAt(i) },
+                    ] satisfies MenuItem[])
+                  : [],
+              }),
+            title: it.title,
+          }}>
           <button class="row-btn" onclick={() => playList(items, i)}>
             <span class="n num">{i + 1}</span>
             <span class="grow"><span class="ellipsis t">{it.title}</span>{#if it.context?.length}<span class="ellipsis caption muted">{it.context.join(' · ')}</span>{/if}</span>

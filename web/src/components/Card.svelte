@@ -4,6 +4,10 @@
   import { link, go } from '../lib/router.svelte';
   import { cardImage, isPlayable, itemHref, playHref, subtitle, watched, type Shape, LIBRARY_ICON } from '../lib/media';
   import { toggleFavorite } from '../lib/itemstate';
+  import { contextMenu } from '../lib/contextmenu.svelte';
+  import { itemMenu } from '../lib/itemmenu';
+  import { can } from '../lib/session.svelte';
+  import { Perm } from '../lib/types';
   import { t } from '../lib/i18n.svelte';
   import type { Item } from '../lib/types';
   import type { IconName } from '../lib/icons';
@@ -34,7 +38,7 @@
   }
 </script>
 
-<a {href} use:link class="card {shape}" title={item.title}>
+<a {href} use:link class="card {shape}" title={item.title} use:contextMenu={{ items: () => itemMenu(item, { manage: can(Perm.LIBRARY_MANAGE), onplay }), title: item.title }}>
   <div class="art">
     {#if img}
       <Img image={img} w={shape === 'landscape' ? 400 : 400} alt="" />
