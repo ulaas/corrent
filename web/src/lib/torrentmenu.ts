@@ -12,6 +12,7 @@ export interface TorrentMenuActions {
   media: (hash: string) => Promise<FileEntry[]>;
   play: (hash: string, file: FileEntry) => void;
   rename: (t: Torrent) => void;
+  addToLibrary: (t: Torrent) => void;
   limits: (t: Torrent, section: 'speed' | 'seed') => void;
   setCategory: (sel: Torrent[], category: string | null) => void;
   setTag: (sel: Torrent[], tag: string, on: boolean) => void;
@@ -28,6 +29,8 @@ export interface TorrentMenuContext {
   me: string | null;
   manageAll: boolean;
   manageOwn: boolean;
+  /** May import into libraries (LIBRARY_MANAGE). */
+  library: boolean;
   categories: string[];
   tags: string[];
 }
@@ -114,6 +117,9 @@ export function menuFor(sel: Torrent[], ctx: TorrentMenuContext, on: TorrentMenu
   }
   rows.push({ kind: 'sep' }, ...play);
   rows.push({ label: t('Move to…'), icon: 'folder-simple-dashed', onselect: () => on.move(hashes) });
+  if (one && ctx.library && one.has_metadata && !one.restore_failed) {
+    rows.push({ label: t('Add to library…'), icon: 'film-slate', onselect: () => on.addToLibrary(one) });
+  }
   if (one) rows.push({ label: t('Rename…'), icon: 'pencil-simple', shortcut: 'F2', onselect: () => on.rename(one) });
   rows.push({
     kind: 'submenu',

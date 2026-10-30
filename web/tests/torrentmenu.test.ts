@@ -45,6 +45,7 @@ const on: TorrentMenuActions = {
   media: async () => [],
   play: () => {},
   rename: () => calls.push('rename'),
+  addToLibrary: () => calls.push('import'),
   limits: (_, s) => calls.push(`limits:${s}`),
   setCategory: (_, c) => calls.push(`cat:${c}`),
   setTag: (_, g, o) => calls.push(`tag:${g}:${o}`),
@@ -54,7 +55,7 @@ const on: TorrentMenuActions = {
   copy: (s) => calls.push(`copy:${s}`),
   remove: (_, d) => calls.push(`remove:${d}`),
 };
-const all = { me: 'ada', manageAll: true, manageOwn: true, categories: ['Movies'], tags: ['hd'] };
+const all = { me: 'ada', manageAll: true, manageOwn: true, library: true, categories: ['Movies'], tags: ['hd'] };
 const labels = (rows: MenuItem[]) => rows.map((r) => ('label' in r ? r.label : r.kind));
 
 describe('torrent context menu', () => {
@@ -69,7 +70,7 @@ describe('torrent context menu', () => {
   it('has single-torrent entries only for one', () => {
     const one = labels(menuFor([tor({})], all, on));
     const two = labels(menuFor([tor({}), tor({ hash: 'cd'.repeat(20) })], all, on));
-    for (const l of ['Rename…', 'Speed limits…', 'Seeding limits…', 'Add trackers…', 'Play']) {
+    for (const l of ['Rename…', 'Add to library…', 'Speed limits…', 'Seeding limits…', 'Add trackers…', 'Play']) {
       expect(one).toContain(l);
       expect(two).not.toContain(l);
     }

@@ -74,7 +74,7 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
   instead of the desktop's horizontal scrolling): the desktop's extra columns (queue, category, tags, save path, tracker,
   added, completed), a dynamic grid template instead of the fixed nine columns, and the chooser
   (header right-click: show/hide, reorder, reset; saved in prefs; not on phones).
-- [ ] **S4 Add to library…** dialog: dry-run `POST /torrents/{hash}/import`, show the plan,
+- [x] **S4 Add to library…** (done 2026-10-30) dialog: dry-run `POST /torrents/{hash}/import`, show the plan,
   confirm.
 - [ ] **S5 Media card/row menu**: Play, Play from start, Add to playlist ▸, Mark played/unplayed,
   Favorite, Find subtitles… (movie/episode/video), Identify… (movie/show/video), Refresh metadata ▸

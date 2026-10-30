@@ -17,7 +17,7 @@ rows squares-four scroll terminal-window sun moon desktop translate sparkle cloc
 closed-captioning x-circle globe user-plus qr-code playlist dots-six-vertical rewind fast-forward speedometer
 microphone-stage books stop arrow-line-up arrow-line-down arrows-clockwise broadcast check-square square
 minus-square file arrow-square-out cloud-arrow-down puzzle-piece bookmark-simple trash-simple user-circle circles-three plus-circle stack bell archive play-circle screencast
-lightning folder-simple-dashed folder-simple scales flag minus-circle globe-simple
+lightning folder-simple-dashed folder-simple scales flag minus-circle globe-simple arrow-right film-slate
 `.trim().split(/\s+/);
 
 const base = resolve(import.meta.dirname, '../node_modules/@phosphor-icons/core/assets');

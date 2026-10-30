@@ -1,0 +1,1 @@
+import{B as e,H as t,it as n,vt as r}from"./i18n.svelte-BgTP6WTZ.js";import{t as i}from"./RssConfig-D1qWkxz4.js";var a=t(`<div class="sgroup pad svelte-8x8gc5"><!></div>`);function o(t){var o=a(),s=n(o);i(s,{}),r(o),e(t,o)}export{o as default};

@@ -20,6 +20,7 @@
   import Details from '../components/torrents/Details.svelte';
   import FolderPicker from '../components/FolderPicker.svelte';
   import ColumnChooser from '../components/torrents/ColumnChooser.svelte';
+  import AddToLibrary from '../components/torrents/AddToLibrary.svelte';
   import { cell, col, fit, known, template } from '../lib/torrentcols';
   import { api, errorText } from '../lib/api';
   import { live, useTorrents } from '../lib/torrents.svelte';
@@ -49,6 +50,7 @@
   let dropping = $state(false);
   let railOpen = $state(false);
   let choosing = $state(false);
+  let importing = $state<Torrent | null>(null);
 
   const rows = $derived(sortTorrents(filterTorrents(live.list, view.filter), view.sort, view.desc));
   const counts = $derived(statusCounts(live.list));
@@ -265,6 +267,7 @@
     },
     play: (hash: string, f: FileEntry) => void open(`/api/v1/torrents/${hash}/files/${f.index}/stream`, '_blank', 'noopener'),
     rename: (x) => (editing = { torrent: x, focus: 'name' }),
+    addToLibrary: (x) => (importing = x),
     limits: (x, section) => (editing = { torrent: x, focus: section }),
     setCategory: (list, category) => void patchEach(list, () => ({ category: category ?? '' })),
     setTag: (list, tag, on) => void patchEach(list, (x) => ({ tags: on ? [...new Set([...x.tags, tag])] : x.tags.filter((g) => g !== tag) })),
@@ -293,6 +296,7 @@
         me: session.user?.name ?? null,
         manageAll: canAll,
         manageOwn: can(Perm.TORRENTS_MANAGE_OWN),
+        library: can(Perm.LIBRARY_MANAGE),
         categories: Object.keys(live.labels.categories),
         tags: live.labels.tags,
       },
@@ -601,6 +605,7 @@
 
 {#if adding}<AddTorrent initialText={adding.text} initialFiles={adding.files} onclose={() => (adding = null)} />{/if}
 {#if editing}<EditTorrent torrent={editing.torrent} focus={editing.focus} onclose={() => (editing = null)} />{/if}
+{#if importing}<AddToLibrary torrent={byHash.get(importing.hash) ?? importing} onclose={() => (importing = null)} />{/if}
 {#if choosing}<ColumnChooser onclose={() => (choosing = false)} />{/if}
 {#if labels}<LabelsManager focus={labels.focus} start={labels.start} onclose={() => (labels = false)} />{/if}
 {#if moving}
