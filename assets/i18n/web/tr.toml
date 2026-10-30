@@ -614,3 +614,6 @@
 "Nothing here" = "Burada bir şey yok"
 "Rename…" = "Yeniden adlandır…"
 "Columns that don’t fit the window are left out from the end." = "Pencereye sığmayan sütunlar sondan başlayarak gösterilmez."
+"The agent signs in as you with a token of its own; remove it any time in Settings → Devices." = "Ajan, kendine ait bir anahtarla sizin adınıza oturum açar; istediğiniz zaman Ayarlar → Cihazlar bölümünden kaldırabilirsiniz."
+"Create a token for an agent" = "Ajan için anahtar oluştur"
+"Copy it now: the token is shown only once." = "Şimdi kopyalayın: anahtar yalnızca bir kez gösterilir."

@@ -88,7 +88,7 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
   profile.
 - [x] **S9 Player gaps** (done 2026-10-30): T / "Use this frame as the thumbnail", subtitle delay and size, picture
   aspect, stats (hls.js), reset. Not possible in browsers: audio delay, screenshot.
-- [ ] **S10 AI agent page**: proposals with Approve/Reject; the server's MCP endpoint instead of
+- [x] **S10 AI agent page** (done 2026-10-30; it creates a token for the agent): proposals with Approve/Reject; the server's MCP endpoint instead of
   the desktop's stdio command.
 - [ ] **S11 Torrent polish**: drag to reorder the queue (`POST /torrents/queue`,
   TORRENTS_MANAGE_ALL), speed sparkline in details (collected from deltas), initials placeholder

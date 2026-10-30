@@ -60,6 +60,11 @@
     <a href="/radio" use:link class="item" class:active={current === 'radio'} aria-current={current === 'radio' ? 'page' : undefined}>
       <Icon name="broadcast" size={20} /><span class="label">{t('Radio')}</span>
     </a>
+    {#if can(Perm.LIBRARY_MANAGE)}
+      <a href="/agent" use:link class="item" class:active={current === 'agent'} aria-current={current === 'agent' ? 'page' : undefined}>
+        <Icon name="sparkle" size={20} /><span class="label">{t('AI agent')}</span>
+      </a>
+    {/if}
 
     {#if canAdd || can(Perm.TORRENTS_MANAGE_OWN)}
       <div class="group">{t('Downloads')}</div>

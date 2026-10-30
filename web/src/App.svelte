@@ -37,6 +37,7 @@
   define('collection', '/collection/:id');
   define('person', '/person/:id');
   define('row', '/row/:id');
+  define('agent', '/agent');
   define('settings', '/settings');
   define('settings', '/settings/:section');
 
@@ -55,6 +56,7 @@
     collection: () => import('./pages/CollectionPage.svelte'),
     person: () => import('./pages/Person.svelte'),
     row: () => import('./pages/Row.svelte'),
+    agent: () => import('./pages/Agent.svelte'),
     settings: () => import('./pages/Settings.svelte'),
     notfound: () => import('./pages/NotFound.svelte'),
   };
