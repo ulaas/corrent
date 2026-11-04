@@ -143,6 +143,17 @@ pub struct Added {
 
 const MAX_TORRENT_FILE: usize = 16 * 1024 * 1024;
 
+/// For users who may not reach the server's own network: the server fetches the `.torrent` itself
+/// (the address it checked is the one it connects to, every redirect is checked again) and hands
+/// the engine only the bytes, because the engine's client would follow redirects anywhere.
+async fn fetch_confined(url: &str) -> Result<AddSource, ApiErr> {
+    crate::net::check_public_url(url).await.map_err(|e| err(ErrorCode::Forbidden, e).with_text("url", url))?;
+    let bytes = crate::net::fetch_public(url, MAX_TORRENT_FILE, std::time::Duration::from_secs(30))
+        .await
+        .map_err(|e| err(ErrorCode::BadRequest, e).with_text("url", url))?;
+    Ok(AddSource::Bytes { name: "download.torrent".into(), bytes })
+}
+
 async fn add(State(st): State<Arc<AppState>>, auth: Auth, ip: ClientIp, req: Request) -> ApiResult<Added> {
     auth.require(Perms::TORRENTS_ADD)?;
     let ctype = req.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
@@ -186,9 +197,9 @@ async fn add(State(st): State<Arc<AppState>>, auth: Auth, ip: ClientIp, req: Req
         return Err(err(ErrorCode::BadRequest, "nothing to add"));
     }
     if !crate::paths::unconfined(&auth) {
-        for s in &sources {
+        for s in &mut sources {
             if let AddSource::Url(u) = s {
-                crate::net::check_public_url(u).await.map_err(|e| err(ErrorCode::Forbidden, e).with_text("url", u))?;
+                *s = fetch_confined(u.as_str()).await?;
             }
         }
     }
@@ -266,10 +277,7 @@ async fn preview(
     } else if u.starts_with("magnet:") {
         AddSource::Magnet(u.to_string())
     } else if u.starts_with("http://") || u.starts_with("https://") {
-        if !crate::paths::unconfined(&auth) {
-            crate::net::check_public_url(u).await.map_err(|e| err(ErrorCode::Forbidden, e).with_text("url", u))?;
-        }
-        AddSource::Url(u.to_string())
+        if crate::paths::unconfined(&auth) { AddSource::Url(u.to_string()) } else { fetch_confined(u).await? }
     } else if let Some(h) = InfoHash::from_hex(u) {
         AddSource::Magnet(format!("magnet:?xt=urn:btih:{}", h.to_hex()))
     } else {

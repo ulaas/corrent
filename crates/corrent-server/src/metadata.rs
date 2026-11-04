@@ -92,15 +92,10 @@ fn to_meta(d: &ItemDetails, provider: &str, provider_id: &str) -> MetaDetails {
     }
 }
 
-/// Downloads an image URL for the library (public addresses only, 20 MiB cap).
-async fn fetch_image(st: &AppState, url: &str) -> Option<Vec<u8>> {
-    crate::net::check_public_url(url).await.ok()?;
-    let res = st.http.get(url).timeout(Duration::from_secs(30)).send().await.ok()?;
-    if !res.status().is_success() || res.content_length().is_some_and(|l| l > 20 * 1024 * 1024) {
-        return None;
-    }
-    let b = res.bytes().await.ok()?;
-    (b.len() <= 20 * 1024 * 1024).then(|| b.to_vec())
+/// Downloads an image URL for the library (public addresses only, also after redirects; 20 MiB
+/// cap, enforced while reading).
+async fn fetch_image(url: &str) -> Option<Vec<u8>> {
+    crate::net::fetch_public(url, 20 * 1024 * 1024, Duration::from_secs(30)).await.ok()
 }
 
 /// Applies one provider's record to an item: details, artwork, and for shows the episodes.
@@ -133,7 +128,7 @@ async fn apply_with(
         host.metadata_details(provider, mk, id.to_string(), language.to_string()).await.map_err(|e| e.to_string())?;
     st.library.apply_details(item, to_meta(&d, provider, id)).await.map_err(|e| e.to_string())?;
     for a in &d.artwork {
-        if let Some(bytes) = fetch_image(st, &a.url).await {
+        if let Some(bytes) = fetch_image(&a.url).await {
             let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, art, false).await;
         }
     }
@@ -164,7 +159,7 @@ async fn apply_with(
             .collect();
         let _ = st.library.set_ratings(item, ratings).await;
         for a in extra.artwork.iter().filter(|a| !have.contains(&a.kind)) {
-            if let Some(bytes) = fetch_image(st, &a.url).await {
+            if let Some(bytes) = fetch_image(&a.url).await {
                 let _ = st.library.set_artwork(item, &a.kind, bytes, &a.url, art, false).await;
             }
         }
@@ -179,7 +174,7 @@ async fn apply_with(
             let touched = st.library.apply_episodes(season_item, list).await.unwrap_or_default();
             for (num, ep_item) in touched {
                 if let Some(url) = eps.iter().find(|e| e.episode as i64 == num).and_then(|e| e.still_url.clone())
-                    && let Some(bytes) = fetch_image(st, &url).await
+                    && let Some(bytes) = fetch_image(&url).await
                 {
                     let _ =
                         st.library.set_artwork(ep_item, "thumb", bytes, &url, Replace::IfMissingOrFrame, false).await;
@@ -647,6 +642,22 @@ pub fn start(st: Arc<AppState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn artwork_fetch_stops_at_redirects_into_the_own_network() {
+        use crate::net::test_server::{ok, redirect, serve};
+        let target = serve([("/art.jpg".to_string(), ok(b"image"))].into()).await;
+        let base = serve(
+            [
+                ("/art.jpg".to_string(), ok(b"image")),
+                ("/moved.jpg".to_string(), redirect(&format!("{target}/art.jpg"))),
+            ]
+            .into(),
+        )
+        .await;
+        assert_eq!(fetch_image(&format!("{base}/art.jpg")).await.as_deref(), Some(&b"image"[..]));
+        assert_eq!(fetch_image(&format!("{base}/moved.jpg")).await, None);
+    }
 
     fn c(title: &str, year: Option<u32>) -> Candidate {
         Candidate { id: title.into(), title: title.into(), year, overview: None, poster_url: None }
