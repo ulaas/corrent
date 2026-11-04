@@ -1615,7 +1615,7 @@ impl CorrentApp {
                     );
                     ui.add_space(8.0);
                     heading(ui, p, t!("Sound processing"));
-                    super::media::sound::sheet(ui, p, &mut pb.fx, pb.passthrough);
+                    super::media::sound::sheet(ui, p, pb);
                     ui.add_space(8.0);
                     row(ui, p, t!("ReplayGain"), t!("Uses the volume levels stored in music files."), |ui| {
                         let opts = [("album", t!("By album")), ("track", t!("By track")), ("off", t!("Off"))];

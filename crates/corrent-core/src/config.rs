@@ -154,6 +154,12 @@ pub struct Playback {
     pub muted: bool,
     /// Sound processing: off by default, then no filter runs at all.
     pub fx: crate::audio_fx::AudioFx,
+    /// Effects saved under a name.
+    pub user_presets: Vec<crate::audio_fx::UserPreset>,
+    /// Outputs with their effects, to switch between ("Receiver", "Headphones").
+    pub profiles: Vec<crate::audio_fx::AudioProfile>,
+    /// The profile last switched to.
+    pub active_profile: Option<String>,
 }
 
 impl Default for Playback {
@@ -170,6 +176,9 @@ impl Default for Playback {
             volume: 100.0,
             muted: false,
             fx: crate::audio_fx::AudioFx::default(),
+            user_presets: Vec::new(),
+            profiles: Vec::new(),
+            active_profile: None,
         }
     }
 }
@@ -191,6 +200,92 @@ impl Playback {
             ),
             ("gapless-audio", if self.gapless { "weak" } else { "no" }.into()),
         ]
+    }
+
+    /// Saves the current effects under `name` (replacing one of that name).
+    pub fn save_preset(&mut self, name: &str) {
+        let fx = crate::audio_fx::AudioFx { preset: Some(name.to_string()), ..self.fx.clone() };
+        match self.user_presets.iter_mut().find(|p| p.name == name) {
+            Some(p) => p.fx = fx.clone(),
+            None => self.user_presets.push(crate::audio_fx::UserPreset { name: name.to_string(), fx: fx.clone() }),
+        }
+        self.fx = fx;
+    }
+
+    /// Takes a saved preset's effects. Whether the meters are up isn't part of a sound.
+    pub fn use_preset(&mut self, name: &str) {
+        if let Some(p) = self.user_presets.iter().find(|p| p.name == name) {
+            self.fx = crate::audio_fx::AudioFx { preset: Some(p.name.clone()), meters: self.fx.meters, ..p.fx.clone() };
+        }
+    }
+
+    /// Renames a saved preset, unless the new name is taken.
+    pub fn rename_preset(&mut self, from: &str, to: &str) {
+        if self.user_presets.iter().any(|p| p.name == to) {
+            return;
+        }
+        for p in self.user_presets.iter_mut().filter(|p| p.name == from) {
+            p.name = to.to_string();
+            p.fx.preset = Some(to.to_string());
+        }
+        if self.fx.preset.as_deref() == Some(from) {
+            self.fx.preset = Some(to.to_string());
+        }
+    }
+
+    pub fn delete_preset(&mut self, name: &str) {
+        self.user_presets.retain(|p| p.name != name);
+        if self.fx.preset.as_deref() == Some(name) {
+            self.fx.preset = None;
+        }
+    }
+
+    /// Saves the current output and effects as a profile (replacing one of that name) and makes it
+    /// the active one.
+    pub fn save_profile(&mut self, name: &str) {
+        let profile = crate::audio_fx::AudioProfile {
+            name: name.to_string(),
+            audio_device: self.audio_device.clone(),
+            channels: self.channels.clone(),
+            exclusive: self.exclusive,
+            passthrough: self.passthrough,
+            fx: self.fx.clone(),
+        };
+        match self.profiles.iter_mut().find(|p| p.name == name) {
+            Some(p) => *p = profile,
+            None => self.profiles.push(profile),
+        }
+        self.active_profile = Some(name.to_string());
+    }
+
+    /// Switches to a profile: its output, then its effects. The meters stay as they are.
+    pub fn use_profile(&mut self, name: &str) {
+        let Some(p) = self.profiles.iter().find(|p| p.name == name).cloned() else { return };
+        self.audio_device = p.audio_device;
+        self.channels = p.channels;
+        self.exclusive = p.exclusive;
+        self.passthrough = p.passthrough;
+        self.fx = crate::audio_fx::AudioFx { meters: self.fx.meters, ..p.fx };
+        self.active_profile = Some(p.name);
+    }
+
+    pub fn rename_profile(&mut self, from: &str, to: &str) {
+        if self.profiles.iter().any(|p| p.name == to) {
+            return;
+        }
+        for p in self.profiles.iter_mut().filter(|p| p.name == from) {
+            p.name = to.to_string();
+        }
+        if self.active_profile.as_deref() == Some(from) {
+            self.active_profile = Some(to.to_string());
+        }
+    }
+
+    pub fn delete_profile(&mut self, name: &str) {
+        self.profiles.retain(|p| p.name != name);
+        if self.active_profile.as_deref() == Some(name) {
+            self.active_profile = None;
+        }
     }
 
     /// The filters a player starts with. The source isn't known yet, and the meters wait for it: an
@@ -993,6 +1088,56 @@ mod tests {
         s.playback.muted = true;
         let back: Settings = toml::from_str(&toml::to_string_pretty(&s).unwrap()).unwrap();
         assert_eq!((back.playback.volume, back.playback.muted), (35.0, true));
+    }
+
+    #[test]
+    fn presets_and_profiles() {
+        let mut p = Playback::default();
+        p.fx.apply_preset("night");
+        p.save_preset("Late");
+        p.fx.flatten();
+        p.fx.meters = true;
+        p.use_preset("Late");
+        assert!(p.fx.night.is_some() && p.fx.enabled);
+        assert_eq!(p.fx.preset.as_deref(), Some("Late"));
+        assert!(p.fx.meters, "the meters are not part of a sound");
+        p.rename_preset("Late", "Later");
+        assert_eq!(p.fx.preset.as_deref(), Some("Later"));
+        assert_eq!(p.user_presets[0].name, "Later");
+        p.save_preset("Other");
+        p.rename_preset("Later", "Other");
+        assert_eq!(p.user_presets.len(), 2, "a name that is taken stays taken");
+        p.delete_preset("Other");
+        assert_eq!(p.fx.preset, None);
+
+        p.audio_device = "wasapi/receiver".into();
+        p.channels = "5.1".into();
+        p.passthrough = true;
+        p.save_profile("Receiver");
+        p.audio_device = "wasapi/phones".into();
+        p.channels = "stereo".into();
+        p.passthrough = false;
+        p.fx.apply_preset("crossfeed");
+        p.save_profile("Headphones");
+        assert_eq!(p.active_profile.as_deref(), Some("Headphones"));
+        let phones = p.clone();
+        p.use_profile("Receiver");
+        assert_eq!((p.audio_device.as_str(), p.channels.as_str(), p.passthrough), ("wasapi/receiver", "5.1", true));
+        assert!(p.fx.crossfeed.is_none());
+        assert_eq!(p.active_profile.as_deref(), Some("Receiver"));
+        // Only what differs goes to a running player.
+        let changed = phones.changed_options(&p);
+        assert_eq!(changed.iter().map(|o| o.0).collect::<Vec<_>>(), ["audio-device", "audio-channels", "audio-spdif"]);
+        p.use_profile("Nothing");
+        assert_eq!(p.active_profile.as_deref(), Some("Receiver"));
+        p.rename_profile("Receiver", "AVR");
+        assert_eq!(p.active_profile.as_deref(), Some("AVR"));
+        p.delete_profile("AVR");
+        assert_eq!(p.active_profile, None);
+        // All of it survives the file.
+        let s = Settings { playback: phones, ..Default::default() };
+        let back = Settings::parse(&toml::to_string_pretty(&s).unwrap()).unwrap();
+        assert_eq!(back.playback, s.playback);
     }
 
     #[test]

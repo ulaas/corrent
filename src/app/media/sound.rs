@@ -6,6 +6,7 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use corrent_core::audio_fx::{AudioFx, Band, Caps, FILTERS, Loudness};
+use corrent_core::config::Playback;
 use corrent_mpv::{Mpv, Node};
 use egui::{Color32, CornerRadius, Rect, Ui, pos2, vec2};
 
@@ -61,14 +62,14 @@ fn probe() -> Result<Caps, corrent_mpv::Error> {
 /// A closing player has no way to the settings, so what is left to save waits here for the next
 /// frame.
 static VOLUME: Mutex<Option<(f32, bool)>> = Mutex::new(None);
-static FX: Mutex<Option<AudioFx>> = Mutex::new(None);
+static SOUND: Mutex<Option<Playback>> = Mutex::new(None);
 
-pub(super) fn post_fx(fx: AudioFx) {
-    *crate::util::lock(&FX) = Some(fx);
+pub(super) fn post_sound(playback: Playback) {
+    *crate::util::lock(&SOUND) = Some(playback);
 }
 
-pub(super) fn take_fx() -> Option<AudioFx> {
-    crate::util::lock(&FX).take()
+pub(super) fn take_sound() -> Option<Playback> {
+    crate::util::lock(&SOUND).take()
 }
 
 pub(super) fn post_volume(volume: f32, muted: bool) {
@@ -439,10 +440,124 @@ fn band_label(hz: u32) -> String {
     if hz >= 1000 { format!("{}k", hz / 1000) } else { hz.to_string() }
 }
 
-/// The sound sheet: presets, equalizer, night mode, dialogue, crossfeed, loudness and meters, each
-/// offered only when this libmpv has its filters. Used in the player's settings and in Settings →
-/// Playback. Returns whether something changed.
-pub fn sheet(ui: &mut Ui, p: &Palette, fx: &mut AudioFx, passthrough: bool) -> bool {
+/// The sound sheet: output profiles, presets, equalizer, night mode, dialogue, crossfeed, loudness
+/// and meters, each offered only when this libmpv has its filters. Used over the picture and in
+/// Settings → Playback. Returns whether something changed.
+pub fn sheet(ui: &mut Ui, p: &Palette, pb: &mut Playback) -> bool {
+    let before = pb.clone();
+    profile_switch(ui, pb);
+    let passthrough = pb.passthrough;
+    effects_sheet(ui, p, pb, passthrough);
+    named_section(
+        ui,
+        p,
+        "sound-presets",
+        t!("Saved sounds"),
+        t!("Save these effects"),
+        pb.user_presets.iter().map(|u| u.name.clone()).collect(),
+        |name, action| match action {
+            Named::Save => pb.save_preset(name),
+            Named::Rename(to) => pb.rename_preset(name, to),
+            Named::Delete => pb.delete_preset(name),
+        },
+    );
+    named_section(
+        ui,
+        p,
+        "sound-profiles",
+        t!("Output profiles"),
+        t!("Save this output and its effects"),
+        pb.profiles.iter().map(|u| u.name.clone()).collect(),
+        |name, action| match action {
+            Named::Save => pb.save_profile(name),
+            Named::Rename(to) => pb.rename_profile(name, to),
+            Named::Delete => pb.delete_profile(name),
+        },
+    );
+    *pb != before
+}
+
+/// Quick switch between output profiles, when there are any.
+fn profile_switch(ui: &mut Ui, pb: &mut Playback) {
+    if pb.profiles.is_empty() {
+        return;
+    }
+    let names: Vec<String> = pb.profiles.iter().map(|u| u.name.clone()).collect();
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        ui.label(t!("Output"));
+        let shown = pb.active_profile.clone().unwrap_or_else(|| t!("Choose…").to_string());
+        egui::ComboBox::from_id_salt("sound-profile").selected_text(shown).show_ui(ui, |ui| {
+            for name in &names {
+                if ui.selectable_label(pb.active_profile.as_ref() == Some(name), name).clicked() {
+                    chosen = Some(name.clone());
+                }
+            }
+        });
+    });
+    if let Some(name) = chosen {
+        pb.use_profile(&name);
+    }
+}
+
+enum Named<'a> {
+    Save,
+    Rename(&'a str),
+    Delete,
+}
+
+/// A list of saved things, by name: a box for a name with Save, and on each row the same name for a
+/// rename, and delete. Collapsed until asked for.
+#[allow(clippy::too_many_arguments)]
+fn named_section(
+    ui: &mut Ui,
+    p: &Palette,
+    salt: &str,
+    title: &str,
+    save_hint: &str,
+    names: Vec<String>,
+    mut act: impl FnMut(&str, Named<'_>),
+) {
+    use egui_phosphor::regular as icons;
+    egui::CollapsingHeader::new(title).id_salt(salt).show(ui, |ui| {
+        let id = ui.id().with("name");
+        let mut text: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
+        let typed = text.trim().to_string();
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut text).hint_text(t!("Name")).desired_width(150.0));
+            if ui.add_enabled(!typed.is_empty(), egui::Button::new(t!("Save"))).on_hover_text(save_hint).clicked() {
+                act(&typed, Named::Save);
+                text.clear();
+            }
+        });
+        for name in &names {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(name).color(p.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new(icons::TRASH).frame(false)).on_hover_text(t!("Delete")).clicked() {
+                        act(name, Named::Delete);
+                    }
+                    let can_rename = !typed.is_empty() && typed != *name;
+                    let rename = ui
+                        .add_enabled(can_rename, egui::Button::new(icons::PENCIL_SIMPLE).frame(false))
+                        .on_hover_text(t!("Rename to the name above"))
+                        .on_disabled_hover_text(t!("Type the new name above"));
+                    if rename.clicked() {
+                        act(name, Named::Rename(&typed));
+                        text.clear();
+                    }
+                });
+            });
+        }
+        ui.data_mut(|d| d.insert_temp(id, text));
+    });
+}
+
+/// The effects part of the sheet.
+fn effects_sheet(ui: &mut Ui, p: &Palette, pb: &mut Playback, passthrough: bool) {
+    let saved: Vec<String> = pb.user_presets.iter().map(|u| u.name.clone()).collect();
+    let mut use_saved = None;
+    let fx = &mut pb.fx;
     let caps = caps();
     let before = fx.clone();
     let mut picked = false;
@@ -465,6 +580,12 @@ pub fn sheet(ui: &mut Ui, p: &Palette, fx: &mut AudioFx, passthrough: bool) -> b
             ] {
                 if there && ui.selectable_label(fx.preset.as_deref() == Some(name), label).clicked() {
                     fx.apply_preset(name);
+                    picked = true;
+                }
+            }
+            for name in &saved {
+                if ui.selectable_label(fx.preset.as_deref() == Some(name), name).clicked() {
+                    use_saved = Some(name.clone());
                     picked = true;
                 }
             }
@@ -546,8 +667,7 @@ pub fn sheet(ui: &mut Ui, p: &Palette, fx: &mut AudioFx, passthrough: bool) -> b
         ui.checkbox(&mut fx.meters, t!("Show meters"))
             .on_hover_text(t!("Loudness, peaks and more over the picture (Shift+I). They run only while shown."));
     }
-    let changed = *fx != before;
-    if changed && !picked {
+    if *fx != before && !picked {
         // By hand: no longer the preset, and on if an effect changed (the switch itself stays as set).
         let meters_only = AudioFx { meters: before.meters, enabled: before.enabled, ..fx.clone() } == before;
         if !meters_only {
@@ -555,7 +675,9 @@ pub fn sheet(ui: &mut Ui, p: &Palette, fx: &mut AudioFx, passthrough: bool) -> b
             fx.enabled = true;
         }
     }
-    changed
+    if let Some(name) = use_saved {
+        pb.use_preset(&name);
+    }
 }
 
 #[cfg(test)]

@@ -246,6 +246,9 @@ pub struct Player {
     observing_stats: bool,
     /// The sound sheet is up.
     sound_open: bool,
+    /// CORRENT_DEV_WINDOW=<w>x<h> or `pip`: the layout to check, once.
+    #[cfg(debug_assertions)]
+    dev_window: Option<String>,
     /// Picture in picture: the window small and on top (the size to go back to).
     pip: Option<egui::Vec2>,
     /// The end-of-episode countdown was dismissed for this item.
@@ -279,7 +282,7 @@ pub struct Player {
     /// Counts replaced playlists: an append still on its way after one is dropped.
     playlist_generation: Arc<std::sync::atomic::AtomicU64>,
     /// The effects last handed over to be saved, and since when they differ.
-    fx_saved: Mutex<corrent_core::audio_fx::AudioFx>,
+    fx_saved: Mutex<corrent_core::config::Playback>,
     fx_moved: Option<Instant>,
     /// `fx.meters` as last seen: changing that setting brings the Audio page up or down.
     fx_meters_setting: bool,
@@ -688,6 +691,8 @@ impl Player {
             observing_stats: false,
             // CORRENT_DEV_SOUND: with the sheet up.
             sound_open: cfg!(debug_assertions) && std::env::var_os("CORRENT_DEV_SOUND").is_some(),
+            #[cfg(debug_assertions)]
+            dev_window: std::env::var("CORRENT_DEV_WINDOW").ok(),
             pip: None,
             no_countdown: None,
             cast,
@@ -706,7 +711,7 @@ impl Player {
             appending: None,
             appended: Arc::new(std::sync::atomic::AtomicI64::new(-1)),
             playlist_generation: Arc::default(),
-            fx_saved: Mutex::new(audio.fx.clone()),
+            fx_saved: Mutex::new(audio.clone()),
             fx_meters_setting: audio.fx.meters,
             fx_moved: None,
             volume_saved: (audio.volume as f64, audio.muted),
@@ -884,7 +889,7 @@ impl Player {
     /// New sound settings while playing: only what changed, as a device option re-creates the
     /// audio output (an audible dropout). The filters follow on the next frame (`sync_fx`).
     pub fn apply_audio(&self, audio: &corrent_core::config::Playback) {
-        *crate::util::lock(&self.fx_saved) = audio.fx.clone();
+        *crate::util::lock(&self.fx_saved) = audio.clone();
         let mut current = crate::util::lock(&self.audio);
         for (k, v) in audio.changed_options(&current) {
             self.cmd(&["set", k, &v]);
@@ -1161,9 +1166,14 @@ impl Player {
 
     /// The sound sheet's contents, for the player.
     fn sound_sheet(&mut self, ui: &mut Ui, p: &Palette) {
-        let (mut fx, passthrough) = crate::util::with_lock(&self.audio, |a| (a.fx.clone(), a.passthrough));
-        if super::sound::sheet(ui, p, &mut fx, passthrough) {
-            crate::util::with_lock(&self.audio, |a| a.fx = fx);
+        let mut pb = crate::util::with_lock(&self.audio, |a| a.clone());
+        let before = pb.clone();
+        if super::sound::sheet(ui, p, &mut pb) {
+            // A profile may have changed the output: the one thing that re-creates it.
+            for (k, v) in pb.changed_options(&before) {
+                self.cmd(&["set", k, &v]);
+            }
+            crate::util::with_lock(&self.audio, |a| *a = pb);
         }
     }
 
@@ -1227,7 +1237,7 @@ impl Player {
     /// Hands changed effects over to be saved, once they have rested for 2 s (or now). The settings
     /// window's own changes come back the other way, and need no saving.
     fn save_fx(&mut self, now: bool) {
-        let current = crate::util::with_lock(&self.audio, |a| a.fx.clone());
+        let current = crate::util::with_lock(&self.audio, |a| a.clone());
         if current == *crate::util::lock(&self.fx_saved) {
             self.fx_moved = None;
             return;
@@ -1236,7 +1246,7 @@ impl Player {
         if now || moved.elapsed() >= Duration::from_secs(2) {
             *crate::util::lock(&self.fx_saved) = current.clone();
             self.fx_moved = None;
-            super::sound::post_fx(current);
+            super::sound::post_sound(current);
         } else {
             self.ctx.request_repaint_after(Duration::from_secs(2));
         }
@@ -1278,6 +1288,13 @@ impl Player {
     pub fn show(&mut self, ui: &mut Ui, p: &Palette) -> PlayerAction {
         let mut action = PlayerAction::None;
         let ctx = ui.ctx().clone();
+        #[cfg(debug_assertions)]
+        if let Some(w) = self.dev_window.take() {
+            match w.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))) {
+                Some((a, b)) => ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(a, b))),
+                None => self.toggle_pip(&ctx),
+            }
+        }
         // Drawing a popup closes it on Escape, so this has to be asked before the controls are drawn.
         let popup_open = egui::Popup::is_any_open(&ctx);
         // Space plays and pauses. Taken before the controls are drawn: a focused button would

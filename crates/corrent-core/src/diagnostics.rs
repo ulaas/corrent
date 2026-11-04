@@ -133,8 +133,19 @@ pub const SETTINGS_FIELDS: &[(&str, Rule)] = {
         ("playback.exclusive", Keep),
         ("playback.gapless", Keep),
         // stream C
+        ("playback.active_profile", Drop),
         ("playback.fx.preset", Drop), // may be the name of a user preset
         ("playback.fx.*", Keep),
+        ("playback.profiles[].audio_device", Keep),
+        ("playback.profiles[].channels", Keep),
+        ("playback.profiles[].exclusive", Keep),
+        ("playback.profiles[].fx.preset", Drop),
+        ("playback.profiles[].fx.*", Keep),
+        ("playback.profiles[].name", Drop),
+        ("playback.profiles[].passthrough", Keep),
+        ("playback.user_presets[].fx.preset", Drop),
+        ("playback.user_presets[].fx.*", Keep),
+        ("playback.user_presets[].name", Drop),
         ("playback.muted", Keep),
         ("playback.volume", Keep),
         ("playback.passthrough", Keep),
@@ -506,6 +517,9 @@ mod tests {
         s.playback.fx.preset = Some("mine".into());
         s.playback.fx.night = Some(Default::default());
         s.playback.fx.crossfeed = Some(Default::default());
+        s.playback.active_profile = Some("mine".into());
+        s.playback.save_preset("mine");
+        s.playback.save_profile("mine");
         let colors = ["bg0", "bg1", "bg2", "bg3", "border", "border_hi", "text", "text_dim", "text_mute", "accent"];
         let colors = colors.iter().chain(&["success", "warn", "error", "queued", "paused", "completed"]);
         let def: String = colors

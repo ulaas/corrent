@@ -528,11 +528,12 @@ impl CorrentApp {
             self.settings.playback.muted = muted;
             self.save_settings();
         }
-        if let Some(fx) = sound::take_fx() {
-            self.settings.playback.fx = fx.clone();
+        if let Some(sound) = sound::take_sound() {
+            let (volume, muted) = (self.settings.playback.volume, self.settings.playback.muted);
+            self.settings.playback = corrent_core::config::Playback { volume, muted, ..sound };
             // A settings window open meanwhile must not put the old ones back.
             if let Some(draft) = &mut self.settings_draft {
-                draft.settings.playback.fx = fx;
+                draft.settings.playback = self.settings.playback.clone();
             }
             self.save_settings();
         }
