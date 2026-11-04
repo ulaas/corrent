@@ -52,6 +52,8 @@ pub enum Action {
     Diagnostics,
     View(MainView),
     Settings(Page),
+    SavedView(String),
+    SaveView,
     Status(StatusFilter),
     Category(GroupFilter),
     Tag(GroupFilter),
@@ -212,6 +214,10 @@ impl CorrentApp {
         v.push(Item::new(icons::FILM_SLATE, t!("Media"), view, Action::View(MainView::Media)));
         v.push(Item::new(icons::RSS, t!("RSS feeds"), view, Action::View(MainView::Feeds)));
         v.push(Item::new(icons::MAGNIFYING_GLASS, t!("Search"), view, Action::View(MainView::Search)));
+        for sv in &self.prefs.views {
+            v.push(Item::new(icons::BOOKMARK_SIMPLE, &sv.name, view, Action::SavedView(sv.name.clone())));
+        }
+        v.push(Item::new(icons::BOOKMARK_SIMPLE, t!("Save view…"), app, Action::SaveView));
         for page in Page::ALL {
             v.push(
                 Item::new(page.icon(), page.label(), t!("Settings"), Action::Settings(page))
@@ -328,6 +334,12 @@ impl CorrentApp {
             Action::Diagnostics => self.open_diagnostics(),
             Action::View(v) => self.main_view = v,
             Action::Settings(page) => self.open_settings_at(page),
+            Action::SavedView(name) => {
+                if let Some(sv) = self.prefs.views.iter().find(|v| v.name == name).cloned() {
+                    self.apply_view(&sv);
+                }
+            }
+            Action::SaveView => self.modal = Some(super::dialogs::Modal::SaveView { name: String::new() }),
             Action::Status(f) => {
                 self.prefs.status_filter = f;
                 self.main_view = MainView::Torrents;

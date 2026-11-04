@@ -268,9 +268,9 @@ fn the_column_chooser_closes_on_a_click_outside_and_stays_for_clicks_inside() {
     press_secondary(&mut h, header);
     assert!(h.state().column_menu.is_some(), "open");
     h.get_by_label("Reset to defaults");
-    h.get_by_label("Category").click();
+    h.get_by_label("#").click();
     h.run_steps(3);
-    assert!(h.state().prefs.columns.contains(&super::Col::Category), "a click inside toggles");
+    assert!(h.state().prefs.columns.contains(&super::Col::Queue), "a click inside toggles");
     assert!(h.state().column_menu.is_some(), "and leaves it open");
     let outside = egui::pos2(100.0, 500.0);
     h.event(egui::Event::PointerMoved(outside));
@@ -734,6 +734,77 @@ fn the_palette_finds_settings_and_filters() {
     h.run_steps(3);
     press(&mut h, egui::Modifiers::NONE, egui::Key::Enter);
     assert_eq!(h.state().prefs.category_filter, super::GroupFilter::None);
+}
+
+#[test]
+fn saved_views_save_apply_and_delete() {
+    let (_f, mut app) = three_rows();
+    app.prefs.status_filter = StatusFilter::Seeding;
+    app.search = "two".into();
+    app.prefs.sort = super::Col::Size;
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.state_mut().modal = Some(super::dialogs::Modal::SaveView { name: "Big ones".into() });
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Enter);
+    assert_eq!(h.state().prefs.views.len(), 1);
+    // Elsewhere, then back to it.
+    h.state_mut().clear_filters();
+    h.state_mut().search.clear();
+    h.state_mut().prefs.sort = super::Col::Name;
+    h.run_steps(3);
+    h.get_by_label("Big ones").click();
+    h.run_steps(3);
+    assert_eq!(h.state().prefs.status_filter, StatusFilter::Seeding);
+    assert_eq!(h.state().search, "two");
+    assert_eq!(h.state().prefs.sort, super::Col::Size);
+    // Replacing by name, and the context menu.
+    h.state_mut().save_view("Big ones");
+    assert_eq!(h.state().prefs.views.len(), 1);
+    let at = h.get_by_label("Big ones").rect().center();
+    press_secondary(&mut h, at);
+    h.get_by_label_contains("Delete view").click();
+    h.run_steps(3);
+    assert!(h.state().prefs.views.is_empty());
+}
+
+#[test]
+fn the_error_column_shows_the_first_line() {
+    let (_f, mut app) = app(
+        "error-col",
+        vec![
+            TorrentView {
+                error: Some("Disk is full\nand more detail".into()),
+                ..torrent(1, "Alpha", TorrentState::Error)
+            },
+            torrent(2, "Beta", TorrentState::Seeding),
+        ],
+    );
+    app.prefs.columns.push(super::Col::Error);
+    let mut h = harness(app);
+    h.run_steps(3);
+    assert_eq!(h.query_all_by_label("Disk is full").count(), 2, "under the name and in its column");
+    assert!(h.query_by_label_contains("and more detail").is_none());
+}
+
+#[test]
+fn fit_columns_measures_and_applies() {
+    let (_f, app) = three_rows();
+    let mut h = harness(app);
+    h.run_steps(3);
+    let header = h.get_by_label("Ratio").rect().center();
+    let before = h.get_by_label("Ratio").rect().width();
+    assert!(before > 0.0);
+    press_secondary(&mut h, header);
+    h.get_by_label("Fit columns").click();
+    h.run_steps(3);
+    let widths = &h.state().prefs.column_widths;
+    assert!(!widths.is_empty());
+    assert!(widths.iter().all(|(_, w)| (32.0..=420.0).contains(w)), "{widths:?}");
+    assert_eq!(h.state().prefs.columns_fitted, 1);
+    h.get_by_label("Reset to defaults").click();
+    h.run_steps(3);
+    assert!(h.state().prefs.column_widths.is_empty());
 }
 
 #[test]

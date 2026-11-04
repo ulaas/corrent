@@ -163,6 +163,7 @@ fn sort_fingerprint(rows: &[usize], snap: &Snapshot, prefs: &UiPrefs, hosts: &Tr
             Col::Completed => t.completed_at.hash(&mut h),
             Col::SavePath => t.save_path.hash(&mut h),
             Col::Tracker => t.trackers.first().map(|u| hosts.peek(u)).hash(&mut h),
+            Col::Error => t.error.hash(&mut h),
             _ => return None,
         }
     }
@@ -218,6 +219,8 @@ pub fn compute_rows(
             Col::Tracker => a.trackers.first().map(|u| hosts.peek(u)).cmp(&b.trackers.first().map(|u| hosts.peek(u))),
             Col::SeedTime => a.seeding_secs.cmp(&b.seeding_secs),
             Col::LastActivity => a.last_activity.cmp(&b.last_activity),
+            // Those with an error first when ascending.
+            Col::Error => a.error.is_none().cmp(&b.error.is_none()).then_with(|| a.error.cmp(&b.error)),
         }
     };
     rows.sort_by(|&a, &b| {
@@ -327,6 +330,9 @@ impl CorrentApp {
             None
         };
 
+        if std::mem::take(&mut self.fit_columns) {
+            self.measure_columns(ui, &rows, units);
+        }
         let seen_before = self.rows_seen_once;
         // Drag rows to reorder the queue (only while the list is sorted by queue position).
         let reorder = self.prefs.sort == Col::Queue && self.prefs.sort_asc;
@@ -335,7 +341,7 @@ impl CorrentApp {
         let pointer = ui.ctx().pointer_interact_pos();
         egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 0 }).show(ui, |ui| {
             let mut tb = TableBuilder::new(ui)
-                .id_salt("torrents")
+                .id_salt(("torrents", self.prefs.columns_fitted))
                 .striped(self.settings.appearance.striped_rows)
                 .resizable(true)
                 .sense(if reorder { Sense::click_and_drag() } else { Sense::click() })
@@ -352,7 +358,8 @@ impl CorrentApp {
                     // columns out of view. It takes what the others leave instead.
                     Column::remainder().at_least(180.0).clip(true).resizable(false)
                 } else {
-                    Column::initial(c.default_width()).at_least(32.0).clip(true)
+                    let saved = self.prefs.column_widths.iter().find(|(x, _)| x == c).map(|(_, w)| *w);
+                    Column::initial(saved.unwrap_or(c.default_width())).at_least(32.0).clip(true)
                 };
                 tb = tb.column(col);
             }
@@ -496,7 +503,14 @@ impl CorrentApp {
                 self.prefs.sort = c;
                 self.prefs.sort_asc = matches!(
                     c,
-                    Col::Name | Col::Queue | Col::Category | Col::Tags | Col::SavePath | Col::Tracker | Col::Eta
+                    Col::Name
+                        | Col::Queue
+                        | Col::Category
+                        | Col::Tags
+                        | Col::SavePath
+                        | Col::Tracker
+                        | Col::Eta
+                        | Col::Error
                 );
             }
         }
@@ -525,6 +539,58 @@ impl CorrentApp {
                 self.click_row(h, mods, &rows);
             }
         }
+    }
+
+    /// "Fit columns": every column (but the name, which takes the rest) as wide as its title and
+    /// the first rows of the list need.
+    fn measure_columns(&mut self, ui: &Ui, rows: &[usize], units: crate::config::SpeedUnits) {
+        let snap = self.snap.clone();
+        let hosts = &self.counts.hosts;
+        let shown: Vec<&TorrentView> = rows.iter().take(100).filter_map(|&i| snap.torrents.get(i)).collect();
+        let width = |text: String, font: egui::FontId| ui.painter().layout_no_wrap(text, font, Color32::WHITE).size().x;
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        let small = egui::TextStyle::Small.resolve(ui.style());
+        let mono = egui::TextStyle::Monospace.resolve(ui.style());
+        let mut widths = Vec::new();
+        for &c in &self.prefs.columns {
+            let cell = |t: &TorrentView| -> f32 {
+                match c {
+                    Col::Name => 0.0,
+                    Col::Progress => 120.0,
+                    Col::Activity => 100.0,
+                    Col::Queue => width((t.queue_pos + 1).to_string(), mono.clone()),
+                    Col::Size => width(fmt_bytes(t.size), mono.clone()),
+                    Col::Status => width(status_text(t), egui::FontId::proportional(11.0)) + 14.0,
+                    Col::Peers => width(format!("{} / {}", t.peers_live, t.peers_seen), mono.clone()),
+                    Col::Down => width(fmt_speed(t.down_bps, units), mono.clone()),
+                    Col::Up => width(fmt_speed(t.up_bps, units), mono.clone()),
+                    Col::Eta => width(t.eta.map(fmt_duration).unwrap_or_else(|| "∞".into()), mono.clone()),
+                    Col::Ratio => width(fmt_ratio(t.ratio), mono.clone()),
+                    Col::Category => width(t.category.clone().unwrap_or_default(), body.clone()),
+                    Col::Tags => width(t.tags.join(", "), body.clone()),
+                    Col::Added => width(fmt_date(t.added_at), small.clone()),
+                    Col::Completed => width(t.completed_at.map(fmt_date).unwrap_or_default(), small.clone()),
+                    Col::Downloaded => width(fmt_bytes(t.downloaded), mono.clone()),
+                    Col::Uploaded => width(fmt_bytes(t.uploaded), mono.clone()),
+                    Col::SavePath => width(t.save_path.display().to_string(), small.clone()),
+                    Col::Tracker => {
+                        width(t.trackers.first().map(|u| hosts.peek(u)).unwrap_or_default().to_string(), small.clone())
+                    }
+                    Col::SeedTime => width(fmt_duration(Duration::from_secs(t.seeding_secs)), mono.clone()),
+                    Col::LastActivity => width(fmt_date(t.last_activity), small.clone()),
+                    Col::Error => width(
+                        t.error.as_deref().and_then(|e| e.lines().next()).unwrap_or_default().to_string(),
+                        small.clone(),
+                    ),
+                }
+            };
+            let content = shown.iter().map(|t| cell(t)).fold(0.0f32, f32::max);
+            // Room for the title and its sort arrow, and the cell's margins.
+            let title = width(c.title().to_string(), small.clone()) + 16.0;
+            widths.push((c, (content.max(title) + 14.0).clamp(32.0, 420.0)));
+        }
+        self.prefs.column_widths = widths;
+        self.prefs.columns_fitted = self.prefs.columns_fitted.wrapping_add(1);
     }
 
     /// Opacity for a row: new rows fade in over 250 ms (rows present at startup don't).
@@ -768,6 +834,16 @@ impl CorrentApp {
             Col::LastActivity => {
                 ui.label(RichText::new(fmt_date(t.last_activity)).small().color(p.text_dim));
             }
+            Col::Error => {
+                if let Some(e) = &t.error {
+                    let first = e.lines().next().unwrap_or_default();
+                    ui.add(egui::Label::new(RichText::new(first).small().color(p.error)).truncate()).on_hover_ui(
+                        |ui| {
+                            ui.label(e);
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -905,6 +981,21 @@ impl CorrentApp {
         widgets::popup(popup, |ui| {
             ui.set_width(240.0);
             ui.label(RichText::new(t!("Columns")).strong().color(p.text));
+            // Above the list, which can be taller than the popup.
+            ui.horizontal(|ui| {
+                if ui
+                    .button(t!("Fit columns"))
+                    .on_hover_text(t!("Make every column as wide as its contents need"))
+                    .clicked()
+                {
+                    self.fit_columns = true;
+                }
+                if ui.button(t!("Reset to defaults")).clicked() {
+                    self.prefs.columns = super::UiPrefs::default().columns;
+                    self.prefs.column_widths.clear();
+                    self.prefs.columns_fitted = self.prefs.columns_fitted.wrapping_add(1);
+                }
+            });
             ui.separator();
             // Shown columns in their order (with move buttons), then the hidden ones.
             let shown: Vec<Col> = self.prefs.columns.clone();
@@ -951,10 +1042,6 @@ impl CorrentApp {
                 Some((c, true)) => self.prefs.columns.push(c),
                 Some((c, false)) => self.prefs.columns.retain(|x| *x != c),
                 None => {}
-            }
-            ui.separator();
-            if ui.button(t!("Reset to defaults")).clicked() {
-                self.prefs.columns = super::UiPrefs::default().columns;
             }
         });
         // Closed by a click elsewhere or Escape.

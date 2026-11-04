@@ -160,10 +160,11 @@ pub enum Col {
     SeedTime,
     LastActivity,
     Activity,
+    Error,
 }
 
 impl Col {
-    pub const ALL: [Col; 21] = [
+    pub const ALL: [Col; 22] = [
         Col::Queue,
         Col::Name,
         Col::Size,
@@ -185,6 +186,7 @@ impl Col {
         Col::SeedTime,
         Col::LastActivity,
         Col::Activity,
+        Col::Error,
     ];
 
     pub fn title(self) -> &'static str {
@@ -210,6 +212,7 @@ impl Col {
             Col::SeedTime => t!("Seeding time"),
             Col::LastActivity => t!("Last activity"),
             Col::Activity => t!("Activity"),
+            Col::Error => t!("Error"),
         }
     }
 
@@ -224,6 +227,7 @@ impl Col {
             Col::Tags | Col::Category => 110.0,
             Col::Added | Col::Completed | Col::LastActivity => 130.0,
             Col::Activity => 100.0,
+            Col::Error => 200.0,
             _ => 86.0,
         }
     }
@@ -267,6 +271,25 @@ pub struct UiPrefs {
     pub feeds_selected: Option<String>,
     pub search_sort: search_view::SortBy,
     pub search_asc: bool,
+    /// Named filter and sort combinations in the sidebar.
+    pub views: Vec<SavedView>,
+    /// Column widths from "Fit columns".
+    pub column_widths: Vec<(Col, f32)>,
+    /// Counts "Fit columns": a new table state, so the widths above apply.
+    pub columns_fitted: u32,
+}
+
+/// A saved view: what the list is filtered and sorted by.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedView {
+    pub name: String,
+    pub status: StatusFilter,
+    pub category: GroupFilter,
+    pub tag: GroupFilter,
+    pub tracker: GroupFilter,
+    pub search: String,
+    pub sort: Col,
+    pub sort_asc: bool,
 }
 
 impl Default for UiPrefs {
@@ -299,6 +322,9 @@ impl Default for UiPrefs {
             feeds_selected: None,
             search_sort: search_view::SortBy::Seeders,
             search_asc: false,
+            views: Vec::new(),
+            column_widths: Vec::new(),
+            columns_fitted: 0,
         }
     }
 }
@@ -342,6 +368,8 @@ pub struct CorrentApp {
     /// How many rows fit in the list (Page Up/Down).
     page_rows: usize,
     pub column_menu: Option<egui::Pos2>,
+    /// "Fit columns" was asked for: measured on the next frame.
+    fit_columns: bool,
     /// A widget had the keyboard focus at the end of the last frame.
     had_focus: bool,
 
@@ -568,6 +596,7 @@ impl CorrentApp {
             focus_visible: false,
             page_rows: 10,
             column_menu: None,
+            fit_columns: false,
             had_focus: false,
             launch_queue: launch.into(),
             dropped_tx,
@@ -658,6 +687,39 @@ impl CorrentApp {
             local_stopping: None,
             prefs,
         }
+    }
+
+    /// The list as it is now, under this name (replacing a view of that name).
+    pub(super) fn save_view(&mut self, name: &str) {
+        let view = self.current_view(name.trim());
+        match self.prefs.views.iter_mut().find(|v| v.name == view.name) {
+            Some(v) => *v = view,
+            None => self.prefs.views.push(view),
+        }
+    }
+
+    pub(super) fn current_view(&self, name: &str) -> SavedView {
+        SavedView {
+            name: name.to_string(),
+            status: self.prefs.status_filter,
+            category: self.prefs.category_filter.clone(),
+            tag: self.prefs.tag_filter.clone(),
+            tracker: self.prefs.tracker_filter.clone(),
+            search: self.search.clone(),
+            sort: self.prefs.sort,
+            sort_asc: self.prefs.sort_asc,
+        }
+    }
+
+    pub(super) fn apply_view(&mut self, view: &SavedView) {
+        self.prefs.status_filter = view.status;
+        self.prefs.category_filter = view.category.clone();
+        self.prefs.tag_filter = view.tag.clone();
+        self.prefs.tracker_filter = view.tracker.clone();
+        self.search.clone_from(&view.search);
+        self.prefs.sort = view.sort;
+        self.prefs.sort_asc = view.sort_asc;
+        self.main_view = feeds::MainView::Torrents;
     }
 
     /// What the views show now, into the preferences that get saved.

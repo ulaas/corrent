@@ -184,6 +184,41 @@ pub(super) fn section(ui: &mut Ui, p: &Palette, title: &str, add: Option<&str>, 
 }
 
 impl CorrentApp {
+    /// Saved views: applying one just sets the filters and the sort.
+    fn views_section(&mut self, ui: &mut Ui, p: &Palette, tv: bool) {
+        let mut c = self.prefs.collapsed.iter().any(|k| k == "views");
+        if section(ui, p, t!("Views"), Some(t!("Save view…")), &mut c) {
+            self.modal = Some(super::dialogs::Modal::SaveView { name: String::new() });
+        }
+        set_collapsed(&mut self.prefs.collapsed, "views", c);
+        if !c {
+            if self.prefs.views.is_empty() {
+                hint(ui, p, t!("Save the current filters, search and sort to come back to them."));
+            }
+            let mut apply = None;
+            let mut delete = None;
+            for (i, view) in self.prefs.views.iter().enumerate() {
+                let on = tv && *view == self.current_view(&view.name);
+                let r = row(ui, p, icons::BOOKMARK_SIMPLE, p.accent, &view.name, None, on);
+                if r.clicked() {
+                    apply = Some(i);
+                }
+                crate::ui::widgets::context_menu(&r, |ui| {
+                    if ui.button(format!("{}  {}", icons::TRASH, t!("Delete view"))).clicked() {
+                        delete = Some(i);
+                    }
+                });
+            }
+            if let Some(v) = apply.and_then(|i| self.prefs.views.get(i).cloned()) {
+                self.apply_view(&v);
+            }
+            if let Some(i) = delete {
+                self.prefs.views.remove(i);
+            }
+        }
+        ui.add_space(10.0);
+    }
+
     /// Filter by tracker host: the private tracker, the dead one.
     fn trackers_section(&mut self, ui: &mut Ui, p: &Palette, total: usize, tv: bool) {
         let mut c = self.prefs.collapsed.iter().any(|k| k == "trackers");
@@ -245,6 +280,7 @@ impl CorrentApp {
             let total = self.snap.torrents.len();
             ui.add_space(4.0);
             self.media_sidebar(ui, p);
+            self.views_section(ui, p, tv);
             let mut c = self.prefs.collapsed.contains(&"status".to_string());
             section(ui, p, t!("Status"), None, &mut c);
             set_collapsed(&mut self.prefs.collapsed, "status", c);

@@ -66,6 +66,10 @@ pub enum Modal {
         text: String,
     },
     ConfirmExit,
+    /// Saving the list's filters and sort under a name.
+    SaveView {
+        name: String,
+    },
     /// "Add to library…": a finished download into a movie, show or video library.
     AddToLibrary(Box<AddToLibrary>),
 }
@@ -912,6 +916,29 @@ impl CorrentApp {
                             for hash in hashes.iter() {
                                 self.engine.send(EngineCommand::AddTrackers { hash: *hash, trackers: list.clone() });
                             }
+                            keep = false;
+                        }
+                        if secondary_button(ui, t!("Cancel")).clicked() {
+                            keep = false;
+                        }
+                    });
+                }
+                Modal::SaveView { name } => {
+                    ui.set_width(widgets::modal_width(ui.ctx(), 400.0));
+                    title(ui, p, icons::BOOKMARK_SIMPLE, t!("Save view"));
+                    ui.label(
+                        RichText::new(t!("Keeps the current filters, search and sort in the sidebar.")).color(p.text_dim),
+                    );
+                    ui.add_space(6.0);
+                    let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).hint_text(t!("Name")));
+                    self.focus_once(&r);
+                    ui.add_space(14.0);
+                    widgets::dialog_footer(ui, |ui| {
+                        let ok = !name.trim().is_empty();
+                        if ui.add_enabled_ui(ok, |ui| primary_button(ui, p, t!("Save"))).inner.clicked()
+                            || (ok && enter_in(ui, &r))
+                        {
+                            self.save_view(name);
                             keep = false;
                         }
                         if secondary_button(ui, t!("Cancel")).clicked() {
