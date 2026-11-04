@@ -62,7 +62,7 @@ pub enum Modal {
         up: u32,
     },
     Trackers {
-        hash: InfoHash,
+        hashes: Vec<InfoHash>,
         text: String,
     },
     ConfirmExit,
@@ -443,8 +443,8 @@ impl CorrentApp {
         self.modal = Some(Modal::SpeedLimits { hashes, down, up });
     }
 
-    pub fn open_trackers_dialog(&mut self, hash: InfoHash) {
-        self.modal = Some(Modal::Trackers { hash, text: String::new() });
+    pub fn open_trackers_dialog(&mut self, hashes: Vec<InfoHash>) {
+        self.modal = Some(Modal::Trackers { hashes, text: String::new() });
     }
 
     /// Queue a source for adding: opens the add dialog (with preview) unless disabled.
@@ -530,7 +530,8 @@ impl CorrentApp {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             let add = ui
                                 .add_enabled_ui(!sources.is_empty(), |ui| primary_button(ui, p, t!("Continue")))
-                                .inner;
+                                .inner
+                                .on_hover_text(t!("Ctrl+Enter"));
                             if add.clicked()
                                 || (ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
                                     && !sources.is_empty())
@@ -883,7 +884,7 @@ impl CorrentApp {
                         }
                     });
                 }
-                Modal::Trackers { hash, text } => {
+                Modal::Trackers { hashes, text } => {
                     ui.set_width(widgets::modal_width(ui.ctx(), 520.0));
                     title(ui, p, icons::BROADCAST, t!("Add trackers"));
                     ui.label(RichText::new(t!("One tracker URL per line.")).color(p.text_dim));
@@ -907,7 +908,9 @@ impl CorrentApp {
                         let list: Vec<String> =
                             text.lines().map(|l| l.trim().to_string()).filter(|l| url::Url::parse(l).is_ok()).collect();
                         if ui.add_enabled_ui(!list.is_empty(), |ui| primary_button(ui, p, t!("Add"))).inner.clicked() {
-                            self.engine.send(EngineCommand::AddTrackers { hash: *hash, trackers: list });
+                            for hash in hashes.iter() {
+                                self.engine.send(EngineCommand::AddTrackers { hash: *hash, trackers: list.clone() });
+                            }
                             keep = false;
                         }
                         if secondary_button(ui, t!("Cancel")).clicked() {

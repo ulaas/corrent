@@ -514,7 +514,7 @@ impl CorrentApp {
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button(format!("{}  {}", icons::PLUS, t!("Add trackers…"))).clicked() {
-                        self.open_trackers_dialog(t.hash);
+                        self.open_trackers_dialog(vec![t.hash]);
                     }
                     if !t.trackers.is_empty() && ui.button(format!("{}  {}", icons::COPY, t!("Copy all"))).clicked() {
                         self.copy(t.trackers.join("\n"));

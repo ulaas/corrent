@@ -5,13 +5,28 @@ use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
 use crate::engine::EngineCommand;
-use crate::engine::types::{AddSource, TorrentState, TorrentView};
+use crate::engine::types::{AddSource, InfoHash, TorrentState, TorrentView};
 use crate::store::QueueMove;
 use crate::ui::theme::Palette;
 
 /// (torrent, its files, how many are selected) and its playable files.
 pub(super) type MediaFilesCache =
     (crate::engine::types::InfoHash, usize, usize, std::sync::Arc<Vec<(usize, String, u64)>>);
+
+#[derive(Clone, Copy, Debug)]
+enum Move {
+    By(isize),
+    First,
+    Last,
+}
+
+/// What a selection can be widened by.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum SameAs {
+    Category,
+    Tag,
+    Tracker,
+}
 
 fn item(ui: &mut Ui, icon: &str, text: &str) -> bool {
     ui.button(format!("{icon}  {text}")).clicked()
@@ -165,8 +180,8 @@ impl CorrentApp {
         if item(ui, icons::ARROWS_CLOCKWISE, t!("Force recheck")) {
             self.engine.send(EngineCommand::Recheck(hashes.clone()));
         }
-        if single && item(ui, icons::BROADCAST, t!("Add trackers…")) {
-            self.open_trackers_dialog(first.hash);
+        if item(ui, icons::BROADCAST, t!("Add trackers…")) {
+            self.open_trackers_dialog(hashes.clone());
         }
         crate::ui::widgets::menu_button(ui, format!("{}  {}", icons::COPY, t!("Copy")), |ui| {
             if ui.button(t!("Name")).clicked() {
@@ -180,6 +195,32 @@ impl CorrentApp {
             }
             if ui.button(t!("Save path")).clicked() {
                 self.copy(sel.iter().map(|t| t.content_path.display().to_string()).collect::<Vec<_>>().join("\n"));
+            }
+            if ui.button(t!("Tracker hosts")).clicked() {
+                let mut hosts: Vec<String> = Vec::new();
+                for u in sel.iter().flat_map(|t| t.trackers.iter()) {
+                    hosts.push(self.counts.hosts.get(u).to_string());
+                }
+                hosts.sort();
+                hosts.dedup();
+                self.copy(hosts.join("\n"));
+            }
+        });
+        crate::ui::widgets::menu_button(ui, format!("{}  {}", icons::SELECTION, t!("Select")), |ui| {
+            if ui.button(t!("Invert selection")).clicked() {
+                self.invert_selection();
+                ui.close();
+            }
+            ui.separator();
+            for (label, what) in [
+                (t!("Same category"), SameAs::Category),
+                (t!("Same tag"), SameAs::Tag),
+                (t!("Same tracker"), SameAs::Tracker),
+            ] {
+                if ui.button(label).clicked() {
+                    self.select_same(what);
+                    ui.close();
+                }
             }
         });
         ui.separator();
@@ -282,6 +323,9 @@ impl CorrentApp {
         if consume(sc(Modifiers::COMMAND, Key::B)) {
             self.prefs.show_sidebar = !self.prefs.show_sidebar;
         }
+        if consume(sc(Modifiers::NONE, Key::F1)) {
+            self.extras.shortcuts = !self.extras.shortcuts;
+        }
         if typing {
             return;
         }
@@ -353,32 +397,102 @@ impl CorrentApp {
         if !self.had_focus && consume(sc(Modifiers::NONE, Key::Escape)) {
             self.selected.clear();
         }
-        // Arrow navigation
-        let up = consume(sc(Modifiers::NONE, Key::ArrowUp)) || consume(sc(Modifiers::SHIFT, Key::ArrowUp));
-        let down = consume(sc(Modifiers::NONE, Key::ArrowDown)) || consume(sc(Modifiers::SHIFT, Key::ArrowDown));
-        if up || down {
-            let shift = ctx.input(|i| i.modifiers.shift);
-            let rows = self.visible_rows().to_vec();
-            if rows.is_empty() {
-                return;
-            }
-            let hashes: Vec<_> = rows.iter().filter_map(|&i| self.snap.torrents.get(i).map(|t| t.hash)).collect();
-            let cur = self.focus.and_then(|f| hashes.iter().position(|h| *h == f));
-            let next = match (cur, up) {
-                (None, _) => 0,
-                (Some(c), true) => c.saturating_sub(1),
-                (Some(c), false) => (c + 1).min(hashes.len() - 1),
-            };
-            let Some(&h) = hashes.get(next) else { return };
-            if shift {
-                self.selected.insert(h);
-            } else {
-                self.selected.clear();
-                self.selected.insert(h);
-                self.anchor = Some(h);
-            }
-            self.focus = Some(h);
-            self.scroll_to_focus = true;
+        if consume(sc(Modifiers::NONE, Key::Slash)) {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("search_box")));
         }
+        if consume(sc(Modifiers::COMMAND, Key::Space)) {
+            self.toggle_focused();
+        }
+        // Moving through the list. Ctrl moves only the focus; Shift selects from the anchor.
+        let page = self.page_rows.max(1);
+        let moves = [
+            (Key::ArrowUp, Move::By(-1)),
+            (Key::ArrowDown, Move::By(1)),
+            (Key::PageUp, Move::By(-(page as isize))),
+            (Key::PageDown, Move::By(page as isize)),
+            (Key::Home, Move::First),
+            (Key::End, Move::Last),
+        ];
+        let moved = moves.into_iter().find_map(|(key, how)| {
+            let hit = consume(sc(Modifiers::COMMAND, key)) || consume(sc(Modifiers::NONE, key));
+            hit.then_some(how)
+        });
+        if let Some(how) = moved {
+            let mods = ctx.input(|i| i.modifiers);
+            self.move_focus(how, mods.shift, mods.command);
+        }
+    }
+
+    /// The torrents in the list, in its order.
+    fn visible_hashes(&mut self) -> Vec<InfoHash> {
+        let snap = self.snap.clone();
+        self.visible_rows().iter().filter_map(|&i| snap.torrents.get(i).map(|t| t.hash)).collect()
+    }
+
+    fn move_focus(&mut self, how: Move, extend: bool, focus_only: bool) {
+        let hashes = self.visible_hashes();
+        let Some(last) = hashes.len().checked_sub(1) else { return };
+        let cur = self.focus.and_then(|f| hashes.iter().position(|h| *h == f));
+        let next = match (how, cur) {
+            (Move::First, _) => 0,
+            (Move::Last, _) => last,
+            (Move::By(_), None) => 0,
+            (Move::By(n), Some(c)) => c.saturating_add_signed(n).min(last),
+        };
+        let Some(&h) = hashes.get(next) else { return };
+        if focus_only {
+            // The selection stays.
+        } else if extend {
+            // From the anchor, which stays for the next Shift+move or Shift+click.
+            let anchor = self.anchor.or(self.focus).unwrap_or(h);
+            self.anchor = Some(anchor);
+            let a = hashes.iter().position(|x| *x == anchor).unwrap_or(next);
+            self.selected = hashes.get(a.min(next)..=a.max(next)).unwrap_or_default().iter().copied().collect();
+        } else {
+            self.selected.clear();
+            self.selected.insert(h);
+            self.anchor = Some(h);
+        }
+        self.focus = Some(h);
+        self.focus_visible = true;
+        self.scroll_to_focus = true;
+    }
+
+    /// Ctrl+Space: the focused row in or out of the selection.
+    fn toggle_focused(&mut self) {
+        if let Some(h) = self.focus {
+            if !self.selected.remove(&h) {
+                self.selected.insert(h);
+            }
+            self.anchor = Some(h);
+            self.focus_visible = true;
+        }
+    }
+
+    pub(super) fn invert_selection(&mut self) {
+        let all = self.visible_hashes();
+        self.selected = all.into_iter().filter(|h| !self.selected.contains(h)).collect();
+        self.anchor = None;
+    }
+
+    /// Selects the visible torrents that have what the focused one (or the first selected) has.
+    pub(super) fn select_same(&mut self, what: SameAs) {
+        let snap = self.snap.clone();
+        let current =
+            self.focus.filter(|f| self.selected.contains(f)).or_else(|| self.selected_hashes().first().copied());
+        let Some(base) = current.and_then(|h| snap.torrents.iter().find(|t| t.hash == h)) else { return };
+        let mut base_hosts: Vec<String> = Vec::new();
+        for u in base.trackers.iter() {
+            base_hosts.push(self.counts.hosts.get(u).to_string());
+        }
+        let hosts = &self.counts.hosts;
+        let same = |t: &TorrentView| match what {
+            SameAs::Category => t.category == base.category,
+            SameAs::Tag => t.tags.iter().any(|x| base.tags.contains(x)),
+            SameAs::Tracker => t.trackers.iter().any(|u| base_hosts.iter().any(|h| h == hosts.peek(u))),
+        };
+        let chosen: Vec<InfoHash> =
+            (self.rows.iter().filter_map(|&i| snap.torrents.get(i))).filter(|t| same(t)).map(|t| t.hash).collect();
+        self.selected = chosen.into_iter().collect();
     }
 }

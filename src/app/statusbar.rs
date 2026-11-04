@@ -39,7 +39,26 @@ impl CorrentApp {
             };
             let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), egui::Sense::hover());
             ui.painter().circle_filled(r.center(), 4.0, dot);
-            ui.label(RichText::new(text).small().color(p.text_dim));
+            let local = self.server.is_none();
+            let page = |r: &egui::Response, page, this: &mut Self| {
+                if local && r.clicked() {
+                    this.open_settings_at(page);
+                }
+            };
+            let chip = |text: RichText| {
+                egui::Label::new(text.small().color(p.text_dim)).sense(if local {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                })
+            };
+            let r = ui.add(chip(RichText::new(text)));
+            let r = if local && matches!(self.snap.engine_state, EngineState::Running) {
+                r.on_hover_text(t!("Click for BitTorrent settings"))
+            } else {
+                r
+            };
+            page(&r, super::settings_window::Page::BitTorrent, self);
 
             let wd = self.when_done.action;
             if wd != crate::integration::power::WhenDone::Nothing {
@@ -80,12 +99,10 @@ impl CorrentApp {
                 }
             }
             if let Some(port) = s.listen_port {
-                ui.label(
-                    RichText::new(format!("{} {}", icons::PLUGS, t!("Port {port}", port = port)))
-                        .small()
-                        .color(p.text_dim),
-                )
-                .on_hover_text(t!("Incoming connection port"));
+                let r = ui
+                    .add(chip(RichText::new(format!("{} {}", icons::PLUGS, t!("Port {port}", port = port)))))
+                    .on_hover_text(t!("Incoming connection port. Click for connection settings."));
+                page(&r, super::settings_window::Page::Connection, self);
             }
             ui.label(
                 RichText::new(format!("{} {}", icons::USERS, t!("{n} peers", n = s.peers_live)))
@@ -93,12 +110,14 @@ impl CorrentApp {
                     .color(p.text_dim),
             );
             if let Some(free) = self.snap.free_space {
-                ui.label(
-                    RichText::new(format!("{} {}", icons::HARD_DRIVE, t!("{free} free", free = fmt_bytes(free))))
-                        .small()
-                        .color(p.text_dim),
-                )
-                .on_hover_text(t!("Free space in the default download folder"));
+                let r = ui
+                    .add(chip(RichText::new(format!(
+                        "{} {}",
+                        icons::HARD_DRIVE,
+                        t!("{free} free", free = fmt_bytes(free))
+                    ))))
+                    .on_hover_text(t!("Free space in the default download folder. Click to change the folder."));
+                page(&r, super::settings_window::Page::Downloads, self);
             }
             self.health_chip(ui, p);
 

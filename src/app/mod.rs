@@ -259,6 +259,13 @@ pub struct UiPrefs {
     pub tracker_filter: GroupFilter,
     /// Collapsed sidebar sections ("status", "categories", "tags", "trackers").
     pub collapsed: Vec<String>,
+    // What the views were showing (copied from them when saved, see `sync_prefs`).
+    pub speed_scope_torrent: bool,
+    pub show_all_peers: bool,
+    pub file_filter: String,
+    pub feeds_selected: Option<String>,
+    pub search_sort: search_view::SortBy,
+    pub search_asc: bool,
 }
 
 impl Default for UiPrefs {
@@ -285,6 +292,12 @@ impl Default for UiPrefs {
             tag_filter: GroupFilter::All,
             tracker_filter: GroupFilter::All,
             collapsed: Vec::new(),
+            speed_scope_torrent: true,
+            show_all_peers: false,
+            file_filter: String::new(),
+            feeds_selected: None,
+            search_sort: search_view::SortBy::Seeders,
+            search_asc: false,
         }
     }
 }
@@ -323,6 +336,10 @@ pub struct CorrentApp {
     rows_key: Option<u64>,
     sort_memo: table::SortMemo,
     pub scroll_to_focus: bool,
+    /// The focus was last moved with the keyboard: the focused row is marked.
+    focus_visible: bool,
+    /// How many rows fit in the list (Page Up/Down).
+    page_rows: usize,
     pub column_menu: Option<egui::Pos2>,
     /// A widget had the keyboard focus at the end of the last frame.
     had_focus: bool,
@@ -525,6 +542,9 @@ impl CorrentApp {
         }
         let remote = remote::RemoteCtl::new(&settings);
         let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
+        let feeds = feeds::FeedsUi { selected: prefs.feeds_selected.clone(), ..Default::default() };
+        let mut torznab = search_view::SearchUi::default();
+        (torznab.sort, torznab.asc) = (prefs.search_sort, prefs.search_asc);
         CorrentApp {
             paths,
             settings,
@@ -533,7 +553,6 @@ impl CorrentApp {
             events: rx,
             ui_events_tx,
             snap: Arc::new(Snapshot::default()),
-            prefs,
             toasts: Toasts::default(),
             search: String::new(),
             selected: HashSet::new(),
@@ -543,6 +562,8 @@ impl CorrentApp {
             rows_key: None,
             sort_memo: Default::default(),
             scroll_to_focus: false,
+            focus_visible: false,
+            page_rows: 10,
             column_menu: None,
             had_focus: false,
             launch_queue: launch.into(),
@@ -565,11 +586,11 @@ impl CorrentApp {
             frame_seen: false,
             counts: sidebar::Counts::default(),
             sent_detail_target: None,
-            file_filter: String::new(),
+            file_filter: prefs.file_filter.clone(),
             file_tree: Default::default(),
             media_files_cache: None,
-            show_all_peers: false,
-            speed_scope_torrent: true,
+            show_all_peers: prefs.show_all_peers,
+            speed_scope_torrent: prefs.speed_scope_torrent,
             tray: None,
             tray_failed: false,
             ctx: ctx.clone(),
@@ -590,8 +611,8 @@ impl CorrentApp {
             refused_seen: 0,
             mica: false,
             main_view: Default::default(),
-            feeds: Default::default(),
-            torznab: Default::default(),
+            feeds,
+            torznab,
             remote,
             row_first_seen: Default::default(),
             rows_seen_once: false,
@@ -631,7 +652,18 @@ impl CorrentApp {
             #[cfg(debug_assertions)]
             media_dev_paused: false,
             local_stopping: None,
+            prefs,
         }
+    }
+
+    /// What the views show now, into the preferences that get saved.
+    fn sync_prefs(&mut self) {
+        self.prefs.speed_scope_torrent = self.speed_scope_torrent;
+        self.prefs.show_all_peers = self.show_all_peers;
+        self.prefs.file_filter.clone_from(&self.file_filter);
+        self.prefs.feeds_selected.clone_from(&self.feeds.selected);
+        self.prefs.search_sort = self.torznab.sort;
+        self.prefs.search_asc = self.torznab.asc;
     }
 
     pub fn with_data_notes(mut self, notes: Vec<String>) -> Self {
@@ -1212,6 +1244,7 @@ impl eframe::App for CorrentApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.sync_prefs();
         eframe::set_value(storage, "ui_prefs", &self.prefs);
     }
 
@@ -1272,6 +1305,7 @@ impl CorrentApp {
                 "appearance" => self.open_settings_at(settings_window::Page::Appearance),
                 "magnet" => self.open_magnet_dialog(),
                 "about" => self.extras.about = true,
+                "shortcuts" => self.extras.shortcuts = true,
                 "columns" => {
                     self.column_menu = Some(egui::pos2(500.0, 90.0));
                     egui::Popup::open_id(ctx, egui::Id::new(table::COLUMN_CHOOSER));

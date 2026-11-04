@@ -501,6 +501,182 @@ fn perf_files_tab_10k_files() {
     println!("frame with 10,000 files: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 30.0);
 }
 
+fn three_rows() -> (Fixture, CorrentApp) {
+    app(
+        "keys",
+        vec![
+            torrent(1, "One", TorrentState::Seeding),
+            torrent(2, "Two", TorrentState::Seeding),
+            torrent(3, "Three", TorrentState::Seeding),
+        ],
+    )
+}
+
+fn press(h: &mut Harness<'static, CorrentApp>, mods: egui::Modifiers, key: egui::Key) {
+    h.key_press_modifiers(mods, key);
+    h.run_steps(2);
+}
+
+#[test]
+fn moving_through_the_list_with_the_keyboard() {
+    use egui::{Key, Modifiers as M};
+    let (_f, app) = three_rows();
+    let mut h = harness(app);
+    h.run_steps(3);
+    let (one, two, three) = (InfoHash([1; 20]), InfoHash([2; 20]), InfoHash([3; 20]));
+    let sel = |h: &Harness<'static, CorrentApp>| {
+        let mut v: Vec<u8> = h.state().selected.iter().map(|x| x.0[0]).collect();
+        v.sort_unstable();
+        v
+    };
+    press(&mut h, M::NONE, Key::End);
+    assert_eq!(h.state().focus, Some(three));
+    assert_eq!(sel(&h), [3]);
+    press(&mut h, M::NONE, Key::Home);
+    assert_eq!(sel(&h), [1]);
+    press(&mut h, M::NONE, Key::PageDown);
+    assert_eq!(h.state().focus, Some(three), "a page down, stopping at the end");
+    press(&mut h, M::NONE, Key::PageUp);
+    assert_eq!(h.state().focus, Some(one));
+    // Shift selects a range from the anchor, also on the way back.
+    press(&mut h, M::SHIFT, Key::ArrowDown);
+    press(&mut h, M::SHIFT, Key::ArrowDown);
+    assert_eq!(sel(&h), [1, 2, 3]);
+    press(&mut h, M::SHIFT, Key::ArrowUp);
+    assert_eq!(sel(&h), [1, 2]);
+    assert_eq!(h.state().anchor, Some(one), "the anchor stays");
+    // Ctrl moves only the focus; Ctrl+Space toggles the row it is on.
+    press(&mut h, M::COMMAND, Key::ArrowDown);
+    assert_eq!(h.state().focus, Some(three));
+    assert_eq!(sel(&h), [1, 2]);
+    press(&mut h, M::COMMAND, Key::Space);
+    assert_eq!(sel(&h), [1, 2, 3]);
+    press(&mut h, M::COMMAND, Key::Space);
+    assert_eq!(sel(&h), [1, 2]);
+    let _ = two;
+    // / goes to the search box.
+    press(&mut h, M::NONE, Key::Slash);
+    assert_eq!(h.state().ctx.memory(|m| m.focused()), Some(egui::Id::new("search_box")));
+}
+
+#[test]
+fn selecting_by_what_torrents_share() {
+    use super::actions::SameAs;
+    let tracked = |n: u8, name: &str, url: &str, cat: &str, tag: &str| TorrentView {
+        trackers: [url.to_string()].into_iter().collect(),
+        category: Some(cat.into()),
+        tags: vec![tag.into()],
+        ..torrent(n, name, TorrentState::Seeding)
+    };
+    let (_f, mut app) = app(
+        "same",
+        vec![
+            tracked(1, "A", "udp://t.example:1/a", "Movies", "x"),
+            tracked(2, "B", "http://t.example/b", "Music", "y"),
+            tracked(3, "C", "udp://o.example:1/a", "Movies", "z"),
+            tracked(4, "D", "udp://o.example:1/a", "Other", "x"),
+        ],
+    );
+    app.selected.insert(InfoHash([1; 20]));
+    let mut h = harness(app);
+    h.run_steps(3);
+    let sel = |h: &Harness<'static, CorrentApp>| {
+        let mut v: Vec<u8> = h.state().selected.iter().map(|x| x.0[0]).collect();
+        v.sort_unstable();
+        v
+    };
+    h.state_mut().select_same(SameAs::Category);
+    assert_eq!(sel(&h), [1, 3]);
+    h.state_mut().selected = [InfoHash([1; 20])].into_iter().collect();
+    h.state_mut().select_same(SameAs::Tag);
+    assert_eq!(sel(&h), [1, 4]);
+    h.state_mut().selected = [InfoHash([1; 20])].into_iter().collect();
+    h.state_mut().select_same(SameAs::Tracker);
+    assert_eq!(sel(&h), [1, 2], "by host, not by URL");
+    h.state_mut().invert_selection();
+    assert_eq!(sel(&h), [3, 4]);
+}
+
+#[test]
+fn add_trackers_goes_to_the_whole_selection() {
+    let (_f, mut app) = three_rows();
+    let log = record_commands(&mut app);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().open_trackers_dialog(vec![InfoHash([1; 20]), InfoHash([2; 20])]);
+    if let Some(super::dialogs::Modal::Trackers { text, .. }) = &mut h.state_mut().modal {
+        *text = "udp://t.example:1/announce".into();
+    }
+    h.run_steps(3);
+    h.get_by_label("Add").click();
+    h.run_steps(3);
+    let sent = commands_sent(h.state(), &log);
+    assert_eq!(sent.iter().filter(|c| c.starts_with("AddTrackers")).count(), 2, "{sent:?}");
+}
+
+#[test]
+fn view_state_comes_back_after_a_restart() {
+    let mut prefs = super::UiPrefs::default();
+    {
+        let (_f, mut app) = three_rows();
+        app.speed_scope_torrent = false;
+        app.show_all_peers = true;
+        app.file_filter = "mkv".into();
+        app.feeds.selected = Some("https://x.example/rss".into());
+        app.torznab.sort = super::search_view::SortBy::Size;
+        app.torznab.asc = true;
+        app.sync_prefs();
+        prefs.clone_from(&app.prefs);
+    }
+    // Through what is stored.
+    let stored = serde_json::to_string(&prefs).unwrap();
+    let prefs: super::UiPrefs = serde_json::from_str(&stored).unwrap();
+    assert!(!prefs.speed_scope_torrent && prefs.show_all_peers);
+    let dir = std::env::temp_dir().join(format!("corrent-ui-prefs-{}", std::process::id()));
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let (_tx, ipc) = std::sync::mpsc::channel();
+    let paths = Paths { data_dir: dir.join("data"), portable: true };
+    let app = CorrentApp::build(
+        &ctx,
+        Some(prefs),
+        rt.handle().clone(),
+        paths,
+        settings(&dir),
+        false,
+        Vec::new(),
+        ipc,
+        false,
+        false,
+    );
+    assert!(!app.speed_scope_torrent && app.show_all_peers);
+    assert_eq!(app.file_filter, "mkv");
+    assert_eq!(app.feeds.selected.as_deref(), Some("https://x.example/rss"));
+    assert_eq!(app.torznab.sort, super::search_view::SortBy::Size);
+    assert!(app.torznab.asc);
+    drop(app);
+    drop(Fixture { rt: Some(rt), dir });
+}
+
+#[test]
+fn the_shortcuts_window_opens_with_f1_and_status_bar_chips_open_settings() {
+    let (_f, mut app) = three_rows();
+    app.snap = Arc::new(Snapshot {
+        session: crate::engine::types::SessionView { listen_port: Some(4242), ..Default::default() },
+        ..(*app.snap).clone()
+    });
+    let mut h = harness(app);
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::F1);
+    h.get_by_label_contains("Keyboard shortcuts");
+    h.get_by_label("Ctrl+Space");
+    press(&mut h, egui::Modifiers::NONE, egui::Key::F1);
+    assert!(!h.state().extras.shortcuts);
+    h.get_by_label_contains("Port 4242").click();
+    h.run_steps(3);
+    assert!(h.state().settings_draft.as_ref().is_some_and(|d| d.page == super::settings_window::Page::Connection));
+}
+
 #[test]
 fn empty_list_offers_add_actions() {
     let (_f, app) = app("empty", vec![]);

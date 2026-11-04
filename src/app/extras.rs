@@ -19,6 +19,8 @@ pub struct Extras {
     pub stats: bool,
     pub streams: bool,
     pub log: bool,
+    /// The Keyboard shortcuts window.
+    pub shortcuts: bool,
     pub log_filter: String,
     pub log_level: u8, // 0 = info+, 1 = warn+, 2 = error
     log_index: LogIndex,
@@ -167,6 +169,9 @@ impl CorrentApp {
                     self.open_diagnostics();
                 }
                 ui.separator();
+                if ui.button(format!("{}  {}", icons::KEYBOARD, t!("Keyboard shortcuts  (F1)"))).clicked() {
+                    self.extras.shortcuts = true;
+                }
                 if ui.button(format!("{}  {}", icons::INFO, t!("About Corrent"))).clicked() {
                     self.extras.about = true;
                 }
@@ -185,6 +190,7 @@ impl CorrentApp {
         self.stats_window(ctx, p);
         self.streams_window(ctx, p);
         self.log_window(ctx, p);
+        self.shortcuts_window(ctx, p);
         self.diagnostics_window(ctx, p);
         self.get_mpv_window(ctx, p);
     }
@@ -221,6 +227,78 @@ impl CorrentApp {
         });
         if r.should_close() {
             self.extras.about = false;
+        }
+    }
+
+    fn shortcuts_window(&mut self, ctx: &Context, p: &Palette) {
+        if !self.extras.shortcuts {
+            return;
+        }
+        let groups: [(&str, &[(&str, &str)]); 2] = [
+            (
+                t!("Anywhere"),
+                &[
+                    ("Ctrl+O", t!("Add torrent files")),
+                    ("Ctrl+Shift+O", t!("Add magnet links or URLs")),
+                    ("Ctrl+N", t!("Create a torrent")),
+                    ("Ctrl+,", t!("Settings")),
+                    ("Ctrl+F", t!("Search torrents")),
+                    ("Ctrl+B", t!("Show or hide the sidebar")),
+                    ("Ctrl+I", t!("Show or hide the details")),
+                    ("Ctrl+Shift+S", t!("Alternative speed limits on or off")),
+                    ("F1", t!("This window")),
+                ],
+            ),
+            (
+                t!("In the torrent list"),
+                &[
+                    ("↑ ↓", t!("Move and select")),
+                    (t!("Home End"), t!("First and last torrent")),
+                    (t!("PgUp PgDn"), t!("A page up or down")),
+                    (t!("Shift+move"), t!("Select from where you started")),
+                    (t!("Ctrl+move"), t!("Move without changing the selection")),
+                    (t!("Ctrl+Space"), t!("Add the row to the selection, or take it out")),
+                    ("Ctrl+A", t!("Select all")),
+                    (t!("Space"), t!("Pause the selection; resume it if all of it is paused")),
+                    (t!("Enter"), t!("Open the selected torrent's files")),
+                    ("F2", t!("Rename")),
+                    (t!("Del"), t!("Remove")),
+                    (t!("Shift+Del"), t!("Remove with files")),
+                    ("/", t!("Search torrents")),
+                    (t!("Esc"), t!("Clear the selection")),
+                    ("Ctrl+V", t!("Add a magnet link from the clipboard")),
+                ],
+            ),
+        ];
+        let mut open = true;
+        egui::Window::new(RichText::new(format!("{}  {}", icons::KEYBOARD, t!("Keyboard shortcuts"))).strong())
+            .id(Id::new("shortcuts_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(460.0)
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                let max = (ctx.content_rect().height() - 120.0).max(160.0);
+                egui::ScrollArea::vertical().max_height(max).show(ui, |ui| {
+                    for (i, (title, keys)) in groups.iter().enumerate() {
+                        if i > 0 {
+                            ui.add_space(10.0);
+                        }
+                        ui.label(RichText::new(*title).strong().color(p.text));
+                        ui.add_space(2.0);
+                        egui::Grid::new(("shortcuts", i)).num_columns(2).spacing(vec2(16.0, 5.0)).show(ui, |ui| {
+                            for (key, what) in keys.iter() {
+                                ui.label(RichText::new(*key).monospace().small().color(p.accent));
+                                ui.label(RichText::new(*what).color(p.text_dim));
+                                ui.end_row();
+                            }
+                        });
+                    }
+                });
+            });
+        if !open {
+            self.extras.shortcuts = false;
         }
     }
 

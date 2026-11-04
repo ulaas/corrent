@@ -307,6 +307,8 @@ impl CorrentApp {
 
         let compact = self.settings.appearance.compact_rows;
         let row_h = if compact { 30.0 } else { 52.0 };
+        self.page_rows = ((ui.available_height() - 30.0) / (row_h + ui.spacing().item_spacing.y)).max(1.0) as usize;
+        let focus_mark = self.focus.filter(|_| self.focus_visible);
         let cols = self.prefs.columns.clone();
         let show_bar_in_name = !cols.contains(&Col::Progress);
         let units = self.settings.appearance.speed_units;
@@ -407,6 +409,17 @@ impl CorrentApp {
                         });
                     }
                     let resp = row.response();
+                    if focus_mark == Some(t.hash) {
+                        // Where the keyboard is, also on a row that isn't selected.
+                        let stroke = egui::Stroke::new(1.0, if p.high_contrast { p.text } else { p.accent });
+                        let at = egui::LayerId::new(egui::Order::Foreground, Id::new("list_focus"));
+                        resp.ctx.layer_painter(at).rect_stroke(
+                            resp.rect,
+                            egui::CornerRadius::same(3),
+                            stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                     if reorder && resp.drag_started() && !t.pending {
                         drag_start = Some(t.hash);
                     }
@@ -560,6 +573,7 @@ impl CorrentApp {
             self.anchor = Some(h);
         }
         self.focus = Some(h);
+        self.focus_visible = false;
     }
 
     #[allow(clippy::too_many_arguments)]

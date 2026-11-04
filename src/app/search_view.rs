@@ -13,7 +13,7 @@ use crate::ui::theme::{self, Palette};
 use crate::ui::widgets::{empty_compact, empty_state, primary_button};
 use crate::util::{fmt_bytes, fmt_date};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum SortBy {
     Title,
     Size,
