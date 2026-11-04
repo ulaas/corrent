@@ -50,10 +50,8 @@ pub async fn start(lib: &Library, debounce: Duration) -> crate::Result<Watching>
             tokio::time::sleep(debounce).await;
             let ids: Vec<i64> = dirty.lock().unwrap_or_else(|e| e.into_inner()).drain().collect();
             for id in ids {
-                // Changes during a running scan are picked up by scheduling another later.
-                if !lib2.start_scan(id) {
-                    dirty.lock().unwrap_or_else(|e| e.into_inner()).insert(id);
-                }
+                // Changes during a running scan: another one follows it.
+                lib2.start_scan(id);
             }
         }
     });

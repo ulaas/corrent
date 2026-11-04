@@ -335,6 +335,35 @@ async fn hidden_libraries_stay_hidden_from_wanted_monitors_and_streams() {
     h.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn items_whose_file_is_gone_are_flagged() {
+    let h = harness("missing", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let lib = empty_library(&h, &admin, "Films", "movies").await;
+    let here =
+        seed_item(&h, lib, "movie", None, None, "Here", Some(h.dir.join("here.mkv").display().to_string())).await;
+    let gone =
+        seed_item(&h, lib, "movie", None, None, "Gone", Some(h.dir.join("gone.mkv").display().to_string())).await;
+    let bare = seed_item(&h, lib, "movie", None, None, "No file yet", None).await;
+    h.st.identity
+        .db()
+        .write(move |t| {
+            t.execute(
+                "UPDATE files SET missing_since = 1 WHERE id IN (SELECT file_id FROM item_files WHERE item_id = ?1)",
+                [gone],
+            )
+        })
+        .await
+        .unwrap();
+    let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+    let flag = |id: i64| v["items"].as_array().unwrap().iter().find(|i| i["id"] == id).unwrap()["missing"].clone();
+    assert_eq!(flag(gone), true, "{v}");
+    assert_eq!(flag(here), Value::Null, "left out when false");
+    assert_eq!(flag(bare), Value::Null, "no file was ever known");
+    h.stop().await;
+}
+
 /// Signs in to the qBittorrent API and returns the session cookie.
 async fn qbt_login(app: &Router, name: &str, password: &str) -> String {
     let mut r = Request::builder()

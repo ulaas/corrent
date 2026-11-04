@@ -43,6 +43,8 @@ struct Inner {
     prober: probe::Prober,
     status: Mutex<HashMap<i64, ScanStatus>>,
     cancel: Mutex<HashMap<i64, Arc<AtomicBool>>>,
+    /// Libraries asked to scan while a scan ran: what changed may be behind it already.
+    rescan: Mutex<std::collections::HashSet<i64>>,
     events: tokio::sync::broadcast::Sender<LibraryEvent>,
     /// Image work is CPU-bound: at most this many at once.
     images: tokio::sync::Semaphore,
@@ -120,6 +122,7 @@ impl Library {
                 prober,
                 status: Mutex::new(HashMap::new()),
                 cancel: Mutex::new(HashMap::new()),
+                rescan: Mutex::new(Default::default()),
                 events: tokio::sync::broadcast::channel(256).0,
                 images: tokio::sync::Semaphore::new((cpus / 2).max(1)),
                 name_hook: std::sync::RwLock::new(None),
@@ -173,11 +176,13 @@ impl Library {
         }
     }
 
-    /// Starts a scan in the background unless one is running. Returns false when one was.
+    /// Starts a scan in the background. Returns false when one was running: another then follows
+    /// it (the running one may have passed the folder that changed).
     pub fn start_scan(&self, library_id: i64) -> bool {
         let flag = {
             let mut c = self.inner.cancel.lock().unwrap_or_else(|e| e.into_inner());
             if c.contains_key(&library_id) {
+                self.inner.rescan.lock().unwrap_or_else(|e| e.into_inner()).insert(library_id);
                 return false;
             }
             let f = Arc::new(AtomicBool::new(false));
@@ -186,16 +191,30 @@ impl Library {
         };
         let lib = self.clone();
         tokio::spawn(async move {
-            let r = scan::scan(&lib, library_id, &flag).await;
-            if let Err(e) = r {
-                tracing::warn!("scan of library {library_id} failed: {e}");
-                let mut s = lib.scan_status(library_id).unwrap_or(ScanStatus { library_id, ..Default::default() });
-                s.running = false;
-                s.error = Some(e.to_string());
-                lib.set_status(s);
+            loop {
+                let r = scan::scan(&lib, library_id, &flag).await;
+                if let Err(e) = r {
+                    tracing::warn!("scan of library {library_id} failed: {e}");
+                    let mut s = lib.scan_status(library_id).unwrap_or(ScanStatus { library_id, ..Default::default() });
+                    s.running = false;
+                    s.error = Some(e.to_string());
+                    lib.set_status(s);
+                }
+                let again = {
+                    let mut c = lib.inner.cancel.lock().unwrap_or_else(|e| e.into_inner());
+                    let asked = lib.inner.rescan.lock().unwrap_or_else(|e| e.into_inner()).remove(&library_id);
+                    // Cancelling stops what was asked for too.
+                    let again = asked && !flag.load(Ordering::Relaxed);
+                    if !again {
+                        c.remove(&library_id);
+                    }
+                    again
+                };
+                lib.emit(LibraryEvent::Changed { library_id });
+                if !again {
+                    break;
+                }
             }
-            lib.inner.cancel.lock().unwrap_or_else(|e| e.into_inner()).remove(&library_id);
-            lib.emit(LibraryEvent::Changed { library_id });
         });
         true
     }
@@ -291,17 +310,22 @@ impl Library {
     }
 
     pub async fn list(&self) -> Result<Vec<LibraryInfo>> {
+        self.infos(None).await
+    }
+
+    /// All libraries, or the one with this id.
+    async fn infos(&self, only: Option<i64>) -> Result<Vec<LibraryInfo>> {
         let rows = self
             .inner
             .db
-            .read(|c| {
+            .read(move |c| {
                 let mut st = c.prepare(
                     "SELECT l.id, l.name, l.kind, l.settings, l.scanned_at, \
                      (SELECT count(*) FROM items i WHERE i.library_id = l.id AND i.parent_id IS NULL) \
-                     FROM libraries l ORDER BY l.name",
+                     FROM libraries l WHERE ?1 IS NULL OR l.id = ?1 ORDER BY l.name",
                 )?;
                 let libs = st
-                    .query_map([], |r| {
+                    .query_map([only], |r| {
                         Ok((
                             r.get::<_, i64>(0)?,
                             r.get::<_, String>(1)?,
@@ -342,7 +366,7 @@ impl Library {
     }
 
     pub async fn get(&self, id: i64) -> Result<LibraryInfo> {
-        self.list().await?.into_iter().find(|l| l.id == id).ok_or(LibError::NotFound)
+        self.infos(Some(id)).await?.pop().ok_or(LibError::NotFound)
     }
 
     /// The library whose folders contain `path` (deepest folder wins).

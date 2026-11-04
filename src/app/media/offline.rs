@@ -579,6 +579,7 @@ mod tests {
                     added_at: 0,
                     child_count: None,
                     partial: false,
+                    missing: false,
                     grandparent_id: None,
                     parent_index: None,
                     work: None,

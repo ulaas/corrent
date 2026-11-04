@@ -270,7 +270,11 @@ pub(crate) async fn prepare(
                 title: detail.item.title.clone(),
                 item_id: Some(item),
             };
-            let id = st.hls.create(spec).map_err(hls_err)?;
+            let hls = st.hls.clone();
+            let id = tokio::task::spawn_blocking(move || hls.create(spec))
+                .await
+                .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
+                .map_err(hls_err)?;
             ("hls".to_string(), format!("/api/v1/hls/{id}/index.m3u8"), Some(id), reasons)
         }
     };
@@ -472,7 +476,7 @@ async fn trickplay(
         return Err(err(ErrorCode::NotFound, "no such file"));
     }
     let path = trickplay_dir(&st, id).join(&name);
-    if !path.exists() {
+    if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
         return Err(err(ErrorCode::NotFound, "not generated yet"));
     }
     let mime = if name.ends_with(".vtt") { "text/vtt" } else { "image/jpeg" };

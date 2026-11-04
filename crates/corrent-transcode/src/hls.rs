@@ -34,6 +34,7 @@ const MAX_SHORT_RUNS: u32 = 3;
 /// Below this much free space on the cache's disk no new transcode starts (a full disk would
 /// also break the library database and downloads).
 const MIN_FREE: u64 = 2 * 1024 * 1024 * 1024;
+const FREE_SPACE_FOR: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub struct HlsConfig {
@@ -162,13 +163,18 @@ impl Session {
         true
     }
 
+    async fn has_segment(&self, n: u64, path: &Path) -> bool {
+        let listed = self.done.lock().unwrap_or_else(|e| e.into_inner()).contains(&n);
+        listed && tokio::fs::try_exists(path).await.unwrap_or(false)
+    }
+
     fn may_start_encoder(&self) -> bool {
         self.short_runs.load(Ordering::Relaxed) < MAX_SHORT_RUNS
     }
 
     /// Reads the muxer's own playlist: every segment listed there is complete.
-    fn refresh_done(&self) {
-        let Ok(text) = std::fs::read_to_string(self.dir.join("index.m3u8")) else { return };
+    async fn refresh_done(&self) {
+        let Ok(text) = tokio::fs::read_to_string(self.dir.join("index.m3u8")).await else { return };
         let mut done = self.done.lock().unwrap_or_else(|e| e.into_inner());
         for line in text.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
             if let Some(n) = segment_number(line) {
@@ -209,6 +215,7 @@ impl std::error::Error for HlsError {}
 pub struct HlsManager {
     cfg: Mutex<HlsConfig>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    free: Mutex<Option<(Instant, u64)>>,
 }
 
 fn random_id() -> String {
@@ -231,7 +238,8 @@ impl HlsManager {
     /// paced to the players).
     pub fn new(cfg: HlsConfig) -> Arc<HlsManager> {
         let _ = std::fs::remove_dir_all(&cfg.root);
-        let m = Arc::new(HlsManager { cfg: Mutex::new(cfg), sessions: Mutex::new(HashMap::new()) });
+        let m =
+            Arc::new(HlsManager { cfg: Mutex::new(cfg), sessions: Mutex::new(HashMap::new()), free: Mutex::new(None) });
         let weak = Arc::downgrade(&m);
         tokio::spawn(async move {
             loop {
@@ -267,6 +275,20 @@ impl HlsManager {
         self.cfg.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Free space on the cache's disk, asked for at most every few seconds.
+    fn free_space(&self, root: &Path) -> Option<u64> {
+        let mut cached = self.free.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, free)) = *cached
+            && at.elapsed() < FREE_SPACE_FOR
+        {
+            return Some(free);
+        }
+        let free = fs4::available_space(root).ok()?;
+        *cached = Some((Instant::now(), free));
+        Some(free)
+    }
+
+    /// Touches the disk: from a blocking context.
     pub fn create(&self, spec: SessionSpec) -> Result<String, HlsError> {
         let cfg = self.config();
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -287,7 +309,7 @@ impl HlsManager {
             }
         }
         let _ = std::fs::create_dir_all(&cfg.root);
-        if fs4::available_space(&cfg.root).is_ok_and(|free| free < MIN_FREE) {
+        if self.free_space(&cfg.root).is_some_and(|free| free < MIN_FREE) {
             return Err(HlsError::NoSpace);
         }
         let id = random_id();
@@ -340,7 +362,7 @@ impl HlsManager {
     #[cfg(test)]
     pub(crate) async fn encoding(&self, id: &str) -> (bool, usize) {
         let Ok(s) = self.get(id) else { return (false, 0) };
-        s.refresh_done();
+        s.refresh_done().await;
         let running = s.running.lock().await;
         let on = running.as_ref().is_some_and(|r| r.ended.lock().unwrap_or_else(|e| e.into_inner()).is_none());
         (on, s.done.lock().unwrap_or_else(|e| e.into_inner()).len())
@@ -381,8 +403,8 @@ impl HlsManager {
         let cfg = self.config();
         let deadline = Instant::now() + SEGMENT_WAIT;
         loop {
-            s.refresh_done();
-            if s.done.lock().unwrap_or_else(|e| e.into_inner()).contains(&n) && path.exists() {
+            s.refresh_done().await;
+            if s.has_segment(n, &path).await {
                 return Ok(path);
             }
             {
@@ -400,8 +422,8 @@ impl HlsManager {
                         }
                         if ended == Some(false) && n >= r.start {
                             // It may have written `n` just after the check above.
-                            s.refresh_done();
-                            if s.done.lock().unwrap_or_else(|e| e.into_inner()).contains(&n) && path.exists() {
+                            s.refresh_done().await;
+                            if s.has_segment(n, &path).await {
                                 return Ok(path);
                             }
                             let start = r.start;
@@ -425,7 +447,7 @@ impl HlsManager {
                     if let Some(old) = running.take() {
                         old.encoder.stop();
                     }
-                    *running = Some(start_encoder(&cfg, &s, n).map_err(HlsError::Failed)?);
+                    *running = Some(start_encoder(&cfg, &s, n).await.map_err(HlsError::Failed)?);
                 }
             }
             if Instant::now() >= deadline {
@@ -472,7 +494,7 @@ async fn pace(cfg: &HlsConfig, s: &Session) {
     if wanted == u64::MAX {
         return;
     }
-    s.refresh_done();
+    s.refresh_done().await;
     let next = {
         let done = s.done.lock().unwrap_or_else(|e| e.into_inner());
         (wanted..s.segments.load(Ordering::Relaxed)).find(|n| !done.contains(n))
@@ -495,7 +517,7 @@ async fn pace(cfg: &HlsConfig, s: &Session) {
             // It ended by itself at or before `next`: nothing more will come from there.
             let ran_out = running.as_ref().filter(|r| state == Some(Some(false)) && next >= r.start).map(|r| r.start);
             if let Some(start) = ran_out {
-                s.refresh_done();
+                s.refresh_done().await;
                 if !s.done.lock().unwrap_or_else(|e| e.into_inner()).contains(&next) {
                     *running = None;
                     s.end_short(start);
@@ -503,7 +525,7 @@ async fn pace(cfg: &HlsConfig, s: &Session) {
                 return;
             }
             if ahead < RESUME_AHEAD && s.idle() < IDLE && s.may_start_encoder() {
-                match start_encoder(cfg, s, next) {
+                match start_encoder(cfg, s, next).await {
                     Ok(r) => *running = Some(r),
                     Err(e) => tracing::debug!("transcode {}: {e}", s.id),
                 }
@@ -580,9 +602,9 @@ pub fn job_options(cfg: &HlsConfig, spec: &SessionSpec, dir: &Path, start: u64) 
     o
 }
 
-fn start_encoder(cfg: &HlsConfig, s: &Session, start: u64) -> Result<Running, String> {
+async fn start_encoder(cfg: &HlsConfig, s: &Session, start: u64) -> Result<Running, String> {
     // A new run rewrites the muxer playlist from `start`; earlier complete segments stay.
-    let _ = std::fs::remove_file(s.dir.join("index.m3u8"));
+    let _ = tokio::fs::remove_file(s.dir.join("index.m3u8")).await;
     let job = EncodeJob {
         input: s.spec.input.clone(),
         output: s.dir.join("index.m3u8").display().to_string(),
@@ -595,7 +617,8 @@ fn start_encoder(cfg: &HlsConfig, s: &Session, start: u64) -> Result<Running, St
     let encoder = match &cfg.worker {
         Some(w) => {
             let job_file = s.dir.join(format!("job-{start}.json"));
-            std::fs::write(&job_file, serde_json::to_vec(&job).map_err(|e| e.to_string())?)
+            tokio::fs::write(&job_file, serde_json::to_vec(&job).map_err(|e| e.to_string())?)
+                .await
                 .map_err(|e| e.to_string())?;
             let mut cmd = tokio::process::Command::new(w);
             // No console window flashing up (the worker is a console program).

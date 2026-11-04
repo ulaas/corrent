@@ -665,9 +665,7 @@ async fn serve_image(State(st): State<Arc<AppState>>, id: String, ty: String, q:
 
 async fn send_image(st: &AppState, sha: &str, width: u32, req: Request, immutable: bool) -> Response {
     let w = [200, 400, 800].into_iter().find(|v| *v >= width);
-    let Some(path) = corrent_library::artwork::existing(st.library.artwork_root(), sha, w)
-        .or_else(|| corrent_library::artwork::existing(st.library.artwork_root(), sha, None))
-    else {
+    let Some(path) = corrent_library::artwork::find(st.library.artwork_root(), sha, w).await else {
         return fail(StatusCode::NOT_FOUND, "Image not found");
     };
     if req

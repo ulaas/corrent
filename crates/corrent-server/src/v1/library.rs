@@ -382,7 +382,7 @@ async fn image(
     Query(q): Query<ImageQuery>,
     req: Request,
 ) -> Result<Response, ApiErr> {
-    let Some(path) = corrent_library::artwork::existing(st.library.artwork_root(), &sha, q.w) else {
+    let Some(path) = corrent_library::artwork::find(st.library.artwork_root(), &sha, q.w).await else {
         return Err(err(ErrorCode::NotFound, "no such image"));
     };
     if req

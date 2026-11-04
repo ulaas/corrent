@@ -21,7 +21,9 @@ const ITEM_SELECT: &str = "SELECT i.id, i.library_id, i.kind, i.parent_id, i.tit
             (SELECT 1 FROM watch_state w WHERE w.item_id = e.id AND w.user_id = ?1 AND w.played = 1)) \
        ELSE NULL END, \
      p.parent_id, p.index_no, CASE WHEN i.kind = 'track' THEN json_extract(i.extra, '$.work') END, \
-     ws.audio_track, ws.subtitle_track \
+     ws.audio_track, ws.subtitle_track, \
+     EXISTS (SELECT 1 FROM item_files x WHERE x.item_id = i.id AND x.role = 'main') AND NOT EXISTS \
+       (SELECT 1 FROM item_files x JOIN files f ON f.id = x.file_id WHERE x.item_id = i.id AND x.role = 'main' AND f.missing_since IS NULL) \
      FROM items i LEFT JOIN items p ON p.id = i.parent_id LEFT JOIN items gp ON gp.id = p.parent_id \
      LEFT JOIN watch_state ws ON ws.item_id = i.id AND ws.user_id = ?1";
 
@@ -67,6 +69,7 @@ fn item_row(r: &Row) -> rusqlite::Result<RawItem> {
             },
             child_count: Some(r.get::<_, i64>(17)?).filter(|n| *n > 0),
             partial: false,
+            missing: r.get::<_, i64>(24)? != 0,
             grandparent_id: r.get(19)?,
             parent_index: r.get(20)?,
             work: r.get(21)?,
@@ -132,7 +135,7 @@ pub(crate) fn allowed(c: &Connection, user: i64) -> rusqlite::Result<Option<Vec<
     Ok((!v.is_empty()).then_some(v))
 }
 
-fn allowed_clause(allowed: &Option<Vec<i64>>) -> String {
+pub(crate) fn allowed_clause(allowed: &Option<Vec<i64>>) -> String {
     match allowed {
         None => String::new(),
         Some(v) => format!(" AND i.library_id IN ({})", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")),
@@ -450,6 +453,31 @@ impl Library {
             .ok_or(LibError::NotFound)
     }
 
+    /// Main files of items the user may see: item → (file, path, size), the first path of each.
+    pub async fn main_files(&self, user: i64, ids: Vec<i64>) -> Result<HashMap<i64, (i64, String, i64)>> {
+        Ok(self
+            .db()
+            .read(move |c| {
+                let only = allowed_clause(&allowed(c, user)?);
+                let mut out = HashMap::new();
+                for chunk in ids.chunks(500) {
+                    let list = chunk.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+                    // Sorted backwards: the first path in order is the one that stays.
+                    let mut st = c.prepare(&format!(
+                        "SELECT x.item_id, f.id, f.path, f.size FROM item_files x JOIN files f ON f.id = x.file_id JOIN items i ON i.id = x.item_id \
+                         WHERE x.role = 'main' AND f.missing_since IS NULL AND x.item_id IN ({list}){only} ORDER BY f.path DESC"
+                    ))?;
+                    let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?;
+                    for row in rows {
+                        let (item, file) = row?;
+                        out.insert(item, file);
+                    }
+                }
+                Ok(out)
+            })
+            .await?)
+    }
+
     /// A file's path, if the user may see an item that uses it.
     pub async fn file_path(&self, user: i64, file_id: i64) -> Result<String> {
         self.db()
@@ -518,34 +546,18 @@ impl Library {
             .db()
             .read(move |c| {
                 let sep = std::path::MAIN_SEPARATOR.to_string();
-                let items: Vec<i64> = c
-                    .prepare(
-                        "SELECT DISTINCT x.item_id FROM files f JOIN item_files x ON x.file_id = f.id JOIN items i ON i.id = x.item_id \
-                         WHERE x.role = 'main' AND i.library_id = ?1 AND f.missing_since IS NULL AND i.kind IN ('movie','episode','track','book','video') \
-                         AND (f.path = ?2 OR substr(f.path, 1, length(?2) + 1) = ?2 || ?3)",
-                    )?
-                    .query_map(params![library, p, sep], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?;
-                let users: Vec<i64> = c
-                    .prepare(
-                        "SELECT u.id FROM users u WHERE u.disabled = 0 AND (NOT EXISTS (SELECT 1 FROM user_libraries a WHERE a.user_id = u.id) \
-                         OR EXISTS (SELECT 1 FROM user_libraries a WHERE a.user_id = u.id AND a.library_id = ?1))",
-                    )?
-                    .query_map([library], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?;
-                if items.is_empty() || users.is_empty() {
-                    return Ok(None);
-                }
-                let mut q = c.prepare_cached("SELECT played FROM watch_state WHERE user_id = ?1 AND item_id = ?2")?;
-                for u in &users {
-                    for i in &items {
-                        let played: Option<bool> = q.query_row([u, i], |r| r.get(0)).optional()?;
-                        if played != Some(true) {
-                            return Ok(Some(false));
-                        }
-                    }
-                }
-                Ok(Some(true))
+                let (items, users, unwatched): (i64, i64, bool) = c.query_row(
+                    "WITH it(id) AS (SELECT DISTINCT x.item_id FROM files f JOIN item_files x ON x.file_id = f.id JOIN items i ON i.id = x.item_id \
+                       WHERE x.role = 'main' AND i.library_id = ?1 AND f.missing_since IS NULL AND i.kind IN ('movie','episode','track','book','video') \
+                       AND (f.path = ?2 OR substr(f.path, 1, length(?2) + 1) = ?2 || ?3)), \
+                     us(id) AS (SELECT u.id FROM users u WHERE u.disabled = 0 AND (NOT EXISTS (SELECT 1 FROM user_libraries a WHERE a.user_id = u.id) \
+                       OR EXISTS (SELECT 1 FROM user_libraries a WHERE a.user_id = u.id AND a.library_id = ?1))) \
+                     SELECT (SELECT count(*) FROM it), (SELECT count(*) FROM us), EXISTS (SELECT 1 FROM us CROSS JOIN it WHERE NOT EXISTS \
+                       (SELECT 1 FROM watch_state w WHERE w.user_id = us.id AND w.item_id = it.id AND w.played = 1))",
+                    params![library, p, sep],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?;
+                Ok((items > 0 && users > 0).then_some(!unwatched))
             })
             .await?)
     }

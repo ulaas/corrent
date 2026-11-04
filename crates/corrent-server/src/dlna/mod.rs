@@ -391,7 +391,14 @@ fn library_object(l: &corrent_proto::library::Library) -> didl::Object {
 
 /// An item as a DIDL object: containers for shows, seasons, artists, albums and folders; files
 /// (with a signed URL) for the rest. `None`: nothing to play (the file is missing).
-async fn item_object(d: &Dlna, user: i64, host: &str, it: &corrent_proto::library::Item) -> Option<didl::Object> {
+/// `main`: the item's main file (file id, path, size), for playable kinds.
+fn item_object(
+    d: &Dlna,
+    user: i64,
+    host: &str,
+    it: &corrent_proto::library::Item,
+    main: Option<&(i64, String, i64)>,
+) -> Option<didl::Object> {
     let parent = it.parent_id.map(|p| format!("i{p}")).unwrap_or_else(|| format!("l{}", it.library_id));
     let art = it
         .images
@@ -411,9 +418,9 @@ async fn item_object(d: &Dlna, user: i64, host: &str, it: &corrent_proto::librar
             children: it.child_count,
         });
     }
-    let (file, path) = d.st.library.main_file(user, it.id).await.ok()?;
+    let (file, path, size) = main?;
+    let (file, size) = (*file, (*size).max(0) as u64);
     let path = std::path::PathBuf::from(path);
-    let size = tokio::fs::metadata(&path).await.ok()?.len();
     let mime = crate::v1::library::mime_for(&path).to_string();
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("bin").to_ascii_lowercase();
     let url = format!("http://{host}{}", media_path(d, user, file, &ext));
@@ -455,7 +462,8 @@ async fn metadata(d: &Dlna, user: i64, host: &str, object: &str) -> Result<Optio
     }
     let id = object.strip_prefix('i').and_then(|s| s.parse::<i64>().ok()).ok_or(())?;
     let it = d.st.library.item(user, id).await.map_err(|_| ())?;
-    Ok(item_object(d, user, host, &it.item).await)
+    let mains = d.st.library.main_files(user, vec![id]).await.map_err(|_| ())?;
+    Ok(item_object(d, user, host, &it.item, mains.get(&id)))
 }
 
 async fn children(
@@ -487,12 +495,10 @@ async fn children(
         q.parent_id = Some(id);
     }
     let page = d.st.library.items(user, q).await.map_err(|_| ())?;
-    let mut out = Vec::with_capacity(page.items.len());
-    for it in &page.items {
-        if let Some(o) = item_object(d, user, host, it).await {
-            out.push(o);
-        }
-    }
+    // One query for the page; a TV may ask for hundreds of items at once.
+    let ids = page.items.iter().filter(|i| !is_container(i.kind)).map(|i| i.id).collect();
+    let mains = d.st.library.main_files(user, ids).await.map_err(|_| ())?;
+    let out = page.items.iter().filter_map(|it| item_object(d, user, host, it, mains.get(&it.id))).collect();
     Ok((out, page.total))
 }
 
@@ -574,7 +580,7 @@ async fn art(State(d): State<Arc<Dlna>>, Path((sha, sig)): Path<(String, String)
     if !signed(&d, &format!("art:{sha}"), &sig) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let Some(path) = corrent_library::artwork::existing(d.st.library.artwork_root(), &sha, Some(480)) else {
+    let Some(path) = corrent_library::artwork::find(d.st.library.artwork_root(), &sha, Some(480)).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
     match crate::v1::library::serve_path(path, req).await {

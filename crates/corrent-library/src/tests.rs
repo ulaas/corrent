@@ -10,6 +10,45 @@ use corrent_proto::library::{ItemKind, ItemQuery, LibraryKind, LibrarySettings, 
 use crate::Library;
 use crate::probe::Prober;
 
+/// How many times a library reported changes after `requests` scan requests in a row.
+async fn changes_after(lib: &Library, id: i64, requests: usize) -> usize {
+    let mut events = lib.subscribe();
+    for _ in 0..requests {
+        lib.start_scan(id);
+    }
+    while lib.inner.cancel.lock().unwrap().contains_key(&id) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let mut n = 0;
+    while let Ok(e) = events.try_recv() {
+        n += matches!(e, crate::LibraryEvent::Changed { .. }) as usize;
+    }
+    n
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scan_asked_for_during_a_scan_runs_after_it() {
+    let d = scratch("rescan");
+    let folder = d.join("films");
+    std::fs::create_dir_all(&folder).unwrap();
+    let lib = Library::new(Db::open(&d.join("corrent.db")).unwrap(), &d, Prober::new(None, 1));
+    let l = lib
+        .create(NewLibrary {
+            name: "Films".into(),
+            kind: LibraryKind::Movies,
+            folders: vec![folder.display().to_string()],
+            settings: LibrarySettings::defaults(),
+        })
+        .await
+        .unwrap();
+    let one = changes_after(&lib, l.id, 1).await;
+    assert!(one > 0);
+    assert_eq!(changes_after(&lib, l.id, 2).await, 2 * one, "the request during the scan isn't lost");
+    assert_eq!(changes_after(&lib, l.id, 5).await, 2 * one, "requests during a scan make one more scan");
+    drop(lib);
+    let _ = std::fs::remove_dir_all(d);
+}
+
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("corrent-lib-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);

@@ -26,7 +26,7 @@ impl Library {
 
     /// The caller's playlists and others' public ones.
     pub async fn playlists(&self, user: i64) -> Result<Vec<Playlist>> {
-        let rows: Vec<(Playlist, Vec<i64>)> = self
+        let rows: Vec<(Playlist, i64, i64, Vec<i64>)> = self
             .db()
             .read(move |c| {
                 let mut st = c.prepare(
@@ -46,21 +46,29 @@ impl Library {
                         })
                     })?
                     .collect::<corrent_db::rusqlite::Result<Vec<_>>>()?;
+                // Only what the reader may see counts.
+                let only = crate::query::allowed_clause(&crate::query::allowed(c, user)?);
+                let mut totals = c.prepare(&format!(
+                    "SELECT count(*), coalesce(sum(i.runtime_ms), 0) FROM playlist_items x JOIN items i ON i.id = x.item_id \
+                     WHERE x.playlist_id = ?1{only}"
+                ))?;
+                let mut first = c.prepare(&format!(
+                    "SELECT x.item_id FROM playlist_items x JOIN items i ON i.id = x.item_id WHERE x.playlist_id = ?1{only} ORDER BY x.pos LIMIT 4"
+                ))?;
                 let mut out = Vec::new();
                 for p in lists {
-                    let mut st = c.prepare_cached("SELECT item_id FROM playlist_items WHERE playlist_id = ?1 ORDER BY pos")?;
-                    let ids: Vec<i64> = st.query_map([p.id], |r| r.get(0))?.collect::<corrent_db::rusqlite::Result<_>>()?;
-                    out.push((p, ids));
+                    let (count, runtime) = totals.query_row([p.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                    let ids: Vec<i64> = first.query_map([p.id], |r| r.get(0))?.collect::<corrent_db::rusqlite::Result<_>>()?;
+                    out.push((p, count, runtime, ids));
                 }
                 Ok(out)
             })
             .await?;
         let mut out = Vec::new();
-        for (mut p, ids) in rows {
-            let items = self.visible_items(user, ids).await?;
-            p.count = items.len() as i64;
-            p.runtime_ms = items.iter().filter_map(|i| i.runtime_ms).sum();
-            p.images = items.iter().filter_map(|i| i.images.first().cloned()).take(4).collect();
+        for (mut p, count, runtime, ids) in rows {
+            p.count = count;
+            p.runtime_ms = runtime;
+            p.images = self.visible_items(user, ids).await?.iter().filter_map(|i| i.images.first().cloned()).collect();
             out.push(p);
         }
         Ok(out)

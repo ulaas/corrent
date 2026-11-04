@@ -96,9 +96,10 @@ pub async fn create(st: &AppState) -> Result<BackupFile, String> {
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(0o600);
         let mut add = |zip_name: &str, path: &Path| -> std::io::Result<()> {
-            if let Ok(bytes) = std::fs::read(path) {
-                z.start_file(zip_name, opts).map_err(std::io::Error::other)?;
-                z.write_all(&bytes)?;
+            if let Ok(mut f) = std::fs::File::open(path) {
+                let big = f.metadata()?.len() >= u64::from(u32::MAX);
+                z.start_file(zip_name, opts.large_file(big)).map_err(std::io::Error::other)?;
+                std::io::copy(&mut f, &mut z)?;
             }
             Ok(())
         };

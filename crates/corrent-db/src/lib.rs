@@ -140,6 +140,10 @@ impl Db {
             }
         }
         migrate(&mut c, path)?;
+        // New indexes and tables have no statistics yet.
+        if let Err(e) = c.execute_batch("PRAGMA optimize") {
+            tracing::debug!("PRAGMA optimize: {e}");
+        }
         let (tx, rx) = std::sync::mpsc::channel::<Job>();
         std::thread::Builder::new()
             .name("corrent-db-writer".into())
@@ -249,9 +253,9 @@ impl Db {
         if check == "ok" { Ok(()) } else { Err(DbError::Corrupt(check)) }
     }
 
-    /// A consistent copy of the whole database (backups).
-    pub async fn backup_to(&self, dest: PathBuf) -> Result<()> {
-        self.write(move |t| t.execute("VACUUM INTO ?1", [dest.to_string_lossy()]).map(|_| ())).await
+    /// Refreshes the query planner's statistics where they went stale.
+    pub async fn optimize(&self) -> Result<()> {
+        self.write(|t| t.execute_batch("PRAGMA optimize")).await
     }
 }
 

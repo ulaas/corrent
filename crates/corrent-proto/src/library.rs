@@ -313,6 +313,9 @@ pub struct Item {
     /// Some files still downloading (torrent not complete).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// Has a main file, but it isn't on disk any more (an unplugged drive?): nothing to play.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub missing: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

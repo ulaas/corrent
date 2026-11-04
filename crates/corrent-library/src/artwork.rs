@@ -53,6 +53,12 @@ pub fn existing(root: &Path, sha: &str, width: Option<u32>) -> Option<PathBuf> {
     full.exists().then_some(full)
 }
 
+/// [`existing`] off the async runtime (a `stat` or two, on what may be a network share).
+pub async fn find(root: &Path, sha: &str, width: Option<u32>) -> Option<PathBuf> {
+    let (root, sha) = (root.to_path_buf(), sha.to_string());
+    tokio::task::spawn_blocking(move || existing(&root, &sha, width)).await.ok().flatten()
+}
+
 fn decode(data: &[u8]) -> Result<DynamicImage, String> {
     if data.len() > MAX_BYTES {
         return Err("image too large".into());
