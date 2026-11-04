@@ -1819,11 +1819,15 @@ async fn dlna_browses_and_streams() {
     let (dlna, _) = crate::dlna::test_router(h.st.clone(), true).await.unwrap();
 
     // The description, from the local network only.
-    let desc = || Request::builder().uri("/dlna/description.xml").body(Body::empty()).unwrap();
+    let host =
+        |h: &str| Request::builder().uri("/dlna/description.xml").header(header::HOST, h).body(Body::empty()).unwrap();
+    let desc = || host("192.168.1.5:8201");
     let (s, d) = raw(&dlna, "192.168.1.9", desc()).await;
     assert_eq!(s, StatusCode::OK);
     assert!(String::from_utf8_lossy(&d).contains("urn:schemas-upnp-org:device:MediaServer:1"));
     assert_eq!(raw(&dlna, "8.8.8.8", desc()).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(raw(&dlna, "192.168.1.9", host("rebound.example:8201")).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(raw(&dlna, "192.168.1.9", host("[fe80::1]:8201")).await.0, StatusCode::OK);
 
     // Root → the library → the photo with a signed URL.
     let (s, root) = soap(&dlna, "192.168.1.9", "Browse", &browse("0", "BrowseDirectChildren")).await;
@@ -1836,15 +1840,13 @@ async fn dlna_browses_and_streams() {
     let url = &items[start..];
     let url = &url[..url.find("&lt;").unwrap()];
     let path = url.trim_start_matches("http://192.168.1.5:8201");
-    let (s, bytes) = raw(&dlna, "192.168.1.9", Request::builder().uri(path).body(Body::empty()).unwrap()).await;
+    let on_host = |uri: String| Request::builder().uri(uri).header(header::HOST, "192.168.1.5:8201");
+    let (s, bytes) = raw(&dlna, "192.168.1.9", on_host(path.to_string()).body(Body::empty()).unwrap()).await;
     assert_eq!(s, StatusCode::OK);
     assert!(bytes.starts_with(b"\x89PNG"));
     // A forged signature, an unknown object, an unknown action.
     let forged = format!("/dlna/media/{item}/000000000000000000000000.png");
-    assert_eq!(
-        raw(&dlna, "192.168.1.9", Request::builder().uri(forged).body(Body::empty()).unwrap()).await.0,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(raw(&dlna, "192.168.1.9", on_host(forged).body(Body::empty()).unwrap()).await.0, StatusCode::NOT_FOUND);
     let (_, meta) = soap(&dlna, "192.168.1.9", "Browse", &browse(&format!("i{item}"), "BrowseMetadata")).await;
     assert!(meta.contains("<NumberReturned>1</NumberReturned>"), "{meta}");
     let (s, nope) = soap(&dlna, "192.168.1.9", "Browse", &browse("i999999", "BrowseMetadata")).await;

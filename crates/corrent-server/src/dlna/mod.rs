@@ -204,8 +204,11 @@ fn router(d: Arc<Dlna>) -> Router {
     r.layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(axum::middleware::from_fn(
             move |ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request, next: Next| {
-                // Read per request: changes to the allowed networks apply at once.
-                let ok = crate::net::is_local(peer.ip(), &crate::net::parse_cidrs(&st.cfg.load().allowed_networks));
+                // Read per request: changes to the allowed networks apply at once. The Host check
+                // stops DNS rebinding: a web page in a local browser can't read this port through
+                // a name of its own. Players use the IP address from the announcement.
+                let ok = crate::net::is_local(peer.ip(), &crate::net::parse_cidrs(&st.cfg.load().allowed_networks))
+                    && crate::net::host_allowed(&crate::v1::request_host(&req), &st.nets.load().hostnames);
                 async move { if ok { next.run(req).await } else { StatusCode::FORBIDDEN.into_response() } }
             },
         ))
