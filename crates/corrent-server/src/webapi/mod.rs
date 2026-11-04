@@ -225,10 +225,39 @@ fn sid_from(headers: &HeaderMap) -> Option<String> {
     })
 }
 
+/// Whether a server account may use this API.
+fn may_use(u: &corrent_proto::auth::User) -> bool {
+    u.perms.contains(corrent_proto::auth::Perms::DOWNLOADER)
+        || u.perms.contains(corrent_proto::auth::Perms::TORRENTS_MANAGE_ALL)
+}
+
+/// The account behind a session still exists, is enabled, may use this API, and has the password
+/// it signed in with.
+async fn owner_still_valid(identity: &crate::identity::Identity, owner: &auth::Owner) -> bool {
+    match identity.signin_state(owner.user).await {
+        Ok(Some((u, pw_hash))) => !u.disabled && may_use(&u) && pw_hash == owner.pw_hash,
+        _ => false,
+    }
+}
+
 async fn require_login(State(st): State<Arc<ApiState>>, headers: HeaderMap, req: Request, next: Next) -> Response {
-    let ok = sid_from(&headers).is_some_and(|sid| st.sessions.lock().unwrap_or_else(|e| e.into_inner()).check(&sid));
-    if !ok {
-        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    let forbidden = || (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    let Some(sid) = sid_from(&headers) else { return forbidden() };
+    if !st.sessions.lock().unwrap_or_else(|e| e.into_inner()).check(&sid) {
+        return forbidden();
+    }
+    if let Some(identity) = &st.identity {
+        let changes = identity.user_changes();
+        let due = st.sessions.lock().unwrap_or_else(|e| e.into_inner()).due(&sid, changes);
+        if let Some(owner) = due {
+            let valid = owner_still_valid(identity, &owner).await;
+            let mut sessions = st.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            if !valid {
+                sessions.remove(&sid);
+                return forbidden();
+            }
+            sessions.verified(&sid, changes);
+        }
     }
     next.run(req).await
 }
@@ -241,16 +270,24 @@ async fn login(State(st): State<Arc<ApiState>>, ConnectInfo(peer): ConnectInfo<S
     // at most two run at once (below), which keeps guessing slow.
     let ip = peer.ip();
     let pass = pass.to_string();
+    let mut owner = None;
+    let mut changes = 0;
     let ok = match &st.identity {
-        Some(identity) => match identity.authenticate(user, &pass).await {
-            Ok(u) => {
-                let allowed = u.perms.contains(corrent_proto::auth::Perms::DOWNLOADER)
-                    || u.perms.contains(corrent_proto::auth::Perms::TORRENTS_MANAGE_ALL);
-                identity.audit(Some(&u.name), &ip.to_string(), "login", "qbittorrent api", allowed, "").await;
-                allowed
+        Some(identity) => {
+            changes = identity.user_changes();
+            match identity.authenticate(user, &pass).await {
+                Ok(u) => {
+                    let allowed = may_use(&u);
+                    identity.audit(Some(&u.name), &ip.to_string(), "login", "qbittorrent api", allowed, "").await;
+                    // Read after `authenticate`, which may have upgraded the stored hash.
+                    if let Ok(Some((_, pw_hash))) = identity.signin_state(u.id).await {
+                        owner = Some(auth::Owner { user: u.id, pw_hash });
+                    }
+                    allowed && owner.is_some()
+                }
+                Err(_) => false,
             }
-            Err(_) => false,
-        },
+        }
         None => {
             // Verify outside the lock: PBKDF2 takes a while.
             let cfg = st.cfg.clone();
@@ -271,7 +308,7 @@ async fn login(State(st): State<Arc<ApiState>>, ConnectInfo(peer): ConnectInfo<S
         tracing::info!("web API: failed login from {ip}");
         return (StatusCode::OK, "Fails.").into_response();
     }
-    let sid = sessions.create();
+    let sid = sessions.create(owner, changes);
     let secure = if st.secure_cookie { "; Secure" } else { "" };
     let cookie = format!("SID={sid}; HttpOnly; SameSite=Strict; Path=/{secure}");
     ([(header::SET_COOKIE, cookie)], "Ok.").into_response()

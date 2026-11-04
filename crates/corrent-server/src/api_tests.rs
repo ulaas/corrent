@@ -182,6 +182,79 @@ pub(crate) async fn user_token(app: &Router, admin: &str, name: &str) -> String 
     v["token"].as_str().unwrap().to_string()
 }
 
+/// Signs in to the qBittorrent API and returns the session cookie.
+async fn qbt_login(app: &Router, name: &str, password: &str) -> String {
+    let mut r = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v2/auth/login")
+        .header(header::HOST, "127.0.0.1:8443")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(format!("username={name}&password={}", password.replace(' ', "%20"))))
+        .unwrap();
+    r.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+    let res = app.clone().oneshot(r).await.unwrap();
+    let cookie = res.headers().get(header::SET_COOKIE).expect("signed in").to_str().unwrap();
+    cookie.split(';').next().unwrap().to_string()
+}
+
+async fn qbt_status(app: &Router, cookie: &str) -> StatusCode {
+    let mut r = Request::builder()
+        .uri("/api/v2/app/version")
+        .header(header::HOST, "127.0.0.1:8443")
+        .header(header::COOKIE, cookie)
+        .body(Body::empty())
+        .unwrap();
+    r.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+    app.clone().oneshot(r).await.unwrap().status()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn qbittorrent_sessions_end_with_their_account() {
+    let h = harness("qbt-owner", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        &admin,
+        json!({ "name": "sonarr", "password": "long enough pw", "role": "admin" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let id = v["id"].as_i64().unwrap();
+    let patch = |body: Value| {
+        let (admin, uri) = (admin.clone(), format!("/api/v1/users/{id}"));
+        async move { send(app, Method::PATCH, &uri, &admin, body).await.0 }
+    };
+    // Disabled: the very next call is refused, and re-enabling doesn't bring the session back.
+    let sid = qbt_login(app, "sonarr", "long enough pw").await;
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::OK);
+    assert_eq!(patch(json!({ "disabled": true })).await, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::FORBIDDEN);
+    assert_eq!(patch(json!({ "disabled": false })).await, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::FORBIDDEN);
+    // A new password.
+    let sid = qbt_login(app, "sonarr", "long enough pw").await;
+    assert_eq!(patch(json!({ "display_name": "Sonarr" })).await, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::OK, "other changes leave it alone");
+    assert_eq!(patch(json!({ "password": "another long pw" })).await, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::FORBIDDEN);
+    // No longer allowed to use this API.
+    let sid = qbt_login(app, "sonarr", "another long pw").await;
+    assert_eq!(patch(json!({ "role": "user" })).await, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::FORBIDDEN);
+    // Deleted.
+    assert_eq!(patch(json!({ "role": "admin" })).await, StatusCode::OK);
+    let sid = qbt_login(app, "sonarr", "another long pw").await;
+    let (s, _, _) =
+        call(app, Method::DELETE, &format!("/api/v1/users/{id}"), Call { bearer: Some(&admin), ..Default::default() })
+            .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::FORBIDDEN);
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn feed_passkeys_stay_with_those_who_may_change_settings() {
     let h = harness("rss-mask", ServerConfig { tls: false, ..Default::default() }).await;

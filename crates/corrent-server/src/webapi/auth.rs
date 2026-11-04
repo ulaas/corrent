@@ -48,34 +48,68 @@ pub fn verify_password(stored: &str, password: &str) -> bool {
     pbkdf2::verify(pbkdf2::PBKDF2_HMAC_SHA256, iters, &salt, password.as_bytes(), &hash).is_ok()
 }
 
+/// The server account behind a session (media server only), as it was at sign-in.
+#[derive(Clone)]
+pub struct Owner {
+    pub user: i64,
+    /// A new password ends the session.
+    pub pw_hash: String,
+}
+
+struct Session {
+    at: Instant,
+    owner: Option<Owner>,
+    verified: Instant,
+    /// [`crate::identity::Identity::user_changes`] when the owner was last looked at.
+    changes: u64,
+}
+
 #[derive(Default)]
 pub struct Sessions {
-    sids: HashMap<String, Instant>,
+    sids: HashMap<String, Session>,
 }
 
 impl Sessions {
-    pub fn create(&mut self) -> String {
-        self.sids.retain(|_, at| at.elapsed() < SESSION_TTL);
+    pub fn create(&mut self, owner: Option<Owner>, changes: u64) -> String {
+        self.sids.retain(|_, s| s.at.elapsed() < SESSION_TTL);
         // Logins only add sessions; past the cap the least recently used one goes.
         while self.sids.len() >= MAX_SESSIONS {
-            let Some(oldest) = self.sids.iter().min_by_key(|(_, at)| **at).map(|(k, _)| k.clone()) else { break };
+            let Some(oldest) = self.sids.iter().min_by_key(|(_, s)| s.at).map(|(k, _)| k.clone()) else { break };
             self.sids.remove(&oldest);
         }
         let sid = random_hex(16);
-        self.sids.insert(sid.clone(), Instant::now());
+        let now = Instant::now();
+        self.sids.insert(sid.clone(), Session { at: now, owner, verified: now, changes });
         sid
     }
 
     /// Valid sessions are refreshed on use.
     pub fn check(&mut self, sid: &str) -> bool {
         // Expired sessions go here too, not only when someone logs in.
-        self.sids.retain(|_, at| at.elapsed() < SESSION_TTL);
+        self.sids.retain(|_, s| s.at.elapsed() < SESSION_TTL);
         match self.sids.get_mut(sid) {
-            Some(at) => {
-                *at = Instant::now();
+            Some(s) => {
+                s.at = Instant::now();
                 true
             }
             None => false,
+        }
+    }
+
+    /// The owner to look at again: a minute after the last time, or at once when any account
+    /// changed since.
+    pub fn due(&self, sid: &str, changes: u64) -> Option<Owner> {
+        let s = self.sids.get(sid)?;
+        if s.changes == changes && s.verified.elapsed() < RECHECK {
+            return None;
+        }
+        s.owner.clone()
+    }
+
+    pub fn verified(&mut self, sid: &str, changes: u64) {
+        if let Some(s) = self.sids.get_mut(sid) {
+            s.verified = Instant::now();
+            s.changes = changes;
         }
     }
 
@@ -83,6 +117,9 @@ impl Sessions {
         self.sids.remove(sid);
     }
 }
+
+/// How long a session's account may go unchecked when nothing changed.
+const RECHECK: Duration = Duration::from_secs(60);
 
 /// Sessions kept at once (each login adds one; clients reuse theirs).
 const MAX_SESSIONS: usize = 256;
@@ -94,10 +131,10 @@ mod tests {
     #[test]
     fn sessions_are_bounded() {
         let mut s = Sessions::default();
-        let first = s.create();
+        let first = s.create(None, 0);
         let mut sids = vec![first.clone()];
         for _ in 0..300 {
-            sids.push(s.create());
+            sids.push(s.create(None, 0));
             // Keep the first one in use: it is recent, so it survives the cap.
             assert!(s.check(&first));
         }
@@ -121,10 +158,22 @@ mod tests {
     #[test]
     fn sessions_check_and_end() {
         let mut s = Sessions::default();
-        let sid = s.create();
+        let sid = s.create(None, 0);
         assert!(s.check(&sid));
         assert!(!s.check("nope"));
         s.remove(&sid);
         assert!(!s.check(&sid));
+    }
+
+    #[test]
+    fn owners_come_due_when_accounts_change() {
+        let mut s = Sessions::default();
+        let sid = s.create(Some(Owner { user: 7, pw_hash: "h".into() }), 3);
+        assert!(s.due(&sid, 3).is_none(), "just checked");
+        assert_eq!(s.due(&sid, 4).map(|o| o.user), Some(7), "an account changed");
+        s.verified(&sid, 4);
+        assert!(s.due(&sid, 4).is_none());
+        let plain = s.create(None, 3);
+        assert!(s.due(&plain, 4).is_none(), "the password-only API has no accounts");
     }
 }
