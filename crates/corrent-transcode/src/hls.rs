@@ -38,6 +38,8 @@ const MAX_SHORT_RUNS: u32 = 3;
 /// also break the library database and downloads).
 const MIN_FREE: u64 = 2 * 1024 * 1024 * 1024;
 const FREE_SPACE_FOR: Duration = Duration::from_secs(5);
+/// How long a stopped session waits for its encoder before deleting its files anyway.
+const STOP_WAIT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug)]
 pub struct HlsConfig {
@@ -412,6 +414,10 @@ impl HlsManager {
             }
             {
                 let mut running = s.running.lock().await;
+                // The pacing loop may have just found where the stream ends.
+                if n >= s.segments.load(Ordering::Relaxed) {
+                    return Err(HlsError::NotFound);
+                }
                 let produced = s.done.lock().unwrap_or_else(|e| e.into_inner()).range(..=n).next_back().copied();
                 let reachable = match running.as_ref() {
                     Some(r) => {
@@ -538,13 +544,17 @@ async fn pace(cfg: &HlsConfig, s: &Session) {
 }
 
 async fn stop_session(s: Arc<Session>) {
-    if let Some(r) = s.running.lock().await.take() {
+    let running = s.running.lock().await.take();
+    if let Some(r) = running {
         r.encoder.stop();
+        // Until it has closed its files: an in-process encoder only notices within half a second,
+        // and would go on writing into a folder that's gone.
+        let deadline = Instant::now() + STOP_WAIT;
+        while r.ended.lock().unwrap_or_else(|e| e.into_inner()).is_none() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
-    let dir = s.dir.clone();
-    // Give a killed encoder a moment to close its files.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let _ = tokio::fs::remove_dir_all(dir).await;
+    let _ = tokio::fs::remove_dir_all(&s.dir).await;
 }
 
 /// mpv options for encoding from segment `start`.
