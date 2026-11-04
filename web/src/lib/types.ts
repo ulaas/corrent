@@ -413,6 +413,8 @@ export interface Item {
   added_at: number;
   child_count?: number;
   partial?: boolean;
+  /** The main file isn't where the library last saw it (absent when it's there). */
+  missing?: boolean;
   work?: string;
 }
 

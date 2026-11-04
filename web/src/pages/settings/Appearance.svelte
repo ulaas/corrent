@@ -60,7 +60,7 @@
   const fixed = $derived(fixedAccentPresets.includes(prefs.preset));
 </script>
 
-<p class="lead muted">{t('These settings are saved in this browser.')}</p>
+<p class="lead muted">{t('These settings follow your account to your other devices. Volume and the sidebar stay with each device.')}</p>
 
 <div class="sgroup">
   <h3>{t('Theme')}</h3>

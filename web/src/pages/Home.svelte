@@ -121,7 +121,7 @@
             {#if d?.overview}<p class="overview">{d.overview}</p>{/if}
             <div class="row wrap cta">
               {#if isPlayable(hero.kind)}
-                <button class="btn primary lg" onclick={() => go(playHref(hero.id))}>
+                <button class="btn primary lg" disabled={hero.missing} onclick={() => go(playHref(hero.id))}>
                   <Icon name="play-fill" />
                   {hero.state.position_ms > 0 && !hero.state.played ? t('Resume') : t('Play')}
                 </button>

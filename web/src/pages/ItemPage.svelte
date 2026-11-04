@@ -283,6 +283,7 @@
             {#if site('rotten_tomatoes')}<span>Rotten Tomatoes {site('rotten_tomatoes')}</span>{/if}
             {#if site('metacritic')}<span>Metacritic {site('metacritic')}</span>{/if}
             {#if video?.height}<span class="tag">{video.height >= 2000 ? '4K' : video.height >= 1000 ? 'HD 1080p' : video.height >= 700 ? 'HD 720p' : `${video.height}p`}</span>{/if}
+            {#if item.missing}<span class="badge err"><Icon name="warning-circle" size={12} />{t('File missing')}</span>{/if}
             {#if item.partial}<span class="badge warn"><Icon name="download-simple" size={12} />{t('Still downloading')}</span>{/if}
           </p>
           {#if item.genres.length}
@@ -296,13 +297,13 @@
               <button class="btn primary lg" onclick={() => playAlbum(false)}><Icon name="play-fill" />{t('Play')}</button>
               <button class="btn lg" onclick={() => playAlbum(true)}><Icon name="shuffle" />{t('Shuffle')}</button>
             {:else if item.kind === 'book'}
-              <button class="btn primary lg" onclick={playBook}><Icon name="play-fill" />{resumable ? t('Resume') : t('Listen')}</button>
+              <button class="btn primary lg" disabled={item.missing} onclick={playBook}><Icon name="play-fill" />{resumable ? t('Resume') : t('Listen')}</button>
             {:else if isPlayable(item.kind)}
-              <button class="btn primary lg" onclick={() => go(playHref(item!.id))}>
+              <button class="btn primary lg" disabled={item.missing} onclick={() => go(playHref(item!.id))}>
                 <Icon name="play-fill" />{resumable ? t('Resume from {time}', { time: clock(item.state.position_ms) }) : t('Play')}
               </button>
               {#if resumable}
-                <button class="btn lg" onclick={() => go(playHref(item!.id, false))}><Icon name="arrow-counter-clockwise" />{t('From the start')}</button>
+                <button class="btn lg" disabled={item.missing} onclick={() => go(playHref(item!.id, false))}><Icon name="arrow-counter-clockwise" />{t('From the start')}</button>
               {/if}
             {/if}
             {#if item.kind === 'show' && can(Perm.TORRENTS_ADD)}

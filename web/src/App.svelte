@@ -8,6 +8,7 @@
   import ConfirmHost from './components/ConfirmHost.svelte';
   import ContextMenu from './components/ContextMenu.svelte';
   import IdentifyHost from './components/IdentifyHost.svelte';
+  import Shortcuts from './components/Shortcuts.svelte';
   import MiniPlayer from './components/MiniPlayer.svelte';
   import BottomNav from './components/BottomNav.svelte';
   import Spinner from './components/Spinner.svelte';
@@ -133,10 +134,18 @@
   }
 
   const fullscreen = $derived(m.name === 'play');
+  let help = $state(false);
 
   function onkeydown(e: KeyboardEvent) {
     const target = e.target as HTMLElement;
     const typing = target.closest('input, textarea, select, [contenteditable="true"]');
+    if (e.key === '?' && !typing && !e.ctrlKey && !e.metaKey && session.user) {
+      e.preventDefault();
+      // A dialog can't show over an element in full screen.
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+      help = !help;
+      return;
+    }
     if (e.key === '/' && !typing && !e.ctrlKey && !e.metaKey) {
       const box = document.getElementById('global-search') as HTMLInputElement | null;
       if (box) {
@@ -208,6 +217,7 @@
 <ConfirmHost />
 <ContextMenu />
 <IdentifyHost />
+{#if help}<Shortcuts onclose={() => (help = false)} />{/if}
 
 <style>
   .skip {
