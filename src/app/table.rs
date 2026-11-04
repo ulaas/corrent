@@ -21,7 +21,30 @@ pub fn tracker_host(url: &str) -> String {
         .unwrap_or_else(|| url.to_string())
 }
 
-pub fn matches_filters(t: &TorrentView, prefs: &UiPrefs, search: &str) -> bool {
+/// Announce URL → host, remembered: with thousands of torrents, parsing each tracker URL on
+/// every engine tick is real work on the UI thread.
+#[derive(Default)]
+pub struct TrackerHosts(std::collections::HashMap<String, String>);
+
+impl TrackerHosts {
+    pub fn get(&mut self, url: &str) -> &str {
+        if !self.0.contains_key(url) {
+            // A session doesn't see this many; the bound is for a hostile or broken list.
+            if self.0.len() >= 200_000 {
+                self.0.clear();
+            }
+            self.0.insert(url.to_string(), tracker_host(url));
+        }
+        self.0.get(url).map_or("", String::as_str)
+    }
+
+    /// The host of a URL `get` has seen; the URL itself otherwise.
+    pub fn peek<'a>(&'a self, url: &'a str) -> &'a str {
+        self.0.get(url).map_or(url, String::as_str)
+    }
+}
+
+pub fn matches_filters(t: &TorrentView, prefs: &UiPrefs, search: &str, hosts: &mut TrackerHosts) -> bool {
     if !prefs.status_filter.matches(t) {
         return false;
     }
@@ -61,7 +84,7 @@ pub fn matches_filters(t: &TorrentView, prefs: &UiPrefs, search: &str) -> bool {
             }
         }
         GroupFilter::Named(host) => {
-            if !t.trackers.iter().any(|u| &tracker_host(u) == host) {
+            if !t.trackers.iter().any(|u| hosts.get(u) == host) {
                 return false;
             }
         }
@@ -82,10 +105,20 @@ pub fn matches_filters(t: &TorrentView, prefs: &UiPrefs, search: &str) -> bool {
     true
 }
 
-pub fn compute_rows(snap: &Snapshot, prefs: &UiPrefs, search: &str) -> Vec<usize> {
-    let mut rows: Vec<usize> =
-        (snap.torrents.iter().enumerate()).filter(|(_, t)| matches_filters(t, prefs, search)).map(|(i, _)| i).collect();
+pub fn compute_rows(snap: &Snapshot, prefs: &UiPrefs, search: &str, hosts: &mut TrackerHosts) -> Vec<usize> {
+    let mut rows: Vec<usize> = (snap.torrents.iter().enumerate())
+        .filter(|(_, t)| matches_filters(t, prefs, search, hosts))
+        .map(|(i, _)| i)
+        .collect();
     let ts = &snap.torrents;
+    if prefs.sort == Col::Tracker {
+        for t in rows.iter().filter_map(|&i| ts.get(i)) {
+            if let Some(u) = t.trackers.first() {
+                hosts.get(u);
+            }
+        }
+    }
+    let hosts = &*hosts;
     let cmp = |a: &TorrentView, b: &TorrentView| -> Ordering {
         let f = |x: f64, y: f64| x.partial_cmp(&y).unwrap_or(Ordering::Equal);
         match prefs.sort {
@@ -107,7 +140,8 @@ pub fn compute_rows(snap: &Snapshot, prefs: &UiPrefs, search: &str) -> Vec<usize
             Col::Downloaded => a.downloaded.cmp(&b.downloaded),
             Col::Uploaded => a.uploaded.cmp(&b.uploaded),
             Col::SavePath => a.save_path.cmp(&b.save_path),
-            Col::Tracker => a.trackers.first().cmp(&b.trackers.first()),
+            // By what the column shows: the host, not the URL's scheme.
+            Col::Tracker => a.trackers.first().map(|u| hosts.peek(u)).cmp(&b.trackers.first().map(|u| hosts.peek(u))),
             Col::SeedTime => a.seeding_secs.cmp(&b.seeding_secs),
             Col::LastActivity => a.last_activity.cmp(&b.last_activity),
         }
@@ -623,7 +657,7 @@ impl CorrentApp {
             }
             Col::Tracker => {
                 ui.label(
-                    RichText::new(t.trackers.first().map(|u| tracker_host(u)).unwrap_or_default())
+                    RichText::new(t.trackers.first().map(|u| self.counts.hosts.peek(u)).unwrap_or_default())
                         .small()
                         .color(p.text_dim),
                 );
@@ -705,35 +739,62 @@ impl CorrentApp {
                 });
             });
         } else if !self.search.trim().is_empty() {
-            widgets::empty_state(
-                ui,
-                p,
-                icons::MAGNIFYING_GLASS,
-                t!("No matches"),
-                &t!("No torrents match “{q}”.", q = self.search.trim()),
-            );
+            let filters = self.active_filters();
+            let q = self.search.trim().to_string();
+            let subtitle = if filters.is_empty() {
+                t!("No torrents match “{q}”.", q = q)
+            } else {
+                t!("No torrents match “{q}” in {filters}.", q = q, filters = filters.join(" · "))
+            };
+            widgets::empty_state(ui, p, icons::MAGNIFYING_GLASS, t!("No matches"), &subtitle);
             ui.vertical_centered(|ui| {
                 if widgets::secondary_button(ui, t!("Clear search")).clicked() {
                     self.search.clear();
                 }
+                if !filters.is_empty() && widgets::secondary_button(ui, t!("Show all torrents")).clicked() {
+                    self.clear_filters();
+                    self.search.clear();
+                }
             });
         } else {
+            let filters = self.active_filters().join(" · ");
             widgets::empty_state(
                 ui,
                 p,
                 icons::FUNNEL,
-                &t!("Nothing in “{f}”", f = self.prefs.status_filter.label()),
+                &t!("Nothing in “{f}”", f = filters),
                 t!("No torrents match the current filters."),
             );
             ui.vertical_centered(|ui| {
                 if widgets::secondary_button(ui, t!("Show all torrents")).clicked() {
-                    self.prefs.status_filter = super::StatusFilter::All;
-                    self.prefs.category_filter = GroupFilter::All;
-                    self.prefs.tag_filter = GroupFilter::All;
-                    self.prefs.tracker_filter = GroupFilter::All;
+                    self.clear_filters();
                 }
             });
         }
+    }
+
+    /// The filters in force, as the sidebar names them.
+    fn active_filters(&self) -> Vec<String> {
+        let group = |g: &GroupFilter, none: &str| match g {
+            GroupFilter::All => None,
+            GroupFilter::None => Some(none.to_string()),
+            GroupFilter::Named(n) => Some(n.clone()),
+        };
+        let status = self.prefs.status_filter;
+        (status != super::StatusFilter::All)
+            .then(|| status.label().to_string())
+            .into_iter()
+            .chain(group(&self.prefs.category_filter, t!("Uncategorized")))
+            .chain(group(&self.prefs.tag_filter, t!("Untagged")))
+            .chain(group(&self.prefs.tracker_filter, t!("No trackers")))
+            .collect()
+    }
+
+    pub(super) fn clear_filters(&mut self) {
+        self.prefs.status_filter = super::StatusFilter::All;
+        self.prefs.category_filter = GroupFilter::All;
+        self.prefs.tag_filter = GroupFilter::All;
+        self.prefs.tracker_filter = GroupFilter::All;
     }
 
     fn column_chooser(&mut self, ui: &mut Ui, p: &Palette) {
@@ -837,6 +898,22 @@ mod more_tests {
         }
     }
 
+    fn mf(t: &TorrentView, prefs: &UiPrefs, search: &str) -> bool {
+        matches_filters(t, prefs, search, &mut TrackerHosts::default())
+    }
+
+    #[test]
+    fn tracker_sort_goes_by_host() {
+        let tracked = |n: u8, url: &str| TorrentView {
+            trackers: [url.to_string()].into_iter().collect(),
+            ..t(n, &format!("t{n}"))
+        };
+        let sn = snap(vec![tracked(1, "udp://a.example:80/announce"), tracked(2, "https://z.example/announce")]);
+        let p = UiPrefs { sort: Col::Tracker, sort_asc: true, ..Default::default() };
+        let rows = compute_rows(&sn, &p, "", &mut TrackerHosts::default());
+        assert_eq!(sn.torrents[rows[0]].name, "t1", "a.example before z.example, whatever the scheme");
+    }
+
     fn snap(ts: Vec<TorrentView>) -> Snapshot {
         Snapshot { torrents: ts, ..Default::default() }
     }
@@ -848,11 +925,11 @@ mod more_tests {
         let mut b = t(2, "b");
         b.category = Some("Music".into());
         let prefs = UiPrefs { category_filter: GroupFilter::Named("Movies".into()), ..Default::default() };
-        assert!(matches_filters(&a, &prefs, ""));
-        assert!(!matches_filters(&b, &prefs, ""));
+        assert!(mf(&a, &prefs, ""));
+        assert!(!mf(&b, &prefs, ""));
         let none = UiPrefs { category_filter: GroupFilter::None, ..Default::default() };
-        assert!(matches_filters(&t(3, "c"), &none, ""));
-        assert!(!matches_filters(&a, &none, ""));
+        assert!(mf(&t(3, "c"), &none, ""));
+        assert!(!mf(&a, &none, ""));
     }
 
     #[test]
@@ -861,12 +938,12 @@ mod more_tests {
         a.tags = vec!["linux".into()];
         a.trackers = vec!["udp://tracker.example.org:1337/announce".into()];
         let tag = UiPrefs { tag_filter: GroupFilter::Named("linux".into()), ..Default::default() };
-        assert!(matches_filters(&a, &tag, ""));
-        assert!(!matches_filters(&t(2, "b"), &tag, ""));
+        assert!(mf(&a, &tag, ""));
+        assert!(!mf(&t(2, "b"), &tag, ""));
         let tr = UiPrefs { tracker_filter: GroupFilter::Named("tracker.example.org".into()), ..Default::default() };
-        assert!(matches_filters(&a, &tr, ""));
+        assert!(mf(&a, &tr, ""));
         let none = UiPrefs { tracker_filter: GroupFilter::None, ..Default::default() };
-        assert!(matches_filters(&t(2, "b"), &none, ""));
+        assert!(mf(&t(2, "b"), &none, ""));
     }
 
     #[test]
@@ -874,10 +951,10 @@ mod more_tests {
         let mut a = t(1, "Ubuntu Server 24.04");
         a.tags = vec!["iso".into()];
         let p = UiPrefs::default();
-        assert!(matches_filters(&a, &p, "ubuntu 24"));
-        assert!(matches_filters(&a, &p, "ubuntu iso"), "tags match whole terms");
-        assert!(!matches_filters(&a, &p, "ubuntu desktop"));
-        assert!(matches_filters(&a, &p, "0101"), "info hash prefix");
+        assert!(mf(&a, &p, "ubuntu 24"));
+        assert!(mf(&a, &p, "ubuntu iso"), "tags match whole terms");
+        assert!(!mf(&a, &p, "ubuntu desktop"));
+        assert!(mf(&a, &p, "0101"), "info hash prefix");
     }
 
     #[test]
@@ -900,12 +977,12 @@ mod more_tests {
     fn sorting_by_name_natural_and_size_desc() {
         let sn = snap(vec![t(1, "ep10"), t(2, "ep2"), t(3, "Ep1")]);
         let mut p = UiPrefs { sort: Col::Name, sort_asc: true, ..Default::default() };
-        let rows = compute_rows(&sn, &p, "");
+        let rows = compute_rows(&sn, &p, "", &mut TrackerHosts::default());
         let names: Vec<&str> = rows.iter().map(|&i| sn.torrents[i].name.as_str()).collect();
         assert_eq!(names, vec!["Ep1", "ep2", "ep10"]);
         p.sort = Col::Size;
         p.sort_asc = false;
-        let rows = compute_rows(&sn, &p, "");
+        let rows = compute_rows(&sn, &p, "", &mut TrackerHosts::default());
         assert_eq!(sn.torrents[rows[0]].size, 30);
     }
 
@@ -916,7 +993,7 @@ mod more_tests {
         let b = t(2, "b");
         let sn = snap(vec![b, a]);
         let p = UiPrefs { sort: Col::Eta, sort_asc: true, ..Default::default() };
-        let rows = compute_rows(&sn, &p, "");
+        let rows = compute_rows(&sn, &p, "", &mut TrackerHosts::default());
         assert_eq!(sn.torrents[rows[0]].name, "a");
     }
 

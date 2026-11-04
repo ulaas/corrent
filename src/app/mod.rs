@@ -257,7 +257,7 @@ pub struct UiPrefs {
     pub category_filter: GroupFilter,
     pub tag_filter: GroupFilter,
     pub tracker_filter: GroupFilter,
-    /// Collapsed sidebar sections ("status", "categories", "tags").
+    /// Collapsed sidebar sections ("status", "categories", "tags", "trackers").
     pub collapsed: Vec<String>,
 }
 
@@ -498,8 +498,7 @@ impl CorrentApp {
     ) -> Self {
         theme::install_fonts(ctx);
         egui_extras::install_image_loaders(ctx);
-        let mut prefs = prefs.unwrap_or_default();
-        prefs.tracker_filter = GroupFilter::All;
+        let prefs = prefs.unwrap_or_default();
         let (tx, rx) = std::sync::mpsc::channel();
         let ui_events_tx = tx.clone();
         // Read once at startup (a small file); later changes are kept in memory and saved off
@@ -925,7 +924,8 @@ impl CorrentApp {
         self.prefs.tracker_filter.hash(&mut h);
         let key = h.finish();
         if self.rows_key != Some(key) {
-            self.rows = table::compute_rows(&self.snap, &self.prefs, &self.search);
+            self.counts.update(&self.snap);
+            self.rows = table::compute_rows(&self.snap, &self.prefs, &self.search, &mut self.counts.hosts);
             self.rows_key = Some(key);
             // Never act on torrents the user can't see.
             let visible: HashSet<InfoHash> =
@@ -1076,10 +1076,7 @@ impl CorrentApp {
     fn show_torrents(&mut self, ctx: &Context, hashes: Vec<InfoHash>) {
         self.show_window(ctx);
         self.main_view = feeds::MainView::Torrents;
-        self.prefs.status_filter = StatusFilter::All;
-        self.prefs.category_filter = GroupFilter::All;
-        self.prefs.tag_filter = GroupFilter::All;
-        self.prefs.tracker_filter = GroupFilter::All;
+        self.clear_filters();
         self.search.clear();
         let first = hashes.first().copied();
         self.selected = hashes.into_iter().collect();

@@ -1399,3 +1399,8 @@
 "Added {n} torrents" = "{n} torrent eklendi"
 "Show all" = "Tümünü göster"
 "Current: {limit}" = "Şu anki: {limit}"
+"No trackers" = "İzleyicisiz"
+"Copy announce URL" = "Duyuru adresini kopyala"
+"Pause all on this tracker" = "Bu izleyicidekilerin tümünü duraklat"
+"Resume all on this tracker" = "Bu izleyicidekilerin tümünü sürdür"
+"No torrents match “{q}” in {filters}." = "{filters} içinde “{q}” ile eşleşen torrent yok."

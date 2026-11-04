@@ -380,6 +380,44 @@ fn the_limit_menu_shows_a_custom_limit() {
 }
 
 #[test]
+fn filtering_by_tracker_shows_only_its_torrents() {
+    let tracked = |n: u8, name: &str, url: &str| TorrentView {
+        trackers: [url.to_string()].into_iter().collect(),
+        ..torrent(n, name, TorrentState::Seeding)
+    };
+    let (_f, mut app) = app(
+        "tracker",
+        vec![
+            tracked(1, "Alpha", "udp://one.example:80/announce"),
+            tracked(2, "Beta", "udp://two.example:80/announce"),
+            torrent(3, "Gamma", TorrentState::Seeding),
+        ],
+    );
+    let log = record_commands(&mut app);
+    let mut h = harness(app);
+    h.run_steps(3);
+    // A tall list: the section is below the fold, reached as a screen reader would.
+    h.get_by_label("one.example").click_accesskit();
+    h.run_steps(3);
+    assert_eq!(h.state().prefs.tracker_filter, super::GroupFilter::Named("one.example".into()),);
+    assert!(h.query_by_label("Alpha").is_some());
+    assert!(h.query_by_label("Beta").is_none());
+    assert!(h.query_by_label("Gamma").is_none());
+    h.get_by_label("No trackers").click_accesskit();
+    h.run_steps(3);
+    assert!(h.query_by_label("Gamma").is_some());
+    assert!(h.query_by_label("Alpha").is_none());
+    // The empty state names what is filtering.
+    h.state_mut().prefs.tag_filter = super::GroupFilter::Named("x".into());
+    h.run_steps(3);
+    h.get_by_label("Nothing in “x · No trackers”");
+    h.get_by_label("Show all torrents").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Alpha").is_some());
+    assert!(commands_sent(h.state(), &log).is_empty());
+}
+
+#[test]
 fn empty_list_offers_add_actions() {
     let (_f, app) = app("empty", vec![]);
     let mut h = harness(app);
