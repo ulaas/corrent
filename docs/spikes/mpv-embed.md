@@ -59,3 +59,19 @@ without advanced control (`vo=libmpv` gets no display timing from us). So the A/
 them instead of made-up numbers; making them real needs `display-fps-override` from the monitor's
 rate, or the advanced control trial, both deferred.
 
+## Closing while a server stalls (A13: verified, doesn't reproduce)
+
+`Drop for Player` sends `stop` and frees the render context on the UI thread; `render.h` says that
+waits for the core to uninitialise the VO, so a stalled demuxer could hold the UI thread up.
+`closing_while_the_server_stalls` in `render.rs` (ignored, `--ignored --nocapture`) does the same
+against a local server that stops sending with the connection open:
+
+| | frames rendered | render context freed in | `mpv_terminate_destroy` |
+|---|---|---|---|
+| stalled at opening | 0 | 46 µs | 1 ms |
+| stalled mid playback (`paused-for-cache`) | 100 | 173 µs | 102 ms |
+
+Far below the 10 s of the UI watchdog, so no `logs/hang-*.txt`, and no fix was made (the deferred
+`vid no` and a closing state aren't needed). The stall is in the demuxer's thread, which the core
+doesn't wait for. A slow disk or a blocked `sub-add` were not part of this.
+

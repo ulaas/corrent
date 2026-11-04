@@ -217,4 +217,62 @@ mod tests {
         let mid = &buf[(24 * 64 + 32) * 4..][..4];
         assert!(mid[0] > 200 && mid[1] < 60 && mid[2] < 60 && mid[3] == 255, "red pixel, got {mid:?}");
     }
+
+    /// A bench for finding A13, not a check: does closing the player wait for a stalled server? The
+    /// player's `Drop` sends `stop` and drops the render context on the UI thread, whose watchdog
+    /// writes a hang report after 10 s. This does the same against a server that stops sending, at
+    /// opening and in the middle of playback. Run with `--ignored --nocapture`; result in
+    /// `docs/spikes/mpv-embed.md`.
+    #[test]
+    #[ignore]
+    fn closing_while_the_server_stalls() {
+        use std::io::{Read, Write};
+        let Ok(lib) = Library::get() else {
+            eprintln!("libmpv not found; skipping");
+            return;
+        };
+        for (name, frames) in [("stalled at opening", 0usize), ("stalled mid playback", 100)] {
+            let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/clip.y4m", server.local_addr().unwrap());
+            std::thread::spawn(move || {
+                let (mut c, _) = server.accept().unwrap();
+                let mut request = [0u8; 2048];
+                let _ = c.read(&mut request);
+                if frames > 0 {
+                    let mut out = b"HTTP/1.1 200 OK\r\nContent-Type: video/x-yuv4mpeg\r\n\r\n".to_vec();
+                    out.extend_from_slice(b"YUV4MPEG2 W64 H48 F25:1 Ip A1:1 C420mpeg2\n");
+                    for _ in 0..frames {
+                        out.extend_from_slice(b"FRAME\n");
+                        out.extend(std::iter::repeat_n(128u8, 64 * 48 * 3 / 2));
+                    }
+                    let _ = c.write_all(&out);
+                }
+                // And then nothing, with the connection open.
+                std::thread::sleep(std::time::Duration::from_secs(120));
+                drop(c);
+            });
+            let mut opts: Vec<(&str, &str)> = crate::HEADLESS.to_vec();
+            opts.extend([("vo", "libmpv"), ("ao", "null"), ("keep-open", "yes")]);
+            let mpv = Arc::new(Mpv::new(lib.clone(), &opts).unwrap());
+            let mut rc = RenderContext::new_sw(mpv.clone()).unwrap();
+            mpv.command(&["loadfile", &url]).unwrap();
+            let mut buf = vec![0u8; 64 * 48 * 4];
+            let (mut rendered, mut cache) = (0, false);
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(if frames > 0 { 12 } else { 3 });
+            while std::time::Instant::now() < until {
+                mpv.wait_event(0.02);
+                if rc.update() && rc.render_sw(64, 48, &mut buf).is_ok() {
+                    rendered += 1;
+                }
+                cache = mpv.get("paused-for-cache").is_ok_and(|v| v.as_bool() == Some(true));
+            }
+            let t = std::time::Instant::now();
+            mpv.command_async(0, &["stop"]).unwrap();
+            drop(rc);
+            println!("{name}: {rendered} frames, paused-for-cache {cache}; render context freed in {:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            drop(mpv);
+            println!("{name}: mpv destroyed in {:?} (off the UI thread in the player)", t.elapsed());
+        }
+    }
 }
