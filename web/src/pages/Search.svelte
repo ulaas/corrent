@@ -28,19 +28,27 @@
   let adding = $state<string | null>(null);
   let added = $state<Set<string>>(new Set());
 
+  // Only the newest search may fill the list: an older one can answer last.
+  let inFlight: AbortController | null = null;
+
   async function search(e?: Event) {
     e?.preventDefault();
     const text = q.trim();
     if (!text) return;
+    inFlight?.abort();
+    const mine = (inFlight = new AbortController());
     busy = true;
     error = '';
     try {
-      last.res = await api.get<SearchResponse>('/search', { q: text });
+      const res = await api.get<SearchResponse>('/search', { q: text }, mine.signal);
+      if (mine !== inFlight) return;
+      last.res = res;
       last.q = text;
     } catch (err) {
+      if (mine !== inFlight) return;
       error = errorText(err);
     } finally {
-      busy = false;
+      if (mine === inFlight) busy = false;
     }
   }
 

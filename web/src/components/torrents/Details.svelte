@@ -35,6 +35,7 @@
   // svelte-ignore state_referenced_locally
   let tab = $state<(typeof TABS)[number]['id']>(initialTab);
   let detail = $state<TorrentDetail | null>(null);
+  let detailError = $state('');
   let selectedFiles = $state<Set<number>>(new Set());
   let newTrackers = $state('');
   let canvas: HTMLCanvasElement | undefined = $state();
@@ -42,10 +43,22 @@
   $effect(() => {
     const hash = torrent.hash;
     detail = null;
+    detailError = '';
     selectedFiles = new Set();
-    api.get<TorrentDetail>(`/torrents/${hash}/detail`).then((d) => (detail = d)).catch(() => {});
+    // A slow answer for the torrent selected before must not show under this one.
+    api.get<TorrentDetail>(`/torrents/${hash}/detail`).then(
+      (d) => {
+        if (hash === torrent.hash) detail = d;
+      },
+      (e) => {
+        if (hash === torrent.hash && !detail) detailError = errorText(e);
+      },
+    );
     const off = events.on((e) => {
-      if (e.t === 'torrent_detail' && e.detail.hash === hash) detail = e.detail;
+      if (e.t === 'torrent_detail' && e.detail.hash === hash) {
+        detail = e.detail;
+        detailError = '';
+      }
     });
     const unsub = events.subscribe({ topic: 'torrent', arg: hash });
     return () => {
@@ -209,7 +222,9 @@
         </dl>
       </div>
     {:else if tab === 'files'}
-      {#if !detail}
+      {#if detailError}
+        <p class="detail-error caption" role="alert">{detailError}</p>
+      {:else if !detail}
         <div class="center"><Spinner /></div>
       {:else if !detail.files.length}
         <p class="muted center">{t('The file list appears once the metadata has arrived.')}</p>
@@ -267,7 +282,9 @@
         <div class="axis caption muted"><span>{t('Download')} / {t('Upload')} · {rate(peak)}</span><span>{t('now')}</span></div>
       {/if}
     {:else if tab === 'peers'}
-      {#if !detail}
+      {#if detailError}
+        <p class="detail-error caption" role="alert">{detailError}</p>
+      {:else if !detail}
         <div class="center"><Spinner /></div>
       {:else if !detail.peers.length}
         <p class="muted center">{t('No peers connected.')}</p>
@@ -292,7 +309,9 @@
         <button class="btn" disabled={!newTrackers.trim()}><Icon name="plus" />{t('Add trackers')}</button>
       </form>
     {:else if tab === 'pieces'}
-      {#if !detail}
+      {#if detailError}
+        <p class="detail-error caption" role="alert">{detailError}</p>
+      {:else if !detail}
         <div class="center"><Spinner /></div>
       {:else}
         <canvas bind:this={canvas} class="pieces" aria-label={t('{n} pieces, {p} done', { n: detail.piece_count, p: percent(torrent.progress) })}></canvas>
@@ -303,6 +322,11 @@
 </section>
 
 <style>
+  .detail-error {
+    padding: 24px;
+    text-align: center;
+    color: var(--error);
+  }
   .details {
     display: flex;
     flex-direction: column;

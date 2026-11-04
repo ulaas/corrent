@@ -68,5 +68,8 @@ export function tk<T extends string>(key: T): T {
 
 /** BCP 47 locale for Intl formatters. */
 export function locale(): string {
-  return state.lang === 'tr' ? 'tr-TR' : 'en-GB';
+  if (state.lang === 'tr') return 'tr-TR';
+  // English in the browser's own conventions (dates differ between en-US and en-GB).
+  const nav = typeof navigator === 'undefined' ? '' : navigator.language;
+  return nav?.startsWith('en') ? nav : 'en-GB';
 }
