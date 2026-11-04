@@ -186,6 +186,8 @@ impl GlVideo {
             if let Err(e) = self.rc.render_gl(self.fbo.0.get() as i32, want[0], want[1], false) {
                 tracing::debug!("video render: {e}");
             }
+            // Feeds mpv's timing statistics (display fps, jitter on the A/V page).
+            self.rc.report_swap();
             gl.bind_framebuffer(glow::FRAMEBUFFER, std::num::NonZeroU32::new(prev as u32).map(glow::NativeFramebuffer));
         }
     }
@@ -416,6 +418,8 @@ impl Player {
         let volume = format!("{}", if audio.volume.is_finite() { audio.volume.clamp(0.0, 130.0) } else { 100.0 });
         opts.extend([("volume", volume.as_str()), ("mute", if audio.muted { "yes" } else { "no" })]);
         opts.push(if audio_only { ("vid", "no") } else { ("vo", "libmpv") });
+        // The texture is 8 bits a channel: HDR tone-mapped or 10-bit sources would band without.
+        opts.push(("dither-depth", "8"));
         // Albums go through mpv's own playlist, opened ahead of time: see `gapless_tick`.
         if audio_only && audio.gapless {
             opts.push(("prefetch-playlist", "yes"));

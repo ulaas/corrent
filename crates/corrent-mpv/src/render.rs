@@ -112,9 +112,11 @@ impl RenderContext {
         flags & ffi::MPV_RENDER_UPDATE_FRAME != 0
     }
 
-    /// Renders the current frame into framebuffer `fbo` (0 = default) of `w`×`h` pixels.
+    /// Renders the current frame into framebuffer `fbo` (0 = default) of `w`×`h` pixels, an RGBA8
+    /// texture: told the depth, mpv can dither down to it (`dither-depth`).
     pub fn render_gl(&mut self, fbo: i32, w: i32, h: i32, flip_y: bool) -> Result<()> {
-        let mut target = ffi::mpv_opengl_fbo { fbo, w, h, internal_format: 0 };
+        const GL_RGBA8: c_int = 0x8058;
+        let mut target = ffi::mpv_opengl_fbo { fbo, w, h, internal_format: GL_RGBA8 };
         let mut flip: c_int = flip_y.into();
         let mut block: c_int = 0;
         let mut params = [

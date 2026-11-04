@@ -41,3 +41,21 @@ Findings:
 
 **Go** for the GL path as the default native video path; SW stays the automatic fallback
 (`CORRENT_SW_VIDEO=1` or GL context creation failure). Windows/macOS runs remain [O].
+
+## Frame reports and dither (quality round, 2026-11-05)
+
+`GlVideo::paint` now calls `report_swap()` after rendering, `render_gl` tells mpv the target is
+`GL_RGBA8`, and the player sets `dither-depth=8`. Measured with `examples/egui_player.rs --simple`
+(no advanced control, as the player runs; 120 Hz display, 1280×720@30 `testsrc2`, 8 s, two runs each):
+
+| | frames | p50 | p99 | max (start-up) |
+|---|---|---|---|---|
+| without `--swap` | 934, 936 | 8.3 ms | 8.8, 8.8 ms | 128, 184 ms |
+| with `--swap` | 934, 936, 936 | 8.3 ms | 9.0, 8.8, 8.9 ms | 202, 192, 191 ms |
+
+No change, as expected: it only feeds statistics. But `display-fps`, `estimated-display-fps`,
+`vsync-jitter` and `vsync-ratio` stay "property unavailable" on this libmpv with the report, with or
+without advanced control (`vo=libmpv` gets no display timing from us). So the A/V page shows "—" for
+them instead of made-up numbers; making them real needs `display-fps-override` from the monitor's
+rate, or the advanced control trial, both deferred.
+
