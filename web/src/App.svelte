@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick, untrack } from 'svelte';
   import { fly } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import Sidebar from './components/Sidebar.svelte';
@@ -14,7 +15,7 @@
   import Auth from './pages/Auth.svelte';
   import Home from './pages/Home.svelte';
   import { boot, session } from './lib/session.svelte';
-  import { define, match, route } from './lib/router.svelte';
+  import { define, match, rememberScroll, route, scrollOf } from './lib/router.svelte';
   import { ms, prefs } from './lib/prefs.svelte';
   import { music } from './lib/player.svelte';
   import { startLibraries } from './lib/libraries.svelte';
@@ -81,13 +82,55 @@
     }
   });
 
-  // New page: close the drawer and scroll to the top (history navigation keeps the position
-  // the browser restores for the window; our scroller is the main element).
+  // New page: close the drawer and scroll to the top. Back and Forward go to where the entry was
+  // left (browsers only do that for the window; our scroller is the main element).
+  let lastPath = route.path;
+  let restoring = false;
+  let endRestore: (() => void) | null = null;
+
   $effect(() => {
-    void route.path;
-    drawer = false;
-    scroller?.scrollTo({ top: 0 });
+    const path = route.path;
+    const key = route.key;
+    const restored = route.restored;
+    untrack(() => {
+      drawer = false;
+      const changed = path !== lastPath;
+      lastPath = path;
+      endRestore?.();
+      if (restored) restoreScroll(key);
+      else if (changed) scroller?.scrollTo({ top: 0 });
+    });
   });
+
+  /** The page may not be tall enough yet (its data is on the way): keeps trying for a few seconds,
+   *  unless the person starts scrolling themselves. */
+  function restoreScroll(key: number) {
+    const el = scroller;
+    const target = scrollOf(key);
+    if (!el) return;
+    if (!target) return el.scrollTo({ top: 0 });
+    restoring = true;
+    const until = performance.now() + 3000;
+    let frame = 0;
+    const stop = () => {
+      cancelAnimationFrame(frame);
+      restoring = false;
+      endRestore = null;
+      for (const k of ['wheel', 'touchstart', 'pointerdown', 'keydown']) el.removeEventListener(k, stop);
+    };
+    endRestore = stop;
+    for (const k of ['wheel', 'touchstart', 'pointerdown', 'keydown']) el.addEventListener(k, stop, { passive: true });
+    const attempt = () => {
+      el.scrollTop = target;
+      if (Math.abs(el.scrollTop - target) < 2 || performance.now() > until) return stop();
+      frame = requestAnimationFrame(attempt);
+    };
+    void tick().then(attempt);
+  }
+
+  function onMainScroll() {
+    if (!restoring && scroller) rememberScroll(route.key, scroller.scrollTop);
+  }
 
   const fullscreen = $derived(m.name === 'play');
 
@@ -135,7 +178,7 @@
           </div>
         {/if}
       {/if}
-      <main id="main" bind:this={scroller} tabindex="-1">
+      <main id="main" bind:this={scroller} tabindex="-1" onscroll={onMainScroll}>
         {#key routeKey}
           <div class="route" in:fly={{ y: 10, duration: ms(260), easing: cubicOut }}>
             {#if m.name === 'home'}

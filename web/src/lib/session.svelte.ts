@@ -2,6 +2,7 @@
 import { api, setCsrf, setUnauthorizedHandler } from './api';
 import { events } from './events.svelte';
 import { resetExtensions } from './extensions.svelte';
+import { forgetGrids } from './gridcache';
 import { resetLibraries } from './libraries.svelte';
 import { syncPrefs } from './prefs.svelte';
 import { Perm, type LoginResponse, type ServerInfo, type User } from './types';
@@ -24,6 +25,7 @@ export const isAdmin = () => can(Perm.SETTINGS_WRITE);
 function forgetUser() {
   resetLibraries();
   resetExtensions();
+  forgetGrids();
 }
 
 function signedIn(r: LoginResponse) {

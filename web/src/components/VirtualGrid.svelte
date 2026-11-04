@@ -5,6 +5,7 @@
   import Card from './Card.svelte';
   import Icon from './Icon.svelte';
   import { api, errorText } from '../lib/api';
+  import { cachedGrid, rememberGrid } from '../lib/gridcache';
   import { onRelink } from '../lib/events.svelte';
   import { t } from '../lib/i18n.svelte';
   import { aspect, type Shape } from '../lib/media';
@@ -32,7 +33,10 @@
   let offsetTop = $state(0);
   let pages = $state<Record<number, Item[]>>({});
   const loading = new Set<number>();
+  /** Pages shown from the cache, not fetched yet in this grid's life: they refresh when seen. */
+  const stale = new Set<number>();
   let generation = 0;
+  let activeKey = '';
 
   const minW = $derived(cardWidth(shape));
   const cols = $derived(Math.max(1, Math.floor((width + GAP) / (minW + GAP))));
@@ -47,7 +51,7 @@
   }
 
   function loadPage(page: number, force = false) {
-    if ((pages[page] && !force) || loading.has(page)) return;
+    if ((pages[page] && !force && !stale.has(page)) || loading.has(page)) return;
     loading.add(page);
     const gen = generation;
     api
@@ -57,9 +61,14 @@
         pages[page] = p.items;
         total = p.total;
         error = '';
+        stale.delete(page);
+        rememberGrid(activeKey, { pages, total });
       })
       .catch((e) => {
-        if (gen === generation) error = errorText(e);
+        if (gen !== generation) return;
+        // What the cache shows stays on screen; only a page with nothing to show is an error.
+        if (!pages[page]) error = errorText(e);
+        stale.delete(page);
       })
       .finally(() => loading.delete(page));
   }
@@ -82,16 +91,26 @@
     return out;
   }
 
-  // New query: start over.
+  // New query: start over, or from what is known of it (Back to a grid shows it at once).
   $effect(() => {
-    void JSON.stringify(query);
+    const key = JSON.stringify(query);
     untrack(() => {
+      if (key === activeKey) return;
+      activeKey = key;
       generation++;
-      pages = {};
       loading.clear();
-      total = -1;
+      stale.clear();
       error = '';
-      load(0);
+      const known = cachedGrid(key);
+      if (known && known.total > 0) {
+        pages = known.pages;
+        total = known.total;
+        for (const p of Object.keys(known.pages)) stale.add(+p);
+      } else {
+        pages = {};
+        total = -1;
+        load(0);
+      }
     });
   });
 
