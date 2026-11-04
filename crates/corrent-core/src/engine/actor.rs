@@ -1897,7 +1897,8 @@ impl Actor {
                 }
                 match result {
                     Ok((hash, name)) => {
-                        self.unrecorded.remove(&hash);
+                        // A record of its own, or only the default one a tick gave it meanwhile?
+                        let fresh = self.unrecorded.remove(&hash) || self.store.get(&hash).is_none();
                         let top = req.add_to_top;
                         // A watch-folder file follows its folder's after-add setting instead of the
                         // general "delete the .torrent" one below.
@@ -1913,10 +1914,20 @@ impl Actor {
                         let m = self.store.meta_mut(hash);
                         m.metainfo_missing = false;
                         m.name = name.clone();
-                        m.category = req.category.clone();
-                        m.tags = req.tags.clone();
-                        m.added_by = req.added_by.clone();
-                        m.added_at = now_unix();
+                        // Added again with its record still there (a failed load kept it, as its
+                        // row promised): what the request doesn't set stays.
+                        if fresh || req.category.is_some() {
+                            m.category = req.category.clone();
+                        }
+                        if fresh || !req.tags.is_empty() {
+                            m.tags = req.tags.clone();
+                        }
+                        if fresh || req.added_by.is_some() {
+                            m.added_by = req.added_by.clone();
+                        }
+                        if fresh {
+                            m.added_at = now_unix();
+                        }
                         m.pause_reason = req.paused.then_some(PauseReason::User);
                         if let AddSource::Magnet(s) = &req.source {
                             m.source_magnet = Some(s.clone());

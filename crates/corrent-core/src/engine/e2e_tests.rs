@@ -852,14 +852,7 @@ pub(super) async fn add_tiny_torrents_pub(l: &Leecher, dir: &Path, n: u8) -> Vec
 /// Add `n` tiny paused torrents (made-up piece hashes; nothing to download) and wait for them.
 async fn add_tiny_torrents(l: &Leecher, dir: &Path, n: u8) -> Vec<InfoHash> {
     for i in 0..n {
-        let name = format!("tiny-{i:03}.bin");
-        let mut info =
-            format!("d6:lengthi16384e4:name{}:{name}12:piece lengthi16384e6:pieces20:", name.len()).into_bytes();
-        info.extend_from_slice(&[i.wrapping_add(100); 20]);
-        info.push(b'e');
-        let mut bytes = b"d4:info".to_vec();
-        bytes.extend_from_slice(&info);
-        bytes.push(b'e');
+        let bytes = tiny_torrent(&format!("tiny-{i:03}.bin"), i.wrapping_add(100));
         l.engine.send(EngineCommand::Add(Box::new(AddRequest {
             source: AddSource::Bytes { name: format!("{i}.torrent"), bytes },
             torrent_bytes: None,
@@ -1881,7 +1874,7 @@ async fn a_restart_waits_for_an_add_fetching_its_metadata() {
     // Added on the new session; the file must list this one and the one before the restart.
     let tiny = {
         l.engine.send(EngineCommand::Add(Box::new(AddRequest {
-            source: AddSource::Bytes { name: "b.torrent".into(), bytes: tiny_torrent("after.bin") },
+            source: AddSource::Bytes { name: "b.torrent".into(), bytes: tiny_torrent("after.bin", 7) },
             torrent_bytes: None,
             save_path: dir.join("dl"),
             create_subfolder: false,
@@ -1906,10 +1899,10 @@ async fn a_restart_waits_for_an_add_fetching_its_metadata() {
 }
 
 /// One tiny torrent's metainfo (made-up piece hash).
-fn tiny_torrent(name: &str) -> Vec<u8> {
+fn tiny_torrent(name: &str, fill: u8) -> Vec<u8> {
     let mut bytes =
         format!("d4:infod6:lengthi16384e4:name{}:{name}12:piece lengthi16384e6:pieces20:", name.len()).into_bytes();
-    bytes.extend_from_slice(&[7; 20]);
+    bytes.extend_from_slice(&[fill; 20]);
     bytes.extend_from_slice(b"ee");
     bytes
 }
@@ -1950,5 +1943,45 @@ async fn a_restart_stops_waiting_for_a_dead_add_and_adds_it_afterwards() {
     assert_eq!(srv.hits("/a.torrent"), 2);
     let paths = stop(l).await;
     assert!(session_list(&paths).contains(&s.hash.to_hex()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A torrent shown as a failed load keeps its record (its row says so): adding it again by hand,
+/// with nothing chosen in the request, keeps the category, tags and date.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adding_a_torrent_again_keeps_its_record() {
+    let dir = temp_dir("readd-record");
+    let l = start(&dir);
+    let hash = add_tiny_torrents(&l, &dir, 1).await[0];
+    let paths = stop(l).await;
+    let mut store = read_store(&paths);
+    let m = store.torrents.get_mut(&hash).unwrap();
+    m.added_at = 12345;
+    m.tags = vec!["kept".into()];
+    std::fs::write(paths.store_file(), serde_json::to_vec(&store).unwrap()).unwrap();
+    std::fs::remove_file(paths.session_dir().join(format!("{}.torrent", hash.to_hex()))).unwrap();
+    lose_session_db(&paths, false);
+    let l = start(&dir);
+    wait_for(&l, "the failed load", 30, |sn| find(sn, hash).is_some_and(|t| t.restore_failed)).await;
+    l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        source: AddSource::Bytes { name: "again.torrent".into(), bytes: tiny_torrent("tiny-000.bin", 100) },
+        torrent_bytes: None,
+        save_path: dir.join("dl"),
+        create_subfolder: false,
+        category: None,
+        tags: Vec::new(),
+        paused: true,
+        only_files: None,
+        add_to_top: false,
+        initial_peers: None,
+        added_by: None,
+    })));
+    wait_for(&l, "added again", 30, |sn| find(sn, hash).is_some_and(|t| !t.restore_failed)).await;
+    let paths = stop(l).await;
+    let m = read_store(&paths).torrents.remove(&hash).unwrap();
+    assert_eq!(m.category.as_deref(), Some("Kept"));
+    assert_eq!(m.tags, vec!["kept".to_string()]);
+    assert_eq!(m.added_at, 12345);
+    assert!(!m.metainfo_missing);
     let _ = std::fs::remove_dir_all(dir);
 }
