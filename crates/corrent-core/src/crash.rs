@@ -50,6 +50,7 @@ fn power_loss_flag(log_dir: &Path) -> PathBuf {
 
 /// Mark the running engine as alive (called about once a minute).
 pub fn heartbeat(log_dir: &Path) {
+    crate::faults::fs_delay(log_dir);
     let _ = std::fs::write(alive(log_dir), crate::util::now_unix().to_string());
 }
 

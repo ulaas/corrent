@@ -208,6 +208,8 @@ pub struct Actor {
     /// Durations of the last 60 ticks (ms), for `SessionView::tick_max_ms`.
     tick_ms: std::collections::VecDeque<u32>,
     last_heartbeat: Option<Instant>,
+    /// The last heartbeat's write: one at a time, should the disk hang.
+    heartbeat_task: Option<JoinHandle<()>>,
     low_space_warned: bool,
     /// O5: the save folder's last probe, when the checks last started, whether one runs, and
     /// the problems last logged.
@@ -317,6 +319,7 @@ impl Actor {
             stopping: false,
             tick_ms: std::collections::VecDeque::with_capacity(60),
             last_heartbeat: None,
+            heartbeat_task: None,
             low_space_warned: false,
             health_probe: Ok(()),
             health_at: None,
@@ -2490,8 +2493,12 @@ impl Actor {
         }
         self.check_free_space();
         if self.last_heartbeat.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
-            // For D14: when this run was last alive, should the computer lose power.
-            crate::crash::heartbeat(&self.paths.log_dir());
+            // For D14: when this run was last alive, should the computer lose power. Off the
+            // engine's thread: a sleeping disk must not stall it.
+            if self.heartbeat_task.as_ref().is_none_or(|t| t.is_finished()) {
+                let log_dir = self.paths.log_dir();
+                self.heartbeat_task = Some(tokio::task::spawn_blocking(move || crate::crash::heartbeat(&log_dir)));
+            }
             self.last_heartbeat = Some(Instant::now());
         }
         self.wake.wake();

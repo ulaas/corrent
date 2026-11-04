@@ -456,3 +456,18 @@ async fn fm_health_checks_flip_and_clear() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The heartbeat (a file written about once a minute) doesn't hold up the engine on a slow disk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_slow_profile_disk_keeps_the_engine_ticking() {
+    let dir = temp_dir("fm-slow-heartbeat");
+    // Set before the first tick, which writes the first heartbeat.
+    crate::faults::set_fs_delay(&dir, Duration::from_secs(2));
+    let l = start(&dir);
+    let first = wait_for(&l, "a running engine", 30, |sn| sn.session.listen_port.is_some()).await.generation;
+    let snap = wait_for(&l, "more ticks", 20, |sn| sn.generation > first + 5).await;
+    assert!(snap.session.tick_max_ms < 1000, "slowest tick {} ms", snap.session.tick_max_ms);
+    crate::faults::clear(&dir);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
