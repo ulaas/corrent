@@ -4,6 +4,8 @@
   import Icon from './Icon.svelte';
   import Img from './Img.svelte';
   import Seek from './Seek.svelte';
+  import SoundPanel from './SoundPanel.svelte';
+  import PlayerStats from './PlayerStats.svelte';
   import { music } from '../lib/player.svelte';
   import { motion, ms, prefs } from '../lib/prefs.svelte';
   import { clock } from '../lib/format';
@@ -12,7 +14,7 @@
   import type { Lyrics } from '../lib/types';
 
   const cur = $derived(music.current);
-  let tab = $state<'queue' | 'lyrics'>('queue');
+  let tab = $state<'queue' | 'lyrics' | 'sound'>('queue');
   // Lyrics of the current track (null: none; undefined: loading).
   let lyrics = $state<Lyrics | null | undefined>(undefined);
   let lyricsFor = -1;
@@ -112,10 +114,16 @@
         <div class="tabs" role="tablist">
           <button role="tab" class:sel={tab === 'queue'} aria-selected={tab === 'queue'} onclick={() => (tab = 'queue')}>{t('Up next')}</button>
           <button role="tab" class:sel={tab === 'lyrics'} aria-selected={tab === 'lyrics'} onclick={() => (tab = 'lyrics')}>{t('Lyrics')}</button>
+          <button role="tab" class:sel={tab === 'sound'} aria-selected={tab === 'sound'} onclick={() => (tab = 'sound')}>{t('Sound')}</button>
         </div>
         {#if tab === 'queue'}<span class="caption muted">{music.order.length === 1 ? t('1 track') : t('{n} tracks', { n: music.order.length })}</span>{/if}
       </header>
-      {#if tab === 'lyrics'}
+      {#if tab === 'sound'}
+        <div class="soundtab">
+          <SoundPanel />
+          {#if prefs.audioFx.meters}<PlayerStats fx={music.fx} audio />{/if}
+        </div>
+      {:else if tab === 'lyrics'}
         <div class="lyrics" bind:this={lyricsBox}>
           {#if lyrics === undefined}
             <p class="muted">{t('Loading…')}</p>
@@ -156,6 +164,15 @@
 {/if}
 
 <style>
+  .soundtab {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
   .mini {
     position: fixed;
     left: var(--sidebar-w);

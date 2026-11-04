@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SoundPanel from '../../components/SoundPanel.svelte';
   import { flip } from 'svelte/animate';
   import Icon from '../../components/Icon.svelte';
   import { accents, fixedAccentPresets } from 'virtual:tokens';
@@ -141,9 +142,24 @@
     </select></div></div>
 </div>
 
+<div class="sgroup">
+  <h3>{t('Sound')}</h3>
+  <div class="soundbox">
+    <p class="muted small">{t('Off by default. Processing starts with the next thing you play, and only in browsers that allow it for that source.')}</p>
+    <SoundPanel />
+  </div>
+</div>
+
 <button class="btn ghost" onclick={resetPrefs}><Icon name="arrow-counter-clockwise" />{t('Reset appearance')}</button>
 
 <style>
+  .soundbox {
+    max-width: 480px;
+    padding: 0 var(--sp-4, 16px) var(--sp-4, 16px);
+  }
+  .soundbox p {
+    margin: 0 0 10px;
+  }
   .lead {
     margin: -10px 0 18px;
   }

@@ -2,7 +2,9 @@
 // `resolveSource`/`attachSource`), progress reporting, and the persistent music player.
 import { api, ApiError, imageUrl, itemFileUrl } from './api';
 import { image } from './media';
-import { perceptual, prefs } from './prefs.svelte';
+import { prefs } from './prefs.svelte';
+import { FxHost } from './fxhost.svelte';
+import { mustBypass } from './audiofxmodel';
 import type { Item, ItemDetail, Page } from './types';
 
 // ---- sources ----
@@ -62,7 +64,14 @@ export function stopSession(info: PlaybackInfo | null | undefined, leaving = fal
   if (info?.session_id) void api.del(`/playback/sessions/${info.session_id}`, { keepalive: leaving }).catch(() => {});
 }
 
-type HlsLike = { destroy(): void; loadSource(u: string): void; attachMedia(el: HTMLMediaElement): void; on(ev: string, f: (e: string, d: { fatal?: boolean; type?: string }) => void): void; recoverMediaError(): void; startLoad(): void };
+type HlsEvent = { fatal?: boolean; type?: string; frag?: { duration: number; stats?: { total: number; loading: { start: number; end: number } } } };
+type HlsLike = { destroy(): void; loadSource(u: string): void; attachMedia(el: HTMLMediaElement): void; on(ev: string, f: (e: string, d: HlsEvent) => void): void; recoverMediaError(): void; startLoad(): void };
+
+/** The last HLS segment, for the stats overlay. */
+export interface HlsStats {
+  bps: number;
+  loadMs: number;
+}
 
 /** Attaches a source to a media element; the returned function detaches it. `onfatal` is
  *  called when an HLS stream can't continue. `current` is asked once hls.js has loaded: a request
@@ -72,6 +81,7 @@ export async function attachSource(
   src: Pick<PlaybackInfo, 'method' | 'url'>,
   onfatal?: (msg: string) => void,
   current?: () => boolean,
+  onstats?: (s: HlsStats) => void,
 ): Promise<() => void> {
   if ((src.method === 'hls' || src.method === 'remux') && !el.canPlayType('application/vnd.apple.mpegurl')) {
     const { default: Hls } = await import('hls.js/dist/hls.light.mjs');
@@ -91,6 +101,12 @@ export async function attachSource(
         hls.startLoad();
       } else onfatal?.(String(d.type));
     });
+    if (onstats) {
+      hls.on(Hls.Events.FRAG_LOADED, (_e, d) => {
+        const s = d.frag?.stats;
+        if (s && d.frag?.duration) onstats({ bps: (s.total * 8) / d.frag.duration, loadMs: s.loading.end - s.loading.start });
+      });
+    }
     hls.loadSource(src.url);
     hls.attachMedia(el);
     return () => {
@@ -205,6 +221,9 @@ class Music {
   muted = $state(false);
   private el: HTMLAudioElement | null = null;
   private loadGen = 0;
+  /** The element's link to sound processing and the volume. */
+  fx = $state.raw<FxHost | null>(null);
+  private plain = false;
   private info: PlaybackInfo | null = null;
   private detach: (() => void) | null = null;
   private stopReport: (() => void) | null = null;
@@ -223,12 +242,7 @@ class Music {
     const a = new Audio();
     a.preload = 'auto';
     // Follows the volume wherever it's changed (the video player's slider too).
-    $effect.root(() => {
-      $effect(() => {
-        a.volume = perceptual(prefs.volume);
-        a.muted = this.muted;
-      });
-    });
+    this.fx = new FxHost(a, () => this.muted, () => this.plain);
     a.addEventListener('play', () => (this.playing = true));
     a.addEventListener('pause', () => (this.playing = false));
     a.addEventListener('timeupdate', () => (this.time = a.currentTime));
@@ -292,10 +306,25 @@ class Music {
     this.repeat = this.repeat === 'off' ? 'all' : this.repeat === 'all' ? 'one' : 'off';
   }
 
+  /** An element that went through Web Audio stays there; a source that can't needs a new one. */
+  private newElement() {
+    this.stopReport?.();
+    this.stopReport = null;
+    this.fx?.dispose();
+    this.fx = null;
+    const old = this.el;
+    this.el = null;
+    old?.pause();
+    old?.removeAttribute('src');
+  }
+
   private async load(autoplay: boolean) {
     const cur = this.current;
     if (!cur) return;
-    const a = this.audio();
+    const safari = browserProfile() === 'safari';
+    this.plain = mustBypass({ external: !!cur.stream }, safari);
+    if (this.plain && this.fx?.chain) this.newElement();
+    let a = this.audio();
     const gen = ++this.loadGen;
     this.error = '';
     this.detach?.();
@@ -313,6 +342,11 @@ class Music {
         const info = await resolveSource(cur.id);
         if (gen !== this.loadGen) return stopSession(info);
         this.info = info;
+        this.plain = mustBypass({ method: info.method }, safari);
+        if (this.plain && this.fx?.chain) {
+          this.newElement();
+          a = this.audio();
+        }
         const detach = await attachSource(a, info, undefined, () => gen === this.loadGen);
         if (gen !== this.loadGen) return detach();
         this.detach = detach;

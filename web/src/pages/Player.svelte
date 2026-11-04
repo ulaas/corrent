@@ -16,10 +16,13 @@
   import { clock } from '../lib/format';
   import type { MenuItem } from '../lib/contextmenu.svelte';
   import { mediaAction, moveInRows, TapTracker } from '../lib/playerinput';
-  import { everyVisible } from '../lib/visibility.svelte';
   import { cueAt, parseTrickplay, type TrickCue } from '../lib/trickplay';
   import { imageUrl } from '../lib/api';
-  import { ms, perceptual, prefs } from '../lib/prefs.svelte';
+  import { ms, prefs } from '../lib/prefs.svelte';
+  import { FxHost } from '../lib/fxhost.svelte';
+  import { browserProfile, type HlsStats } from '../lib/player.svelte';
+  import SoundPanel from '../components/SoundPanel.svelte';
+  import PlayerStats from '../components/PlayerStats.svelte';
   import { t, tk } from '../lib/i18n.svelte';
   import type { CastDevice, Item, ItemDetail, Page } from '../lib/types';
 
@@ -45,7 +48,7 @@
   let trick = $state<TrickCue[]>([]);
   let nextUp = $state<Item | null>(null);
   let countdown = $state(0);
-  let menu = $state<'' | 'speed' | 'subs' | 'audio' | 'cast' | 'settings'>('');
+  let menu = $state<'' | 'speed' | 'subs' | 'audio' | 'cast' | 'settings' | 'sound'>('');
 
   // ---- playback settings (as the desktop's, src/app/media/player.rs; browsers can't delay
   // audio or take mpv's screenshots) ----
@@ -55,7 +58,8 @@
   let aspect = $state<Aspect>('');
   const RATIO: Record<string, number> = { '16:9': 16 / 9, '4:3': 4 / 3, '2.35:1': 2.35 };
   let stats = $state(false);
-  let statsText = $state('');
+  let hlsStats = $state.raw<HlsStats | null>(null);
+  let fx = $state.raw<FxHost | null>(null);
   // Subtitle cues as they came, so the delay can be changed again.
   const cueTimes = new WeakMap<TextTrackCue, [number, number]>();
   function shiftCues() {
@@ -83,27 +87,6 @@
     aspect = '';
     setRate(1);
   }
-  $effect(() => {
-    if (!stats) return;
-    const tick = () => {
-      if (!video) return;
-      const q = video.getVideoPlaybackQuality?.();
-      let ahead = 0;
-      for (let i = 0; i < video.buffered.length; i++) {
-        if (video.buffered.start(i) <= video.currentTime && video.currentTime <= video.buffered.end(i)) ahead = video.buffered.end(i) - video.currentTime;
-      }
-      statsText = [
-        `${video.videoWidth}×${video.videoHeight}`,
-        info?.method ?? '',
-        q ? t('{dropped}/{total} frames dropped', { dropped: q.droppedVideoFrames, total: q.totalVideoFrames }) : '',
-        t('{s} s buffered', { s: ahead.toFixed(1) }),
-      ]
-        .filter(Boolean)
-        .join(' · ');
-    };
-    tick();
-    return everyVisible(tick, 1000);
-  });
   // "Use this frame as the thumbnail" (T): taken on the server from the file, locked against
   // providers.
   const canThumb = $derived(!!item && (item.kind === 'movie' || item.kind === 'episode' || item.kind === 'video'));
@@ -174,6 +157,7 @@
       }
       if (stale()) return stopSession(next);
       info = next;
+      hlsStats = null;
       stopSession(old && old.session_id !== next.session_id ? old : null);
       detach?.();
       detach = null;
@@ -192,6 +176,7 @@
           error = t('Playback failed ({reason}).', { reason: msg });
         },
         () => !stale(),
+        (s) => (hlsStats = s),
       );
       if (stale()) return attached();
       detach = attached;
@@ -309,9 +294,16 @@
     return () => stopReport?.();
   });
 
-  // Follows the volume wherever it's changed (the mini player's slider too).
+  // The volume (wherever it's changed, the mini player's slider too) and sound processing. Safari's
+  // native HLS can't go through Web Audio, and the element may switch to it at any time.
   $effect(() => {
-    if (video) video.volume = perceptual(prefs.volume);
+    if (!video) return;
+    const h = new FxHost(video, () => muted, () => browserProfile() === 'safari');
+    fx = h;
+    return () => {
+      h.dispose();
+      fx = null;
+    };
   });
 
   // (Re)start when the item changes.
@@ -519,16 +511,11 @@
 
   function setVolume(v: number) {
     prefs.volume = Math.max(0, Math.min(1, v));
-    if (video) {
-      video.muted = false;
-      muted = false;
-    }
+    muted = false;
   }
 
   function toggleMute() {
-    if (!video) return;
-    video.muted = !video.muted;
-    muted = video.muted;
+    muted = !muted;
   }
 
   function setRate(r: number) {
@@ -626,7 +613,7 @@
     keyFocus = false;
     chromeAtDown = chrome || !playing;
     poke();
-    if (menu && !(e.target as HTMLElement).closest('.cm, .menu, .pop')) closePop();
+    if (menu && !(e.target as HTMLElement).closest('.cm, .menu, .pop, .statsbox')) closePop();
   }
 
   function onVideoClick(e: MouseEvent) {
@@ -791,6 +778,10 @@
     else if (k === 'arrowdown') setVolume(prefs.volume - 0.05);
     else if (k === 'f') void toggleFullscreen();
     else if (k === 'm') toggleMute();
+    else if (k === 'i') {
+      if (e.shiftKey) prefs.audioFx.meters = !prefs.audioFx.meters;
+      else stats = !stats;
+    }
     else if (k === 'n' && nextUp) playNext();
     else if (k === 't' && canThumb) void setThumbnail();
     else if (k === 'escape' || media === 'back') {
@@ -864,7 +855,9 @@
     {/each}
   </video>
 
-  {#if stats && statsText}<div class="stats num">{statsText}</div>{/if}
+  {#if stats || prefs.audioFx.meters}
+    <div class="statsbox"><PlayerStats {video} {info} {fx} av={stats} audio={prefs.audioFx.meters} hls={hlsStats} /></div>
+  {/if}
 
   {#if flash}
     <div class="flash num" class:right={flash.side > 0} aria-hidden="true" transition:fade={{ duration: ms(120) }}>
@@ -988,7 +981,14 @@
               <button class="mi" role="menuitem" onclick={() => ((menu = ''), void setThumbnail())}><span>{t('Use this frame as the thumbnail (T)')}</span><Icon name="image" size={14} /></button>
             {/if}
             <button class="mi" role="menuitemcheckbox" aria-checked={stats} onclick={() => (stats = !stats)}>{t('Stats')}{#if stats}<Icon name="check" size={14} />{/if}</button>
+            <button class="mi" role="menuitem" onclick={() => (menu = 'sound')}><span>{t('Sound…')}</span><Icon name="caret-right" size={14} /></button>
             <button class="mi" role="menuitem" onclick={resetSettings}>{t('Reset')}</button>
+          </div>
+        {/if}
+        {#if menu === 'sound'}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div class="menu sound" role="dialog" aria-label={t('Sound')} tabindex="-1" transition:fly={{ y: 8, duration: ms(140) }} onkeydown={(e) => e.key === 'Escape' && (e.stopPropagation(), closePop(true))} {@attach (el) => el.querySelector<HTMLElement>('input')?.focus({ preventScroll: true })}>
+            <SoundPanel />
           </div>
         {/if}
       </div>
@@ -1105,16 +1105,15 @@
     background: rgba(0, 0, 0, 0.6);
     font-size: calc(1.1em * var(--sub-scale, 1));
   }
-  .stats {
+  .statsbox {
     position: absolute;
     top: 64px;
     left: 16px;
-    padding: 6px 10px;
-    border-radius: var(--r-sm);
-    background: rgba(0, 0, 0, 0.6);
-    color: #fff;
-    font-size: 12px;
-    pointer-events: none;
+    z-index: 2;
+  }
+  .sound {
+    width: min(340px, calc(100vw - 32px));
+    padding: 10px;
   }
   .flash {
     position: absolute;
