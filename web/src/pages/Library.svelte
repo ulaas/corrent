@@ -37,6 +37,7 @@
   const filter = $derived(route.query.get('filter') ?? '');
   const view = $derived(route.query.get('view') ?? '');
   let total = $state(-1);
+  let gridError = $state('');
   let refresh = $state(0);
 
   const kind = $derived.by((): ItemKind | undefined => {
@@ -97,7 +98,7 @@
         <h1 class="ellipsis">{lib.name}</h1>
         <p class="muted small">
           {t(LIBRARY_KIND_LABEL[lib.kind])} ·
-          {total >= 0 ? (total === 1 ? t('1 item') : t('{n} items', { n: num(total) })) : '…'}
+          {total >= 0 ? (total === 1 ? t('1 item') : t('{n} items', { n: num(total) })) : gridError ? '–' : '…'}
         </p>
       </div>
       {#if can(Perm.LIBRARY_MANAGE)}
@@ -147,7 +148,7 @@
         {#if !filter}<p>{t('Files added to its folders appear here after a scan.')}</p>{/if}
       </div>
     {/if}
-    <VirtualGrid {query} shape={kind === 'artist' ? 'square' : libraryShape(lib.kind)} bind:total {onplay} />
+    <VirtualGrid {query} shape={kind === 'artist' ? 'square' : libraryShape(lib.kind)} bind:total bind:error={gridError} {onplay} />
   </div>
 {/if}
 

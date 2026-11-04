@@ -1,5 +1,4 @@
 <script lang="ts">
-  import type { Component } from 'svelte';
   import { fly } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import Sidebar from './components/Sidebar.svelte';
@@ -11,6 +10,7 @@
   import MiniPlayer from './components/MiniPlayer.svelte';
   import BottomNav from './components/BottomNav.svelte';
   import Spinner from './components/Spinner.svelte';
+  import Icon from './components/Icon.svelte';
   import Auth from './pages/Auth.svelte';
   import Home from './pages/Home.svelte';
   import { boot, session } from './lib/session.svelte';
@@ -22,6 +22,7 @@
   import { startSessionFeed } from './lib/torrents.svelte';
   import { link } from './lib/events.svelte';
   import { t } from './lib/i18n.svelte';
+  import { lazy, lazyFailed, type Loader } from './lib/lazy.svelte';
 
   define('home', '/');
   define('library', '/library/:id');
@@ -42,7 +43,7 @@
   define('settings', '/settings/:section');
 
   // Pages other than Home load on demand (keeps the first load small).
-  const pages: Record<string, () => Promise<{ default: Component<any> }>> = {
+  const pages: Record<string, Loader> = {
     library: () => import('./pages/Library.svelte'),
     item: () => import('./pages/ItemPage.svelte'),
     play: () => import('./pages/Player.svelte'),
@@ -62,6 +63,9 @@
   };
 
   const m = $derived(match(route.path));
+  // What makes a page a new page: Settings stays mounted while its sections change.
+  const routeKey = $derived(m.name === 'settings' ? 'settings' : route.path);
+  const Page = $derived(m.name === 'home' ? undefined : lazy(m.name, pages[m.name]));
   let drawer = $state(false);
   let scroller: HTMLElement | undefined = $state();
 
@@ -132,16 +136,19 @@
         {/if}
       {/if}
       <main id="main" bind:this={scroller} tabindex="-1">
-        {#key route.path}
+        {#key routeKey}
           <div class="route" in:fly={{ y: 10, duration: ms(260), easing: cubicOut }}>
             {#if m.name === 'home'}
               <Home />
             {:else}
-              {#await pages[m.name]()}
+              {#if Page}
+                <Page params={m.params} />
+              {:else if lazyFailed(m.name)}
+                <div class="page"><div class="empty"><div class="empty-icon"><Icon name="warning-circle" size={30} /></div><h3>{t("Couldn't load this page.")}</h3>
+                  <button class="btn" onclick={() => location.reload()}><Icon name="arrow-clockwise" />{t('Try again')}</button></div></div>
+              {:else}
                 <div class="page-loading"><Spinner /></div>
-              {:then mod}
-                <mod.default params={m.params} />
-              {/await}
+              {/if}
             {/if}
           </div>
         {/key}

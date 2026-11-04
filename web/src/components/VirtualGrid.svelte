@@ -3,7 +3,10 @@
   // items are fetched page by page (GET /items?offset=&limit=) as they come into view.
   import { untrack } from 'svelte';
   import Card from './Card.svelte';
-  import { api } from '../lib/api';
+  import Icon from './Icon.svelte';
+  import { api, errorText } from '../lib/api';
+  import { onRelink } from '../lib/events.svelte';
+  import { t } from '../lib/i18n.svelte';
   import { aspect, type Shape } from '../lib/media';
   import { cardWidth } from '../lib/cards.svelte';
   import type { Item, Page } from '../lib/types';
@@ -14,8 +17,9 @@
     query,
     shape,
     total = $bindable(-1),
+    error = $bindable(''),
     onplay,
-  }: { query: Query; shape: Shape; total?: number; onplay?: (i: Item) => void } = $props();
+  }: { query: Query; shape: Shape; total?: number; error?: string; onplay?: (i: Item) => void } = $props();
 
   const PAGE = 120;
   const GAP = 20;
@@ -42,8 +46,8 @@
     untrack(() => loadPage(page));
   }
 
-  function loadPage(page: number) {
-    if (pages[page] || loading.has(page)) return;
+  function loadPage(page: number, force = false) {
+    if ((pages[page] && !force) || loading.has(page)) return;
     loading.add(page);
     const gen = generation;
     api
@@ -52,9 +56,30 @@
         if (gen !== generation) return;
         pages[page] = p.items;
         total = p.total;
+        error = '';
       })
-      .catch(() => {})
+      .catch((e) => {
+        if (gen === generation) error = errorText(e);
+      })
       .finally(() => loading.delete(page));
+  }
+
+  /** Try again (the button, or the link is back): what is on screen stays until the answer. */
+  function reload() {
+    error = '';
+    const keep = visiblePages();
+    if (!keep.length) return load(0);
+    for (const k of Object.keys(pages)) if (!keep.includes(+k)) delete pages[+k];
+    for (const p of keep) loadPage(p, true);
+  }
+  onRelink(reload);
+
+  function visiblePages(): number[] {
+    if (total <= 0) return [];
+    const a = first * cols, b = Math.min(total - 1, (last + 1) * cols - 1);
+    const out: number[] = [];
+    for (let p = Math.floor(a / PAGE); p <= Math.floor(b / PAGE); p++) out.push(p);
+    return out;
   }
 
   // New query: start over.
@@ -65,15 +90,15 @@
       pages = {};
       loading.clear();
       total = -1;
+      error = '';
       load(0);
     });
   });
 
   // Fetch the pages the visible rows need.
   $effect(() => {
-    if (total <= 0) return;
-    const a = first * cols, b = Math.min(total - 1, (last + 1) * cols - 1);
-    for (let p = Math.floor(a / PAGE); p <= Math.floor(b / PAGE); p++) load(p);
+    if (error) return;
+    for (const p of visiblePages()) load(p);
   });
 
   function itemAt(i: number): Item | undefined {
@@ -104,6 +129,14 @@
   const visibleRows = $derived(rows > 0 && last >= first ? Array.from({ length: last - first + 1 }, (_, i) => first + i) : []);
 </script>
 
+{#if error}
+  <div class="empty">
+    <div class="empty-icon"><Icon name="warning-circle" size={30} /></div>
+    <h3>{t("Couldn't load this list.")}</h3>
+    <p>{error}</p>
+    <button class="btn" onclick={reload}><Icon name="arrow-clockwise" />{t('Try again')}</button>
+  </div>
+{/if}
 <div class="vgrid" bind:this={host} style:height="{Math.max(0, rows * rowH - GAP)}px">
   {#each visibleRows as r (r)}
     <div class="vrow" style:transform="translateY({r * rowH}px)" style:grid-template-columns="repeat({cols}, 1fr)" style:gap="{GAP}px">

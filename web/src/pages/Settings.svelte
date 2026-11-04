@@ -8,6 +8,7 @@
   import { Perm } from '../lib/types';
   import type { IconName } from '../lib/icons';
   import { extensions } from '../lib/extensions.svelte';
+  import { lazy, lazyFailed } from '../lib/lazy.svelte';
 
   let { params }: { params: Record<string, string> } = $props();
 
@@ -54,6 +55,8 @@
   const current = $derived(visible.find((s) => s.id === params.section) ?? (params.section ? undefined : visible[0]));
   const groups = $derived([...new Set(visible.map((s) => s.group))]);
   const phoneIndex = $derived(!params.section);
+  const lazyKey = $derived(current ? `settings:${current.id}` : '');
+  const Section = $derived(current ? lazy(lazyKey, current.load) : undefined);
 </script>
 
 <div class="settings" class:index={phoneIndex}>
@@ -73,11 +76,14 @@
       <button class="btn ghost back-phone" onclick={() => go('/settings')}><Icon name="arrow-left" />{t('Settings')}</button>
       <h2 class="stitle">{t(current.label)}</h2>
       {#key current.id}
-        {#await current.load()}
+        {#if Section}
+          <Section section={current.id} />
+        {:else if lazyFailed(lazyKey)}
+          <div class="empty"><div class="empty-icon"><Icon name="warning-circle" size={30} /></div><h3>{t("Couldn't load this page.")}</h3>
+            <button class="btn" onclick={() => location.reload()}><Icon name="arrow-clockwise" />{t('Try again')}</button></div>
+        {:else}
           <div class="center"><Spinner /></div>
-        {:then mod}
-          <mod.default section={current.id} />
-        {/await}
+        {/if}
       {/key}
     {:else}
       <div class="empty"><h3>{t("You can't open this section.")}</h3></div>
