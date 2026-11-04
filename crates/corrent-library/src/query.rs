@@ -587,26 +587,6 @@ impl Library {
         Ok(self.db().read(move |c| Ok(allowed(c, user)?.is_none_or(|a| a.contains(&library)))).await?)
     }
 
-    /// Whether a file at this path belongs to an item the user may see.
-    pub async fn path_visible(&self, user: i64, path: &std::path::Path) -> Result<bool> {
-        let p = db_path(path);
-        Ok(self
-            .db()
-            .read(move |c| {
-                let mut st = c.prepare_cached(
-                    "SELECT x.item_id FROM files f JOIN item_files x ON x.file_id = f.id WHERE f.path = ?1",
-                )?;
-                let items = st.query_map([p], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                for item in items {
-                    if visible(c, user, item)? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            })
-            .await?)
-    }
-
     /// How many library files lie under `prefix` (the delete guard for torrents).
     pub async fn files_under(&self, prefix: &std::path::Path) -> Result<i64> {
         let p = db_path(prefix);

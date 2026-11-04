@@ -155,22 +155,6 @@ pub fn redact_torrent(p: &Principal, mut t: corrent_proto::Torrent) -> corrent_p
     t
 }
 
-/// Another user's torrent details without the addresses of its peers.
-pub fn redact_detail(
-    st: &AppState,
-    p: &Principal,
-    mut d: corrent_proto::torrent::TorrentDetail,
-) -> corrent_proto::torrent::TorrentDetail {
-    let own = || {
-        let me = Some(p.user.name.as_str());
-        st.engine.snapshot().torrents.iter().find(|t| t.hash == d.hash).is_some_and(|t| t.added_by.as_deref() == me)
-    };
-    if !p.can(Perms::TORRENTS_MANAGE_ALL) && !own() {
-        d.peers.clear();
-    }
-    d
-}
-
 trait WithParam {
     fn with_param(self, k: &str, p: Perms) -> Self;
 }

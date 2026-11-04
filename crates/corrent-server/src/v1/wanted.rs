@@ -201,27 +201,11 @@ async fn grab_item(
     Ok(Json(serde_json::json!({ "hash": h })))
 }
 
-/// Whether a torrent's file is also a file of a library this caller can see.
-async fn in_a_visible_library(
-    st: &AppState,
-    auth: &Auth,
-    hash: InfoHash,
-    files: &[corrent_core::engine::types::FileView],
-    f: &corrent_core::engine::types::FileView,
-) -> bool {
-    let snap = st.engine.snapshot();
-    let Some(t) = snap.torrents.iter().find(|t| t.hash == hash) else { return false };
-    let multi = files.len() > 1 || f.components.len() > 1;
-    let path =
-        if multi { f.components.iter().fold(t.content_path.clone(), |p, c| p.join(c)) } else { t.content_path.clone() };
-    st.library.path_visible(auth.0.user.id, &path).await.unwrap_or(false)
-}
-
 /// A torrent file as it downloads (Range requests wait for the pieces they need): proxied
 /// from the engine's loopback stream server.
 async fn stream(
     State(st): State<Arc<AppState>>,
-    auth: Auth,
+    _auth: Auth,
     Path((hash, file)): Path<(String, usize)>,
     req: Request,
 ) -> Result<Response, super::ApiErr> {
@@ -230,11 +214,6 @@ async fn stream(
     st.engine.send(corrent_core::engine::EngineCommand::FileList { hash: h, reply: tx });
     let files = rx.await.ok().flatten().ok_or_else(|| err(ErrorCode::NotFound, "no such torrent"))?;
     let f = files.iter().find(|f| f.index == file).ok_or_else(|| err(ErrorCode::NotFound, "no such file"))?;
-    if super::torrents::may_manage_as(&st, &auth.0, &[h]).is_err()
-        && !in_a_visible_library(&st, &auth, h, &files, f).await
-    {
-        return Err(err(ErrorCode::Forbidden, "permission denied"));
-    }
     let name = f.components.last().cloned().unwrap_or_default();
     let url = integrate::loopback_stream_url(&st, h, file, &name)
         .ok_or_else(|| err(ErrorCode::EngineUnavailable, "streaming is not running"))?;

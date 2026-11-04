@@ -52,7 +52,9 @@ folders, the library folders and `download_roots`: save paths, moves, the folder
 "new folder" all resolve the path (symlinks and `..` can't escape) and refuse anything outside.
 Adding a torrent by URL only fetches from public addresses for them (no loopback, LAN,
 link-local or cloud-metadata addresses). Other users' torrents are listed without their tracker
-URLs (private trackers embed the account's passkey), folders and comments. Accounts with the
+URLs (private trackers embed the account's passkey), folders and comments. Torrents are otherwise
+shared, by design: every signed-in account can stream any torrent and see its file lists and peers,
+whatever libraries it may see. Accounts with the
 `downloader` permission (for Sonarr/Radarr through the qBittorrent API) are trusted with any
 save path, as in qBittorrent.
 

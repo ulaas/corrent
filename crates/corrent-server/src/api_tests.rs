@@ -305,33 +305,24 @@ async fn hidden_libraries_stay_hidden_from_wanted_monitors_and_streams() {
     assert_eq!(get(app, &format!("/api/v1/libraries/{open}/scan"), &bob).await.0, StatusCode::OK);
     assert_eq!(get(app, &format!("/api/v1/libraries/{hidden}/scan"), &bob).await.0, StatusCode::NOT_FOUND);
 
-    // Someone else's download: only through a library that holds the file.
+    // Torrents are shared on the server, by the owner's choice: someone else's download streams
+    // and shows its details for any signed-in account, whatever its libraries.
     let seeder = testkit::seeder_with(&h.dir, "Sintel.2010.mkv", vec![7u8; 10_000]).await;
     testkit::add(&h.l, &seeder, &h.dir);
     testkit::wait_for(&h.l, "the download", 60, |sn| testkit::complete(sn, seeder.hash)).await;
     let content = testkit::find(&h.l.engine.snapshot(), seeder.hash).unwrap().content_path.clone();
     seed_item(&h, hidden, "movie", None, None, "Sintel", Some(content.display().to_string())).await;
-    let uri = format!("/api/v1/torrents/{}/files/0/stream", seeder.hash.to_hex());
-    assert_eq!(get(app, &uri, &bob).await.0, StatusCode::FORBIDDEN);
-    assert_ne!(get(app, &uri, &admin).await.0, StatusCode::FORBIDDEN);
-    h.st.library.set_user_libraries(bob_id, vec![open, hidden]).await.unwrap();
-    assert_ne!(get(app, &uri, &bob).await.0, StatusCode::FORBIDDEN);
+    let hash = seeder.hash.to_hex();
+    assert_ne!(get(app, &format!("/api/v1/torrents/{hash}/files/0/stream"), &bob).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(get(app, &format!("/api/v1/torrents/{hash}/detail"), &bob).await.0, StatusCode::OK);
 
-    // Peers of someone else's torrent.
-    let peer = corrent_proto::torrent::Peer { addr: "203.0.113.9:6881".into(), ..Default::default() };
-    let d = corrent_proto::torrent::TorrentDetail {
-        hash: seeder.hash,
-        files: Vec::new(),
-        peers: vec![peer],
-        pieces: None,
-        piece_count: 0,
-    };
-    let who = |t: String| {
-        let st = h.st.clone();
-        async move { st.identity.verify_token(&t, "").await.unwrap().unwrap() }
-    };
-    assert!(crate::v1::redact_detail(&h.st, &who(bob.clone()).await, d.clone()).peers.is_empty());
-    assert_eq!(crate::v1::redact_detail(&h.st, &who(admin.clone()).await, d).peers.len(), 1);
+    // A PIN opens any profile that has one, administrators' too (also the owner's choice).
+    let (s, v, _) = send(app, Method::PUT, "/api/v1/auth/pin", &admin, json!({ "pin": "2468" })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let admin_id = get(app, "/api/v1/auth/me", &admin).await.1["user"]["id"].as_i64().unwrap();
+    let switch = json!({ "user_id": admin_id, "pin": "2468", "device": device() });
+    let (s, v, _) = send(app, Method::POST, "/api/v1/auth/profile", &bob, switch).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
     h.stop().await;
 }
 

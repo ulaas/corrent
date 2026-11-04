@@ -107,7 +107,7 @@ async fn one(State(st): State<Arc<AppState>>, auth: Auth, Path(hash): Path<Strin
     Ok(Json(super::redact_torrent(&auth.0, wire::torrent(t))))
 }
 
-async fn detail(State(st): State<Arc<AppState>>, auth: Auth, Path(hash): Path<String>) -> ApiResult<TorrentDetail> {
+async fn detail(State(st): State<Arc<AppState>>, _auth: Auth, Path(hash): Path<String>) -> ApiResult<TorrentDetail> {
     let h = parse_hash(&hash)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     st.engine.send(EngineCommand::Detail { hash: h, reply: tx });
@@ -116,7 +116,7 @@ async fn detail(State(st): State<Arc<AppState>>, auth: Auth, Path(hash): Path<St
         .map_err(|_| err(ErrorCode::EngineUnavailable, "engine did not answer"))?
         .map_err(|_| err(ErrorCode::EngineUnavailable, "engine stopped"))?
         .ok_or_else(|| err(ErrorCode::NotFound, "no such torrent"))?;
-    Ok(Json(super::redact_detail(&st, &auth.0, wire::detail(&d))))
+    Ok(Json(wire::detail(&d)))
 }
 
 /// Options for adding torrents (JSON body, or the `options` field of a multipart upload whose
