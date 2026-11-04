@@ -72,6 +72,16 @@ struct Status {
     ext_subs: Vec<(String, i64)>,
     /// What the filter chain needs to know about the source (kept between files).
     source: corrent_core::audio_fx::Source,
+    meters: super::sound::Meters,
+    /// The metering filters run, the Audio page is up, the A/V page is up, the controls are up.
+    meters_on: bool,
+    meter_page: bool,
+    stats_page: bool,
+    controls_visible: bool,
+    /// The whole second of `pos` last drawn.
+    shown_second: i64,
+    /// When the metering filters were last read.
+    meter_read: Option<Instant>,
 }
 
 impl Status {
@@ -109,6 +119,28 @@ struct Stats {
     fps: f64,
     dropped: i64,
     cache_secs: f64,
+    /// `video-params`: what a nerd wants to see of the picture.
+    pixelformat: String,
+    primaries: String,
+    gamma: String,
+    sig_peak: f64,
+    container_fps: f64,
+    display_fps: f64,
+    vsync_jitter: f64,
+    decoder_drops: i64,
+    vo_delayed: i64,
+    avsync: f64,
+    cache_bytes: i64,
+    input_rate: f64,
+    video_bitrate: f64,
+    audio_bitrate: f64,
+    audio_in: String,
+    audio_out: String,
+    current_ao: String,
+    /// The labels of the filters mpv actually runs.
+    chain: Vec<String>,
+    mpv_version: String,
+    ffmpeg_version: String,
 }
 
 struct GlVideo {
@@ -202,6 +234,12 @@ pub struct Player {
     room_code: String,
     /// Showing "Stats for nerds".
     stats: bool,
+    /// Showing the Audio page (the metering filters run only while it is up).
+    meter_page: bool,
+    /// The extra properties are observed from the first time a page needs them, so that a player
+    /// nobody asks anything of doesn't get them at all.
+    observing_meters: bool,
+    observing_stats: bool,
     /// Picture in picture: the window small and on top (the size to go back to).
     pip: Option<egui::Vec2>,
     /// The end-of-episode countdown was dismissed for this item.
@@ -459,54 +497,120 @@ impl Player {
             .name("mpv-events".into())
             .spawn(move || {
                 while !stop2.load(Ordering::Relaxed) {
-                    let Some(ev) = m.wait_event(0.5) else { continue };
+                    let (wait, poll) = {
+                        let s = st.lock().unwrap_or_else(|e| e.into_inner());
+                        let late = s.meter_read.is_none_or(|t| t.elapsed() > Duration::from_millis(300));
+                        (if s.meters_on { 0.1 } else { 0.5 }, s.meters_on && late)
+                    };
+                    // Metadata normally arrives as events (about 10 a second); where a libmpv
+                    // doesn't send them, it is read instead. This thread may wait for mpv.
+                    if poll {
+                        let (input, output) = (m.get("af-metadata/in"), m.get("af-metadata/out"));
+                        let mut s = st.lock().unwrap_or_else(|e| e.into_inner());
+                        s.meter_read = Some(Instant::now());
+                        if let Ok(v) = input {
+                            s.meters.read_input(&v);
+                        }
+                        if let Ok(v) = output {
+                            s.meters.read_output(&v, Instant::now());
+                        }
+                        if s.meter_page {
+                            c2.request_repaint();
+                        }
+                    }
+                    let Some(ev) = m.wait_event(wait) else { continue };
                     let mut s = st.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut repaint = true;
                     match ev {
                         Event::Shutdown => break,
-                        Event::PropertyChange { name, value, .. } => match name.as_str() {
-                            "time-pos" => s.pos = value.as_f64().unwrap_or(s.pos),
-                            "duration" => s.duration = value.as_f64().unwrap_or(0.0),
-                            "pause" => s.paused = value.as_bool().unwrap_or(false),
-                            "volume" => s.volume = value.as_f64().unwrap_or(100.0),
-                            "mute" => s.muted = value.as_bool().unwrap_or(false),
-                            "track-list" => {
-                                s.tracks = track_list(&value);
-                                s.apply_wanted(&m);
-                            }
-                            "chapter-list" => {
-                                s.chapters = value
-                                    .as_array()
-                                    .iter()
-                                    .filter_map(|c| {
-                                        let t = c.get("time").and_then(Node::as_f64)?;
-                                        Some((t, c.get("title").and_then(Node::as_str).map(str::to_string)))
-                                    })
-                                    .collect()
-                            }
-                            "paused-for-cache" => s.buffering = value.as_bool().unwrap_or(false),
-                            "hwdec-current" => s.hwdec = value.as_str().unwrap_or("no").to_string(),
-                            "video-params/aspect" => s.aspect = value.as_f64().unwrap_or(0.0),
-                            "speed" => s.speed = value.as_f64().unwrap_or(1.0),
-                            "sub-delay" => s.sub_delay = value.as_f64().unwrap_or(0.0),
-                            "audio-delay" => s.audio_delay = value.as_f64().unwrap_or(0.0),
-                            "sub-scale" => s.sub_scale = value.as_f64().unwrap_or(1.0),
-                            "video-codec" => s.stats.video_codec = value.as_str().unwrap_or("").to_string(),
-                            "audio-codec-name" => s.stats.audio_codec = value.as_str().unwrap_or("").to_string(),
-                            "video-params/w" => s.stats.width = value.as_i64().unwrap_or(0),
-                            "video-params/h" => s.stats.height = value.as_i64().unwrap_or(0),
-                            "estimated-vf-fps" => s.stats.fps = value.as_f64().unwrap_or(0.0),
-                            "frame-drop-count" => s.stats.dropped = value.as_i64().unwrap_or(0),
-                            "demuxer-cache-duration" => s.stats.cache_secs = value.as_f64().unwrap_or(0.0),
-                            "audio-params" => {
-                                if let Some(channels) = value.get("channel-count").and_then(Node::as_i64) {
-                                    s.source = corrent_core::audio_fx::Source {
-                                        channels: Some(channels),
-                                        layout: value.get("channels").and_then(Node::as_str).map(str::to_string),
-                                    };
+                        Event::PropertyChange { name, value, .. } => {
+                            repaint = needs_repaint(&name, &value, &mut s);
+                            match name.as_str() {
+                                "time-pos" => s.pos = value.as_f64().unwrap_or(s.pos),
+                                "duration" => s.duration = value.as_f64().unwrap_or(0.0),
+                                "pause" => s.paused = value.as_bool().unwrap_or(false),
+                                "volume" => s.volume = value.as_f64().unwrap_or(100.0),
+                                "mute" => s.muted = value.as_bool().unwrap_or(false),
+                                "track-list" => {
+                                    s.tracks = track_list(&value);
+                                    s.apply_wanted(&m);
                                 }
+                                "chapter-list" => {
+                                    s.chapters = value
+                                        .as_array()
+                                        .iter()
+                                        .filter_map(|c| {
+                                            let t = c.get("time").and_then(Node::as_f64)?;
+                                            Some((t, c.get("title").and_then(Node::as_str).map(str::to_string)))
+                                        })
+                                        .collect()
+                                }
+                                "paused-for-cache" => s.buffering = value.as_bool().unwrap_or(false),
+                                "hwdec-current" => s.hwdec = value.as_str().unwrap_or("no").to_string(),
+                                "video-params/aspect" => s.aspect = value.as_f64().unwrap_or(0.0),
+                                "speed" => s.speed = value.as_f64().unwrap_or(1.0),
+                                "sub-delay" => s.sub_delay = value.as_f64().unwrap_or(0.0),
+                                "audio-delay" => s.audio_delay = value.as_f64().unwrap_or(0.0),
+                                "sub-scale" => s.sub_scale = value.as_f64().unwrap_or(1.0),
+                                "video-codec" => s.stats.video_codec = value.as_str().unwrap_or("").to_string(),
+                                "audio-codec-name" => s.stats.audio_codec = value.as_str().unwrap_or("").to_string(),
+                                "video-params/w" => s.stats.width = value.as_i64().unwrap_or(0),
+                                "video-params/h" => s.stats.height = value.as_i64().unwrap_or(0),
+                                "estimated-vf-fps" => s.stats.fps = value.as_f64().unwrap_or(0.0),
+                                "frame-drop-count" => s.stats.dropped = value.as_i64().unwrap_or(0),
+                                "demuxer-cache-duration" => s.stats.cache_secs = value.as_f64().unwrap_or(0.0),
+                                "audio-params" => {
+                                    if let Some(channels) = value.get("channel-count").and_then(Node::as_i64) {
+                                        s.source = corrent_core::audio_fx::Source {
+                                            channels: Some(channels),
+                                            layout: value.get("channels").and_then(Node::as_str).map(str::to_string),
+                                        };
+                                    }
+                                    s.stats.audio_in = super::sound::audio_format(&value);
+                                }
+                                "audio-out-params" => s.stats.audio_out = super::sound::audio_format(&value),
+                                "af-metadata/in" => {
+                                    s.meter_read = Some(Instant::now());
+                                    s.meters.read_input(&value);
+                                }
+                                "af-metadata/out" => {
+                                    s.meter_read = Some(Instant::now());
+                                    s.meters.read_output(&value, Instant::now());
+                                }
+                                "af" => {
+                                    s.stats.chain = value
+                                        .as_array()
+                                        .iter()
+                                        .filter_map(|f| f.get("label").and_then(Node::as_str).map(str::to_string))
+                                        .collect();
+                                }
+                                "current-ao" => s.stats.current_ao = value.as_str().unwrap_or("").to_string(),
+                                "video-params/pixelformat" => {
+                                    s.stats.pixelformat = value.as_str().unwrap_or("").to_string()
+                                }
+                                "video-params/primaries" => {
+                                    s.stats.primaries = value.as_str().unwrap_or("").to_string()
+                                }
+                                "video-params/gamma" => s.stats.gamma = value.as_str().unwrap_or("").to_string(),
+                                "video-params/sig-peak" => s.stats.sig_peak = value.as_f64().unwrap_or(0.0),
+                                "container-fps" => s.stats.container_fps = value.as_f64().unwrap_or(0.0),
+                                "estimated-display-fps" => s.stats.display_fps = value.as_f64().unwrap_or(0.0),
+                                "vsync-jitter" => s.stats.vsync_jitter = value.as_f64().unwrap_or(0.0),
+                                "decoder-frame-drop-count" => s.stats.decoder_drops = value.as_i64().unwrap_or(0),
+                                "vo-delayed-frame-count" => s.stats.vo_delayed = value.as_i64().unwrap_or(0),
+                                "avsync" => s.stats.avsync = value.as_f64().unwrap_or(0.0),
+                                "demuxer-cache-state" => {
+                                    s.stats.cache_bytes = value.get("fw-bytes").and_then(Node::as_i64).unwrap_or(0);
+                                    s.stats.input_rate =
+                                        value.get("raw-input-rate").and_then(Node::as_f64).unwrap_or(0.0);
+                                }
+                                "video-bitrate" => s.stats.video_bitrate = value.as_f64().unwrap_or(0.0),
+                                "audio-bitrate" => s.stats.audio_bitrate = value.as_f64().unwrap_or(0.0),
+                                "mpv-version" => s.stats.mpv_version = value.as_str().unwrap_or("").to_string(),
+                                "ffmpeg-version" => s.stats.ffmpeg_version = value.as_str().unwrap_or("").to_string(),
+                                _ => {}
                             }
-                            _ => {}
-                        },
+                        }
                         Event::FileLoaded => {
                             s.ended = false;
                             s.error = None;
@@ -523,7 +627,9 @@ impl Player {
                         _ => {}
                     }
                     drop(s);
-                    c2.request_repaint();
+                    if repaint {
+                        c2.request_repaint();
+                    }
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -548,6 +654,9 @@ impl Player {
             room: None,
             room_code: String::new(),
             stats: false,
+            meter_page: audio.fx.meters,
+            observing_meters: false,
+            observing_stats: false,
             pip: None,
             no_countdown: None,
             cast,
@@ -737,8 +846,12 @@ impl Player {
     /// only for a change of structure. Nothing here waits for mpv. Does nothing at all when nothing
     /// changed, or runs when everything is off.
     fn sync_fx(&mut self) {
-        let (fx, passthrough) = crate::util::with_lock(&self.audio, |a| (a.fx.clone(), a.passthrough));
+        let (mut fx, passthrough) = crate::util::with_lock(&self.audio, |a| (a.fx.clone(), a.passthrough));
         let source = crate::util::with_lock(&self.status, |s| s.source.clone());
+        // The filters follow the page, and wait for the source: an output opened by the source's
+        // own format keeps it when they are added.
+        fx.meters = self.meter_page && source.channels.is_some();
+        self.observe_pages();
         let inputs = FxInputs { fx, passthrough, source, caps: super::sound::caps().clone() };
         if self.fx_from.as_ref() == Some(&inputs) {
             return;
@@ -746,9 +859,7 @@ impl Player {
         let want = if inputs.passthrough {
             Vec::new()
         } else {
-            let meters = inputs.fx.meters && inputs.source.channels.is_some();
-            let fx = corrent_core::audio_fx::AudioFx { meters, ..inputs.fx.clone() };
-            corrent_core::audio_fx::chain(&fx, &inputs.caps, &inputs.source)
+            corrent_core::audio_fx::chain(&inputs.fx, &inputs.caps, &inputs.source)
         };
         let plan = corrent_core::audio_fx::plan(&self.fx_applied, &want, inputs.caps.target);
         if let Some(af) = &plan.set_af {
@@ -765,8 +876,65 @@ impl Player {
         for [label, option, value, target] in &plan.commands {
             let _ = self.mpv.command_async(FX_REPLY, &["af-command", label, option, value, target]);
         }
+        let meters_on = self.fx_applied_meters(&plan.applied);
+        crate::util::with_lock(&self.status, |s| {
+            if meters_on && !s.meters_on {
+                s.meters = Default::default();
+            }
+            s.meters_on = meters_on;
+        });
         self.fx_applied = plan.applied;
         self.fx_from = Some(inputs);
+    }
+
+    fn fx_applied_meters(&self, stages: &[corrent_core::audio_fx::Stage]) -> bool {
+        stages.iter().any(|s| s.label == "out")
+    }
+
+    /// Asks for what the pages show, the first time one is up, and tells the events thread which
+    /// are up. Properties stay observed afterwards, but it only repaints for the pages that show.
+    fn observe_pages(&mut self) {
+        let (meter_page, stats) = (self.meter_page, self.stats);
+        crate::util::with_lock(&self.status, |s| {
+            s.meter_page = meter_page;
+            s.stats_page = stats;
+        });
+        if meter_page && !self.observing_meters {
+            self.observing_meters = true;
+            for (i, p) in
+                ["af-metadata/in", "af-metadata/out", "audio-out-params", "af", "current-ao"].iter().enumerate()
+            {
+                let _ = self.mpv.observe(100 + i as u64, p);
+            }
+        }
+        if stats && !self.observing_stats {
+            self.observing_stats = true;
+            for (i, p) in [
+                "video-params/pixelformat",
+                "video-params/primaries",
+                "video-params/gamma",
+                "video-params/sig-peak",
+                "container-fps",
+                "estimated-display-fps",
+                "vsync-jitter",
+                "decoder-frame-drop-count",
+                "vo-delayed-frame-count",
+                "avsync",
+                "demuxer-cache-state",
+                "video-bitrate",
+                "audio-bitrate",
+                "audio-out-params",
+                "current-ao",
+                "af",
+                "mpv-version",
+                "ffmpeg-version",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let _ = self.mpv.observe(200 + i as u64, p);
+            }
+        }
     }
 
     pub fn toggle_pause(&mut self) {
@@ -1001,6 +1169,7 @@ impl Player {
         let (pos, dur, paused) = self.position();
         self.thumb_tick();
         let show = paused || Instant::now() < self.controls_until;
+        crate::util::with_lock(&self.status, |s| s.controls_visible = show);
         let k = crate::ui::motion::toggle(&ctx, ui.id().with("controls"), show, crate::ui::motion::PANEL);
         if !show {
             ctx.request_repaint_after(Duration::from_millis(500));
@@ -1028,8 +1197,12 @@ impl Player {
         }
         action = self.skip_button(ui, p, rect, pos, dur, k).or(action);
         self.countdown(ui, p, rect, pos, dur);
+        let mut below = rect.top() + if self.pip.is_some() { 40.0 } else { 90.0 };
         if self.stats {
-            self.stats_overlay(ui, rect);
+            below = self.stats_overlay(ui, rect, below) + 8.0;
+        }
+        if self.meter_page {
+            self.meters_overlay(ui, rect, below);
         }
         self.keys(&ctx, &mut action, popup_open);
         self.extra_keys(&ctx);
@@ -1037,7 +1210,8 @@ impl Player {
     }
 
     /// mpv's keys for the less common things: `[` `]` speed (Backspace resets), `z`/`x`
-    /// subtitle delay, `,`/`.` frame step, `s` screenshot, `i` stats, `n`/`p` next/previous.
+    /// subtitle delay, `,`/`.` frame step, `s` screenshot, `i` stats, `I` the Audio page,
+    /// `n`/`p` next/previous.
     fn extra_keys(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
             return;
@@ -1064,7 +1238,9 @@ impl Player {
                 "," => self.cmd(&["frame-back-step"]),
                 "." => self.cmd(&["frame-step"]),
                 "s" => self.screenshot(),
-                "i" => self.stats = !self.stats,
+                // The dotted and the dotless one: a Turkish keyboard has both.
+                "i" | "ı" => self.stats = !self.stats,
+                "I" | "İ" => self.meter_page = !self.meter_page,
                 "n" => {
                     self.next();
                 }
@@ -1695,30 +1871,58 @@ impl Player {
         }
     }
 
-    /// "Stats for nerds": what is playing and how.
-    fn stats_overlay(&self, ui: &mut Ui, rect: Rect) {
-        let s = crate::util::lock(&self.status);
-        let st = &s.stats;
-        let text = format!(
-            "{} {}×{}  {:.2} fps  {}\n{}\n{} {} · {} {:.1} s · {} {}",
-            st.video_codec,
-            st.width,
-            st.height,
-            st.fps,
-            if s.hwdec.is_empty() || s.hwdec == "no" { t!("software decoding").to_string() } else { s.hwdec.clone() },
-            st.audio_codec,
-            t!("Speed"),
-            format_args!("{:.2}×", s.speed),
-            t!("Buffered"),
-            st.cache_secs,
-            t!("Dropped frames"),
-            st.dropped,
-        );
-        let pos = rect.left_top() + vec2(20.0, 90.0);
-        let galley = ui.painter().layout_no_wrap(text, egui::FontId::monospace(12.0), Color32::WHITE);
+    /// "Stats for nerds": what is playing and how. Returns the bottom of the box. In picture in
+    /// picture, the first lines only.
+    fn stats_overlay(&self, ui: &mut Ui, rect: Rect, top: f32) -> f32 {
+        let lines = {
+            let s = crate::util::lock(&self.status);
+            let render = match &self.video {
+                Video::Gl(v, _) => {
+                    let size = v.lock().map(|g| g.size).unwrap_or([0, 0]);
+                    format!("OpenGL {}×{}", size[0], size[1])
+                }
+                Video::Sw { size, .. } => format!("{} {}×{}", t!("software"), size[0], size[1]),
+                Video::None => String::new(),
+            };
+            stats_lines(&s, &render)
+        };
+        let lines = if self.pip.is_some() { lines.get(..3).unwrap_or(&lines) } else { &lines[..] };
+        let pos = pos2(rect.left() + 20.0, top);
+        let galley = ui.painter().layout_no_wrap(lines.join("\n"), egui::FontId::monospace(12.0), Color32::WHITE);
         let bg = Rect::from_min_size(pos - vec2(8.0, 6.0), galley.size() + vec2(16.0, 12.0));
         ui.painter().rect_filled(bg, CornerRadius::same(6), Color32::from_black_alpha(170));
         ui.painter().galley(pos, galley, Color32::WHITE);
+        bg.bottom()
+    }
+
+    /// The Audio page: on the right when it fits next to the A/V page, or below it. Compact when
+    /// the window is small.
+    fn meters_overlay(&self, ui: &mut Ui, rect: Rect, below: f32) {
+        let (passthrough, makeup) = crate::util::with_lock(&self.audio, |a| {
+            (a.passthrough, a.fx.night.as_ref().filter(|_| a.fx.enabled).map(|n| n.makeup_db))
+        });
+        let s = crate::util::lock(&self.status);
+        let info = super::sound::MeterInfo {
+            layout: s.source.layout.as_deref().unwrap_or(""),
+            chain: &s.stats.chain,
+            audio_in: &s.stats.audio_in,
+            audio_out: &s.stats.audio_out,
+            ao: &s.stats.current_ao,
+            running: s.meters_on,
+            passthrough,
+            makeup,
+        };
+        let compact = rect.width() < 640.0 || rect.height() < 420.0;
+        let width = if compact { 230.0 } else { 330.0 };
+        // Beside the A/V page when there is room, and under it when not.
+        let top = if self.stats && rect.width() < 900.0 {
+            below
+        } else {
+            rect.top() + if self.pip.is_some() { 40.0 } else { 90.0 }
+        };
+        let left = if self.stats && rect.width() < 900.0 { rect.left() + 12.0 } else { rect.right() - width - 12.0 };
+        let area = Rect::from_min_max(pos2(left, top), pos2(left + width, rect.bottom() - 8.0));
+        super::sound::paint_meters(ui.painter(), area, &s.meters, &info, compact);
     }
 
     /// The last seconds of an episode: what comes next, with "Play now" and "Cancel".
@@ -2111,6 +2315,110 @@ impl Drop for Player {
     }
 }
 
+/// Whether a property's change is worth a frame of the whole app. A status bar's worth of numbers
+/// arrive many times a second; with no page up, they redraw nothing (and a playing album redraws
+/// the app once a second, not at every audio frame).
+fn needs_repaint(name: &str, value: &Node, s: &mut Status) -> bool {
+    match name {
+        "time-pos" => {
+            let second = value.as_f64().unwrap_or(s.pos) as i64;
+            let new = second != s.shown_second;
+            s.shown_second = second;
+            new || s.controls_visible || s.stats_page || s.meter_page
+        }
+        "af-metadata/in" | "af-metadata/out" => s.meter_page,
+        "video-codec"
+        | "video-params/w"
+        | "video-params/h"
+        | "estimated-vf-fps"
+        | "frame-drop-count"
+        | "demuxer-cache-duration"
+        | "audio-codec-name"
+        | "hwdec-current"
+        | "video-params/pixelformat"
+        | "video-params/primaries"
+        | "video-params/gamma"
+        | "video-params/sig-peak"
+        | "container-fps"
+        | "estimated-display-fps"
+        | "vsync-jitter"
+        | "decoder-frame-drop-count"
+        | "vo-delayed-frame-count"
+        | "avsync"
+        | "demuxer-cache-state"
+        | "video-bitrate"
+        | "audio-bitrate"
+        | "mpv-version"
+        | "ffmpeg-version"
+        | "current-ao"
+        | "af"
+        | "audio-out-params" => s.stats_page || s.meter_page,
+        _ => true,
+    }
+}
+
+/// The lines of the A/V page.
+fn stats_lines(s: &Status, render: &str) -> Vec<String> {
+    let st = &s.stats;
+    let or_dash = |v: f64, text: String| if v > 0.0 { text } else { "—".to_string() };
+    let kbps = |v: f64| or_dash(v, format!("{:.0} kb/s", v / 1000.0));
+    let decoding =
+        if s.hwdec.is_empty() || s.hwdec == "no" { t!("software decoding").to_string() } else { s.hwdec.clone() };
+    let mut lines = vec![
+        format!("{} {}×{}  {}", st.video_codec, st.width, st.height, decoding),
+        format!(
+            "{} {} · {} {:.2} · {} {}",
+            t!("Dropped frames"),
+            st.dropped,
+            t!("Decoder drops"),
+            st.decoder_drops,
+            t!("Late frames"),
+            st.vo_delayed,
+        ),
+        format!("{} {:.1} s · {} {:.2}×", t!("Buffered"), st.cache_secs, t!("Speed"), s.speed),
+        format!(
+            "{} {} {} {}",
+            st.pixelformat,
+            st.primaries,
+            st.gamma,
+            or_dash(st.sig_peak, format!("{:.1}", st.sig_peak))
+        ),
+        format!(
+            "{} {} · {} {} · {} {}",
+            t!("Container"),
+            or_dash(st.container_fps, format!("{:.3}", st.container_fps)),
+            t!("Filtered"),
+            or_dash(st.fps, format!("{:.3}", st.fps)),
+            t!("Display"),
+            or_dash(st.display_fps, format!("{:.3}", st.display_fps)),
+        ),
+        format!(
+            "{} {:+.1} ms · {} {}",
+            t!("A/V sync"),
+            st.avsync * 1000.0,
+            t!("Jitter"),
+            or_dash(st.vsync_jitter, format!("{:.3}", st.vsync_jitter)),
+        ),
+        format!(
+            "{} {:.1} MB · {} {}",
+            t!("Cache"),
+            st.cache_bytes as f64 / 1e6,
+            t!("Input"),
+            or_dash(st.input_rate, format!("{:.1} MB/s", st.input_rate / 1e6)),
+        ),
+        format!("{} {} · {} {}", t!("Video"), kbps(st.video_bitrate), t!("Audio"), kbps(st.audio_bitrate)),
+        format!("{} {} → {} ({})", st.audio_codec, st.audio_in, st.audio_out, st.current_ao),
+    ];
+    if !st.chain.is_empty() {
+        lines.push(format!("{} {}", t!("Filters"), st.chain.join(" · ")));
+    }
+    if !render.is_empty() {
+        lines.push(render.to_string());
+    }
+    lines.push(format!("{} · FFmpeg {}", st.mpv_version, st.ffmpeg_version));
+    lines
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayerAction {
     None,
@@ -2161,6 +2469,38 @@ fn create_target(gl: &glow::Context) -> Result<(glow::Framebuffer, glow::Texture
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With nothing up, what arrives all the time draws nothing.
+    #[test]
+    fn numbers_nobody_sees_draw_nothing() {
+        let mut s = Status::default();
+        let t = |v: f64| Node::Double(v);
+        for name in ["frame-drop-count", "estimated-vf-fps", "demuxer-cache-duration", "avsync", "video-bitrate"] {
+            assert!(!needs_repaint(name, &t(1.0), &mut s), "{name}");
+        }
+        assert!(!needs_repaint("af-metadata/out", &Node::None, &mut s));
+        // The time: when the second changes, and not between.
+        assert!(needs_repaint("time-pos", &t(1.0), &mut s));
+        s.pos = 1.0;
+        for v in [1.02, 1.5, 1.98] {
+            assert!(!needs_repaint("time-pos", &t(v), &mut s), "{v}");
+        }
+        assert!(needs_repaint("time-pos", &t(2.0), &mut s));
+        // Anything else on screen is drawn.
+        assert!(needs_repaint("pause", &Node::Flag(true), &mut s));
+        assert!(needs_repaint("volume", &t(40.0), &mut s));
+        // A page or the controls up: all of it.
+        s.controls_visible = true;
+        assert!(needs_repaint("time-pos", &t(2.5), &mut s));
+        s.controls_visible = false;
+        s.meter_page = true;
+        assert!(needs_repaint("af-metadata/out", &Node::None, &mut s));
+        assert!(needs_repaint("time-pos", &t(2.6), &mut s));
+        s.meter_page = false;
+        s.stats_page = true;
+        assert!(needs_repaint("frame-drop-count", &t(1.0), &mut s));
+        assert!(!needs_repaint("af-metadata/out", &Node::None, &mut s));
+    }
 
     #[test]
     fn trickplay_index() {
