@@ -9,7 +9,7 @@
   import { onRelink } from '../lib/events.svelte';
   import { api, errorText } from '../lib/api';
   import { back, go, link, route, setQuery } from '../lib/router.svelte';
-  import { backdrop, image, isPlayable, KIND_LABEL, playHref, shapeFor, watched } from '../lib/media';
+  import { BACKDROP_SIZES, backdrop, image, isPlayable, KIND_LABEL, playHref, shapeFor, watched } from '../lib/media';
   import { bytes, clock, runtime } from '../lib/format';
   import { toggleFavorite, togglePlayed } from '../lib/itemstate';
   import { music, toEntry, tracksOf } from '../lib/player.svelte';
@@ -251,7 +251,7 @@
 {:else}
   <article class="detail" class:square>
     <div class="backdrop">
-      {#if bg}<div class="bgimg" in:fade={{ duration: ms(700) }}><Img image={bg} w={0} eager /></div>{/if}
+      {#if bg}<div class="bgimg" in:fade={{ duration: ms(700) }}><Img image={bg} w={0} eager sizes={BACKDROP_SIZES} /></div>{/if}
       <div class="veil"></div>
     </div>
 

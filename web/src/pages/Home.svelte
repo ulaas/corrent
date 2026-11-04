@@ -8,7 +8,7 @@
   import { link, go } from '../lib/router.svelte';
   import { libs, library } from '../lib/libraries.svelte';
   import { onRelink } from '../lib/events.svelte';
-  import { backdrop, homeRowTitle, image, isPlayable, itemHref, playHref, subtitle } from '../lib/media';
+  import { BACKDROP_SIZES, backdrop, homeRowTitle, image, isPlayable, itemHref, playHref, subtitle } from '../lib/media';
   import { runtime } from '../lib/format';
   import { prefs, ms, motion } from '../lib/prefs.svelte';
   import { can } from '../lib/session.svelte';
@@ -100,7 +100,7 @@
     <section class="hero" aria-label={t('Featured')}>
       {#key hero.id}
         <div class="bg" transition:fade={{ duration: ms(900) }}>
-          <Img image={backdrop(hero)} w={0} eager />
+          <Img image={backdrop(hero)} w={0} eager sizes={BACKDROP_SIZES} />
         </div>
       {/key}
       <div class="veil"></div>

@@ -136,6 +136,14 @@ export function imageUrl(sha: string, w?: 200 | 400 | 800): string {
   return `${BASE}/images/${sha}` + (w ? `?w=${w}` : '');
 }
 
+/** `srcset` for artwork: the server's width buckets narrower than the original, and the original.
+ *  An unknown original width counts as wide. */
+export function imageSrcset(sha: string, width?: number): string {
+  const parts = ([200, 400, 800] as const).filter((w) => !width || w < width).map((w) => `${imageUrl(sha, w)} ${w}w`);
+  parts.push(`${imageUrl(sha)} ${width || 1920}w`);
+  return parts.join(', ');
+}
+
 export function itemFileUrl(id: number): string {
   return `${BASE}/items/${id}/file`;
 }

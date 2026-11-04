@@ -3,6 +3,7 @@
   import Img from './Img.svelte';
   import { link, go } from '../lib/router.svelte';
   import { cardImage, initials, isPlayable, itemHref, playHref, subtitle, watched, type Shape, LIBRARY_ICON } from '../lib/media';
+  import { cardWidth } from '../lib/cards.svelte';
   import { toggleFavorite } from '../lib/itemstate';
   import { contextMenu } from '../lib/contextmenu.svelte';
   import { itemMenu } from '../lib/itemmenu';
@@ -41,7 +42,7 @@
 <a {href} use:link class="card {shape}" title={item.title} use:contextMenu={{ items: () => itemMenu(item, { manage: can(Perm.LIBRARY_MANAGE), onplay }), title: item.title }}>
   <div class="art">
     {#if img}
-      <Img image={img} w={shape === 'landscape' ? 400 : 400} alt="" />
+      <Img image={img} w={400} alt="" sizes="{Math.round(cardWidth(shape) * 1.3)}px" />
     {:else}
       {@const ini = initials(item.title)}
       <div class="ph">{#if ini}<span class="ini">{ini}</span><Icon name={fallbackIcon} size={18} />{:else}<Icon name={fallbackIcon} size={36} />{/if}</div>
