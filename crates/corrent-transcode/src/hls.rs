@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,10 @@ const IDLE: Duration = Duration::from_secs(90);
 const PAUSE_AHEAD: u64 = 45;
 const RESUME_AHEAD: u64 = 20;
 const SEGMENT_WAIT: Duration = Duration::from_secs(60);
+/// Encoder runs of a session that may end before reaching what they were started for. After that
+/// the session stops starting encoders for segments it doesn't have (a file whose probed duration
+/// is far off, or which ends early at every seek).
+const MAX_SHORT_RUNS: u32 = 3;
 /// Below this much free space on the cache's disk no new transcode starts (a full disk would
 /// also break the library database and downloads).
 const MIN_FREE: u64 = 2 * 1024 * 1024 * 1024;
@@ -117,7 +121,12 @@ struct Session {
     id: String,
     spec: SessionSpec,
     dir: PathBuf,
-    segments: u64,
+    /// In the playlist: from the probed duration, lowered when the stream turns out shorter.
+    segments: AtomicU64,
+    /// Encoder runs that ended by themselves without producing what was asked for.
+    short_runs: AtomicU32,
+    /// Encoders started.
+    runs: AtomicU32,
     done: Mutex<BTreeSet<u64>>,
     running: tokio::sync::Mutex<Option<Running>>,
     last_access: Mutex<Instant>,
@@ -132,6 +141,29 @@ impl Session {
 
     fn idle(&self) -> Duration {
         self.last_access.lock().unwrap_or_else(|e| e.into_inner()).elapsed()
+    }
+
+    /// An encoder started at `start` ran to the end of the input before reaching a segment the
+    /// playlist promises (the probed duration was too long, or a seek went past the end): the
+    /// stream ends where it stopped. False when it produced nothing at all.
+    fn end_short(&self, start: u64) -> bool {
+        self.short_runs.fetch_add(1, Ordering::Relaxed);
+        let end = self
+            .done
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .range(start..)
+            .next_back()
+            .map_or(start, |last| last + 1);
+        if end == 0 {
+            return false;
+        }
+        self.segments.fetch_min(end, Ordering::Relaxed);
+        true
+    }
+
+    fn may_start_encoder(&self) -> bool {
+        self.short_runs.load(Ordering::Relaxed) < MAX_SHORT_RUNS
     }
 
     /// Reads the muxer's own playlist: every segment listed there is complete.
@@ -269,7 +301,9 @@ impl HlsManager {
                 id: id.clone(),
                 spec,
                 dir,
-                segments,
+                segments: AtomicU64::new(segments),
+                short_runs: AtomicU32::new(0),
+                runs: AtomicU32::new(0),
                 done: Mutex::new(BTreeSet::new()),
                 running: tokio::sync::Mutex::new(None),
                 last_access: Mutex::new(Instant::now()),
@@ -289,6 +323,17 @@ impl HlsManager {
         if let Ok(s) = self.get(id) {
             s.touch();
         }
+    }
+
+    /// Segments encoded so far (`None`: no such session any more).
+    pub fn produced(&self, id: &str) -> Option<usize> {
+        self.get(id).ok().map(|s| s.done.lock().unwrap_or_else(|e| e.into_inner()).len())
+    }
+
+    /// Tests: how many encoders the session started.
+    #[cfg(test)]
+    pub(crate) fn encoder_runs(&self, id: &str) -> u32 {
+        self.get(id).map_or(0, |s| s.runs.load(Ordering::Relaxed))
     }
 
     /// Tests: whether the session's encoder runs, and how many segments are encoded.
@@ -316,7 +361,7 @@ impl HlsManager {
             "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-TARGETDURATION:{}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-INDEPENDENT-SEGMENTS\n",
             seg.ceil() as u64 + 1
         );
-        for n in 0..s.segments {
+        for n in 0..s.segments.load(Ordering::Relaxed) {
             let len = (total - n as f64 * seg).clamp(0.1, seg);
             out.push_str(&format!("#EXTINF:{len:.3},\n{n}.ts\n"));
         }
@@ -327,7 +372,7 @@ impl HlsManager {
     /// The file of segment `n`, encoding (or re-positioning the encoder) as needed.
     pub async fn segment(&self, id: &str, n: u64) -> Result<PathBuf, HlsError> {
         let s = self.get(id)?;
-        if n >= s.segments {
+        if n >= s.segments.load(Ordering::Relaxed) {
             return Err(HlsError::NotFound);
         }
         s.touch();
@@ -353,6 +398,20 @@ impl HlsManager {
                                 "the encoder stopped (started at segment {failed_at})"
                             )));
                         }
+                        if ended == Some(false) && n >= r.start {
+                            // It may have written `n` just after the check above.
+                            s.refresh_done();
+                            if s.done.lock().unwrap_or_else(|e| e.into_inner()).contains(&n) && path.exists() {
+                                return Ok(path);
+                            }
+                            let start = r.start;
+                            *running = None;
+                            return if s.end_short(start) {
+                                Err(HlsError::NotFound)
+                            } else {
+                                Err(HlsError::Failed("the encoder produced nothing".into()))
+                            };
+                        }
                         ended.is_none()
                             && n >= r.start
                             && n <= produced.unwrap_or(r.start).max(r.start) + AHEAD_SEGMENTS
@@ -360,6 +419,9 @@ impl HlsManager {
                     None => false,
                 };
                 if !reachable {
+                    if !s.may_start_encoder() {
+                        return Err(HlsError::NotFound);
+                    }
                     if let Some(old) = running.take() {
                         old.encoder.stop();
                     }
@@ -393,7 +455,7 @@ impl HlsManager {
                 item_id: s.spec.item_id,
                 encoder: encoder.clone(),
                 video: s.spec.video.is_some(),
-                segments: s.segments,
+                segments: s.segments.load(Ordering::Relaxed),
                 produced: s.done.lock().unwrap_or_else(|e| e.into_inner()).len() as u64,
                 encoding_from: s.running.try_lock().ok().and_then(|r| r.as_ref().map(|r| r.start)),
                 idle_secs: s.idle().as_secs(),
@@ -413,7 +475,7 @@ async fn pace(cfg: &HlsConfig, s: &Session) {
     s.refresh_done();
     let next = {
         let done = s.done.lock().unwrap_or_else(|e| e.into_inner());
-        (wanted..s.segments).find(|n| !done.contains(n))
+        (wanted..s.segments.load(Ordering::Relaxed)).find(|n| !done.contains(n))
     };
     let Some(next) = next else { return };
     let mut running = s.running.lock().await;
@@ -430,7 +492,17 @@ async fn pace(cfg: &HlsConfig, s: &Session) {
         Some(Some(true)) | Some(None) => {}
         // Paused (or done with its part): the player is getting close.
         Some(Some(false)) | None => {
-            if ahead < RESUME_AHEAD && s.idle() < IDLE {
+            // It ended by itself at or before `next`: nothing more will come from there.
+            let ran_out = running.as_ref().filter(|r| state == Some(Some(false)) && next >= r.start).map(|r| r.start);
+            if let Some(start) = ran_out {
+                s.refresh_done();
+                if !s.done.lock().unwrap_or_else(|e| e.into_inner()).contains(&next) {
+                    *running = None;
+                    s.end_short(start);
+                }
+                return;
+            }
+            if ahead < RESUME_AHEAD && s.idle() < IDLE && s.may_start_encoder() {
                 match start_encoder(cfg, s, next) {
                     Ok(r) => *running = Some(r),
                     Err(e) => tracing::debug!("transcode {}: {e}", s.id),
@@ -517,7 +589,8 @@ fn start_encoder(cfg: &HlsConfig, s: &Session, start: u64) -> Result<Running, St
         options: job_options(cfg, &s.spec, &s.dir, start),
         audio_file: None,
     };
-    tracing::debug!("transcode {} from segment {start} with {}", s.id, cfg.encoder);
+    let run = s.runs.fetch_add(1, Ordering::Relaxed) + 1;
+    tracing::debug!("transcode {} from segment {start} with {} (run {run})", s.id, cfg.encoder);
     let ended: Arc<Mutex<Option<bool>>> = Arc::default();
     let encoder = match &cfg.worker {
         Some(w) => {

@@ -38,6 +38,45 @@ fn start_time(path: &std::path::Path) -> f64 {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stream_shorter_than_probed_ends_without_restarts() {
+    if !corrent_mpv::Library::available() {
+        eprintln!("libmpv not found; skipping");
+        return;
+    }
+    let dir = scratch("short");
+    let input = source(&dir, 6);
+    let cfg = HlsConfig { root: dir.join("sessions"), worker: None, ..Default::default() };
+    let m = HlsManager::new(cfg);
+    let id = m
+        .create(SessionSpec {
+            input,
+            // The probe says 40 s; the encoder finds 6.
+            duration_ms: 40_000,
+            fps: Some(25.0),
+            video: Some(VideoTarget { height: None, bitrate: 500_000 }),
+            audio: None,
+            burn_subtitle: None,
+            burn_subtitle_file: None,
+            user: "u".into(),
+            title: "t".into(),
+            item_id: None,
+        })
+        .unwrap();
+    assert_eq!(m.playlist(&id).unwrap().matches(".ts").count(), 10);
+    m.segment(&id, 0).await.unwrap();
+    assert_eq!(m.segment(&id, 5).await, Err(crate::hls::HlsError::NotFound));
+    assert_eq!(m.encoder_runs(&id), 1, "the encoder isn't started again for what doesn't exist");
+    let left = m.playlist(&id).unwrap().matches(".ts").count();
+    assert!((1..=3).contains(&left), "the playlist ends where the stream does: {left}");
+    assert!(m.segment(&id, 9).await.is_err());
+    // The pacing loop leaves it alone too.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(m.encoder_runs(&id), 1);
+    m.stop(&id).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hls_session_serves_and_seeks() {
     if !corrent_mpv::Library::available() {
         eprintln!("libmpv not found; skipping");
