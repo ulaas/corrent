@@ -2154,3 +2154,33 @@ async fn perf_engine_tick_cost() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// An idle torrent has no sparkline data, one chosen for the details keeps a long history, and
+/// one with traffic has a full row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rate_history_is_kept_for_active_rows_and_the_detail_target() {
+    let dir = temp_dir("rate-history");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    let idle = add_tiny_torrents(&l, &dir, 1).await[0];
+    l.engine.send(EngineCommand::SetDetailTarget(Some(idle)));
+    // Longer than a row's history (200 ms ticks here).
+    let snap = wait_for(&l, "a long history", 60, |sn| {
+        sn.detail.as_ref().is_some_and(|d| d.hash == idle && d.history.len() > 45)
+    })
+    .await;
+    assert!(snap.row_history.is_empty(), "nothing moved: {:?}", snap.row_history.len());
+    l.engine.send(EngineCommand::SetDetailTarget(None));
+    // A limit slow enough to be seen in the sparkline.
+    let mut cfg = settings(&dir);
+    cfg.speed.download_limit = 512;
+    l.engine.send(EngineCommand::ApplySettings(Box::new(cfg)));
+    add(&l, &s, &dir);
+    let snap = wait_for(&l, "a row with traffic", 60, |sn| {
+        sn.row_history.get(&s.hash).is_some_and(|r| r.iter().any(|(d, _)| *d > 0))
+    })
+    .await;
+    assert_eq!(snap.row_history[&s.hash].len(), 40);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

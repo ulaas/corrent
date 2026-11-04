@@ -20,6 +20,8 @@ use crate::util::now_unix;
 use crate::watchdog::{self, Doing};
 
 const HISTORY_LEN: usize = 600;
+/// Samples behind a row's Activity sparkline: about the last minute.
+const ROW_SAMPLES: usize = 40;
 const STALL_AFTER: Duration = Duration::from_secs(30);
 /// How often the health self-checks run (O5).
 const HEALTH_EVERY: Duration = Duration::from_secs(300);
@@ -121,6 +123,42 @@ struct StaticInfo {
     first_file: Option<PathBuf>,
 }
 
+/// A torrent's last `ROW_SAMPLES` rates in KiB/s, without a heap allocation: there is one per
+/// active torrent, pushed to on every tick.
+#[derive(Clone)]
+struct RateRing {
+    samples: [(u32, u32); ROW_SAMPLES],
+    /// Where the next sample goes, which is also the oldest.
+    head: usize,
+}
+
+impl RateRing {
+    fn new() -> Self {
+        RateRing { samples: [(0, 0); ROW_SAMPLES], head: 0 }
+    }
+
+    fn push(&mut self, sample: (u32, u32)) {
+        if let Some(slot) = self.samples.get_mut(self.head) {
+            *slot = sample;
+        }
+        self.head = (self.head + 1) % ROW_SAMPLES;
+    }
+
+    /// Oldest first.
+    fn iter(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        (0..ROW_SAMPLES).filter_map(|i| self.samples.get((self.head + i) % ROW_SAMPLES).copied())
+    }
+
+    fn idle(&self) -> bool {
+        self.samples.iter().all(|s| *s == (0, 0))
+    }
+
+    /// As the bytes per second of a torrent's detail history.
+    fn bytes(&self) -> VecDeque<(u64, u64)> {
+        self.iter().map(|(d, u)| (u64::from(d) * 1024, u64::from(u) * 1024)).collect()
+    }
+}
+
 /// Downloaded/uploaded byte counters per peer address (for rates).
 type PeerCounters = HashMap<String, (u64, u64)>;
 
@@ -144,7 +182,10 @@ pub struct Actor {
     last_schedule_state: Option<bool>,
     detail_target: Option<InfoHash>,
     history: VecDeque<(u64, u64)>,
-    torrent_history: HashMap<InfoHash, VecDeque<(u64, u64)>>,
+    /// Only torrents active in the last `ROW_SAMPLES` ticks: an idle library costs nothing.
+    torrent_history: HashMap<InfoHash, RateRing>,
+    /// The longer history of `detail_target` (the Speed tab), from when it was chosen.
+    detail_history: VecDeque<(u64, u64)>,
     row_history: Arc<HashMap<InfoHash, Vec<(u32, u32)>>>,
     prev_peer: HashMap<String, (u64, u64)>,
     /// Peer counters per torrent for on-demand details (remote clients), with the time taken.
@@ -283,6 +324,7 @@ impl Actor {
             detail_target: None,
             history: VecDeque::with_capacity(HISTORY_LEN),
             torrent_history: HashMap::new(),
+            detail_history: VecDeque::new(),
             row_history: Default::default(),
             prev_peer: HashMap::new(),
             remote_prev: HashMap::new(),
@@ -909,6 +951,8 @@ impl Actor {
             EngineCommand::SetDetailTarget(t) => {
                 if self.detail_target != t {
                     self.detail_target = t;
+                    self.detail_history =
+                        t.and_then(|h| self.torrent_history.get(&h)).map(RateRing::bytes).unwrap_or_default();
                     self.prev_peer.clear();
                     self.pieces_cache = None;
                 }
@@ -1843,6 +1887,9 @@ impl Actor {
         self.static_info.remove(hash);
         self.mirrored_size.remove(hash);
         self.torrent_history.remove(hash);
+        if self.detail_target == Some(*hash) {
+            self.detail_history.clear();
+        }
         self.seen_unfinished.remove(hash);
         self.last_down_active.remove(hash);
         self.seed_carry_ms.remove(hash);
@@ -2452,19 +2499,10 @@ impl Actor {
             allowed_ranges: sess.allowlist.as_ref().map(|a| a.len()),
         };
 
-        // Activity sparklines: the last minute or so, refreshed every other tick.
+        // Activity sparklines: the last minute or so, refreshed every other tick. A torrent
+        // without a row here was idle all that time (the table draws a flat line).
         if self.tick_count.is_multiple_of(2) {
-            const ROW_SAMPLES: usize = 40;
-            let kib = |b: u64| (b / 1024).min(u32::MAX as u64) as u32;
-            self.row_history = Arc::new(
-                self.torrent_history
-                    .iter()
-                    .map(|(h, v)| {
-                        let skip = v.len().saturating_sub(ROW_SAMPLES);
-                        (*h, v.iter().skip(skip).map(|(d, u)| (kib(*d), kib(*u))).collect())
-                    })
-                    .collect(),
-            );
+            self.row_history = Arc::new(self.torrent_history.iter().map(|(h, r)| (*h, r.iter().collect())).collect());
         }
 
         self.generation += 1;
@@ -2753,11 +2791,14 @@ impl Actor {
             restore_failed: false,
         };
 
-        let hist = self.torrent_history.entry(hash).or_default();
-        if hist.len() >= HISTORY_LEN {
-            hist.pop_front();
+        let kib = |b: u64| (b / 1024).min(u32::MAX as u64) as u32;
+        push_rate(&mut self.torrent_history, hash, (kib(down_bps), kib(up_bps)));
+        if self.detail_target == Some(hash) {
+            if self.detail_history.len() >= HISTORY_LEN {
+                self.detail_history.pop_front();
+            }
+            self.detail_history.push_back((down_bps, up_bps));
         }
-        hist.push_back((down_bps, up_bps));
 
         if completed_event {
             let b = &self.settings.behavior;
@@ -2848,7 +2889,7 @@ impl Actor {
             files,
             peers,
             pieces,
-            history: self.torrent_history.get(&hash).cloned().unwrap_or_default(),
+            history: self.torrent_history.get(&hash).map(RateRing::bytes).unwrap_or_default(),
         })
     }
 
@@ -2870,13 +2911,7 @@ impl Actor {
         }
         let pieces = self.pieces_cache.as_ref().filter(|(_, ph, _)| *ph == hash).map(|(_, _, p)| p.clone());
 
-        TorrentDetail {
-            hash,
-            files,
-            peers,
-            pieces,
-            history: self.torrent_history.get(&hash).cloned().unwrap_or_default(),
-        }
+        TorrentDetail { hash, files, peers, pieces, history: self.detail_history.clone() }
     }
 
     /// Stream sessions with torrent names, smoothed rates and file availability.
@@ -3113,6 +3148,18 @@ impl Actor {
                     self.toast(ToastKind::Info, t!("Removed “{name}”: {why}.", name = name, why = why));
                 }
             }
+        }
+    }
+}
+
+/// One more sample of a torrent's rates; a torrent idle for all its samples loses its ring.
+fn push_rate(history: &mut HashMap<InfoHash, RateRing>, hash: InfoHash, sample: (u32, u32)) {
+    if sample != (0, 0) {
+        history.entry(hash).or_insert_with(RateRing::new).push(sample);
+    } else if let Some(ring) = history.get_mut(&hash) {
+        ring.push(sample);
+        if ring.idle() {
+            history.remove(&hash);
         }
     }
 }
@@ -3567,6 +3614,44 @@ mod tests {
 #[cfg(test)]
 mod more_tests {
     use super::*;
+
+    #[test]
+    fn a_rate_ring_keeps_the_last_samples_in_order() {
+        let mut ring = RateRing::new();
+        ring.push((1, 2));
+        ring.push((3, 4));
+        let got: Vec<_> = ring.iter().collect();
+        assert_eq!(got.len(), ROW_SAMPLES);
+        assert_eq!(got[ROW_SAMPLES - 2..], [(1, 2), (3, 4)], "newest last, zeros before");
+        for i in 0..ROW_SAMPLES as u32 + 5 {
+            ring.push((i, 0));
+        }
+        let got: Vec<_> = ring.iter().map(|(d, _)| d).collect();
+        let want: Vec<u32> = (5..ROW_SAMPLES as u32 + 5).collect();
+        assert_eq!(got, want, "wraps around");
+        let bytes = ring.bytes();
+        assert_eq!(bytes.back(), Some(&((ROW_SAMPLES as u64 + 4) * 1024, 0)));
+    }
+
+    #[test]
+    fn an_idle_torrent_has_no_rate_ring() {
+        let mut history = HashMap::new();
+        let h = InfoHash([1; 20]);
+        push_rate(&mut history, h, (0, 0));
+        assert!(history.is_empty(), "never active");
+        push_rate(&mut history, h, (5, 0));
+        for i in 0..ROW_SAMPLES {
+            assert!(history.contains_key(&h), "still has a rate in view at {i}");
+            push_rate(&mut history, h, (0, 0));
+        }
+        assert!(history.is_empty(), "idle for the whole window");
+    }
+
+    #[test]
+    fn five_thousand_rate_rings_stay_small() {
+        // It was a VecDeque of up to 600 u64 pairs per torrent: about 80 MiB at 5k.
+        assert!(std::mem::size_of::<RateRing>() * 5000 < 2 << 20);
+    }
 
     #[tokio::test]
     async fn cancelling_a_feed_add_forgets_its_article() {
