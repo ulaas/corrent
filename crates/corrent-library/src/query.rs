@@ -636,7 +636,7 @@ impl Library {
                 if !cont.is_empty() {
                     rows.push(HomeRow { id: "continue".into(), title: t!("Continue watching").into(), items: cont });
                 }
-                let next = next_up(c, user)?;
+                let next = next_up(c, user, HOME_NEXT_UP)?;
                 if !next.is_empty() {
                     rows.push(HomeRow { id: "next_up".into(), title: t!("Next up").into(), items: next });
                 }
@@ -826,13 +826,17 @@ impl Library {
     }
 }
 
-/// For each show the user is watching, the first unplayed episode after the last played one.
-fn next_up(c: &Connection, user: i64) -> rusqlite::Result<Vec<Item>> {
+/// Shows the home screen's "Next up" looks at.
+const HOME_NEXT_UP: i64 = 20;
+
+/// For each show the user is watching (the `limit` most recent), the first unplayed episode after
+/// the last played one.
+fn next_up(c: &Connection, user: i64, limit: i64) -> rusqlite::Result<Vec<Item>> {
     let mut st = c.prepare(
         "SELECT s.parent_id, max(w.last_played_at) FROM watch_state w JOIN items e ON e.id = w.item_id AND e.kind = 'episode' \
-         JOIN items s ON s.id = e.parent_id WHERE w.user_id = ?1 AND w.played = 1 GROUP BY s.parent_id ORDER BY 2 DESC LIMIT 20",
+         JOIN items s ON s.id = e.parent_id WHERE w.user_id = ?1 AND w.played = 1 GROUP BY s.parent_id ORDER BY 2 DESC LIMIT ?2",
     )?;
-    let shows: Vec<i64> = st.query_map([user], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let shows: Vec<i64> = st.query_map([user, limit], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let mut out = Vec::new();
     for show in shows {
         out.extend(next_in_show(c, user, show, false)?);
@@ -878,9 +882,14 @@ impl Library {
             .db()
             .read(move |c| match series {
                 Some(s) => next_in_show(c, user, s, first),
-                None => next_up(c, user),
+                None => next_up(c, user, HOME_NEXT_UP),
             })
             .await?)
+    }
+
+    /// "Next up" over more shows than the home screen looks at.
+    pub async fn next_up_list(&self, user: i64, limit: i64) -> Result<Vec<Item>> {
+        Ok(self.db().read(move |c| next_up(c, user, limit)).await?)
     }
 }
 

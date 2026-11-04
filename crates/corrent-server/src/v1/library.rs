@@ -180,7 +180,7 @@ async fn scan_status(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path
     Ok(Json(st.library.scan_status(id).unwrap_or(ScanStatus { library_id: id, ..Default::default() })))
 }
 
-/// `GET /items?library_id=&parent_id=&kind=&genre=&person_id=&favorite=&played=&sort=&desc=&offset=&limit=`
+/// `GET /items?library_id=&parent_id=&kind=&genre=&person_id=&favorite=&played=&in_progress=&next_up=&sort=&desc=&offset=&limit=`
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct ItemsQuery {
@@ -191,18 +191,32 @@ struct ItemsQuery {
     person_id: Option<i64>,
     favorite: Option<bool>,
     played: Option<bool>,
+    /// Home's "Continue watching" row, whole: paged, most recently played first.
+    in_progress: Option<bool>,
+    /// Home's "Next up" row: worked out per show, so not paged (at most [`NEXT_UP_MAX`]).
+    next_up: Option<bool>,
     sort: Option<String>,
     desc: bool,
     offset: i64,
     limit: Option<i64>,
 }
 
+const NEXT_UP_MAX: i64 = 100;
+
 async fn items(State(st): State<Arc<AppState>>, auth: Auth, Query(q): Query<ItemsQuery>) -> ApiResult<Page<Item>> {
+    if q.next_up == Some(true) {
+        let mut items = st.library.next_up_list(auth.0.user.id, NEXT_UP_MAX).await.map_err(lib_err)?;
+        if let Some(l) = q.library_id {
+            items.retain(|i| i.library_id == l);
+        }
+        return Ok(Json(Page { total: items.len() as i64, items, next: None }));
+    }
     let kind = match q.kind.as_deref() {
         Some(k) => Some(ItemKind::parse(k).ok_or_else(|| err(ErrorCode::BadRequest, "unknown kind"))?),
         None => None,
     };
-    let sort = match q.sort.as_deref().unwrap_or("title") {
+    let in_progress = q.in_progress == Some(true);
+    let sort = match q.sort.as_deref().unwrap_or(if in_progress { "played" } else { "title" }) {
         "title" => SortBy::Title,
         "added" => SortBy::Added,
         "year" => SortBy::Year,
@@ -224,6 +238,21 @@ async fn items(State(st): State<Arc<AppState>>, auth: Auth, Query(q): Query<Item
         offset: q.offset,
         limit: q.limit,
         ..Default::default()
+    };
+    let query = if in_progress {
+        ItemQuery {
+            resumable: Some(true),
+            // A sort that isn't asked for goes newest first.
+            desc: q.desc || q.sort.is_none(),
+            kinds: if kind.is_none() {
+                vec![ItemKind::Movie, ItemKind::Episode, ItemKind::Book, ItemKind::Video]
+            } else {
+                Vec::new()
+            },
+            ..query
+        }
+    } else {
+        query
     };
     Ok(Json(st.library.items(auth.0.user.id, query).await.map_err(lib_err)?))
 }

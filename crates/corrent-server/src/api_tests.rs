@@ -418,6 +418,68 @@ async fn text_is_compressed_and_video_is_not() {
     h.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_item_list_has_in_progress_and_next_up() {
+    let h = harness("rows", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let admin_id = get(app, "/api/v1/auth/me", &admin).await.1["user"]["id"].as_i64().unwrap();
+    let films = empty_library(&h, &admin, "Films", "movies").await;
+    let shows = empty_library(&h, &admin, "Shows", "shows").await;
+    let mut in_progress = Vec::new();
+    for n in 0..3 {
+        in_progress.push(seed_item(&h, films, "movie", None, None, &format!("Film {n}"), None).await);
+    }
+    let finished = seed_item(&h, films, "movie", None, None, "Finished", None).await;
+    let mut seen = Vec::new();
+    for name in ["Old show", "New show"] {
+        let show = seed_item(&h, shows, "show", None, None, name, None).await;
+        let season = seed_item(&h, shows, "season", Some(show), Some(1), "Season 1", None).await;
+        let e1 = seed_item(&h, shows, "episode", Some(season), Some(1), "One", None).await;
+        let e2 = seed_item(&h, shows, "episode", Some(season), Some(2), "Two", None).await;
+        seen.push((e1, e2));
+    }
+    // (item, position, played, last played)
+    let rows = vec![
+        (in_progress[0], 1000, 0, 100),
+        (in_progress[1], 1000, 0, 300),
+        (in_progress[2], 1000, 0, 200),
+        (finished, 1000, 1, 400),
+        (seen[0].0, 0, 1, 500),
+        (seen[1].0, 0, 1, 600),
+    ];
+    h.st.identity
+        .db()
+        .write(move |t| {
+            for (item, pos, played, at) in rows {
+                t.execute(
+                    "INSERT INTO watch_state(user_id, item_id, position_ms, played, last_played_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    [admin_id, item, pos, played, at],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let ids = |v: &Value| v["items"].as_array().unwrap().iter().map(|i| i["id"].as_i64().unwrap()).collect::<Vec<_>>();
+    let (s, v, _) = get(app, "/api/v1/items?in_progress=true", &admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(ids(&v), [in_progress[1], in_progress[2], in_progress[0]], "most recent first: {v}");
+    assert_eq!(v["total"], 3);
+    let (_, v, _) = get(app, "/api/v1/items?in_progress=true&limit=2", &admin).await;
+    assert_eq!(ids(&v), [in_progress[1], in_progress[2]]);
+    assert_eq!((v["total"].as_i64(), v["next"].as_i64()), (Some(3), Some(2)));
+    let (_, v, _) = get(app, "/api/v1/items?in_progress=true&limit=2&offset=2", &admin).await;
+    assert_eq!(ids(&v), [in_progress[0]]);
+    let (s, v, _) = get(app, "/api/v1/items?next_up=true", &admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(ids(&v), [seen[1].1, seen[0].1], "the show watched last comes first: {v}");
+    assert_eq!((v["total"].as_i64(), v["next"].as_i64()), (Some(2), None));
+    let (_, v, _) = get(app, &format!("/api/v1/items?next_up=true&library_id={films}"), &admin).await;
+    assert_eq!(ids(&v), Vec::<i64>::new());
+    h.stop().await;
+}
+
 /// Signs in to the qBittorrent API and returns the session cookie.
 async fn qbt_login(app: &Router, name: &str, password: &str) -> String {
     let mut r = Request::builder()

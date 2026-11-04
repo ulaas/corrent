@@ -145,6 +145,12 @@ the client asks for it. Media files, HLS and remux segments and torrent streams 
 | GET | `/api/v1/library/search` |
 | GET PUT | `/api/v1/users/{id}/libraries` |
 
+`GET /items` also takes `in_progress=true` (started and not finished, most recently played first
+unless `sort` says otherwise; paged) and `next_up=true` (the next episode of each show being
+watched, the most recent first). `next_up` isn't paged: it returns at most 100 items with
+`total` = their number, and of the other parameters only `library_id` applies. An item whose main
+file is gone from disk has `missing: true`; the field is left out otherwise.
+
 ### Playlists and collections
 
 | Method | Path |
