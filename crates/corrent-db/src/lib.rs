@@ -105,18 +105,39 @@ fn migrate(c: &mut Connection, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// How to open the database.
+#[derive(Clone, Copy, Debug)]
+pub struct OpenOptions {
+    /// Read every page before anything else (`PRAGMA quick_check`): minutes on a large library
+    /// on a slow disk, so worth it after an unclean exit rather than at each start.
+    pub quick_check: bool,
+}
+
+impl Default for OpenOptions {
+    fn default() -> Self {
+        OpenOptions { quick_check: true }
+    }
+}
+
 impl Db {
-    /// Opens (creating if needed) and migrates the database at `path`.
+    /// Opens (creating if needed), checks and migrates the database at `path`.
     pub fn open(path: &Path) -> Result<Db> {
+        Db::open_with(path, OpenOptions::default())
+    }
+
+    /// [`Db::open`] with a choice about the integrity check.
+    pub fn open_with(path: &Path, options: OpenOptions) -> Result<Db> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| DbError::Other(format!("{}: {e}", dir.display())))?;
         }
         let mut c = Connection::open(path)?;
         c.pragma_update(None, "journal_mode", "WAL")?;
         configure(&c)?;
-        let check: String = c.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
-        if check != "ok" {
-            return Err(DbError::Corrupt(check));
+        if options.quick_check {
+            let check: String = c.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+            if check != "ok" {
+                return Err(DbError::Corrupt(check));
+            }
         }
         migrate(&mut c, path)?;
         let (tx, rx) = std::sync::mpsc::channel::<Job>();
@@ -220,6 +241,12 @@ impl Db {
         f: impl FnOnce(&Transaction) -> rusqlite::Result<T> + Send + 'static,
     ) -> Result<T> {
         self.submit(f)?.blocking_recv().map_err(|_| DbError::Closed)?
+    }
+
+    /// The integrity check on a read connection, for hosts that run it in the background.
+    pub async fn quick_check(&self) -> Result<()> {
+        let check: String = self.read(|c| c.query_row("PRAGMA quick_check", [], |r| r.get(0))).await?;
+        if check == "ok" { Ok(()) } else { Err(DbError::Corrupt(check)) }
     }
 
     /// A consistent copy of the whole database (backups).
@@ -380,6 +407,26 @@ mod tests {
             .await
             .unwrap();
         assert!(plan.contains("watch_state_item"), "{plan}");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn the_integrity_check_only_runs_when_asked_for() {
+        let p = scratch("quick-check");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch("PRAGMA page_size=4096; PRAGMA journal_mode=DELETE; CREATE TABLE t(a);").unwrap();
+            for _ in 0..200 {
+                c.execute("INSERT INTO t VALUES (zeroblob(500))", []).unwrap();
+            }
+            c.pragma_update(None, "user_version", schema_version()).unwrap();
+        }
+        // Garbage in a table page: only reading every page notices.
+        let mut bytes = std::fs::read(&p).unwrap();
+        bytes[4096 * 3..4096 * 4].fill(0xa5);
+        std::fs::write(&p, bytes).unwrap();
+        assert!(Db::open_with(&p, OpenOptions { quick_check: false }).is_ok(), "a clean start doesn't look");
+        assert!(Db::open_with(&p, OpenOptions { quick_check: true }).is_err(), "an unclean one does");
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
