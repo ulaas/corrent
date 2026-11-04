@@ -334,6 +334,31 @@ impl CorrentApp {
             };
             self.play_queue(vec![e], false);
         }
+        // CORRENT_DEV_QUEUE=<id>,<id>…: music, in the mini player.
+        if let Ok(ids) = std::env::var("CORRENT_DEV_QUEUE")
+            && self.media.player.is_none()
+            && self.media.client.is_some()
+            && !self.media_dev_played
+        {
+            self.media_dev_played = true;
+            self.main_view = super::feeds::MainView::Media;
+            let queue = ids
+                .split(',')
+                .filter_map(|id| id.trim().parse().ok())
+                .map(|item_id: i64| QueueEntry {
+                    item_id,
+                    title: format!("#{item_id}"),
+                    subtitle: String::new(),
+                    resume_ms: 0,
+                    poster: None,
+                    local: None,
+                    stream: None,
+                    audio_track: None,
+                    subtitle_track: None,
+                })
+                .collect();
+            self.play_queue(queue, true);
+        }
         if let Ok(spec) = std::env::var("CORRENT_DEV_LIBRARY")
             && !self.media_dev_library_sent
             && let Some(c) = self.media.client.clone()

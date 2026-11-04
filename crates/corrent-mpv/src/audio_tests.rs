@@ -276,3 +276,43 @@ fn dynaudnorm_lookahead() {
         println!("{name}: loadfile→restart {restart:?}, restart→first sample {:?}", t.elapsed());
     }
 }
+
+/// A queue through mpv's own playlist, which is what makes tracks gapless: the second entry goes in
+/// when the first has loaded, and mpv moves on by itself. With `keep-open=yes` the last entry
+/// doesn't end with `EndFile` but with `eof-reached` (the player's queue used to wait for `EndFile`,
+/// so it never advanced at all).
+#[test]
+fn a_two_entry_queue_plays_through_mpvs_playlist() {
+    if Library::get().is_err() {
+        eprintln!("libmpv not found; skipping");
+        return;
+    }
+    let opts = [("ao", "null"), ("keep-open", "yes"), ("gapless-audio", "weak"), ("prefetch-playlist", "yes")];
+    let mpv = Mpv::headless(&opts).unwrap();
+    mpv.observe(1, "playlist-playing-pos").unwrap();
+    mpv.observe(2, "eof-reached").unwrap();
+    let first = mpv.loadfile_mode_args("av://lavfi:sine=f=500:r=48000:d=1", "replace", "");
+    mpv.command(&first.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+    let (mut appended, mut count, mut positions, mut eofs, mut ends) = (false, 0, Vec::new(), 0, 0);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline && eofs == 0 {
+        let Some(ev) = mpv.wait_event(0.1) else { continue };
+        match ev {
+            Event::FileLoaded if !appended => {
+                appended = true;
+                let next = mpv.loadfile_mode_args("av://lavfi:sine=f=700:r=48000:d=1", "append", "");
+                mpv.command(&next.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+                count = mpv.get("playlist-count").unwrap().as_i64().unwrap();
+            }
+            Event::PropertyChange { userdata: 1, value, .. } => positions.push(value.as_i64().unwrap_or(-1)),
+            Event::PropertyChange { userdata: 2, value, .. } => eofs += i32::from(value.as_bool() == Some(true)),
+            Event::EndFile(crate::EndReason::Eof) => ends += 1,
+            _ => {}
+        }
+    }
+    println!("count {count}, positions {positions:?}, EndFile(Eof) {ends}, eof-reached {eofs}");
+    assert_eq!(count, 2);
+    assert_eq!(positions.last(), Some(&1), "{positions:?}");
+    assert_eq!(ends, 1, "the first entry ends by EndFile");
+    assert_eq!(eofs, 1, "the last by eof-reached");
+}

@@ -56,6 +56,10 @@ struct Status {
     /// Skippable parts found by analysis (from the playback info).
     segments: Vec<corrent_proto::library::MediaSegment>,
     ended: bool,
+    /// The entry that was playing reached its end, and mpv has moved on or is about to.
+    entry_ended: bool,
+    /// `playlist-playing-pos`.
+    playlist_pos: i64,
     buffering: bool,
     error: Option<String>,
     hwdec: String,
@@ -266,6 +270,14 @@ pub struct Player {
     fx_set_at: Option<Instant>,
     /// The position last reported: a paused player has nothing new to say.
     last_reported: f64,
+    /// The queue index of the entry at position 0 of mpv's playlist.
+    playlist_start: usize,
+    /// The queue index whose `loadfile append` was started, and that it was sent (it asks the
+    /// server first).
+    appending: Option<usize>,
+    appended: Arc<std::sync::atomic::AtomicI64>,
+    /// Counts replaced playlists: an append still on its way after one is dropped.
+    playlist_generation: Arc<std::sync::atomic::AtomicU64>,
     /// The effects last handed over to be saved, and since when they differ.
     fx_saved: Mutex<corrent_core::audio_fx::AudioFx>,
     fx_moved: Option<Instant>,
@@ -401,6 +413,10 @@ impl Player {
         let volume = format!("{}", if audio.volume.is_finite() { audio.volume.clamp(0.0, 130.0) } else { 100.0 });
         opts.extend([("volume", volume.as_str()), ("mute", if audio.muted { "yes" } else { "no" })]);
         opts.push(if audio_only { ("vid", "no") } else { ("vo", "libmpv") });
+        // Albums go through mpv's own playlist, opened ahead of time: see `gapless_tick`.
+        if audio_only && audio.gapless {
+            opts.push(("prefetch-playlist", "yes"));
+        }
         // mpv sends the token: always verify HTTPS (mpv doesn't by default), against the
         // server's own CA when it has one.
         opts.push(("tls-verify", "yes"));
@@ -492,6 +508,8 @@ impl Player {
             "demuxer-cache-duration",
             "audio-codec-name",
             "audio-params",
+            "eof-reached",
+            "playlist-playing-pos",
         ]
         .iter()
         .enumerate()
@@ -534,6 +552,9 @@ impl Player {
                             repaint = needs_repaint(&name, &value, &mut s);
                             match name.as_str() {
                                 "time-pos" => s.pos = value.as_f64().unwrap_or(s.pos),
+                                // With `keep-open` the last entry doesn't end with `EndFile`.
+                                "eof-reached" if value.as_bool() == Some(true) => s.ended = true,
+                                "playlist-playing-pos" => s.playlist_pos = value.as_i64().unwrap_or(-1),
                                 "duration" => s.duration = value.as_f64().unwrap_or(0.0),
                                 "pause" => s.paused = value.as_bool().unwrap_or(false),
                                 "volume" => s.volume = value.as_f64().unwrap_or(100.0),
@@ -627,7 +648,7 @@ impl Player {
                         Event::CommandReply { userdata: FX_REPLY, error } if error < 0 => {
                             tracing::warn!("sound filter change: {}", m.library().error_text(error))
                         }
-                        Event::EndFile(EndReason::Eof) => s.ended = true,
+                        Event::EndFile(EndReason::Eof) => s.entry_ended = true,
                         Event::EndFile(EndReason::Error(code)) => {
                             s.error = Some(t!("Playback failed: {why}", why = m.library().error_text(code)))
                         }
@@ -681,6 +702,10 @@ impl Player {
             fx_from: None,
             fx_set_at: None,
             last_reported: -1.0,
+            playlist_start: 0,
+            appending: None,
+            appended: Arc::new(std::sync::atomic::AtomicI64::new(-1)),
+            playlist_generation: Arc::default(),
             fx_saved: Mutex::new(audio.fx.clone()),
             fx_meters_setting: audio.fx.meters,
             fx_moved: None,
@@ -697,8 +722,14 @@ impl Player {
 
     fn load_current(&mut self) {
         let Some(e) = self.current().cloned() else { return };
+        self.playlist_start = self.index;
+        self.appending = None;
+        self.appended.store(-1, Ordering::Relaxed);
+        self.playlist_generation.fetch_add(1, Ordering::Relaxed);
         {
             let mut s = crate::util::lock(&self.status);
+            s.playlist_pos = -1;
+            s.entry_ended = false;
             s.tracks.clear();
             s.ext_subs.clear();
             s.loaded = false;
@@ -708,8 +739,12 @@ impl Player {
         }
         if let Some(url) = &e.stream {
             let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
-            let args = self.mpv.loadfile_args(url, &title);
-            let _ = self.mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            let (mpv, url) = (self.mpv.clone(), url.clone());
+            // `loadfile_args` asks mpv the first time, which isn't for the UI thread.
+            self.rt.spawn_blocking(move || {
+                let args = mpv.loadfile_args(&url, &title);
+                let _ = mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            });
             return;
         }
         if let Some(path) = &e.local {
@@ -720,8 +755,11 @@ impl Player {
             self.sheets.clear();
             let start = format!("start={}", e.resume_ms as f64 / 1000.0);
             let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
-            let args = self.mpv.loadfile_args(&path.to_string_lossy(), &format!("{start},{title}"));
-            let _ = self.mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            let (mpv, path) = (self.mpv.clone(), path.to_string_lossy().into_owned());
+            self.rt.spawn_blocking(move || {
+                let args = mpv.loadfile_args(&path, &format!("{start},{title}"));
+                let _ = mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            });
             {
                 let mut s = crate::util::lock(&self.status);
                 s.pos = e.resume_ms as f64 / 1000.0;
@@ -1003,7 +1041,20 @@ impl Player {
         if self.index + 1 < self.queue.len() {
             self.report(true);
             self.index += 1;
-            self.load_current();
+            // Already in mpv's playlist: let it move on.
+            if self.appended.load(Ordering::Relaxed) == self.index as i64 {
+                self.appending = None;
+                self.cmd(&["playlist-next"]);
+                let resume = crate::util::with_lock(&self.status, |s| {
+                    s.pos = 0.0;
+                    s.ended = false;
+                    s.entry_ended = false;
+                    s.pos
+                });
+                self.last_reported = resume;
+            } else {
+                self.load_current();
+            }
             true
         } else {
             false
@@ -1060,6 +1111,7 @@ impl Player {
                 self.report(false);
             }
         }
+        self.gapless_tick();
         let ended = crate::util::with_lock(&self.status, |s| s.ended);
         if ended {
             self.report(true);
@@ -1113,6 +1165,63 @@ impl Player {
         if super::sound::sheet(ui, p, &mut fx, passthrough) {
             crate::util::with_lock(&self.audio, |a| a.fx = fx);
         }
+    }
+
+    /// Albums play through mpv's own playlist, which is what makes them gapless: when an entry has
+    /// loaded, the next one is resolved and appended (`prefetch-playlist` opens it ahead of time),
+    /// and mpv moves on by itself. Only for music: a film's next episode has its subtitles, its
+    /// countdown with a Cancel, and a start position, which all belong to one file at a time.
+    fn gapless_tick(&mut self) {
+        let (pos, loaded, entry_ended) =
+            crate::util::with_lock(&self.status, |s| (s.playlist_pos, s.loaded, s.entry_ended));
+        // mpv moved on by itself: the one before was played to its end if it said so.
+        let playing = usize::try_from(pos).ok().map(|p| self.playlist_start + p);
+        if loaded && let Some(playing) = playing.filter(|p| *p > self.index && *p < self.queue.len()) {
+            crate::util::with_lock(&self.status, |s| s.ended = entry_ended);
+            self.report(true);
+            crate::util::with_lock(&self.status, |s| {
+                s.ended = false;
+                s.entry_ended = false;
+            });
+            self.index = playing;
+            self.appending = None;
+        }
+        let gapless = self.audio_only && crate::util::with_lock(&self.audio, |a| a.gapless);
+        let next = self.index + 1;
+        if !gapless || !loaded || self.appending == Some(next) || self.appended.load(Ordering::Relaxed) >= next as i64 {
+            return;
+        }
+        let Some(e) = self.queue.get(next).filter(|e| e.stream.is_none()).cloned() else { return };
+        self.appending = Some(next);
+        let (client, mpv, appended, generation) =
+            (self.client.clone(), self.mpv.clone(), self.appended.clone(), self.playlist_generation.clone());
+        let at = generation.load(Ordering::Relaxed);
+        self.rt.spawn(async move {
+            let url = match &e.local {
+                Some(path) => path.to_string_lossy().into_owned(),
+                None => {
+                    let info: Result<corrent_proto::library::PlaybackInfo, String> = client
+                        .send(
+                            reqwest::Method::POST,
+                            &format!("/api/v1/playback/{}", e.item_id),
+                            &serde_json::json!({ "profile": "native" }),
+                        )
+                        .await;
+                    match info {
+                        Ok(info) => client.url(&info.url),
+                        // At its end the queue falls back to loading the next one the usual way.
+                        Err(e) => return tracing::debug!("next track: {e}"),
+                    }
+                }
+            };
+            if generation.load(Ordering::Relaxed) != at {
+                return;
+            }
+            let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
+            let args = mpv.loadfile_mode_args(&url, "append", &title);
+            let _ = mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            appended.store(next as i64, Ordering::Relaxed);
+        });
     }
 
     /// Hands changed effects over to be saved, once they have rested for 2 s (or now). The settings
