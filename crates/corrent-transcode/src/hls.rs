@@ -27,6 +27,9 @@ const IDLE: Duration = Duration::from_secs(90);
 const PAUSE_AHEAD: u64 = 45;
 const RESUME_AHEAD: u64 = 20;
 const SEGMENT_WAIT: Duration = Duration::from_secs(60);
+/// How often encoders are paced. Tests look more often: their small clips encode in a second or
+/// two, which a 2 s tick can miss entirely.
+const PACE_EVERY: Duration = if cfg!(test) { Duration::from_millis(100) } else { Duration::from_secs(2) };
 /// Encoder runs of a session that may end before reaching what they were started for. After that
 /// the session stops starting encoders for segments it doesn't have (a file whose probed duration
 /// is far off, or which ends early at every seek).
@@ -243,7 +246,7 @@ impl HlsManager {
         let weak = Arc::downgrade(&m);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(PACE_EVERY).await;
                 let Some(m) = weak.upgrade() else { break };
                 let all: Vec<Arc<Session>> =
                     m.sessions.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
