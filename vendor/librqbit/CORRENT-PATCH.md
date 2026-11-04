@@ -38,6 +38,15 @@ used by the `webui`/`http-api` features Corrent doesn't enable), plus runtime co
   torrent by hash scanned the whole list, so a command over many torrents was quadratic.
   Diff: `docs/upstream/librqbit-hash-index.patch`.
 
+- `session.json` writes coalesce (`src/session_persistence/json.rs`, `session.rs`, marked
+  `CORRENT PATCH (F16)`). Every pause, resume and file selection rewrote and synced the whole
+  file, so pausing n torrents cost O(n²) bytes and n fsyncs. Those `update_metadata` calls now
+  reach the disk through one flusher, at most every 500 ms. `store` (an add), `delete` and
+  `Session::stop` write at once, through the same single write path (temp file, sync, rename as
+  in D5, kill points included), and stop waits for a write in progress. After a stop nothing is
+  written behind the session's back, so a late call can't overwrite a new session's file.
+  Diff: `docs/upstream/librqbit-session-flush.patch`.
+
 - Test-only kill points (`src/corrent_hooks.rs`, call sites marked `CORRENT PATCH (D8)` in
   `src/session_persistence/json.rs` and `src/bitv.rs`): after the temp file and after the rename
   of `session.json`, `<hash>.torrent` and the initial `.bitv`, and after each write and sync of

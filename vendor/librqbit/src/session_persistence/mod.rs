@@ -81,6 +81,10 @@ pub trait SessionPersistenceStore: core::fmt::Debug + Send + Sync + BitVFactory 
     async fn stream_all(
         &self,
     ) -> anyhow::Result<BoxStream<'_, anyhow::Result<(TorrentId, SerializedTorrent)>>>;
+    // CORRENT PATCH (F16): the session stops; `update_metadata` calls not yet saved are saved now.
+    async fn stop(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 fn serialize_info_hash<S>(id: &Id20, serializer: S) -> Result<S::Ok, S::Error>

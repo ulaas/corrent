@@ -1103,6 +1103,13 @@ impl Session {
                 debug!("error pausing torrent: {e:#}");
             }
         }
+        // CORRENT PATCH (F16): what the coalescing store still owes. The pauses above aren't in
+        // it: a stopped session must come back with its torrents running as before.
+        if let Some(p) = self.persistence.as_ref()
+            && let Err(e) = p.stop().await
+        {
+            warn!(storage=?p, error=?e, "error saving the session at stop")
+        }
         self.cancellation_token.cancel();
         // this sucks, but hopefully will be enough
         tokio::time::sleep(Duration::from_secs(1)).await;

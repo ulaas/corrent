@@ -10,6 +10,9 @@ ready to turn into upstream pull requests:
   and per-file download order on `ManagedTorrent`.
 - `librqbit-hash-index.patch` — `Session::get`/`delete` by info hash in O(1) (`SessionDatabase`
   keeps an index).
+- `librqbit-session-flush.patch` — pause, resume and file-selection changes reach `session.json`
+  through one flusher (at most one write per 500 ms); adds, deletes and a session stop write at
+  once. Assumes `librqbit-persistence-fsync.patch`. Its `count_session_write` is for Corrent's tests.
 - `librqbit-json-next-id.patch` — the JSON session store hands each concurrent add its own id
   (before, concurrent adds got the same id and all but one failed).
 - `librqbit-persistence-fsync.patch` — `session.json`, the initial `.bitv` and the `.torrent`

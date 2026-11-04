@@ -1021,14 +1021,18 @@ async fn perf_session_flush_cost() {
     let n = 250;
     let t = Instant::now();
     add_tiny_torrents(&l, &dir, n).await;
-    println!("add {n}: {:?}", t.elapsed());
-    // A Flush queued behind the command is answered once the actor has worked through it.
-    for (what, cmd) in [("resume all", EngineCommand::ResumeAll), ("pause all", EngineCommand::PauseAll)] {
-        let t = Instant::now();
+    println!("add {n}: {:?}, {} writes", t.elapsed(), session_writes(&l.paths));
+    first_checks_done(&l).await;
+    // Until every torrent has changed, which takes its engine call, plus the write it owes.
+    for (what, cmd, paused) in
+        [("resume all", EngineCommand::ResumeAll, false), ("pause all", EngineCommand::PauseAll, true)]
+    {
+        let (t, before) = (Instant::now(), session_writes(&l.paths));
         l.engine.send(cmd);
-        let engine = l.engine.clone();
-        assert!(tokio::task::spawn_blocking(move || engine.flush_blocking(Duration::from_secs(300))).await.unwrap());
-        println!("{what} {n}: {:?}", t.elapsed());
+        wait_for(&l, what, 120, |sn| sn.torrents.iter().all(|r| (r.state == TorrentState::Paused) == paused)).await;
+        let changed = t.elapsed();
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        println!("{what} {n}: {changed:?}, {} writes", session_writes(&l.paths) - before);
     }
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
@@ -2182,5 +2186,86 @@ async fn rate_history_is_kept_for_active_rows_and_the_detail_target() {
     .await;
     assert_eq!(snap.row_history[&s.hash].len(), 40);
     stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Past the first check of every torrent: a resume made during it does nothing.
+async fn first_checks_done(l: &Leecher) {
+    wait_for(l, "the first checks", 120, |sn| sn.torrents.iter().all(|t| t.state == TorrentState::Paused)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+}
+
+fn session_writes(paths: &Paths) -> u64 {
+    librqbit::corrent_hooks::session_writes(&paths.session_dir().join("session.json"))
+}
+
+/// F16: pausing many torrents writes session.json a few times, not once each, and the flusher
+/// does save it with the engine still running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_burst_of_pauses_costs_few_session_writes() {
+    let dir = temp_dir("session-coalesce");
+    let l = start(&dir);
+    let n = 60;
+    let hashes = add_tiny_torrents(&l, &dir, n).await;
+    first_checks_done(&l).await;
+    l.engine.send(EngineCommand::ResumeAll);
+    wait_for(&l, "all running", 60, |sn| sn.torrents.iter().all(|t| t.state != TorrentState::Paused)).await;
+    // Past the resumes' own write.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (before, began) = (session_writes(&l.paths), Instant::now());
+    l.engine.send(EngineCommand::PauseAll);
+    let paused = |paths: &Paths| {
+        let db: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(paths.session_dir().join("session.json")).unwrap()).unwrap();
+        let list = db["torrents"].as_object().unwrap();
+        list.len() == hashes.len() && list.values().all(|e| e["is_paused"] == true)
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !paused(&l.paths) {
+        assert!(Instant::now() < deadline, "the pauses never reached session.json");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (writes, took) = (session_writes(&l.paths) - before, began.elapsed());
+    eprintln!("{writes} writes of session.json for {n} pauses in {took:?}");
+    assert!(writes <= 2 + took.as_secs() * 2 && writes < u64::from(n) / 2, "{writes} writes in {took:?}");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// F16: adds and deletes don't wait for the flusher: when they report back, they are on disk,
+/// and so is a pause made just before. The stop saves what is still owed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adds_deletes_and_stops_reach_the_session_file_at_once() {
+    let dir = temp_dir("session-at-once");
+    let l = start(&dir);
+    let hashes = add_tiny_torrents(&l, &dir, 3).await;
+    first_checks_done(&l).await;
+    let entry = |paths: &Paths, h: InfoHash| {
+        let db: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(paths.session_dir().join("session.json")).unwrap()).unwrap();
+        db["torrents"].as_object().unwrap().values().find(|e| e["info_hash"] == h.to_hex()).cloned()
+    };
+    for h in &hashes {
+        assert!(entry(&l.paths, *h).is_some(), "listed when its add reported back");
+    }
+    l.engine.send(EngineCommand::Resume(vec![hashes[0]]));
+    wait_for(&l, "running", 20, |sn| find(sn, hashes[0]).is_some_and(|t| t.state != TorrentState::Paused)).await;
+    while l.events.try_recv().is_ok() {}
+    l.engine.send(EngineCommand::Pause(vec![hashes[0]]));
+    l.engine.send(EngineCommand::Delete { hashes: vec![hashes[1]], with_data: false });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if matches!(l.events.try_recv(), Ok(EngineEvent::Removed { hash, .. }) if hash == hashes[1]) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the delete never reported back");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(entry(&l.paths, hashes[1]).is_none(), "gone when its delete reported back");
+    assert_eq!(entry(&l.paths, hashes[0]).unwrap()["is_paused"], true, "the delete's write took the pause along");
+    // Resume then stop at once: the last state is saved by the stop, not left to the flusher.
+    l.engine.send(EngineCommand::Resume(vec![hashes[2]]));
+    let paths = stop(l).await;
+    assert_eq!(entry(&paths, hashes[2]).unwrap()["is_paused"], false);
     let _ = std::fs::remove_dir_all(dir);
 }

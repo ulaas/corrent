@@ -45,9 +45,21 @@ each):
 | Pause all 250 | 270 ms | 400 ms |
 
 That's about 0.6–1 ms per write. The file is rewritten whole, so the cost per write grows with
-the number of torrents. With thousands of torrents, or on a hard disk or network drive, writes
-should be batched (one per ~500 ms, at once on delete and stop). L4 and F16 in
-`docs/STABILITY.md` measure that first.
+the number of torrents.
+
+Since F16 (2026-11-05) pauses, resumes and file selections reach the disk through one flusher, at
+most one write per 500 ms (patch: `docs/upstream/librqbit-session-flush.patch`); adds, deletes and
+a session stop still write at once. The same test now also counts the writes. PauseAll at n
+torrents went from n writes (O(n²) bytes) to one or two:
+
+| What (250 torrents, debug build, until every row changed) | Time | Writes of `session.json` |
+|---|---|---|
+| Add 250 | 1.1 s | 250 |
+| Resume all | 0.2 s | 1 |
+| Pause all | 0.3 s | 1 |
+
+A crash can lose the last 500 ms of those changes: a lost pause is put back by Corrent's own records
+(`enforce_pauses`). The kill matrix (120 kills, 0 lost) and the fault matrix pass with it.
 
 ## Per-tick static data (engine quality round, 2026-11-05)
 

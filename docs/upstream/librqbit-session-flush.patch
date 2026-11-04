@@ -1,0 +1,352 @@
+diff --git a/vendor/librqbit/src/corrent_hooks.rs b/vendor/librqbit/src/corrent_hooks.rs
+index df20507..dc1567f 100644
+--- a/vendor/librqbit/src/corrent_hooks.rs
++++ b/vendor/librqbit/src/corrent_hooks.rs
+@@ -2,7 +2,9 @@
+ //! durability tests can end the process exactly there. Nothing happens unless a hook is set,
+ //! which only Corrent's test builds do (`corrent_core::faults`).
+ 
+-use std::sync::OnceLock;
++use std::collections::HashMap;
++use std::path::{Path, PathBuf};
++use std::sync::{Mutex, OnceLock};
+ 
+ static KILL: OnceLock<fn(&str, &str)> = OnceLock::new();
+ 
+@@ -16,3 +18,16 @@ pub(crate) fn kill_point(op: &str, phase: &str) {
+         f(op, phase);
+     }
+ }
++
++static SESSION_WRITES: Mutex<Option<HashMap<PathBuf, u64>>> = Mutex::new(None);
++
++pub(crate) fn count_session_write(path: &Path) {
++    let mut writes = SESSION_WRITES.lock().unwrap_or_else(|e| e.into_inner());
++    *writes.get_or_insert_default().entry(path.to_path_buf()).or_default() += 1;
++}
++
++/// How often this `session.json` has been written in this process (for Corrent's tests).
++pub fn session_writes(path: &Path) -> u64 {
++    let writes = SESSION_WRITES.lock().unwrap_or_else(|e| e.into_inner());
++    writes.as_ref().and_then(|w| w.get(path)).copied().unwrap_or(0)
++}
+diff --git a/vendor/librqbit/src/session.rs b/vendor/librqbit/src/session.rs
+index 31cb8ad..30d6e54 100644
+--- a/vendor/librqbit/src/session.rs
++++ b/vendor/librqbit/src/session.rs
+@@ -1103,6 +1103,13 @@ impl Session {
+                 debug!("error pausing torrent: {e:#}");
+             }
+         }
++        // CORRENT PATCH (F16): what the coalescing store still owes. The pauses above aren't in
++        // it: a stopped session must come back with its torrents running as before.
++        if let Some(p) = self.persistence.as_ref()
++            && let Err(e) = p.stop().await
++        {
++            warn!(storage=?p, error=?e, "error saving the session at stop")
++        }
+         self.cancellation_token.cancel();
+         // this sucks, but hopefully will be enough
+         tokio::time::sleep(Duration::from_secs(1)).await;
+diff --git a/vendor/librqbit/src/session_persistence/json.rs b/vendor/librqbit/src/session_persistence/json.rs
+index ebe0fa4..d54f03a 100644
+--- a/vendor/librqbit/src/session_persistence/json.rs
++++ b/vendor/librqbit/src/session_persistence/json.rs
+@@ -1,4 +1,13 @@
+-use std::{any::TypeId, collections::HashMap, path::PathBuf};
++use std::{
++    any::TypeId,
++    collections::HashMap,
++    path::PathBuf,
++    sync::{
++        Arc,
++        atomic::{AtomicBool, Ordering},
++    },
++    time::Duration,
++};
+ 
+ use crate::{
+     api::TorrentIdOrHash,
+@@ -26,10 +35,27 @@ struct SerializedSessionDatabase {
+     torrents: HashMap<usize, SerializedTorrent>,
+ }
+ 
+-pub struct JsonSessionPersistenceStore {
+-    output_folder: PathBuf,
++// CORRENT PATCH (F16): how often `update_metadata` calls (pause, resume, file selection) reach
++// the disk at most. `store`, `delete` and a session stop write at once.
++const COALESCE: Duration = Duration::from_millis(500);
++// After a failed write, so a full disk doesn't turn into a busy loop.
++const RETRY_AFTER: Duration = Duration::from_secs(5);
++
++// CORRENT PATCH (F16): session.json, shared with the task that does the coalesced writes.
++struct SessionFile {
+     db_filename: PathBuf,
+     db_content: tokio::sync::RwLock<SerializedSessionDatabase>,
++    // `db_content` has updates that aren't on disk yet.
++    dirty: AtomicBool,
++    // The session has stopped: nothing is written behind its back any more.
++    stopped: AtomicBool,
++    wake: tokio::sync::Notify,
++}
++
++pub struct JsonSessionPersistenceStore {
++    output_folder: PathBuf,
++    file: Arc<SessionFile>,
++    flusher: tokio::task::JoinHandle<()>,
+     spawner: BlockingSpawner,
+     // Corrent patch: ids handed out but not stored yet. Without it, adds running at the same
+     // time all got `max + 1` and every one after the first was refused as already managed.
+@@ -65,10 +91,17 @@ impl JsonSessionPersistenceStore {
+             }
+         };
+ 
+-        Ok(Self {
++        let file = Arc::new(SessionFile {
+             db_filename,
+-            output_folder,
+             db_content: tokio::sync::RwLock::new(db),
++            dirty: AtomicBool::new(false),
++            stopped: AtomicBool::new(false),
++            wake: tokio::sync::Notify::new(),
++        });
++        Ok(Self {
++            output_folder,
++            flusher: tokio::spawn(file.clone().run_flusher()),
++            file,
+             spawner,
+             next_free: std::sync::Mutex::new(0),
+         })
+@@ -77,6 +110,7 @@ impl JsonSessionPersistenceStore {
+     async fn to_hash(&self, id: TorrentIdOrHash) -> anyhow::Result<Id20> {
+         match id {
+             TorrentIdOrHash::Id(id) => self
++                .file
+                 .db_content
+                 .read()
+                 .await
+@@ -88,47 +122,6 @@ impl JsonSessionPersistenceStore {
+         }
+     }
+ 
+-    async fn flush(&self) -> anyhow::Result<()> {
+-        // we don't need the write lock technically, but we need to stop concurrent modifications
+-        let db_content = self.db_content.write().await;
+-        // CORRENT PATCH (D5): no `to_str().unwrap()` (panicked on a non-UTF-8 data folder).
+-        let tmp_filename = self.db_filename.with_extension("json.tmp");
+-        let mut tmp = tokio::fs::OpenOptions::new()
+-            .create(true)
+-            .truncate(true)
+-            .write(true)
+-            .open(&tmp_filename)
+-            .await
+-            .with_context(|| format!("error opening {tmp_filename:?}"))?;
+-        trace!(?tmp_filename, "opened temp file");
+-
+-        let mut buf = Vec::new();
+-        serde_json::to_writer(&mut buf, &*db_content).context("error serializing")?;
+-
+-        trace!(?tmp_filename, "serialized DB as JSON");
+-        tmp.write_all(&buf)
+-            .await
+-            .with_context(|| format!("error writing {tmp_filename:?}"))?;
+-        // CORRENT PATCH (D5): on disk before the rename, so a power cut can't leave a renamed
+-        // but empty or cut-off session database.
+-        tmp.flush()
+-            .await
+-            .with_context(|| format!("error writing {tmp_filename:?}"))?;
+-        tmp.sync_all()
+-            .await
+-            .with_context(|| format!("error syncing {tmp_filename:?}"))?;
+-        drop(tmp);
+-        trace!(?tmp_filename, "wrote to temp file");
+-        crate::corrent_hooks::kill_point("engine-session", "after_tmp"); // CORRENT PATCH (D8)
+-
+-        rename_retrying(&tmp_filename, &self.db_filename)
+-            .await
+-            .context("error renaming persistence file")?;
+-        crate::corrent_hooks::kill_point("engine-session", "after_rename"); // CORRENT PATCH (D8)
+-        trace!(filename=?self.db_filename, "wrote persistence");
+-        Ok(())
+-    }
+-
+     fn torrent_bytes_filename(&self, info_hash: &Id20) -> PathBuf {
+         self.output_folder.join(format!("{info_hash:?}.torrent"))
+     }
+@@ -201,9 +194,90 @@ impl JsonSessionPersistenceStore {
+             }
+         }
+ 
+-        self.db_content.write().await.torrents.insert(id, st);
+-        self.flush().await?;
++        self.file.db_content.write().await.torrents.insert(id, st);
++        Ok(())
++    }
++}
+ 
++impl Drop for JsonSessionPersistenceStore {
++    fn drop(&mut self) {
++        self.flusher.abort();
++    }
++}
++
++impl SessionFile {
++    // CORRENT PATCH (F16): `update_metadata` calls coalesce here. A burst (pause all) costs a
++    // write or two instead of one each, so at most the last `COALESCE` of them can be lost in a
++    // crash; Corrent's own records put a lost pause back (`Actor::enforce_pauses`).
++    async fn run_flusher(self: Arc<Self>) {
++        loop {
++            self.wake.notified().await;
++            tokio::time::sleep(COALESCE).await;
++            let db_content = self.db_content.write().await;
++            if self.stopped.load(Ordering::SeqCst) {
++                return;
++            }
++            if self.dirty.swap(false, Ordering::SeqCst)
++                && let Err(e) = self.write(&db_content).await
++            {
++                warn!(error=?e, "error writing session persistence; retrying");
++                self.dirty.store(true, Ordering::SeqCst);
++                self.wake.notify_one();
++                drop(db_content);
++                tokio::time::sleep(RETRY_AFTER).await;
++            }
++        }
++    }
++
++    // The only write of session.json. Every update so far is in it, whoever asked for it.
++    async fn flush(&self) -> anyhow::Result<()> {
++        // we don't need the write lock technically, but we need to stop concurrent modifications
++        let db_content = self.db_content.write().await;
++        self.dirty.store(false, Ordering::SeqCst);
++        let written = self.write(&db_content).await;
++        if written.is_err() {
++            self.dirty.store(true, Ordering::SeqCst);
++        }
++        written
++    }
++
++    async fn write(&self, db_content: &SerializedSessionDatabase) -> anyhow::Result<()> {
++        // CORRENT PATCH (D5): no `to_str().unwrap()` (panicked on a non-UTF-8 data folder).
++        let tmp_filename = self.db_filename.with_extension("json.tmp");
++        let mut tmp = tokio::fs::OpenOptions::new()
++            .create(true)
++            .truncate(true)
++            .write(true)
++            .open(&tmp_filename)
++            .await
++            .with_context(|| format!("error opening {tmp_filename:?}"))?;
++        trace!(?tmp_filename, "opened temp file");
++
++        let mut buf = Vec::new();
++        serde_json::to_writer(&mut buf, db_content).context("error serializing")?;
++
++        trace!(?tmp_filename, "serialized DB as JSON");
++        tmp.write_all(&buf)
++            .await
++            .with_context(|| format!("error writing {tmp_filename:?}"))?;
++        // CORRENT PATCH (D5): on disk before the rename, so a power cut can't leave a renamed
++        // but empty or cut-off session database.
++        tmp.flush()
++            .await
++            .with_context(|| format!("error writing {tmp_filename:?}"))?;
++        tmp.sync_all()
++            .await
++            .with_context(|| format!("error syncing {tmp_filename:?}"))?;
++        drop(tmp);
++        trace!(?tmp_filename, "wrote to temp file");
++        crate::corrent_hooks::kill_point("engine-session", "after_tmp"); // CORRENT PATCH (D8)
++
++        rename_retrying(&tmp_filename, &self.db_filename)
++            .await
++            .context("error renaming persistence file")?;
++        crate::corrent_hooks::kill_point("engine-session", "after_rename"); // CORRENT PATCH (D8)
++        crate::corrent_hooks::count_session_write(&self.db_filename);
++        trace!(filename=?self.db_filename, "wrote persistence");
+         Ok(())
+     }
+ }
+@@ -297,6 +371,7 @@ impl BitVFactory for JsonSessionPersistenceStore {
+ impl SessionPersistenceStore for JsonSessionPersistenceStore {
+     async fn next_id(&self) -> anyhow::Result<TorrentId> {
+         let stored = self
++            .file
+             .db_content
+             .read()
+             .await
+@@ -316,10 +391,10 @@ impl SessionPersistenceStore for JsonSessionPersistenceStore {
+         debug!(?id, "attempting to delete");
+         // BIG NOTE: DO NOT inline this variable. Otherwise Rust doesn't drop the lock and it deadlocks
+         // when calling flush - because let bindings prolong the duration.
+-        let removed = self.db_content.write().await.torrents.remove(&id);
++        let removed = self.file.db_content.write().await.torrents.remove(&id);
+         if let Some(t) = removed {
+             debug!(?id, "deleted from in-memory db, flushing");
+-            self.flush().await?;
++            self.file.flush().await?;
+             for tf in [
+                 self.torrent_bytes_filename(&t.info_hash),
+                 self.bitv_filename(&t.info_hash),
+@@ -339,6 +414,7 @@ impl SessionPersistenceStore for JsonSessionPersistenceStore {
+ 
+     async fn get(&self, id: TorrentId) -> anyhow::Result<SerializedTorrent> {
+         let mut st = self
++            .file
+             .db_content
+             .read()
+             .await
+@@ -367,6 +443,7 @@ impl SessionPersistenceStore for JsonSessionPersistenceStore {
+         &self,
+     ) -> anyhow::Result<BoxStream<'_, anyhow::Result<(TorrentId, SerializedTorrent)>>> {
+         let all_ids = self
++            .file
+             .db_content
+             .read()
+             .await
+@@ -380,7 +457,8 @@ impl SessionPersistenceStore for JsonSessionPersistenceStore {
+     }
+ 
+     async fn store(&self, id: TorrentId, torrent: &ManagedTorrentHandle) -> anyhow::Result<()> {
+-        self.update_db(id, torrent, true).await
++        self.update_db(id, torrent, true).await?;
++        self.file.flush().await
+     }
+ 
+     async fn update_metadata(
+@@ -388,6 +466,20 @@ impl SessionPersistenceStore for JsonSessionPersistenceStore {
+         id: TorrentId,
+         torrent: &ManagedTorrentHandle,
+     ) -> anyhow::Result<()> {
+-        self.update_db(id, torrent, false).await
++        self.update_db(id, torrent, false).await?;
++        // CORRENT PATCH (F16): saved by the flusher, or by the next write of any kind.
++        self.file.dirty.store(true, Ordering::SeqCst);
++        self.file.wake.notify_one();
++        Ok(())
++    }
++
++    // CORRENT PATCH (F16): holding the lock also waits for a write the flusher has begun.
++    async fn stop(&self) -> anyhow::Result<()> {
++        self.file.stopped.store(true, Ordering::SeqCst);
++        let db_content = self.file.db_content.write().await;
++        if self.file.dirty.swap(false, Ordering::SeqCst) {
++            self.file.write(&db_content).await?;
++        }
++        Ok(())
+     }
+ }
+diff --git a/vendor/librqbit/src/session_persistence/mod.rs b/vendor/librqbit/src/session_persistence/mod.rs
+index c5b11d5..2bca7db 100644
+--- a/vendor/librqbit/src/session_persistence/mod.rs
++++ b/vendor/librqbit/src/session_persistence/mod.rs
+@@ -81,6 +81,10 @@ pub trait SessionPersistenceStore: core::fmt::Debug + Send + Sync + BitVFactory
+     async fn stream_all(
+         &self,
+     ) -> anyhow::Result<BoxStream<'_, anyhow::Result<(TorrentId, SerializedTorrent)>>>;
++    // CORRENT PATCH (F16): the session stops; `update_metadata` calls not yet saved are saved now.
++    async fn stop(&self) -> anyhow::Result<()> {
++        Ok(())
++    }
+ }
+ 
+ fn serialize_info_hash<S>(id: &Id20, serializer: S) -> Result<S::Ok, S::Error>
