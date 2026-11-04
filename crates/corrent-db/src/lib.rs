@@ -3,6 +3,7 @@
 //! `PRAGMA user_version` with a backup before each upgrade.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -55,8 +56,19 @@ type Reply = Box<dyn FnOnce(Option<String>) + Send>;
 /// Gets the batch transaction, or the reason none could be started.
 type Job = Box<dyn FnOnce(std::result::Result<&Transaction, &str>) -> (bool, Reply) + Send>;
 
+/// How much the database has been used.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DbStats {
+    /// Reads on the pool ([`Db::read`], [`Db::read_blocking`]).
+    pub reads: u64,
+    /// Write transactions committed.
+    pub commits: u64,
+}
+
 struct Inner {
     path: PathBuf,
+    reads: AtomicU64,
+    commits: Arc<AtomicU64>,
     writer: std::sync::mpsc::Sender<Job>,
     readers: Mutex<Vec<Connection>>,
     max_readers: usize,
@@ -145,13 +157,17 @@ impl Db {
             tracing::debug!("PRAGMA optimize: {e}");
         }
         let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let commits: Arc<AtomicU64> = Arc::default();
+        let counted = commits.clone();
         std::thread::Builder::new()
             .name("corrent-db-writer".into())
-            .spawn(move || writer_loop(c, rx))
+            .spawn(move || writer_loop(c, rx, counted))
             .map_err(|e| DbError::Other(e.to_string()))?;
         Ok(Db {
             inner: Arc::new(Inner {
                 path: path.to_path_buf(),
+                reads: AtomicU64::new(0),
+                commits,
                 writer: tx,
                 readers: Mutex::new(Vec::new()),
                 max_readers: 8,
@@ -161,6 +177,10 @@ impl Db {
 
     pub fn path(&self) -> &Path {
         &self.inner.path
+    }
+
+    pub fn stats(&self) -> DbStats {
+        DbStats { reads: self.inner.reads.load(Ordering::Relaxed), commits: self.inner.commits.load(Ordering::Relaxed) }
     }
 
     fn take_reader(&self) -> Result<Connection> {
@@ -184,6 +204,7 @@ impl Db {
 
     /// Runs a read on a pooled read-only connection (blocking; call from a blocking context).
     pub fn read_blocking<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
+        self.inner.reads.fetch_add(1, Ordering::Relaxed);
         let c = self.take_reader()?;
         let r = f(&c);
         self.put_reader(c);
@@ -259,7 +280,7 @@ impl Db {
     }
 }
 
-fn writer_loop(mut c: Connection, rx: std::sync::mpsc::Receiver<Job>) {
+fn writer_loop(mut c: Connection, rx: std::sync::mpsc::Receiver<Job>, commits: Arc<AtomicU64>) {
     while let Ok(first) = rx.recv() {
         let mut batch = vec![first];
         while batch.len() < 256 {
@@ -308,6 +329,7 @@ fn writer_loop(mut c: Connection, rx: std::sync::mpsc::Receiver<Job>) {
             tracing::error!("database: commit failed: {e}");
             e.to_string()
         });
+        commits.fetch_add(1, Ordering::Relaxed);
         // Callers hear back only after the commit (or its failure). With synchronous=NORMAL in
         // WAL mode a committed write survives a crash of Corrent, but the very last
         // transactions can be lost on power failure — acceptable for this data.

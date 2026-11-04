@@ -10,6 +10,103 @@ use corrent_proto::library::{ItemKind, ItemQuery, LibraryKind, LibrarySettings, 
 use crate::Library;
 use crate::probe::Prober;
 
+/// What a scan left in the database, without its ids (the order of inserts may differ).
+async fn scan_result(db: &Db, root: &Path) -> Vec<String> {
+    let root = root.display().to_string();
+    db.read(move |c| {
+        let mut out = Vec::new();
+        let mut st = c.prepare(
+            "SELECT f.path, x.role, i.kind, i.title, i.index_no, p.title FROM files f JOIN item_files x ON x.file_id = f.id \
+             JOIN items i ON i.id = x.item_id LEFT JOIN items p ON p.id = i.parent_id",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(format!(
+                "file {} {} {} {} {:?} {:?}",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        for row in rows {
+            out.push(row?.replace(&root, ""));
+        }
+        let mut st = c.prepare("SELECT kind, title, year, sort_title FROM items")?;
+        let rows = st.query_map([], |r| {
+            Ok(format!(
+                "item {} {} {:?} {}",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        for row in rows {
+            out.push(row?);
+        }
+        let mut st = c.prepare("SELECT title, original_title, people, overview FROM items_fts")?;
+        let rows = st.query_map([], |r| {
+            Ok(format!(
+                "fts {} {} {} {}",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        for row in rows {
+            out.push(row?);
+        }
+        out.sort();
+        Ok(out)
+    })
+    .await
+    .unwrap()
+}
+
+/// Scans the same 200 files with `parallel` probes: what's in the database, and the commits.
+async fn scan_fixture(name: &str, parallel: usize) -> (Vec<String>, u64) {
+    let d = scratch(name);
+    let root = d.join("films");
+    for n in 0..100 {
+        let folder = root.join(format!("Film {n} (2001)"));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(format!("Film {n} (2001).mkv")), format!("not really a video {n}")).unwrap();
+        std::fs::write(folder.join(format!("Film {n} (2001)-trailer.mkv")), format!("nor is this one {n}")).unwrap();
+    }
+    let db = Db::open(&d.join("corrent.db")).unwrap();
+    let lib = Library::new(db.clone(), &d, Prober::new(None, parallel));
+    let l = lib
+        .create(NewLibrary {
+            name: "Films".into(),
+            kind: LibraryKind::Movies,
+            folders: vec![root.display().to_string()],
+            settings: LibrarySettings::defaults(),
+        })
+        .await
+        .unwrap();
+    let before = db.stats().commits;
+    let status = lib.scan_now(l.id).await.unwrap();
+    assert_eq!(status.added, 200, "{status:?}");
+    let commits = db.stats().commits - before;
+    let result = scan_result(&db, &root).await;
+    drop(lib);
+    drop(db);
+    let _ = std::fs::remove_dir_all(d);
+    (result, commits)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_parallel_scan_finds_what_a_serial_one_does() {
+    let (serial, _) = scan_fixture("serial", 1).await;
+    let (parallel, commits) = scan_fixture("parallel", 4).await;
+    assert!(serial.iter().filter(|l| l.starts_with("file ")).count() == 200, "{serial:#?}");
+    assert_eq!(serial, parallel);
+    assert!(commits < 50, "batched, not one transaction per file: {commits}");
+}
+
 /// How many times a library reported changes after `requests` scan requests in a row.
 async fn changes_after(lib: &Library, id: i64, requests: usize) -> usize {
     let mut events = lib.subscribe();
