@@ -2252,6 +2252,10 @@ async fn adds_deletes_and_stops_reach_the_session_file_at_once() {
     wait_for(&l, "running", 20, |sn| find(sn, hashes[0]).is_some_and(|t| t.state != TorrentState::Paused)).await;
     while l.events.try_recv().is_ok() {}
     l.engine.send(EngineCommand::Pause(vec![hashes[0]]));
+    // The pause goes through the engine-call worker, the delete doesn't: in this order, the pause
+    // is only in memory when the delete writes (well within the flusher's 500 ms).
+    wait_for(&l, "paused", 20, |sn| find(sn, hashes[0]).is_some_and(|t| t.state == TorrentState::Paused)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
     l.engine.send(EngineCommand::Delete { hashes: vec![hashes[1]], with_data: false });
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
