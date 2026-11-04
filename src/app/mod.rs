@@ -1300,7 +1300,12 @@ impl CorrentApp {
         }
         if let Ok(w) = std::env::var("CORRENT_DEV_OPEN") {
             match w.as_str() {
-                "settings" => self.open_settings(),
+                "settings" => {
+                    self.open_settings();
+                    if let (Some(d), Ok(q)) = (&mut self.settings_draft, std::env::var("CORRENT_DEV_SETTINGS_SEARCH")) {
+                        d.search = q;
+                    }
+                }
                 "remote" => self.open_settings_at(settings_window::Page::Remote),
                 "appearance" => self.open_settings_at(settings_window::Page::Appearance),
                 "magnet" => self.open_magnet_dialog(),

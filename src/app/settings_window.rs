@@ -181,18 +181,58 @@ impl SettingsDraft {
     }
 }
 
+/// The settings search as the rows see it: the words typed (lower case) and how many rows on the
+/// page matched, this frame and the one before.
+#[derive(Clone, Default)]
+struct RowSearch {
+    words: Vec<String>,
+    hits: usize,
+    last_hits: usize,
+}
+
+fn row_search_id() -> Id {
+    Id::new("settings_row_search")
+}
+
+/// A row matches when every word is in its label or help text.
+fn row_matches(words: &[String], label: &str, help: &str) -> bool {
+    let (label, help) = (label.to_lowercase(), help.to_lowercase());
+    words.iter().all(|w| label.contains(w.as_str()) || help.contains(w.as_str()))
+}
+
+/// While searching, rows that don't match fade: the page may have dozens. When only the page's
+/// keywords matched, not one of its rows, none fade.
+fn row_is_dimmed(ui: &Ui, label: &str, help: &str) -> bool {
+    let id = row_search_id();
+    let mut s: RowSearch = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    if s.words.is_empty() {
+        return false;
+    }
+    let hit = row_matches(&s.words, label, help);
+    s.hits += usize::from(hit);
+    let dim = !hit && s.last_hits > 0;
+    ui.data_mut(|d| d.insert_temp(id, s));
+    dim
+}
+
 fn row(ui: &mut Ui, p: &Palette, label: &str, help: &str, add: impl FnOnce(&mut Ui)) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width((ui.available_width() - 280.0).max(200.0));
-            ui.label(RichText::new(label).color(p.text));
-            if !help.is_empty() {
-                ui.add(egui::Label::new(RichText::new(help).small().color(p.text_dim)).wrap());
-            }
-        });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.set_width(270.0);
-            add(ui);
+    let dim = row_is_dimmed(ui, label, help);
+    ui.scope(|ui| {
+        if dim {
+            ui.multiply_opacity(0.35);
+        }
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width((ui.available_width() - 280.0).max(200.0));
+                ui.label(RichText::new(label).color(p.text));
+                if !help.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(help).small().color(p.text_dim)).wrap());
+                }
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.set_width(270.0);
+                add(ui);
+            });
         });
     });
     ui.add_space(6.0);
@@ -504,6 +544,10 @@ impl CorrentApp {
     }
 
     fn settings_page(&mut self, ui: &mut Ui, p: &Palette, d: &mut SettingsDraft) {
+        let id = row_search_id();
+        let last: RowSearch = ui.data(|m| m.get_temp(id)).unwrap_or_default();
+        let words = d.search.to_lowercase().split_whitespace().map(String::from).collect();
+        ui.data_mut(|m| m.insert_temp(id, RowSearch { words, hits: 0, last_hits: last.hits }));
         let mut browse: Option<(PickTarget, PathBuf)> = None;
         let mut pick_extra: Option<u8> = None;
         self.settings_page_inner(ui, p, d, &mut browse, &mut pick_extra);
@@ -1820,4 +1864,36 @@ fn audio_devices() -> Result<Vec<(String, String)>, String> {
             Some((name, desc))
         })
         .collect())
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn rows_match_on_label_or_help_with_every_word() {
+        let w = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert!(row_matches(&w("tray"), "Close to tray", ""));
+        assert!(row_matches(&w("keeps running"), "Close to tray", "Closing the window keeps Corrent running."));
+        assert!(!row_matches(&w("tray proxy"), "Close to tray", ""));
+        assert!(row_matches(&[], "Anything", ""));
+    }
+
+    /// With no row matching (only the page's keywords did), nothing fades.
+    #[test]
+    fn only_a_search_with_matches_dims() {
+        let ctx = egui::Context::default();
+        let mut dims = Vec::new();
+        let mut frame = |last_hits: usize| {
+            let mut o = ctx.run_ui(Default::default(), |ui| {
+                let s = RowSearch { words: vec!["tray".into()], hits: 0, last_hits };
+                ui.data_mut(|d| d.insert_temp(row_search_id(), s));
+                dims.push((row_is_dimmed(ui, "Proxy", ""), row_is_dimmed(ui, "Close to tray", "")));
+            });
+            o.textures_delta.clear();
+        };
+        frame(0);
+        frame(1);
+        assert_eq!(dims, vec![(false, false), (true, false)]);
+    }
 }
