@@ -85,6 +85,9 @@ struct UndoEntry {
 const UNDO_WINDOW: Duration = Duration::from_secs(120);
 /// Results of background tasks waiting for the actor, at most.
 const INTERNAL_QUEUE: usize = 4096;
+/// At most one snapshot per this outside the ticks: a burst of commands or results (a batch add)
+/// clones the whole list once, not once per message, and the UI repaints once.
+const PUBLISH_GAP: Duration = Duration::from_millis(100);
 /// How long a session restart waits for adds still fetching their metadata. A dead magnet never
 /// resolves, so after this they stop, and start again on the new session.
 const RESTART_WAITS_FOR_ADDS: Duration = Duration::from_secs(15);
@@ -160,6 +163,9 @@ pub struct Actor {
     last_down_active: HashMap<InfoHash, Instant>,
     seed_carry_ms: HashMap<InfoHash, u64>,
     generation: u64,
+    last_publish: Instant,
+    /// Something changed since `last_publish`, too soon to publish it at once.
+    publish_owed: bool,
     tick_count: u64,
     last_tick: Instant,
     /// Wake-ups noticed this run (I1).
@@ -290,6 +296,8 @@ impl Actor {
             seed_carry_ms: HashMap::new(),
             // Continue after a restart: the UI caches rows per generation (STABILITY.md D12).
             generation,
+            last_publish: Instant::now(),
+            publish_owed: false,
             tick_count: 0,
             wakes: 0,
             last_tick: Instant::now(),
@@ -371,15 +379,26 @@ impl Actor {
                         // What the engine is busy with, for the watchdog and the stall banner (O6).
                         watchdog::doing(Doing::Command(watchdog::command_name(&cmd)));
                         self.handle(cmd).await;
-                        self.publish();
+                        self.publish_soon();
                         watchdog::doing(Doing::Idle);
                     }
                 },
                 Some(msg) = internal_rx.recv() => {
+                    // These change no row; the next tick carries free space and health.
+                    let visible = !matches!(
+                        msg,
+                        Internal::FreeSpace(_)
+                            | Internal::Health { .. }
+                            | Internal::PreviewFinished { .. }
+                            | Internal::WatchFileSettled(_)
+                    );
                     self.handle_internal(msg);
-                    self.publish();
+                    if visible {
+                        self.publish_soon();
+                    }
                     watchdog::actor_beat();
                 }
+                _ = tokio::time::sleep(PUBLISH_GAP), if self.publish_owed => self.publish(),
                 _ = tick.tick() => {
                     watchdog::doing(Doing::Tick);
                     self.tick();
@@ -2484,6 +2503,7 @@ impl Actor {
                 .collect(),
         };
         self.snapshot.store(Arc::new(snap));
+        self.publish_owed = false;
         self.store.maybe_save();
         if let Some(e) = self.store.take_save_error() {
             self.emit(EngineEvent::DataWarning(t!(
@@ -2929,7 +2949,18 @@ impl Actor {
         out
     }
 
+    /// `publish`, unless one just went out: then within `PUBLISH_GAP` (or with the next tick).
+    fn publish_soon(&mut self) {
+        if self.last_publish.elapsed() >= PUBLISH_GAP {
+            self.publish();
+        } else {
+            self.publish_owed = true;
+        }
+    }
+
     fn publish(&mut self) {
+        self.last_publish = Instant::now();
+        self.publish_owed = false;
         // Re-publish the last snapshot with fresh engine state / categories after a command.
         let old = self.snapshot.load_full();
         let mut snap = (*old).clone();

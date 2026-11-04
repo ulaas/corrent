@@ -2052,3 +2052,45 @@ async fn cancelling_an_add_fetching_its_metadata_is_quiet() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A batch add doesn't publish a snapshot (a clone of the whole list, a repaint) per message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_add_publishes_few_snapshots() {
+    let dir = temp_dir("batch-publish");
+    let mut cfg = settings(&dir);
+    cfg.advanced.refresh_interval_ms = 1000;
+    let l = start_with(&dir, cfg);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    let first = l.engine.snapshot().generation;
+    let began = Instant::now();
+    let n = 200;
+    for i in 0..n {
+        let name = format!("batch-{i:03}.bin");
+        let bytes = tiny_torrent(&name, 1);
+        l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+            source: AddSource::Bytes { name, bytes },
+            torrent_bytes: None,
+            save_path: dir.join("dl"),
+            create_subfolder: false,
+            category: Some("Batch".into()),
+            tags: Vec::new(),
+            paused: true,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        })));
+    }
+    let snap = wait_for(&l, "every torrent, recorded", 120, |sn| {
+        sn.torrents.iter().filter(|t| t.category.as_deref() == Some("Batch")).count() == n
+    })
+    .await;
+    let (bumps, took) = (snap.generation - first, began.elapsed());
+    // 400 messages. One snapshot per PUBLISH_GAP and tick while they last (a slow machine takes
+    // longer; a fast one takes about 2 s), plus a few; not one per message.
+    let most = 20 + 11 * took.as_secs() + 11;
+    eprintln!("{bumps} snapshots for {n} adds in {took:?}");
+    assert!(bumps <= most, "{bumps} snapshots for {n} adds in {took:?}");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
