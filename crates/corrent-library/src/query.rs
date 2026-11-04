@@ -273,107 +273,82 @@ fn visible(c: &Connection, user: i64, item: i64) -> rusqlite::Result<bool> {
 /// The descriptive columns of an item.
 type DetailRow = (Option<String>, Option<String>, Option<f64>, Option<String>, Option<String>, String, String, String);
 
+/// `id, a, b` for an `IN (...)` (the ids are numbers).
+fn id_list(ids: &[i64]) -> String {
+    ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// The details of one item.
 fn detail(c: &Connection, user: i64, id: i64) -> rusqlite::Result<Option<ItemDetail>> {
     if !visible(c, user, id)? {
         return Ok(None);
     }
-    let Some(item) = items_by_sql(c, user, "i.id = ?2", "i.id", 1, &[id.into()])?.pop() else { return Ok(None) };
-    let (original_title, overview, rating, official_rating, premiered, provider_ids, locked, extra): DetailRow = c.query_row(
-        "SELECT original_title, overview, rating, official_rating, premiered, provider_ids, locked_fields, extra FROM items WHERE id = ?1",
-        [id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
-    )?;
-    let mut st = c.prepare_cached(
-        "SELECT g.name FROM item_genres ig JOIN genres g ON g.id = ig.genre_id WHERE ig.item_id = ?1 ORDER BY g.name",
-    )?;
-    let genres = st.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
-    let mut st = c.prepare_cached(
-        "SELECT p.id, p.name, ip.role, ip.character FROM item_people ip JOIN people p ON p.id = ip.person_id WHERE ip.item_id = ?1 ORDER BY ip.ord",
-    )?;
-    let credits = st
-        .query_map([id], |r| {
-            Ok(Credit { person_id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, character: r.get(3)? })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut st = c.prepare_cached(
-        "SELECT f.id, f.path, f.size, json_extract(f.probe, '$.format'), json_extract(f.probe, '$.duration'), x.role, \
-         json_extract(f.source, '$.torrent'), f.missing_since \
-         FROM item_files x JOIN files f ON f.id = x.file_id WHERE x.item_id = ?1 ORDER BY x.role = 'main' DESC, f.path",
-    )?;
-    let rows = st
-        .query_map([id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, Option<f64>>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, Option<String>>(6)?,
-                r.get::<_, Option<i64>>(7)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut files = Vec::new();
-    for (fid, path, size, container, duration, role, torrent, missing) in rows {
-        let mut st = c.prepare_cached(
-            "SELECT idx, kind, codec, profile, lang, title, is_default, forced, width, height, fps, bitrate, channels, sample_rate, \
-             external_path IS NOT NULL FROM streams WHERE file_id = ?1 ORDER BY kind, idx",
-        )?;
-        let streams = st
-            .query_map([fid], |r| {
-                Ok(Stream {
-                    index: r.get(0)?,
-                    kind: r.get(1)?,
-                    codec: r.get(2)?,
-                    profile: r.get(3)?,
-                    lang: r.get(4)?,
-                    title: r.get(5)?,
-                    default: r.get::<_, i64>(6)? != 0,
-                    forced: r.get::<_, i64>(7)? != 0,
-                    width: r.get(8)?,
-                    height: r.get(9)?,
-                    fps: r.get(10)?,
-                    bitrate: r.get(11)?,
-                    channels: r.get(12)?,
-                    sample_rate: r.get(13)?,
-                    external: r.get(14)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut st = c.prepare_cached("SELECT start_ms, title FROM chapters WHERE file_id = ?1 ORDER BY idx")?;
-        let chapters = st
-            .query_map([fid], |r| Ok(Chapter { start_ms: r.get(0)?, title: r.get(1)? }))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let segments = c
-            .prepare_cached("SELECT kind, start_ms, end_ms FROM media_segments WHERE file_id = ?1 ORDER BY start_ms")?
-            .query_map([fid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .into_iter()
-            .filter_map(|(k, s, e)| {
-                let kind = match k.as_str() {
-                    "intro" => corrent_proto::library::SkipKind::Intro,
-                    "recap" => corrent_proto::library::SkipKind::Recap,
-                    "credits" => corrent_proto::library::SkipKind::Credits,
-                    _ => return None,
-                };
-                Some(corrent_proto::library::MediaSegment { kind, start_ms: s, end_ms: e })
-            })
-            .collect();
-        files.push(MediaFile {
-            id: fid,
-            path,
-            size,
-            container,
-            duration_ms: duration.map(|d| (d * 1000.0) as i64),
-            role,
-            streams,
-            chapters,
-            torrent,
-            segments,
-            missing: missing.is_some(),
-        });
+    Ok(details(c, user, &[id])?.remove(&id))
+}
+
+/// Details of many items with one query per table, whatever their number. Items the user may not
+/// see are left out.
+fn details(c: &Connection, user: i64, ids: &[i64]) -> rusqlite::Result<HashMap<i64, ItemDetail>> {
+    let mut out = HashMap::with_capacity(ids.len());
+    for chunk in ids.chunks(500) {
+        details_of_chunk(c, user, chunk, &mut out)?;
     }
+    Ok(out)
+}
+
+fn details_of_chunk(
+    c: &Connection,
+    user: i64,
+    ids: &[i64],
+    out: &mut HashMap<i64, ItemDetail>,
+) -> rusqlite::Result<()> {
+    let list = id_list(ids);
+    let items = items_by_sql(c, user, &format!("i.id IN ({list})"), "i.id", ids.len() as i64, &[])?;
+    if items.is_empty() {
+        return Ok(());
+    }
+    let mut rows: HashMap<i64, DetailRow> = HashMap::new();
+    let mut st = c.prepare(&format!(
+        "SELECT id, original_title, overview, rating, official_rating, premiered, provider_ids, locked_fields, extra FROM items WHERE id IN ({list})"
+    ))?;
+    for row in st.query_map([], |r| {
+        Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)))
+    })? {
+        let (id, d) = row?;
+        rows.insert(id, d);
+    }
+    let mut genres: HashMap<i64, Vec<String>> = HashMap::new();
+    let mut st = c.prepare(&format!(
+        "SELECT ig.item_id, g.name FROM item_genres ig JOIN genres g ON g.id = ig.genre_id WHERE ig.item_id IN ({list}) ORDER BY g.name"
+    ))?;
+    for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get(1)?)))? {
+        let (id, g) = row?;
+        genres.entry(id).or_default().push(g);
+    }
+    let mut credits: HashMap<i64, Vec<Credit>> = HashMap::new();
+    let mut st = c.prepare(&format!(
+        "SELECT ip.item_id, p.id, p.name, ip.role, ip.character FROM item_people ip JOIN people p ON p.id = ip.person_id \
+         WHERE ip.item_id IN ({list}) ORDER BY ip.ord"
+    ))?;
+    for row in st.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            Credit { person_id: r.get(1)?, name: r.get(2)?, role: r.get(3)?, character: r.get(4)? },
+        ))
+    })? {
+        let (id, credit) = row?;
+        credits.entry(id).or_default().push(credit);
+    }
+    let mut collections: HashMap<i64, Vec<(i64, String)>> = HashMap::new();
+    let mut st = c.prepare(&format!(
+        "SELECT x.item_id, cl.id, cl.name FROM collections cl JOIN collection_items x ON x.collection_id = cl.id \
+         WHERE x.item_id IN ({list}) ORDER BY cl.name"
+    ))?;
+    for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?))))? {
+        let (id, col) = row?;
+        collections.entry(id).or_default().push(col);
+    }
+    let mut files = files_of_items(c, &list)?;
     let to_map = |s: &str| -> BTreeMap<String, serde_json::Value> {
         serde_json::from_str::<BTreeMap<String, serde_json::Value>>(s)
             .unwrap_or_default()
@@ -381,29 +356,133 @@ fn detail(c: &Connection, user: i64, id: i64) -> rusqlite::Result<Option<ItemDet
             .filter(|(_, v)| !v.is_null())
             .collect()
     };
-    Ok(Some(ItemDetail {
-        item,
-        original_title,
-        overview,
-        rating,
-        official_rating,
-        premiered,
-        genres,
-        credits,
-        files,
-        provider_ids: to_map(&provider_ids)
-            .into_iter()
-            .map(|(k, v)| (k, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))
-            .collect(),
-        locked_fields: locked.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
-        extra: to_map(&extra),
-        collections: c
-            .prepare_cached(
-                "SELECT cl.id, cl.name FROM collections cl JOIN collection_items x ON x.collection_id = cl.id WHERE x.item_id = ?1 ORDER BY cl.name",
-            )?
-            .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?,
-    }))
+    for item in items {
+        let id = item.id;
+        let Some((original_title, overview, rating, official_rating, premiered, provider_ids, locked, extra)) =
+            rows.remove(&id)
+        else {
+            continue;
+        };
+        out.insert(
+            id,
+            ItemDetail {
+                item,
+                original_title,
+                overview,
+                rating,
+                official_rating,
+                premiered,
+                genres: genres.remove(&id).unwrap_or_default(),
+                credits: credits.remove(&id).unwrap_or_default(),
+                files: files.remove(&id).unwrap_or_default(),
+                provider_ids: to_map(&provider_ids)
+                    .into_iter()
+                    .map(|(k, v)| (k, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))
+                    .collect(),
+                locked_fields: locked.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+                extra: to_map(&extra),
+                collections: collections.remove(&id).unwrap_or_default(),
+            },
+        );
+    }
+    Ok(())
+}
+
+/// The files of the items in `list`, each with its streams, chapters and segments.
+fn files_of_items(c: &Connection, list: &str) -> rusqlite::Result<HashMap<i64, Vec<MediaFile>>> {
+    let mut st = c.prepare(&format!(
+        "SELECT x.item_id, f.id, f.path, f.size, json_extract(f.probe, '$.format'), json_extract(f.probe, '$.duration'), x.role, \
+         json_extract(f.source, '$.torrent'), f.missing_since \
+         FROM item_files x JOIN files f ON f.id = x.file_id WHERE x.item_id IN ({list}) ORDER BY x.role = 'main' DESC, f.path"
+    ))?;
+    let rows = st
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                MediaFile {
+                    id: r.get(1)?,
+                    path: r.get(2)?,
+                    size: r.get(3)?,
+                    container: r.get(4)?,
+                    duration_ms: r.get::<_, Option<f64>>(5)?.map(|d| (d * 1000.0) as i64),
+                    role: r.get(6)?,
+                    streams: Vec::new(),
+                    chapters: Vec::new(),
+                    torrent: r.get(7)?,
+                    segments: Vec::new(),
+                    missing: r.get::<_, Option<i64>>(8)?.is_some(),
+                },
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut file_ids: Vec<i64> = rows.iter().map(|(_, f)| f.id).collect();
+    file_ids.sort_unstable();
+    file_ids.dedup();
+    let mut streams: HashMap<i64, Vec<Stream>> = HashMap::new();
+    let mut chapters: HashMap<i64, Vec<Chapter>> = HashMap::new();
+    let mut segments: HashMap<i64, Vec<corrent_proto::library::MediaSegment>> = HashMap::new();
+    for chunk in file_ids.chunks(500) {
+        let files = id_list(chunk);
+        let mut st = c.prepare(&format!(
+            "SELECT file_id, idx, kind, codec, profile, lang, title, is_default, forced, width, height, fps, bitrate, channels, sample_rate, \
+             external_path IS NOT NULL FROM streams WHERE file_id IN ({files}) ORDER BY kind, idx"
+        ))?;
+        for row in st.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                Stream {
+                    index: r.get(1)?,
+                    kind: r.get(2)?,
+                    codec: r.get(3)?,
+                    profile: r.get(4)?,
+                    lang: r.get(5)?,
+                    title: r.get(6)?,
+                    default: r.get::<_, i64>(7)? != 0,
+                    forced: r.get::<_, i64>(8)? != 0,
+                    width: r.get(9)?,
+                    height: r.get(10)?,
+                    fps: r.get(11)?,
+                    bitrate: r.get(12)?,
+                    channels: r.get(13)?,
+                    sample_rate: r.get(14)?,
+                    external: r.get(15)?,
+                },
+            ))
+        })? {
+            let (file, s) = row?;
+            streams.entry(file).or_default().push(s);
+        }
+        let mut st = c.prepare(&format!(
+            "SELECT file_id, start_ms, title FROM chapters WHERE file_id IN ({files}) ORDER BY idx"
+        ))?;
+        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, Chapter { start_ms: r.get(1)?, title: r.get(2)? })))? {
+            let (file, ch) = row?;
+            chapters.entry(file).or_default().push(ch);
+        }
+        let mut st = c.prepare(&format!(
+            "SELECT file_id, kind, start_ms, end_ms FROM media_segments WHERE file_id IN ({files}) ORDER BY start_ms"
+        ))?;
+        for row in st.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
+        })? {
+            let (file, k, start_ms, end_ms) = row?;
+            let kind = match k.as_str() {
+                "intro" => corrent_proto::library::SkipKind::Intro,
+                "recap" => corrent_proto::library::SkipKind::Recap,
+                "credits" => corrent_proto::library::SkipKind::Credits,
+                _ => continue,
+            };
+            segments.entry(file).or_default().push(corrent_proto::library::MediaSegment { kind, start_ms, end_ms });
+        }
+    }
+    let mut out: HashMap<i64, Vec<MediaFile>> = HashMap::new();
+    for (item, mut f) in rows {
+        f.streams = streams.get(&f.id).cloned().unwrap_or_default();
+        f.chapters = chapters.get(&f.id).cloned().unwrap_or_default();
+        f.segments = segments.get(&f.id).cloned().unwrap_or_default();
+        out.entry(item).or_default().push(f);
+    }
+    Ok(out)
 }
 
 /// Builds an FTS5 query: every word as a quoted prefix term.
@@ -432,6 +511,11 @@ impl Library {
 
     pub async fn item(&self, user: i64, id: i64) -> Result<ItemDetail> {
         self.db().read(move |c| detail(c, user, id)).await?.ok_or(LibError::NotFound)
+    }
+
+    /// Details of many items in one go; those the user may not see are left out.
+    pub async fn details(&self, user: i64, ids: Vec<i64>) -> Result<HashMap<i64, ItemDetail>> {
+        Ok(self.db().read(move |c| details(c, user, &ids)).await?)
     }
 
     /// The file to play for an item (its main file; for containers, nothing).

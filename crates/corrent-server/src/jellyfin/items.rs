@@ -156,12 +156,17 @@ async fn run(st: &AppState, user: i64, mut q: ItemQuery, limit: i64) -> (Vec<Ite
 
 pub(crate) async fn dtos(st: &AppState, c: &Ctx, user: i64, items: &[Item], detail: bool) -> Vec<Value> {
     let libs = kinds_of_libraries(&st.library.list().await.unwrap_or_default());
+    let mut details = if detail {
+        st.library.details(user, items.iter().map(|i| i.id).collect()).await.unwrap_or_default()
+    } else {
+        Default::default()
+    };
     let mut out = Vec::with_capacity(items.len());
     for it in items {
         if libs.get(&it.library_id).is_some_and(|k| dto::collection_type(*k).is_none()) {
             continue;
         }
-        let d = if detail { st.library.item(user, it.id).await.ok() } else { None };
+        let d = details.remove(&it.id);
         out.push(dto::item_dto(c, it, libs.get(&it.library_id).copied(), d.as_ref()));
     }
     out
