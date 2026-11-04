@@ -75,6 +75,30 @@ fn authorization_header() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn account_list_stays_on_the_local_network() {
+    use crate::api_tests::{Call, call};
+    let h = harness(
+        "jf-public",
+        ServerConfig { tls: false, jellyfin_api: true, remote_access: true, ..Default::default() },
+    )
+    .await;
+    let _ = admin_token(&h.app).await;
+    let list = |peer: &'static str| {
+        let app = h.app.clone();
+        async move {
+            let c = Call { peer: Some(peer), ..Default::default() };
+            call(&app, Method::GET, "/jellyfin/Users/Public", c).await
+        }
+    };
+    let (s, v, _) = list("192.168.1.20").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v[0]["Name"], "admin");
+    let (s, v, _) = list("8.8.8.8").await;
+    assert_eq!((s, v), (StatusCode::OK, json!([])));
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn handshake_and_login() {
     let h = harness("jf-login", ServerConfig { tls: false, jellyfin_api: true, ..Default::default() }).await;
     let app = &h.app;

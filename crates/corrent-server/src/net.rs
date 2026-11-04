@@ -191,16 +191,19 @@ pub async fn get_public(
     Err("too many redirects".into())
 }
 
+/// What [`read_capped`] says about a body over its cap.
+pub const TOO_LARGE: &str = "the answer is too large";
+
 /// Reads a response into memory, stopping as soon as it passes `cap` bytes (a declared length
 /// over it fails before reading anything).
 pub async fn read_capped(mut res: reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
     if res.content_length().is_some_and(|l| l > cap as u64) {
-        return Err("the answer is too large".into());
+        return Err(TOO_LARGE.into());
     }
     let mut body = Vec::new();
     while let Some(c) = res.chunk().await.map_err(|e| e.to_string())? {
         if body.len() + c.len() > cap {
-            return Err("the answer is too large".into());
+            return Err(TOO_LARGE.into());
         }
         body.extend_from_slice(&c);
     }

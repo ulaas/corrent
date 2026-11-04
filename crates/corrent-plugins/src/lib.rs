@@ -216,7 +216,7 @@ impl PluginCtx {
         }
         let mut url = url::Url::parse(&req.url).map_err(|e| e.to_string())?;
         for _ in 0..6 {
-            let res = self.fetch_once(&req, &url).await?;
+            let mut res = self.fetch_once(&req, &url).await?;
             if res.status().is_redirection()
                 && let Some(loc) = res.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok())
             {
@@ -229,17 +229,26 @@ impl PluginCtx {
                 .iter()
                 .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
                 .collect();
-            if res.content_length().is_some_and(|l| l as usize > MAX_BODY) {
-                return Err("response too large".into());
-            }
-            let body = res.bytes().await.map_err(|e| e.without_url().to_string())?;
-            if body.len() > MAX_BODY {
-                return Err("response too large".into());
-            }
-            return Ok(HttpResponse { status, headers, body: body.to_vec() });
+            let body = read_body(&mut res, MAX_BODY).await?;
+            return Ok(HttpResponse { status, headers, body });
         }
         Err("too many redirects".into())
     }
+}
+
+/// A response's body, stopping as soon as it passes `cap` (nothing more is buffered).
+async fn read_body(res: &mut reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
+    if res.content_length().is_some_and(|l| l > cap as u64) {
+        return Err("response too large".into());
+    }
+    let mut body = Vec::new();
+    while let Some(c) = res.chunk().await.map_err(|e| e.without_url().to_string())? {
+        if body.len() + c.len() > cap {
+            return Err("response too large".into());
+        }
+        body.extend_from_slice(&c);
+    }
+    Ok(body)
 }
 
 impl bindings::corrent::plugin::types::Host for HostState {}
@@ -867,6 +876,30 @@ mod tests {
             ids: vec![],
             artist: None,
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn chunked_bodies_stop_at_the_cap() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut c, _)) = l.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = c.read(&mut buf).await;
+                let _ =
+                    c.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await;
+                for _ in 0..8 {
+                    let _ = c.write_all(b"400\r\n").await;
+                    let _ = c.write_all(&[7u8; 1024]).await;
+                    let _ = c.write_all(b"\r\n").await;
+                }
+                let _ = c.write_all(b"0\r\n\r\n").await;
+            }
+        });
+        let get = || async { reqwest::get(format!("http://{addr}/")).await.unwrap() };
+        assert_eq!(read_body(&mut get().await, 4 * 1024).await.unwrap_err(), "response too large");
+        assert_eq!(read_body(&mut get().await, 8 * 1024).await.unwrap().len(), 8 * 1024);
     }
 
     #[tokio::test(flavor = "multi_thread")]
