@@ -16,6 +16,7 @@
   import { clock } from '../lib/format';
   import type { MenuItem } from '../lib/contextmenu.svelte';
   import { mediaAction, moveInRows, TapTracker } from '../lib/playerinput';
+  import { everyVisible } from '../lib/visibility.svelte';
   import { cueAt, parseTrickplay, type TrickCue } from '../lib/trickplay';
   import { imageUrl } from '../lib/api';
   import { ms, perceptual, prefs } from '../lib/prefs.svelte';
@@ -101,8 +102,7 @@
         .join(' · ');
     };
     tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
+    return everyVisible(tick, 1000);
   });
   // "Use this frame as the thumbnail" (T): taken on the server from the file, locked against
   // providers.

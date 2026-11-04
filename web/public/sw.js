@@ -1,7 +1,9 @@
 // Corrent web client service worker: the app shell and its (content-hashed) assets come from
 // a cache, so the client opens instantly and shows its own "can't reach the server" state
 // offline. The API, events and media are never cached here.
-const CACHE = 'corrent-shell-v1';
+// A new build (the plugin in plugins/swhash.ts fills in its hash) means a new cache: activate
+// drops the old ones, and with them the chunks no page asks for any more.
+const CACHE = 'corrent-shell-__BUILD_HASH__';
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/'])).then(() => self.skipWaiting()));

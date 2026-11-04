@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { everyVisible } from '../../lib/visibility.svelte';
   import Icon from '../../components/Icon.svelte';
   import Spinner from '../../components/Spinner.svelte';
   import { api, errorText } from '../../lib/api';
@@ -27,10 +28,7 @@
     }
   }
   void load();
-  $effect(() => {
-    const h = setInterval(load, 10000);
-    return () => clearInterval(h);
-  });
+  $effect(() => everyVisible(load, 10000));
 
   async function add(e: SubmitEvent) {
     e.preventDefault();

@@ -1,5 +1,6 @@
 // Speed history for the torrent details' Speed tab (as the desktop's): sampled once a second
 // while the torrent list is in use — the session's, and that of each torrent that moved data.
+import { everyVisible } from './visibility.svelte';
 import { live } from './torrents.svelte';
 
 /** Samples kept (about five minutes). */
@@ -29,15 +30,15 @@ export function sample() {
 }
 
 let users = 0;
-let timer: ReturnType<typeof setInterval> | null = null;
+let stop: (() => void) | null = null;
 
 /** Samples while someone uses it (call the returned function when done). */
 export function useSpeedHistory(): () => void {
-  if (users++ === 0) timer = setInterval(sample, 1000);
+  if (users++ === 0) stop = everyVisible(sample, 1000);
   return () => {
-    if (--users === 0 && timer) {
-      clearInterval(timer);
-      timer = null;
+    if (--users === 0 && stop) {
+      stop();
+      stop = null;
     }
   };
 }

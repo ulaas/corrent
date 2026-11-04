@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { everyVisible } from '../../lib/visibility.svelte';
   import Icon from '../../components/Icon.svelte';
   import Spinner from '../../components/Spinner.svelte';
   import Toggle from '../../components/Toggle.svelte';
@@ -52,10 +53,7 @@
     }
   }
   void load();
-  $effect(() => {
-    const h = setInterval(load, 5000);
-    return () => clearInterval(h);
-  });
+  $effect(() => everyVisible(load, 5000));
 
   async function restore(b: BackupFile) {
     const r = await confirm({

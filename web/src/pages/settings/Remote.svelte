@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { everyVisible } from '../../lib/visibility.svelte';
   import { fly } from 'svelte/transition';
   import Icon from '../../components/Icon.svelte';
   import Spinner from '../../components/Spinner.svelte';
@@ -35,17 +36,16 @@
   void load();
 
   // The status (Connect address, mapped port) settles a few seconds after a change.
-  $effect(() => {
-    const h = setInterval(async () => {
+  $effect(() =>
+    everyVisible(async () => {
       try {
         const r = await api.get<RemoteAccess>('/server/remote');
         if (saved) saved.status = r.status;
       } catch {
         /* shown on the next save */
       }
-    }, 5000);
-    return () => clearInterval(h);
-  });
+    }, 5000),
+  );
 
   const pending = $derived.by(() => {
     if (!draft) return null;

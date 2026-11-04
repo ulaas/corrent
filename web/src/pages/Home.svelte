@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { everyVisible } from '../lib/visibility.svelte';
   import { fade } from 'svelte/transition';
   import Shelf from '../components/Shelf.svelte';
   import Icon from '../components/Icon.svelte';
@@ -73,8 +74,7 @@
 
   $effect(() => {
     if (heroes.length < 2 || motion() === 0) return;
-    const timer = setInterval(() => (heroIndex = (heroIndex + 1) % heroes.length), 9000);
-    return () => clearInterval(timer);
+    return everyVisible(() => (heroIndex = (heroIndex + 1) % heroes.length), 9000);
   });
 
   function rowHref(id: string): string | undefined {

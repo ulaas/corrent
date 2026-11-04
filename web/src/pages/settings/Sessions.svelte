@@ -1,5 +1,6 @@
 <script lang="ts">
   // Running transcodes (GET /playback/sessions; admins see everyone's).
+  import { everyVisible } from '../../lib/visibility.svelte';
   import Icon from '../../components/Icon.svelte';
   import Spinner from '../../components/Spinner.svelte';
   import { api, errorText } from '../../lib/api';
@@ -32,8 +33,7 @@
   }
   $effect(() => {
     void load();
-    const h = setInterval(load, 3000);
-    return () => clearInterval(h);
+    return everyVisible(load, 3000);
   });
 
   async function stop(s: PlaybackSession) {

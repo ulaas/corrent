@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { everyVisible } from '../lib/visibility.svelte';
   import Icon from '../components/Icon.svelte';
   import Spinner from '../components/Spinner.svelte';
   import Modal from '../components/Modal.svelte';
@@ -34,11 +35,10 @@
   $effect(() => {
     const busy = refreshing || view?.feeds.some((f) => f.loading);
     if (!busy) return;
-    const timer = setInterval(async () => {
+    return everyVisible(async () => {
       await load();
       if (!view?.feeds.some((f) => f.loading)) refreshing = false;
     }, 1500);
-    return () => clearInterval(timer);
   });
 
   async function refresh(url?: string) {
