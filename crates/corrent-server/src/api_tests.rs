@@ -378,15 +378,14 @@ async fn text_is_compressed_and_video_is_not() {
         }
     };
     // A list long enough to be worth it.
-    let magnet = "magnet:?xt=urn:btih:0303030303030303030303030303030303030303";
-    send(app, Method::POST, "/api/v1/torrents", &admin, json!({ "urls": [magnet], "paused": true })).await;
-    testkit::wait_for(&h.l, "the torrent", 30, |sn| !sn.torrents.is_empty()).await;
-    let (s, hd, _) = raw("/api/v1/torrents".into(), header::ACCEPT_ENCODING, "br".into()).await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(hd[header::CONTENT_ENCODING], "br");
-    let (s, hd, _) = raw("/api/v1/torrents".into(), header::ACCEPT_ENCODING, "gzip".into()).await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(hd[header::CONTENT_ENCODING], "gzip");
+    let seeder = testkit::seeder(&h.dir).await;
+    testkit::add(&h.l, &seeder, &h.dir);
+    testkit::wait_for(&h.l, "the torrent", 60, |sn| testkit::find(sn, seeder.hash).is_some()).await;
+    for encoding in ["br", "gzip"] {
+        let (s, hd, body) = raw("/api/v1/torrents".into(), header::ACCEPT_ENCODING, encoding.into()).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(hd.get(header::CONTENT_ENCODING).map(|v| v.to_str().unwrap()), Some(encoding), "{hd:?} {body:?}");
+    }
 
     // A video file, whole and in part.
     let lib = empty_library(&h, &admin, "Films", "movies").await;
