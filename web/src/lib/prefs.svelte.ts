@@ -134,7 +134,7 @@ export function ms(base: number): number {
 }
 
 export function resetPrefs() {
-  Object.assign(prefs, { ...DEFAULTS, homeOrder: [], homeHidden: [], audioFx: defaultFx(), audioPresets: prefs.audioPresets });
+  Object.assign(prefs, { ...DEFAULTS, homeOrder: [], homeHidden: [], audioFx: prefs.audioFx, audioPresets: prefs.audioPresets });
 }
 
 /** Keeps <html> attributes and CSS variables in sync with the preferences. */

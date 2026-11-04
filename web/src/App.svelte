@@ -8,7 +8,6 @@
   import ConfirmHost from './components/ConfirmHost.svelte';
   import ContextMenu from './components/ContextMenu.svelte';
   import IdentifyHost from './components/IdentifyHost.svelte';
-  import Shortcuts from './components/Shortcuts.svelte';
   import MiniPlayer from './components/MiniPlayer.svelte';
   import BottomNav from './components/BottomNav.svelte';
   import Spinner from './components/Spinner.svelte';
@@ -135,6 +134,7 @@
 
   const fullscreen = $derived(m.name === 'play');
   let help = $state(false);
+  const Shortcuts = $derived(help ? lazy('shortcuts', () => import('./components/Shortcuts.svelte')) : undefined);
 
   function onkeydown(e: KeyboardEvent) {
     const target = e.target as HTMLElement;
@@ -217,7 +217,7 @@
 <ConfirmHost />
 <ContextMenu />
 <IdentifyHost />
-{#if help}<Shortcuts onclose={() => (help = false)} />{/if}
+{#if Shortcuts}<Shortcuts onclose={() => (help = false)} />{/if}
 
 <style>
   .skip {

@@ -4,8 +4,7 @@
   import Icon from './Icon.svelte';
   import Img from './Img.svelte';
   import Seek from './Seek.svelte';
-  import SoundPanel from './SoundPanel.svelte';
-  import PlayerStats from './PlayerStats.svelte';
+  import { lazy } from '../lib/lazy.svelte';
   import { music } from '../lib/player.svelte';
   import { motion, ms, prefs } from '../lib/prefs.svelte';
   import { clock } from '../lib/format';
@@ -14,6 +13,12 @@
   import type { Lyrics } from '../lib/types';
 
   const cur = $derived(music.current);
+  // Loaded when the tab opens: the music player is part of every first page.
+  const SoundPanel = $derived(tabIsSound() ? lazy('sound-panel', () => import('./SoundPanel.svelte')) : undefined);
+  const PlayerStats = $derived(tabIsSound() ? lazy('player-stats', () => import('./PlayerStats.svelte')) : undefined);
+  function tabIsSound() {
+    return tab === 'sound';
+  }
   let tab = $state<'queue' | 'lyrics' | 'sound'>('queue');
   // Lyrics of the current track (null: none; undefined: loading).
   let lyrics = $state<Lyrics | null | undefined>(undefined);
@@ -120,8 +125,8 @@
       </header>
       {#if tab === 'sound'}
         <div class="soundtab">
-          <SoundPanel />
-          {#if prefs.audioFx.meters}<PlayerStats fx={music.fx} audio />{/if}
+          {#if SoundPanel}<SoundPanel />{/if}
+          {#if prefs.audioFx.meters && PlayerStats}<PlayerStats fx={music.fx} audio />{/if}
         </div>
       {:else if tab === 'lyrics'}
         <div class="lyrics" bind:this={lyricsBox}>
