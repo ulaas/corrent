@@ -408,6 +408,8 @@ impl Player {
         opts.extend([
             ("idle", "yes"),
             ("keep-open", "yes"),
+            // Pausing at the end would carry over to the next file; `tick` pauses where it stays.
+            ("keep-open-pause", "no"),
             ("hwdec", "auto-safe"),
             ("http-header-fields", header.as_str()),
             ("audio-display", "no"),
@@ -1128,9 +1130,10 @@ impl Player {
                 let mut s = crate::util::lock(&self.status);
                 s.ended = false;
             }
-            // "Cancel" on the countdown: stay at the end.
-            if self.no_countdown != self.current().map(|e| e.item_id) || self.audio_only {
-                self.next();
+            // "Cancel" on the countdown: stay at the end. So does the end of the queue, paused.
+            let on = self.no_countdown != self.current().map(|e| e.item_id) || self.audio_only;
+            if !(on && self.next()) {
+                self.cmd(&["set", "pause", "yes"]);
             }
         }
     }
@@ -1178,6 +1181,8 @@ impl Player {
                 self.cmd(&["set", k, &v]);
             }
             crate::util::with_lock(&self.audio, |a| *a = pb);
+            // `sync_fx` runs next frame, and a released slider may not ask for one.
+            ui.ctx().request_repaint();
         }
     }
 
@@ -2100,7 +2105,7 @@ impl Player {
             let s = crate::util::lock(&self.status);
             let render = match &self.video {
                 Video::Gl(v, _) => {
-                    let size = v.lock().map(|g| g.size).unwrap_or([0, 0]);
+                    let size = crate::util::with_lock(v, |g| g.size);
                     format!("OpenGL {}×{}", size[0], size[1])
                 }
                 Video::Sw { size, .. } => format!("{} {}×{}", t!("software"), size[0], size[1]),
