@@ -334,6 +334,8 @@ pub struct CorrentApp {
     /// The clipboard read for the magnet dialog, and when it was asked.
     clipboard: Option<(std::sync::mpsc::Receiver<String>, std::time::Instant)>,
     pub modal: Option<dialogs::Modal>,
+    /// The open modal's text field has been given the focus.
+    modal_focused: bool,
     pub add_dialogs: VecDeque<dialogs::AddDialog>,
     pub next_req: u64,
     pub settings_draft: Option<settings_window::SettingsDraft>,
@@ -543,6 +545,7 @@ impl CorrentApp {
             dropped_rx,
             clipboard: None,
             modal: None,
+            modal_focused: false,
             add_dialogs: VecDeque::new(),
             next_req: 0,
             settings_draft: None,
@@ -1255,6 +1258,10 @@ impl CorrentApp {
                 "appearance" => self.open_settings_at(settings_window::Page::Appearance),
                 "magnet" => self.open_magnet_dialog(),
                 "about" => self.extras.about = true,
+                "columns" => {
+                    self.column_menu = Some(egui::pos2(500.0, 90.0));
+                    egui::Popup::open_id(ctx, egui::Id::new(table::COLUMN_CHOOSER));
+                }
                 "creator" => self.open_creator(),
                 "connect" => self.open_connect(),
                 "import" => self.open_import(),

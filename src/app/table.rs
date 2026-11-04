@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::time::Duration;
 
-use egui::{Align, Color32, Id, Layout, RichText, Sense, Ui, vec2};
+use egui::{Align, Color32, Id, Layout, RichText, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular as icons;
 
@@ -10,6 +10,9 @@ use crate::engine::types::{InfoHash, Snapshot, TorrentState, TorrentView};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{self, Labeled, badge, chip};
 use crate::util::{fmt_bytes, fmt_date, fmt_duration, fmt_ratio, fmt_speed};
+
+/// The id of the column chooser popup.
+pub(super) const COLUMN_CHOOSER: &str = "column_chooser";
 
 pub fn tracker_host(url: &str) -> String {
     url::Url::parse(url)
@@ -373,6 +376,7 @@ impl CorrentApp {
         }
         if header_menu {
             self.column_menu = ui.ctx().pointer_latest_pos();
+            egui::Popup::open_id(ui.ctx(), Id::new(COLUMN_CHOOSER));
         }
         self.column_chooser(ui, p);
 
@@ -733,73 +737,68 @@ impl CorrentApp {
     }
 
     fn column_chooser(&mut self, ui: &mut Ui, p: &Palette) {
-        let id = Id::new("column_chooser");
+        let id = Id::new(COLUMN_CHOOSER);
         let Some(pos) = self.column_menu else { return };
-        let mut close = false;
-        egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.label(RichText::new(t!("Columns")).strong().color(p.text));
-                ui.separator();
-                // Shown columns in their order (with move buttons), then the hidden ones.
-                let shown: Vec<Col> = self.prefs.columns.clone();
-                let mut hidden: Vec<Col> = Col::ALL.into_iter().filter(|c| !shown.contains(c)).collect();
-                hidden.retain(|c| *c != Col::Name);
-                let mut moved: Option<(usize, usize)> = None;
-                let mut toggled: Option<(Col, bool)> = None;
-                for (i, c) in shown.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        let mut on = true;
-                        let fixed = *c == Col::Name; // the name column always stays
-                        if ui.add_enabled(!fixed, egui::Checkbox::new(&mut on, c.title())).changed() {
-                            toggled = Some((*c, false));
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let last = i + 1 == shown.len();
-                            if ui
-                                .add_enabled(!last, egui::Button::new(icons::CARET_DOWN).small())
-                                .labeled(t!("Move right"))
-                                .clicked()
-                            {
-                                moved = Some((i, i + 1));
-                            }
-                            if ui
-                                .add_enabled(i > 0, egui::Button::new(icons::CARET_UP).small())
-                                .labeled(t!("Move left"))
-                                .clicked()
-                            {
-                                moved = Some((i, i - 1));
-                            }
-                        });
-                    });
-                }
-                for c in hidden {
-                    let mut on = false;
-                    if ui.checkbox(&mut on, c.title()).changed() {
-                        toggled = Some((c, true));
+        let popup = egui::Popup::new(id, ui.ctx().clone(), pos, ui.layer_id())
+            .open_memory(None)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        widgets::popup(popup, |ui| {
+            ui.set_width(240.0);
+            ui.label(RichText::new(t!("Columns")).strong().color(p.text));
+            ui.separator();
+            // Shown columns in their order (with move buttons), then the hidden ones.
+            let shown: Vec<Col> = self.prefs.columns.clone();
+            let mut hidden: Vec<Col> = Col::ALL.into_iter().filter(|c| !shown.contains(c)).collect();
+            hidden.retain(|c| *c != Col::Name);
+            let mut moved: Option<(usize, usize)> = None;
+            let mut toggled: Option<(Col, bool)> = None;
+            for (i, c) in shown.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let mut on = true;
+                    let fixed = *c == Col::Name; // the name column always stays
+                    if ui.add_enabled(!fixed, egui::Checkbox::new(&mut on, c.title())).changed() {
+                        toggled = Some((*c, false));
                     }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let last = i + 1 == shown.len();
+                        if ui
+                            .add_enabled(!last, egui::Button::new(icons::CARET_DOWN).small())
+                            .labeled(t!("Move right"))
+                            .clicked()
+                        {
+                            moved = Some((i, i + 1));
+                        }
+                        if ui
+                            .add_enabled(i > 0, egui::Button::new(icons::CARET_UP).small())
+                            .labeled(t!("Move left"))
+                            .clicked()
+                        {
+                            moved = Some((i, i - 1));
+                        }
+                    });
+                });
+            }
+            for c in hidden {
+                let mut on = false;
+                if ui.checkbox(&mut on, c.title()).changed() {
+                    toggled = Some((c, true));
                 }
-                if let Some((a, b)) = moved {
-                    self.prefs.columns.swap(a, b);
-                }
-                match toggled {
-                    Some((c, true)) => self.prefs.columns.push(c),
-                    Some((c, false)) => self.prefs.columns.retain(|x| *x != c),
-                    None => {}
-                }
-                ui.separator();
-                if ui.button(t!("Reset to defaults")).clicked() {
-                    self.prefs.columns = super::UiPrefs::default().columns;
-                }
-                if ui.button(t!("Close")).clicked() {
-                    close = true;
-                }
-            });
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                close = true;
+            }
+            if let Some((a, b)) = moved {
+                self.prefs.columns.swap(a, b);
+            }
+            match toggled {
+                Some((c, true)) => self.prefs.columns.push(c),
+                Some((c, false)) => self.prefs.columns.retain(|x| *x != c),
+                None => {}
+            }
+            ui.separator();
+            if ui.button(t!("Reset to defaults")).clicked() {
+                self.prefs.columns = super::UiPrefs::default().columns;
             }
         });
-        let _ = vec2;
-        if close {
+        // Closed by a click elsewhere or Escape.
+        if !egui::Popup::is_id_open(ui.ctx(), id) {
             self.column_menu = None;
         }
     }

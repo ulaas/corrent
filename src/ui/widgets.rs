@@ -371,6 +371,30 @@ pub fn popup<R>(popup: egui::Popup<'_>, add: impl FnOnce(&mut Ui) -> R) -> Optio
     popup.show(|ui| scroll_body(ui, add))
 }
 
+// ---------------------------------------------------------------- dialogs
+//
+// A modal keeps to the window: narrower when the window (or a large zoom) leaves less room, and
+// its body scrolls when it doesn't fit in height.
+
+/// The width for a modal that would like `want` points (its frame and a margin come on top).
+pub fn modal_width(ctx: &egui::Context, want: f32) -> f32 {
+    want.min(ctx.content_rect().width() - 92.0).max(240.0)
+}
+
+/// A modal's contents, scrolling when taller than the window.
+pub fn modal_body<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let screen = ui.ctx().content_rect().size();
+    let max = (screen.y - 92.0).max(160.0);
+    // An area offers its size of the frame before; a scroll area in it would never grow.
+    ui.set_max_size(vec2(screen.x, max));
+    egui::ScrollArea::vertical().id_salt("modal_body").max_height(max).show(ui, add).inner
+}
+
+/// A dialog's row of buttons, on the right (also inside `modal_body`, which has no height limit).
+pub fn dialog_footer<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.horizontal(|ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add).inner).inner
+}
+
 #[cfg(test)]
 mod popup_tests {
     /// Menus and popups that don't go through the wrappers above can run off the window.

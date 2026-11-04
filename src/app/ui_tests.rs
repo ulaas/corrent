@@ -215,6 +215,116 @@ fn list_shortcuts_stay_on_the_list() {
 }
 
 #[test]
+fn enter_never_deletes_files() {
+    let (_f, mut app) = app("delete-enter", vec![torrent(1, "Gamma", TorrentState::Seeding)]);
+    let log = record_commands(&mut app);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().request_delete(vec![InfoHash([1; 20])], true);
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().modal.is_some(), "still asking");
+    assert!(commands_sent(h.state(), &log).is_empty(), "nothing deleted");
+    // Keeping the files is fine with Enter.
+    h.get_by_label("Remove from list, keep downloaded files").click();
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().modal.is_none());
+    let sent = commands_sent(h.state(), &log);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("with_data: false"), "{sent:?}");
+}
+
+#[test]
+fn a_dialogs_field_takes_the_focus_once() {
+    let (_f, app) = app("focus-once", vec![torrent(1, "Gamma", TorrentState::Seeding)]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().open_rename_dialog(InfoHash([1; 20]), "Gamma".into());
+    h.run_steps(3);
+    let field = h.state().ctx.memory(|m| m.focused());
+    assert!(field.is_some(), "the name field is ready for typing");
+    h.key_press(egui::Key::Tab);
+    h.run_steps(3);
+    let after = h.state().ctx.memory(|m| m.focused());
+    assert!(after.is_some() && after != field, "Tab leaves the field: {field:?} → {after:?}");
+    // A new dialog gets its turn.
+    h.state_mut().modal = None;
+    h.run_steps(2);
+    h.state_mut().open_new_tag(None);
+    h.run_steps(3);
+    let tag = h.state().ctx.memory(|m| m.focused());
+    assert!(tag.is_some() && tag != after, "{tag:?}");
+}
+
+#[test]
+fn the_column_chooser_closes_on_a_click_outside_and_stays_for_clicks_inside() {
+    let (_f, app) = app("chooser", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    let header = h.get_by_label("Ratio").rect().center();
+    press_secondary(&mut h, header);
+    assert!(h.state().column_menu.is_some(), "open");
+    h.get_by_label("Reset to defaults");
+    h.get_by_label("Category").click();
+    h.run_steps(3);
+    assert!(h.state().prefs.columns.contains(&super::Col::Category), "a click inside toggles");
+    assert!(h.state().column_menu.is_some(), "and leaves it open");
+    let outside = egui::pos2(100.0, 500.0);
+    h.event(egui::Event::PointerMoved(outside));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: outside,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    assert!(h.state().column_menu.is_none(), "a click outside closes it");
+}
+
+#[test]
+fn dialogs_keep_to_a_small_window() {
+    use crate::engine::types::AddSource;
+    // 760 × 480 (the smallest window) at zoom 1.5.
+    let (w, height) = (507.0, 320.0);
+    let (_f, app) = app("small", vec![torrent(1, "Gamma", TorrentState::Seeding)]);
+    let mut h = harness_sized(app, egui::vec2(w, height));
+    h.run_steps(2);
+    let inside = |h: &Harness<'static, CorrentApp>, label: &str| {
+        let r = h.get_by_label(label).rect();
+        assert!(r.max.x <= w && r.min.x >= 0.0, "{label} at {r:?} in a {w} wide window");
+    };
+    h.state_mut().request_delete(vec![InfoHash([1; 20])], false);
+    h.run_steps(3);
+    inside(&h, "Cancel");
+    h.state_mut().modal = None;
+    h.state_mut().begin_add(AddSource::parse(&format!("magnet:?xt=urn:btih:{}", "01".repeat(20))).unwrap());
+    h.run_steps(3);
+    let files = vec![crate::engine::PreviewFile { components: vec!["a.mkv".into()], len: 10 }];
+    let req = h.state().add_dialogs[0].req;
+    let preview = crate::engine::Preview {
+        info_hash: InfoHash([9; 20]),
+        name: "Pack".into(),
+        files,
+        total_size: 10,
+        piece_count: 1,
+        piece_length: 16384,
+        torrent_bytes: Vec::new(),
+        already_added: false,
+        comment: None,
+    };
+    h.state_mut().on_preview_ready(req, Ok(Box::new(preview)));
+    h.run_steps(4);
+    inside(&h, "a.mkv");
+    inside(&h, "Cancel");
+}
+
+#[test]
 fn empty_list_offers_add_actions() {
     let (_f, app) = app("empty", vec![]);
     let mut h = harness(app);
