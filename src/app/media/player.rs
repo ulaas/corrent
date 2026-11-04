@@ -299,7 +299,7 @@ struct FxInputs {
     fx: corrent_core::audio_fx::AudioFx,
     passthrough: bool,
     source: corrent_core::audio_fx::Source,
-    caps: corrent_core::audio_fx::Caps,
+    caps: &'static corrent_core::audio_fx::Caps,
 }
 
 /// `Event::CommandReply` of a filter change: a failure is worth a line in the log.
@@ -917,14 +917,14 @@ impl Player {
         // own format keeps it when they are added.
         fx.meters = self.meter_page && source.channels.is_some();
         self.observe_pages();
-        let inputs = FxInputs { fx, passthrough, source, caps: super::sound::caps().clone() };
+        let inputs = FxInputs { fx, passthrough, source, caps: super::sound::caps() };
         if self.fx_from.as_ref() == Some(&inputs) {
             return;
         }
         let want = if inputs.passthrough {
             Vec::new()
         } else {
-            corrent_core::audio_fx::chain(&inputs.fx, &inputs.caps, &inputs.source)
+            corrent_core::audio_fx::chain(&inputs.fx, inputs.caps, &inputs.source)
         };
         let plan = corrent_core::audio_fx::plan(&self.fx_applied, &want, inputs.caps.target);
         if let Some(af) = &plan.set_af {

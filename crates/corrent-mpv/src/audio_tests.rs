@@ -45,6 +45,16 @@ fn start(af: &str) -> Option<Mpv> {
     Some(Mpv::headless(&[("ao", "null"), ("af", af)]).unwrap())
 }
 
+/// Whether `af-command` takes a target on this libmpv (the player then sets `af` for each value).
+fn has_target(mpv: &Mpv) -> bool {
+    let list = mpv.get("command-list").unwrap();
+    list.as_array().iter().any(|c| {
+        c.get("name").and_then(Node::as_str) == Some("af-command")
+            && c.get("args")
+                .is_some_and(|a| a.as_array().iter().any(|a| a.get("name").and_then(Node::as_str) == Some("target")))
+    })
+}
+
 /// Older libmpvs (CI's distro build) are held to the mechanism, this build to its exact behaviour.
 fn pinned(mpv: &Mpv) -> bool {
     mpv.get_string("mpv-version").is_ok_and(|v| v.starts_with("mpv v0.41"))
@@ -107,6 +117,9 @@ fn metadata_keys_and_levels() {
 #[test]
 fn af_command_changes_a_value_without_touching_af() {
     let Some(mpv) = start(&format!("@gain:lavfi=[volume=0dB],{METER}")) else { return };
+    if !has_target(&mpv) {
+        return;
+    }
     play(&mpv, "av://lavfi:sine=f=1000:r=48000:d=6");
     let before = meta_at(&mpv, 1.0, "lavfi.astats.1.RMS_level");
     let af = mpv.get("af").unwrap();
@@ -125,6 +138,9 @@ fn af_command_changes_a_value_without_touching_af() {
 fn a_named_instance_inside_a_graph_can_be_addressed() {
     let af = format!("@eq:lavfi=[equalizer@b1=f=1000:t=q:w=1:g=0,equalizer@b2=f=8000:t=q:w=1:g=0],{METER}");
     let Some(mpv) = start(&af) else { return };
+    if !has_target(&mpv) {
+        return;
+    }
     play(&mpv, "av://lavfi:sine=f=1000:r=48000:d=6");
     let before = meta_at(&mpv, 1.0, "lavfi.astats.1.RMS_level");
     let pos = mpv.get_f64("time-pos").unwrap().unwrap();
@@ -181,6 +197,10 @@ fn metering_keeps_44100_hz() {
     near("44.1 kHz M", meta_at(&mpv, 1.0, "lavfi.r128.M"), -21.07, 0.5);
     let rate = out_param(&mpv, "samplerate");
     println!("44.1 kHz source, @out from the start: output {rate} Hz");
+    // Older FFmpegs' `ebur128` resampled to 48 kHz: there the Audio page shows it.
+    if !pinned(&mpv) {
+        return;
+    }
     assert_eq!(rate, 44100);
 
     // Added while playing: the AO is already open.
