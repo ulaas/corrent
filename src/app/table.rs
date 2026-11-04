@@ -44,72 +44,142 @@ impl TrackerHosts {
     }
 }
 
-pub fn matches_filters(t: &TorrentView, prefs: &UiPrefs, search: &str, hosts: &mut TrackerHosts) -> bool {
-    if !prefs.status_filter.matches(t) {
-        return false;
+/// `term` (lower case) somewhere in `text`, ignoring case. Names are nearly always ASCII, and
+/// this runs for every torrent on every engine tick while a search is typed.
+fn contains_lower(text: &str, term: &str) -> bool {
+    if text.is_ascii() && term.is_ascii() {
+        let (t, n) = (text.as_bytes(), term.as_bytes());
+        n.is_empty() || t.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+    } else {
+        text.to_lowercase().contains(term)
     }
-    match &prefs.category_filter {
-        GroupFilter::All => {}
-        GroupFilter::None => {
-            if t.category.is_some() {
-                return false;
-            }
-        }
-        GroupFilter::Named(c) => {
-            // Subcategories ("Movies/HD") are included when filtering by a parent.
-            match &t.category {
-                Some(tc) if tc == c || tc.starts_with(&format!("{c}/")) => {}
-                _ => return false,
-            }
-        }
-    }
-    match &prefs.tag_filter {
-        GroupFilter::All => {}
-        GroupFilter::None => {
-            if !t.tags.is_empty() {
-                return false;
-            }
-        }
-        GroupFilter::Named(tag) => {
-            if !t.tags.contains(tag) {
-                return false;
-            }
-        }
-    }
-    match &prefs.tracker_filter {
-        GroupFilter::All => {}
-        GroupFilter::None => {
-            if !t.trackers.is_empty() {
-                return false;
-            }
-        }
-        GroupFilter::Named(host) => {
-            if !t.trackers.iter().any(|u| hosts.get(u) == host) {
-                return false;
-            }
-        }
-    }
-    if !search.trim().is_empty() {
-        let q = search.trim().to_lowercase();
-        let hay_name = t.name.to_lowercase();
-        let all_terms = q.split_whitespace().all(|term| {
-            hay_name.contains(term)
-                || t.hash.to_hex().starts_with(term)
-                || t.tags.iter().any(|tag| tag.to_lowercase() == term)
-                || t.category.as_ref().map(|c| c.to_lowercase() == term).unwrap_or(false)
-        });
-        if !all_terms {
-            return false;
-        }
-    }
-    true
 }
 
-pub fn compute_rows(snap: &Snapshot, prefs: &UiPrefs, search: &str, hosts: &mut TrackerHosts) -> Vec<usize> {
-    let mut rows: Vec<usize> = (snap.torrents.iter().enumerate())
-        .filter(|(_, t)| matches_filters(t, prefs, search, hosts))
-        .map(|(i, _)| i)
-        .collect();
+fn eq_lower(text: &str, term: &str) -> bool {
+    if text.is_ascii() { text.eq_ignore_ascii_case(term) } else { text.to_lowercase() == term }
+}
+
+/// The list's filters, with what they need worked out once per pass over the torrents.
+pub struct RowFilter<'a> {
+    prefs: &'a UiPrefs,
+    /// Lower case.
+    terms: Vec<String>,
+    /// "Movies/" for the category "Movies": its subcategories count too.
+    category_prefix: Option<String>,
+}
+
+impl<'a> RowFilter<'a> {
+    pub fn new(prefs: &'a UiPrefs, search: &str) -> RowFilter<'a> {
+        let terms = search.trim().to_lowercase().split_whitespace().map(String::from).collect();
+        let category_prefix = match &prefs.category_filter {
+            GroupFilter::Named(c) => Some(format!("{c}/")),
+            _ => None,
+        };
+        RowFilter { prefs, terms, category_prefix }
+    }
+
+    pub fn matches(&self, t: &TorrentView, hosts: &mut TrackerHosts) -> bool {
+        let prefs = self.prefs;
+        if !prefs.status_filter.matches(t) {
+            return false;
+        }
+        match &prefs.category_filter {
+            GroupFilter::All => {}
+            GroupFilter::None => {
+                if t.category.is_some() {
+                    return false;
+                }
+            }
+            GroupFilter::Named(c) => {
+                // Subcategories ("Movies/HD") are included when filtering by a parent.
+                let prefix = self.category_prefix.as_deref().unwrap_or_default();
+                match &t.category {
+                    Some(tc) if tc == c || tc.starts_with(prefix) => {}
+                    _ => return false,
+                }
+            }
+        }
+        match &prefs.tag_filter {
+            GroupFilter::All => {}
+            GroupFilter::None => {
+                if !t.tags.is_empty() {
+                    return false;
+                }
+            }
+            GroupFilter::Named(tag) => {
+                if !t.tags.contains(tag) {
+                    return false;
+                }
+            }
+        }
+        match &prefs.tracker_filter {
+            GroupFilter::All => {}
+            GroupFilter::None => {
+                if !t.trackers.is_empty() {
+                    return false;
+                }
+            }
+            GroupFilter::Named(host) => {
+                if !t.trackers.iter().any(|u| hosts.get(u) == host) {
+                    return false;
+                }
+            }
+        }
+        self.terms.iter().all(|term| {
+            contains_lower(&t.name, term)
+                || (term.bytes().all(|b| b.is_ascii_hexdigit()) && t.hash.to_hex().starts_with(term.as_str()))
+                || t.tags.iter().any(|tag| eq_lower(tag, term))
+                || t.category.as_ref().is_some_and(|c| eq_lower(c, term))
+        })
+    }
+}
+
+/// The last sort of the list. Most engine ticks only change speeds and progress: with a list
+/// sorted by something else the order is reused (with 5,000 torrents, a sort compares names
+/// about 60,000 times per tick).
+#[derive(Default)]
+pub struct SortMemo {
+    fingerprint: u64,
+    sorted: Vec<usize>,
+    /// How many times the list was really sorted.
+    pub sorts: u64,
+}
+
+/// What the order of the rows depends on, for the columns whose values rarely change.
+fn sort_fingerprint(rows: &[usize], snap: &Snapshot, prefs: &UiPrefs, hosts: &TrackerHosts) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (prefs.sort, prefs.sort_asc).hash(&mut h);
+    for t in rows.iter().filter_map(|&i| snap.torrents.get(i)) {
+        t.hash.hash(&mut h);
+        t.queue_pos.hash(&mut h);
+        match prefs.sort {
+            Col::Queue => {}
+            Col::Name => t.name.hash(&mut h),
+            Col::Size => t.size.hash(&mut h),
+            Col::Category => t.category.hash(&mut h),
+            Col::Tags => t.tags.hash(&mut h),
+            Col::Added => t.added_at.hash(&mut h),
+            Col::Completed => t.completed_at.hash(&mut h),
+            Col::SavePath => t.save_path.hash(&mut h),
+            Col::Tracker => t.trackers.first().map(|u| hosts.peek(u)).hash(&mut h),
+            _ => return None,
+        }
+    }
+    rows.hash(&mut h);
+    Some(h.finish())
+}
+
+pub fn compute_rows(
+    snap: &Snapshot,
+    prefs: &UiPrefs,
+    search: &str,
+    hosts: &mut TrackerHosts,
+    memo: &mut SortMemo,
+) -> Vec<usize> {
+    let filter = RowFilter::new(prefs, search);
+    let mut rows: Vec<usize> =
+        (snap.torrents.iter().enumerate()).filter(|(_, t)| filter.matches(t, hosts)).map(|(i, _)| i).collect();
     let ts = &snap.torrents;
     if prefs.sort == Col::Tracker {
         for t in rows.iter().filter_map(|&i| ts.get(i)) {
@@ -119,6 +189,10 @@ pub fn compute_rows(snap: &Snapshot, prefs: &UiPrefs, search: &str, hosts: &mut 
         }
     }
     let hosts = &*hosts;
+    let fingerprint = sort_fingerprint(&rows, snap, prefs, hosts);
+    if fingerprint.is_some_and(|f| f == memo.fingerprint && memo.sorted.len() == rows.len()) {
+        return memo.sorted.clone();
+    }
     let cmp = |a: &TorrentView, b: &TorrentView| -> Ordering {
         let f = |x: f64, y: f64| x.partial_cmp(&y).unwrap_or(Ordering::Equal);
         match prefs.sort {
@@ -151,6 +225,13 @@ pub fn compute_rows(snap: &Snapshot, prefs: &UiPrefs, search: &str, hosts: &mut 
         let o = cmp(a, b).then_with(|| a.queue_pos.cmp(&b.queue_pos));
         if prefs.sort_asc { o } else { o.reverse() }
     });
+    memo.sorts += 1;
+    if let Some(f) = fingerprint {
+        memo.fingerprint = f;
+        memo.sorted.clone_from(&rows);
+    } else {
+        memo.sorted.clear();
+    }
     rows
 }
 
@@ -168,38 +249,36 @@ fn state_rank(s: TorrentState) -> u8 {
     }
 }
 
-/// Natural ordering: "ep2" < "ep10".
+/// Splits a leading run of ASCII digits off `s`.
+fn digit_run(s: &str) -> (&str, &str) {
+    let end = s.bytes().position(|b| !b.is_ascii_digit()).unwrap_or(s.len());
+    s.split_at_checked(end).unwrap_or((s, ""))
+}
+
+/// Natural ordering: "ep2" < "ep10". Doesn't allocate: it runs tens of thousands of times per sort.
 pub fn natord(a: &str, b: &str) -> Ordering {
-    let (mut ai, mut bi) = (a.chars().peekable(), b.chars().peekable());
+    let (mut a, mut b) = (a, b);
     loop {
-        match (ai.peek().copied(), bi.peek().copied()) {
+        let (mut ai, mut bi) = (a.chars(), b.chars());
+        match (ai.next(), bi.next()) {
             (None, None) => return Ordering::Equal,
             (None, _) => return Ordering::Less,
             (_, None) => return Ordering::Greater,
             (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
-                let mut na = String::new();
-                while let Some(c) = ai.peek().copied().filter(|c| c.is_ascii_digit()) {
-                    na.push(c);
-                    ai.next();
-                }
-                let mut nb = String::new();
-                while let Some(c) = bi.peek().copied().filter(|c| c.is_ascii_digit()) {
-                    nb.push(c);
-                    bi.next();
-                }
+                let ((na, rest_a), (nb, rest_b)) = (digit_run(a), digit_run(b));
                 let (ta, tb) = (na.trim_start_matches('0'), nb.trim_start_matches('0'));
                 let o = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb));
                 if o != Ordering::Equal {
                     return o;
                 }
+                (a, b) = (rest_a, rest_b);
             }
             (Some(x), Some(y)) => {
                 let o = x.to_lowercase().cmp(y.to_lowercase());
                 if o != Ordering::Equal {
                     return o;
                 }
-                ai.next();
-                bi.next();
+                (a, b) = (ai.as_str(), bi.as_str());
             }
         }
     }
@@ -883,6 +962,45 @@ mod tests {
     }
 
     #[test]
+    fn natural_order_details() {
+        assert_eq!(natord("a007", "a7"), Ordering::Equal, "leading zeros don't count");
+        assert_eq!(natord("a7b", "a007c"), Ordering::Less, "and the rest still does");
+        assert_eq!(natord("", "a"), Ordering::Less);
+        assert_eq!(natord("é2", "É10"), Ordering::Less);
+        assert_eq!(natord("99999999999999999999999", "100000000000000000000000"), Ordering::Less);
+    }
+
+    /// Counts this thread's allocations, for `natord` and the search matching.
+    struct Counting;
+    thread_local! { static ALLOCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+    // SAFETY: passes everything to the system allocator; the counter doesn't allocate.
+    unsafe impl std::alloc::GlobalAlloc for Counting {
+        unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+            let _ = ALLOCS.try_with(|a| a.set(a.get() + 1));
+            // SAFETY: the caller's contract, passed on.
+            unsafe { std::alloc::System.alloc(l) }
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+            // SAFETY: the caller's contract, passed on.
+            unsafe { std::alloc::System.dealloc(p, l) }
+        }
+    }
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+
+    #[test]
+    fn natord_and_matching_dont_allocate() {
+        let before = ALLOCS.with(|a| a.get());
+        let mut o = Ordering::Equal;
+        for _ in 0..1000 {
+            o = natord("Some.Linux.Distro.1234.amd64.iso", "Some.Linux.Distro.1235.amd64.iso");
+            std::hint::black_box(contains_lower("Some.Linux.Distro.1234.amd64.iso", "distro"));
+        }
+        assert_eq!(o, Ordering::Less);
+        assert_eq!(ALLOCS.with(|a| a.get()) - before, 0);
+    }
+
+    #[test]
     fn host() {
         assert_eq!(tracker_host("udp://tracker.example.org:1337/announce"), "tracker.example.org");
     }
@@ -904,8 +1022,12 @@ mod more_tests {
         }
     }
 
+    fn rows_of(sn: &Snapshot, p: &UiPrefs) -> Vec<usize> {
+        compute_rows(sn, p, "", &mut TrackerHosts::default(), &mut SortMemo::default())
+    }
+
     fn mf(t: &TorrentView, prefs: &UiPrefs, search: &str) -> bool {
-        matches_filters(t, prefs, search, &mut TrackerHosts::default())
+        RowFilter::new(prefs, search).matches(t, &mut TrackerHosts::default())
     }
 
     #[test]
@@ -916,7 +1038,7 @@ mod more_tests {
         };
         let sn = snap(vec![tracked(1, "udp://a.example:80/announce"), tracked(2, "https://z.example/announce")]);
         let p = UiPrefs { sort: Col::Tracker, sort_asc: true, ..Default::default() };
-        let rows = compute_rows(&sn, &p, "", &mut TrackerHosts::default());
+        let rows = rows_of(&sn, &p);
         assert_eq!(sn.torrents[rows[0]].name, "t1", "a.example before z.example, whatever the scheme");
     }
 
@@ -980,15 +1102,51 @@ mod more_tests {
     }
 
     #[test]
+    fn the_order_is_reused_until_what_it_depends_on_changes() {
+        let mut sn = snap(vec![t(1, "ep10"), t(2, "ep2"), t(3, "Ep1")]);
+        let p = UiPrefs { sort: Col::Name, sort_asc: true, ..Default::default() };
+        let (mut hosts, mut memo) = (TrackerHosts::default(), SortMemo::default());
+        let first = compute_rows(&sn, &p, "", &mut hosts, &mut memo);
+        assert_eq!(memo.sorts, 1);
+        // A tick: speeds and progress change.
+        sn.torrents[0].down_bps = 500;
+        sn.torrents[1].progress = 0.5;
+        assert_eq!(compute_rows(&sn, &p, "", &mut hosts, &mut memo), first);
+        assert_eq!(memo.sorts, 1, "not sorted again");
+        // A rename can change the order.
+        sn.torrents[2].name = "ep99".into();
+        let renamed = compute_rows(&sn, &p, "", &mut hosts, &mut memo);
+        assert_eq!(memo.sorts, 2);
+        assert_eq!(sn.torrents[renamed[2]].name, "ep99");
+        // A filter that hides one.
+        let filtered = compute_rows(&sn, &p, "ep2", &mut hosts, &mut memo);
+        assert_eq!(filtered.len(), 1);
+        // Columns that change all the time always sort.
+        let by_speed = UiPrefs { sort: Col::Down, ..p.clone() };
+        let before = memo.sorts;
+        compute_rows(&sn, &by_speed, "", &mut hosts, &mut memo);
+        compute_rows(&sn, &by_speed, "", &mut hosts, &mut memo);
+        assert_eq!(memo.sorts, before + 2);
+    }
+
+    #[test]
+    fn search_ignores_case_outside_ascii_too() {
+        let a = t(1, "ÇOCUK Filmi");
+        let p = UiPrefs::default();
+        assert!(mf(&a, &p, "çocuk"));
+        assert!(mf(&a, &p, "FİLM") || mf(&a, &p, "film"));
+    }
+
+    #[test]
     fn sorting_by_name_natural_and_size_desc() {
         let sn = snap(vec![t(1, "ep10"), t(2, "ep2"), t(3, "Ep1")]);
         let mut p = UiPrefs { sort: Col::Name, sort_asc: true, ..Default::default() };
-        let rows = compute_rows(&sn, &p, "", &mut TrackerHosts::default());
+        let rows = rows_of(&sn, &p);
         let names: Vec<&str> = rows.iter().map(|&i| sn.torrents[i].name.as_str()).collect();
         assert_eq!(names, vec!["Ep1", "ep2", "ep10"]);
         p.sort = Col::Size;
         p.sort_asc = false;
-        let rows = compute_rows(&sn, &p, "", &mut TrackerHosts::default());
+        let rows = rows_of(&sn, &p);
         assert_eq!(sn.torrents[rows[0]].size, 30);
     }
 
@@ -999,7 +1157,7 @@ mod more_tests {
         let b = t(2, "b");
         let sn = snap(vec![b, a]);
         let p = UiPrefs { sort: Col::Eta, sort_asc: true, ..Default::default() };
-        let rows = compute_rows(&sn, &p, "", &mut TrackerHosts::default());
+        let rows = rows_of(&sn, &p);
         assert_eq!(sn.torrents[rows[0]].name, "a");
     }
 

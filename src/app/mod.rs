@@ -321,6 +321,7 @@ pub struct CorrentApp {
     pub focus: Option<InfoHash>,
     rows: Vec<usize>,
     rows_key: Option<u64>,
+    sort_memo: table::SortMemo,
     pub scroll_to_focus: bool,
     pub column_menu: Option<egui::Pos2>,
     /// A widget had the keyboard focus at the end of the last frame.
@@ -540,6 +541,7 @@ impl CorrentApp {
             focus: None,
             rows: Vec::new(),
             rows_key: None,
+            sort_memo: Default::default(),
             scroll_to_focus: false,
             column_menu: None,
             had_focus: false,
@@ -931,7 +933,8 @@ impl CorrentApp {
         let key = h.finish();
         if self.rows_key != Some(key) {
             self.counts.update(&self.snap);
-            self.rows = table::compute_rows(&self.snap, &self.prefs, &self.search, &mut self.counts.hosts);
+            self.rows =
+                table::compute_rows(&self.snap, &self.prefs, &self.search, &mut self.counts.hosts, &mut self.sort_memo);
             self.rows_key = Some(key);
             // Never act on torrents the user can't see.
             let visible: HashSet<InfoHash> =
