@@ -18,6 +18,7 @@ pub mod player;
 pub mod profiles;
 pub mod providers;
 mod refresh;
+pub mod sound;
 pub mod subtitles;
 pub mod syncplay;
 
@@ -495,6 +496,12 @@ impl CorrentApp {
         self.media.images.tick(ctx);
         if let Some(pl) = &mut self.media.player {
             pl.tick();
+        }
+        // Also after the player is gone: it hands over what it had left when closed.
+        if let Some((volume, muted)) = sound::take_volume() {
+            self.settings.playback.volume = volume;
+            self.settings.playback.muted = muted;
+            self.save_settings();
         }
         // Lists go stale as scans and metadata land: refresh every 30 s while visible.
         if self.main_view == super::feeds::MainView::Media

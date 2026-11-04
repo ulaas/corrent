@@ -288,6 +288,9 @@ impl CorrentApp {
         // Feeds and rules are edited in the Feeds view, possibly while this window is open.
         new.rss.feeds = self.settings.rss.feeds.clone();
         new.rss.rules = self.settings.rss.rules.clone();
+        // Set from the player, possibly while this window is open.
+        new.playback.volume = self.settings.playback.volume;
+        new.playback.muted = self.settings.playback.muted;
         if new == self.settings {
             return;
         }

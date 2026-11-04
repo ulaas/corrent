@@ -146,6 +146,9 @@ pub struct Playback {
     pub replaygain: String,
     /// No gap between album tracks.
     pub gapless: bool,
+    /// The player's volume (mpv's 0–130) and mute, as they were last.
+    pub volume: f32,
+    pub muted: bool,
 }
 
 impl Default for Playback {
@@ -159,6 +162,8 @@ impl Default for Playback {
             equalizer: EqPreset::Flat,
             replaygain: "album".into(),
             gapless: true,
+            volume: 100.0,
+            muted: false,
         }
     }
 }
@@ -925,6 +930,17 @@ mod tests {
         assert!(get(&o, "af").contains("volume=-6dB,equalizer=f=60"), "{}", get(&o, "af"));
         assert_eq!(get(&o, "replaygain"), "no");
         assert!(get(&o, "audio-spdif").contains("truehd"));
+    }
+
+    #[test]
+    fn volume_is_remembered_with_defaults_for_old_files() {
+        let old: Settings = toml::from_str("[playback]\ngapless = false\n").unwrap();
+        assert_eq!((old.playback.volume, old.playback.muted), (100.0, false));
+        let mut s = Settings::default();
+        s.playback.volume = 35.0;
+        s.playback.muted = true;
+        let back: Settings = toml::from_str(&toml::to_string_pretty(&s).unwrap()).unwrap();
+        assert_eq!((back.playback.volume, back.playback.muted), (35.0, true));
     }
 
     #[test]

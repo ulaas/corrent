@@ -133,6 +133,9 @@ pub const SETTINGS_FIELDS: &[(&str, Rule)] = {
         ("playback.equalizer", Keep),
         ("playback.exclusive", Keep),
         ("playback.gapless", Keep),
+        // stream C
+        ("playback.muted", Keep),
+        ("playback.volume", Keep),
         ("playback.normalize", Keep),
         ("playback.passthrough", Keep),
         ("playback.replaygain", Keep),

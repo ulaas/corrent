@@ -220,6 +220,9 @@ pub struct Player {
     audio: Mutex<corrent_core::config::Playback>,
     /// The position last reported: a paused player has nothing new to say.
     last_reported: f64,
+    /// The volume and mute last handed over to be saved, and since when they differ.
+    volume_saved: (f64, bool),
+    volume_moved: Option<Instant>,
 }
 
 fn track_list(n: &Node) -> Vec<Track> {
@@ -331,6 +334,9 @@ impl Player {
         ]);
         let audio_opts = audio.mpv_options();
         opts.extend(audio_opts.iter().map(|(k, v)| (*k, v.as_str())));
+        // As it was left: no film at 100 % after a late evening at 35 %.
+        let volume = format!("{}", if audio.volume.is_finite() { audio.volume.clamp(0.0, 130.0) } else { 100.0 });
+        opts.extend([("volume", volume.as_str()), ("mute", if audio.muted { "yes" } else { "no" })]);
         opts.push(if audio_only { ("vid", "no") } else { ("vo", "libmpv") });
         // mpv sends the token: always verify HTTPS (mpv doesn't by default), against the
         // server's own CA when it has one.
@@ -393,7 +399,13 @@ impl Player {
             }
             Video::None => Video::None,
         };
-        let status = Arc::new(Mutex::new(Status { volume: 100.0, speed: 1.0, sub_scale: 1.0, ..Default::default() }));
+        let status = Arc::new(Mutex::new(Status {
+            volume: audio.volume as f64,
+            muted: audio.muted,
+            speed: 1.0,
+            sub_scale: 1.0,
+            ..Default::default()
+        }));
         for (i, p) in [
             "time-pos",
             "duration",
@@ -517,6 +529,8 @@ impl Player {
             offline: None,
             audio: Mutex::new(audio.clone()),
             last_reported: -1.0,
+            volume_saved: (audio.volume as f64, audio.muted),
+            volume_moved: None,
         };
         p.load_current();
         Ok(p)
@@ -777,6 +791,7 @@ impl Player {
 
     /// Per-frame housekeeping: progress reports and advancing the queue at the end.
     pub fn tick(&mut self) {
+        self.save_volume(false);
         if self.last_report.elapsed() > Duration::from_secs(10) {
             // A film left paused overnight has nothing new to say every 10 s.
             let (pos, paused) = crate::util::with_lock(&self.status, |s| (s.pos, s.paused));
@@ -797,6 +812,23 @@ impl Player {
             if self.no_countdown != self.current().map(|e| e.item_id) || self.audio_only {
                 self.next();
             }
+        }
+    }
+
+    /// Hands a changed volume over to be saved, once it has rested for 2 s (or now).
+    fn save_volume(&mut self, now: bool) {
+        let current = crate::util::with_lock(&self.status, |s| (s.volume, s.muted));
+        if current == self.volume_saved {
+            self.volume_moved = None;
+            return;
+        }
+        let moved = *self.volume_moved.get_or_insert_with(Instant::now);
+        if now || moved.elapsed() >= Duration::from_secs(2) {
+            self.volume_saved = current;
+            self.volume_moved = None;
+            super::sound::post_volume(current.0 as f32, current.1);
+        } else {
+            self.ctx.request_repaint_after(Duration::from_secs(2));
         }
     }
 
@@ -1987,6 +2019,7 @@ impl Player {
 impl Drop for Player {
     fn drop(&mut self) {
         self.report(true);
+        self.save_volume(true);
         // Nothing here may block the UI thread: a stalled network read can hold mpv up.
         let _ = self.mpv.command_async(0, &["stop"]);
         self.stop_events.store(true, Ordering::Relaxed);
