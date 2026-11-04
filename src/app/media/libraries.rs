@@ -71,7 +71,7 @@ impl CorrentApp {
         });
         ui.add_space(10.0);
         let mut remove = None;
-        for l in &libs {
+        for l in libs.iter() {
             egui::Frame::new()
                 .fill(p.bg2)
                 .corner_radius(egui::CornerRadius::same(10))

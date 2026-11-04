@@ -28,7 +28,7 @@ use corrent_proto::library::{HomeRow, Item, ItemDetail, ItemKind, Library, Page 
 use egui::{Color32, CornerRadius, Rect, RichText, Sense, Ui, pos2, vec2};
 use egui_phosphor::regular as icons;
 
-use self::client::{MediaClient, Slot, fetch, ready};
+use self::client::{MediaClient, Slot, fetch, is_ready, ready, ready_arc, take_ready};
 use self::images::ImageCache;
 use self::player::{GlAccess, Player, PlayerAction, QueueEntry};
 use super::CorrentApp;
@@ -73,6 +73,7 @@ struct Grid {
 /// Playlists and collections.
 type Lists = (Vec<corrent_proto::library::Playlist>, Vec<corrent_proto::library::Collection>);
 type ListItems = ((i64, bool), Slot<Vec<Item>>);
+type ArrangedHome = (Arc<Vec<HomeRow>>, Arc<serde_json::Value>, Arc<Vec<HomeRow>>);
 
 #[derive(Default)]
 pub struct MediaState {
@@ -89,9 +90,11 @@ pub struct MediaState {
     libraries: Option<Slot<Vec<Library>>>,
     /// The last libraries and home rows loaded: shown while a refresh is on its way, so the
     /// periodic refresh never blanks the page (or moves it).
-    libraries_shown: Vec<Library>,
+    libraries_shown: Arc<Vec<Library>>,
     home: Option<Slot<Vec<HomeRow>>>,
-    home_shown: Option<Vec<HomeRow>>,
+    home_shown: Option<Arc<Vec<HomeRow>>>,
+    /// The home rows as this user arranged them: (rows, preferences it was made from, result).
+    home_arranged: Option<ArrangedHome>,
     grids: HashMap<i64, Grid>,
     detail: Option<(i64, Slot<ItemDetail>)>,
     children: HashMap<i64, Slot<ItemPage<Item>>>,
@@ -141,8 +144,13 @@ pub struct MediaState {
 }
 
 impl MediaState {
-    pub fn libraries(&self) -> Vec<Library> {
-        self.libraries.as_ref().and_then(ready).and_then(Result::ok).unwrap_or_else(|| self.libraries_shown.clone())
+    pub fn libraries(&self) -> Arc<Vec<Library>> {
+        self.libraries.as_ref().and_then(ready_arc).and_then(Result::ok).unwrap_or_else(|| self.libraries_shown.clone())
+    }
+
+    /// The fresh home rows, else the ones shown before a refresh.
+    fn home_now(&self) -> Option<Arc<Vec<HomeRow>>> {
+        self.home.as_ref().and_then(ready_arc).and_then(Result::ok).or_else(|| self.home_shown.clone())
     }
 
     pub fn local(&self) -> Option<&Arc<corrent_server::local::LocalServer>> {
@@ -208,12 +216,21 @@ impl MediaState {
     }
 
     fn keep_shown(&mut self) {
-        if let Some(Ok(rows)) = self.home.as_ref().and_then(ready) {
+        if let Some(Ok(rows)) = self.home.as_ref().and_then(ready_arc) {
             self.home_shown = Some(rows);
         }
-        if let Some(Ok(libs)) = self.libraries.as_ref().and_then(ready) {
+        if let Some(Ok(libs)) = self.libraries.as_ref().and_then(ready_arc) {
             self.libraries_shown = libs;
         }
+    }
+}
+
+/// The children of an item, see `CorrentApp::children`.
+struct Children(Option<Arc<ItemPage<Item>>>);
+
+impl Children {
+    fn items(&self) -> &[Item] {
+        self.0.as_ref().map_or(&[], |p| &p.items)
     }
 }
 
@@ -529,9 +546,7 @@ impl CorrentApp {
 
     /// Backdrop images of the home rows (screensaver).
     pub(super) fn media_backdrops(&self) -> Vec<String> {
-        let Some(rows) =
-            self.media.home.as_ref().and_then(ready).and_then(Result::ok).or_else(|| self.media.home_shown.clone())
-        else {
+        let Some(rows) = self.media.home_now() else {
             return Vec::new();
         };
         let mut out: Vec<String> = Vec::new();
@@ -770,12 +785,8 @@ impl CorrentApp {
                 Page::Agent => t!("AI agent").to_string(),
                 Page::Row(id) => self
                     .media
-                    .home
-                    .as_ref()
-                    .and_then(ready)
-                    .and_then(|r| r.ok())
-                    .or_else(|| self.media.home_shown.clone())
-                    .and_then(|rows| rows.into_iter().find(|r| r.id == *id).map(|r| r.title))
+                    .home_now()
+                    .and_then(|rows| rows.iter().find(|r| r.id == *id).map(|r| r.title.clone()))
                     .unwrap_or_default(),
             };
             ui.label(RichText::new(title).size(20.0).strong().color(p.text));
@@ -797,7 +808,7 @@ impl CorrentApp {
                         self.tv.keyboard = true;
                         self.open(Page::Search);
                     }
-                    for l in self.media.libraries().into_iter().rev() {
+                    for l in self.media.libraries().iter().rev() {
                         if ui.selectable_label(*page == Page::Library(l.id), &l.name).clicked() {
                             self.open(Page::Library(l.id));
                         }
@@ -1064,17 +1075,17 @@ impl CorrentApp {
 
     /// Every item of one home row ("See all").
     /// The home rows: the fresh ones, else the ones shown before a refresh (fetched when needed).
-    fn home_rows(&mut self, client: &MediaClient) -> Option<Vec<HomeRow>> {
+    fn home_rows(&mut self, client: &MediaClient) -> Option<Arc<Vec<HomeRow>>> {
         if self.media.home.is_none() {
             let c = client.clone();
             self.media.home = Some(fetch(&self.rt, &self.ctx, async move { c.get("/api/v1/home").await }));
         }
-        self.media.home.as_ref().and_then(ready).and_then(Result::ok).or_else(|| self.media.home_shown.clone())
+        self.media.home_now()
     }
 
     fn row_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, id: &str) {
-        let row = self.home_rows(client).and_then(|rows| rows.into_iter().find(|r| r.id == id));
-        match row {
+        let rows = self.home_rows(client);
+        match rows.as_ref().and_then(|rows| rows.iter().find(|r| r.id == id)) {
             Some(r) => self.card_section(ui, p, client, &r.title, &r.items, None, None),
             None => {
                 ui.add_space(40.0);
@@ -1211,7 +1222,7 @@ impl CorrentApp {
             let c = client.clone();
             self.media.home = Some(fetch(&self.rt, &self.ctx, async move { c.get("/api/v1/home").await }));
         }
-        let rows = self.media.home.as_ref().and_then(ready).or_else(|| self.media.home_shown.clone().map(Ok));
+        let rows = self.media.home.as_ref().and_then(ready_arc).or_else(|| self.media.home_shown.clone().map(Ok));
         match rows {
             None => {
                 ui.add_space(40.0);
@@ -1271,7 +1282,7 @@ impl CorrentApp {
                     }
                 }
                 ui.add_space(12.0);
-                for r in &rows {
+                for r in rows.iter() {
                     let (max_rows, more) = match r.id.as_str() {
                         "continue" | "next_up" => (Some(1), Some(Page::Row(r.id.clone()))),
                         id => match id.strip_prefix("recent:").and_then(|n| n.parse().ok()) {
@@ -1287,13 +1298,20 @@ impl CorrentApp {
 
     /// Orders and hides home rows as the user arranged them (in the web client; stored per
     /// user on the server, so every device shows the same home).
-    fn arrange_home(&mut self, client: &MediaClient, mut rows: Vec<HomeRow>) -> Vec<HomeRow> {
+    fn arrange_home(&mut self, client: &MediaClient, rows: Arc<Vec<HomeRow>>) -> Arc<Vec<HomeRow>> {
         let c = client.clone();
         let prefs = self
             .media
             .user_prefs
             .get_or_insert_with(|| fetch(&self.rt, &self.ctx, async move { c.get("/api/v1/me/prefs").await }));
-        let Some(Ok(prefs)) = ready(prefs) else { return rows };
+        let Some(Ok(prefs)) = ready_arc(prefs) else { return rows };
+        // Worked out once, not every frame.
+        if let Some((from, with, arranged)) = &self.media.home_arranged
+            && Arc::ptr_eq(from, &rows)
+            && Arc::ptr_eq(with, &prefs)
+        {
+            return arranged.clone();
+        }
         let list = |k: &str| -> Vec<String> {
             prefs
                 .get(k)
@@ -1302,9 +1320,11 @@ impl CorrentApp {
                 .unwrap_or_default()
         };
         let (order, hidden) = (list("homeOrder"), list("homeHidden"));
-        rows.retain(|r| !hidden.contains(&r.id));
-        rows.sort_by_key(|r| order.iter().position(|o| *o == r.id).unwrap_or(usize::MAX));
-        rows
+        let mut arranged: Vec<HomeRow> = rows.iter().filter(|r| !hidden.contains(&r.id)).cloned().collect();
+        arranged.sort_by_key(|r| order.iter().position(|o| *o == r.id).unwrap_or(usize::MAX));
+        let arranged = Arc::new(arranged);
+        self.media.home_arranged = Some((rows, prefs, arranged.clone()));
+        arranged
     }
 
     fn library_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, id: i64) {
@@ -1328,11 +1348,10 @@ impl CorrentApp {
         let (sort, desc) = self.media.sort;
         // Load pages as they come into view.
         let g = self.media.grids.entry(id).or_default();
-        let done: Vec<usize> =
-            g.pending.iter().enumerate().filter(|(_, (_, s))| ready(s).is_some()).map(|(i, _)| i).collect();
+        let done: Vec<usize> = g.pending.iter().enumerate().filter(|(_, (_, s))| is_ready(s)).map(|(i, _)| i).collect();
         for i in done.into_iter().rev() {
             let (off, s) = g.pending.remove(i);
-            if let Some(Ok(page)) = ready(&s) {
+            if let Some(Ok(page)) = take_ready(&s) {
                 g.total = Some(page.total);
                 for (n, it) in page.items.into_iter().enumerate() {
                     g.items.insert(off + n as i64, it);
@@ -1459,14 +1478,15 @@ impl CorrentApp {
         }
     }
 
-    fn children(&mut self, client: &MediaClient, parent: i64) -> Option<Vec<Item>> {
+    /// A parent's children (empty until they're loaded), shared, not copied.
+    fn children(&mut self, client: &MediaClient, parent: i64) -> Children {
         let slot = self.media.children.entry(parent).or_insert_with(|| {
             let c = client.clone();
             fetch(&self.rt, &self.ctx, async move {
                 c.get::<ItemPage<Item>>(&format!("/api/v1/items?parent_id={parent}&sort=index&limit=500")).await
             })
         });
-        ready(slot).and_then(Result::ok).map(|p| p.items)
+        Children(ready_arc(slot).and_then(Result::ok))
     }
 
     fn item_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, id: i64) {
@@ -1475,7 +1495,7 @@ impl CorrentApp {
             self.media.detail =
                 Some((id, fetch(&self.rt, &self.ctx, async move { c.get(&format!("/api/v1/items/{id}")).await })));
         }
-        let d = self.media.detail.as_ref().and_then(|(_, s)| ready(s));
+        let d = self.media.detail.as_ref().and_then(|(_, s)| ready_arc(s));
         let d = match d {
             None => {
                 ui.vertical_centered(|ui| ui.spinner());
@@ -1523,9 +1543,10 @@ impl CorrentApp {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.add_space(32.0);
-            let siblings: Vec<Item> = match it.kind {
-                ItemKind::Season | ItemKind::Album => self.children(client, it.id).unwrap_or_default(),
-                _ => vec![it.clone()],
+            let children = self.children(client, it.id);
+            let siblings: &[Item] = match it.kind {
+                ItemKind::Season | ItemKind::Album => children.items(),
+                _ => std::slice::from_ref(&it),
             };
             let label = if it.state.position_ms > 0 && !it.state.played { t!("Resume") } else { t!("Play") };
             let playable =
@@ -1539,7 +1560,7 @@ impl CorrentApp {
                 } else {
                     let first = siblings.iter().find(|s| !s.state.played).or(siblings.first()).cloned();
                     if let Some(f) = first {
-                        self.play_item(&f, &siblings);
+                        self.play_item(&f, siblings);
                     }
                 }
             }
@@ -1594,7 +1615,7 @@ impl CorrentApp {
                     let _ = open::that_detached(&url);
                 }
             }
-            self.download_button(ui, client, &it, &siblings);
+            self.download_button(ui, client, &it, siblings);
             if it.kind.playable() || matches!(it.kind, ItemKind::Season | ItemKind::Album) {
                 self.add_to_playlist_button(ui, client, it.id);
             }
@@ -1619,7 +1640,8 @@ impl CorrentApp {
         }
         match it.kind {
             ItemKind::Show => {
-                let seasons = self.children(client, it.id).unwrap_or_default();
+                let seasons = self.children(client, it.id);
+                let seasons = seasons.items();
                 if !seasons.is_empty() {
                     let sel = *self.media.selected_season.entry(it.id).or_insert_with(|| {
                         seasons
@@ -1631,28 +1653,28 @@ impl CorrentApp {
                     });
                     ui.horizontal(|ui| {
                         ui.add_space(32.0);
-                        for s in &seasons {
+                        for s in seasons {
                             if ui.selectable_label(s.id == sel, &s.title).clicked() {
                                 self.media.selected_season.insert(it.id, s.id);
                             }
                         }
                     });
                     ui.add_space(10.0);
-                    let eps = self.children(client, sel).unwrap_or_default();
-                    self.episode_list(ui, p, client, &eps);
+                    let eps = self.children(client, sel);
+                    self.episode_list(ui, p, client, eps.items());
                 }
             }
             ItemKind::Season => {
-                let eps = self.children(client, it.id).unwrap_or_default();
-                self.episode_list(ui, p, client, &eps);
+                let eps = self.children(client, it.id);
+                self.episode_list(ui, p, client, eps.items());
             }
             ItemKind::Album => {
-                let tracks = self.children(client, it.id).unwrap_or_default();
-                self.track_list(ui, p, client, &tracks);
+                let tracks = self.children(client, it.id);
+                self.track_list(ui, p, client, tracks.items());
             }
             ItemKind::Artist => {
-                let albums = self.children(client, it.id).unwrap_or_default();
-                self.card_section(ui, p, client, t!("Albums"), &albums, None, None);
+                let albums = self.children(client, it.id);
+                self.card_section(ui, p, client, t!("Albums"), albums.items(), None, None);
             }
             _ => {}
         }
@@ -1817,7 +1839,7 @@ impl CorrentApp {
                 fetch(&self.rt, &self.ctx, async move { c.get(&format!("/api/v1/library/search?q={enc}")).await }),
             ));
         }
-        match self.media.search.as_ref().and_then(|(_, s)| ready(s)) {
+        match self.media.search.as_ref().and_then(|(_, s)| ready_arc(s)) {
             None => {
                 ui.vertical_centered(|ui| ui.spinner());
             }
@@ -1862,7 +1884,7 @@ impl CorrentApp {
                     }),
                 ));
         }
-        match self.media.person.as_ref().and_then(|(_, s)| ready(s)) {
+        match self.media.person.as_ref().and_then(|(_, s)| ready_arc(s)) {
             None => {
                 ui.vertical_centered(|ui| ui.spinner());
             }
@@ -1921,7 +1943,7 @@ impl CorrentApp {
             self.main_view = super::feeds::MainView::Media;
             self.open(Page::Home);
         }
-        for l in self.media.libraries() {
+        for l in self.media.libraries().iter() {
             let icon = match l.kind {
                 corrent_proto::library::LibraryKind::Movies => icons::FILM_SLATE,
                 corrent_proto::library::LibraryKind::Shows => icons::TELEVISION,

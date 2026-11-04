@@ -232,7 +232,7 @@ impl CorrentApp {
 
     /// The "Add to library" dialog. True when it is done (or cancelled).
     fn add_to_library_body(&mut self, ui: &mut Ui, p: &Palette, d: &mut AddToLibrary) -> bool {
-        use super::media::client::{fetch, ready};
+        use super::media::client::{fetch, ready, ready_arc};
         use corrent_proto::library::{ImportAction, LibraryKind, TorrentImport};
         ui.set_width(widgets::modal_width(ui.ctx(), 560.0));
         title(ui, p, icons::FILM_SLATE, t!("Add to library"));
@@ -242,10 +242,9 @@ impl CorrentApp {
             d.finished = finished;
             d.preview = None;
         }
-        let libs: Vec<_> = self
-            .media
-            .libraries()
-            .into_iter()
+        let libs = self.media.libraries();
+        let libs: Vec<_> = libs
+            .iter()
             .filter(|l| matches!(l.kind, LibraryKind::Movies | LibraryKind::Shows | LibraryKind::Videos))
             .collect();
         let Some(client) = self.media.client.clone() else {
@@ -310,7 +309,7 @@ impl CorrentApp {
         }
         ui.add_space(8.0);
         ui.label(RichText::new(t!("Where the files go")).strong().color(p.text));
-        let preview = d.preview.as_ref().and_then(|(_, _, s)| ready(s));
+        let preview = d.preview.as_ref().and_then(|(_, _, s)| ready_arc(s));
         let plan_ok = matches!(preview, Some(Ok(_)));
         egui::ScrollArea::vertical().id_salt("add-to-lib-plan").max_height(160.0).show(ui, |ui| match &preview {
             None => {
