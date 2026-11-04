@@ -1985,3 +1985,70 @@ async fn adding_a_torrent_again_keeps_its_record() {
     assert!(!m.metainfo_missing);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Cancelling an add that is already past the point of stopping: it lands, so it is recorded
+/// properly and its watch-folder file is treated as added (it was renamed .failed before).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_an_add_that_lands_anyway_records_it() {
+    let dir = temp_dir("cancel-landed");
+    let s = seeder(&dir).await;
+    let watch = dir.join("watch");
+    std::fs::create_dir_all(&watch).unwrap();
+    let mut cfg = settings(&dir);
+    cfg.watch.push(crate::config::WatchFolder {
+        path: watch.clone(),
+        start_paused: true,
+        category: Some("Watched".into()),
+        ..Default::default()
+    });
+    let l = start_with(&dir, cfg);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    crate::faults::set_call_delay(s.hash.0, Duration::from_secs(3));
+    std::fs::write(watch.join("a.torrent"), &s.bytes).unwrap();
+    let snap = wait_for(&l, "the pending row", 30, |sn| sn.torrents.iter().any(|t| t.pending)).await;
+    let row = snap.torrents.iter().find(|t| t.pending).unwrap().hash;
+    // Past the checks and the folder: within the delay, before the engine's list.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !dir.join("dl").exists() {
+        assert!(Instant::now() < deadline, "the add never got to its folder");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    l.engine.send(EngineCommand::CancelAdd(row));
+    wait_for(&l, "the row to go", 10, |sn| !sn.torrents.iter().any(|t| t.pending)).await;
+    wait_for(&l, "the torrent, recorded", 20, |sn| {
+        find(sn, s.hash).is_some_and(|t| t.category.as_deref() == Some("Watched"))
+    })
+    .await;
+    crate::faults::clear_call_delay(s.hash.0);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !watch.join("a.torrent.added").exists() {
+        assert!(Instant::now() < deadline, "{:?}", std::fs::read_dir(&watch).unwrap().collect::<Vec<_>>());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!watch.join("a.torrent.failed").exists());
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Cancelling an add still fetching its metadata: it goes, without an error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_an_add_fetching_its_metadata_is_quiet() {
+    use super::faultserver::{self, Route};
+    let dir = temp_dir("cancel-fetching");
+    let srv = faultserver::start().await;
+    srv.route("/a.torrent", Route::Hang);
+    let l = start(&dir);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    add_url(&l, &dir, srv.url("/a.torrent"));
+    let snap = wait_for(&l, "the pending row", 10, |sn| sn.torrents.iter().any(|t| t.pending)).await;
+    let row = snap.torrents.iter().find(|t| t.pending).unwrap().hash;
+    l.engine.send(EngineCommand::CancelAdd(row));
+    wait_for(&l, "the row to go", 10, |sn| sn.torrents.is_empty()).await;
+    // A restart doesn't wait for it: it has reported back.
+    l.engine.send(EngineCommand::ApplySettings(restart_settings(&dir)));
+    let seen = toast_with(&l, "Settings applied", 10).await;
+    assert!(!seen.iter().any(|t| t.contains("Could not add")), "{seen:?}");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

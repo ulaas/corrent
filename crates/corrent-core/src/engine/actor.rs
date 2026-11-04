@@ -96,7 +96,6 @@ struct PendingAdd {
     save_path: PathBuf,
     /// The server account that asked for it (it may cancel it).
     added_by: Option<String>,
-    task: Option<JoinHandle<()>>,
     /// Stops the add while it only waits for its metadata (see `add_torrent`).
     cancel: tokio_util::sync::CancellationToken,
     /// Not running: waits for the session restart to finish (see `maybe_apply_deferred`).
@@ -150,6 +149,9 @@ pub struct Actor {
     mirrored_size: HashMap<InfoHash, u64>,
     previews: HashMap<u64, JoinHandle<()>>,
     pending: HashMap<u64, PendingAdd>,
+    /// Adds the user cancelled (no longer in `pending`) until they report back: one past the
+    /// point of stopping may still land, and is then recorded like any other.
+    cancelled_adds: HashSet<u64>,
     next_pending: u64,
     busy: HashMap<InfoHash, String>,
     seen_unfinished: HashSet<InfoHash>,
@@ -277,6 +279,7 @@ impl Actor {
             mirrored_size: HashMap::new(),
             previews: HashMap::new(),
             pending: HashMap::new(),
+            cancelled_adds: HashSet::new(),
             next_pending: 1,
             busy: HashMap::new(),
             seen_unfinished: HashSet::new(),
@@ -655,14 +658,13 @@ impl Actor {
             EngineCommand::CancelAdd(hash) => {
                 let ids: Vec<u64> = self.pending.iter().filter(|(_, p)| p.hash == hash).map(|(id, _)| *id).collect();
                 for id in ids {
-                    if let Some(p) = self.pending.remove(&id)
-                        && let Some(t) = p.task
-                    {
-                        t.abort();
-                    }
-                    // Cancelled by the user: keep the file, renamed so it isn't added again.
-                    if let Some((path, after)) = self.watch_adds.remove(&id) {
-                        self.settle_watch_file(path, after, false);
+                    let Some(p) = self.pending.remove(&id) else { continue };
+                    self.rss_adds.remove(&id);
+                    if p.held.is_none() {
+                        p.cancel.cancel();
+                        self.cancelled_adds.insert(id);
+                    } else {
+                        self.settle_cancelled_watch_file(id);
                     }
                 }
             }
@@ -1244,7 +1246,6 @@ impl Actor {
                 started: now_unix(),
                 save_path: req.save_path.clone(),
                 added_by: req.added_by.clone(),
-                task: None,
                 cancel: Default::default(),
                 held: None,
             },
@@ -1264,24 +1265,30 @@ impl Actor {
         let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
         let cancel = tokio_util::sync::CancellationToken::new();
         let token = cancel.clone();
-        let task = tokio::spawn(async move {
+        tokio::spawn(async move {
             let result = add_torrent(&sess, &req, peer_limit, &token).await.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Internal::AddFinished { pending, req, result }).await;
         });
         if let Some(p) = self.pending.get_mut(&pending) {
-            p.task = Some(task);
             p.cancel = cancel;
         }
     }
 
     /// An add is at work on the current session.
     fn adds_running(&self) -> bool {
-        self.pending.values().any(|p| p.held.is_none())
+        !self.cancelled_adds.is_empty() || self.pending.values().any(|p| p.held.is_none())
     }
 
     /// A session restart has waited long enough: new adds wait for the new session.
     fn holding_adds(&self) -> bool {
         self.deferred_since.is_some_and(|t| t.elapsed() >= RESTART_WAITS_FOR_ADDS)
+    }
+
+    /// Cancelled by the user: keep the watch-folder file, renamed so it isn't added again.
+    fn settle_cancelled_watch_file(&mut self, id: u64) {
+        if let Some((path, after)) = self.watch_adds.remove(&id) {
+            self.settle_watch_file(path, after, false);
+        }
     }
 
     /// Adds that stopped for a session restart start again (on the new session).
@@ -1884,7 +1891,12 @@ impl Actor {
                     return;
                 }
                 self.pending.remove(&pending);
+                let cancelled = self.cancelled_adds.remove(&pending);
                 self.maybe_apply_deferred();
+                if cancelled && result.is_err() {
+                    self.settle_cancelled_watch_file(pending);
+                    return;
+                }
                 if let Some(d) = self.rss_adds.remove(&pending)
                     && let Err(e) = &result
                     && !is_duplicate_error(e)
@@ -2136,6 +2148,7 @@ impl Actor {
             ("mirrored_size", self.mirrored_size.len()),
             ("previews", self.previews.len()),
             ("pending", self.pending.len()),
+            ("cancelled_adds", self.cancelled_adds.len()),
             ("busy", self.busy.len()),
             ("seen_unfinished", self.seen_unfinished.len()),
             ("unrecorded", self.unrecorded.len()),
@@ -2528,7 +2541,7 @@ impl Actor {
             && self.last_down_active.get(&hash).map(|t| t.elapsed() > STALL_AFTER).unwrap_or(false);
 
         let name_engine = h.name();
-        if self.pending.is_empty() {
+        if self.pending.is_empty() && self.cancelled_adds.is_empty() {
             self.unrecorded.clear();
         } else if self.store.get(&hash).is_none() {
             self.unrecorded.insert(hash);
@@ -3118,7 +3131,6 @@ fn failed_view(f: &super::restore::FailedRestore, m: Option<&crate::store::Torre
         started: m.map(|m| m.added_at).unwrap_or(0),
         save_path: f.output_folder.clone(),
         added_by: None,
-        task: None,
         cancel: Default::default(),
         held: None,
     });
@@ -3296,6 +3308,10 @@ async fn add_torrent(
         prepared = prepare_add(sess, req, peer_limit) => prepared?,
     };
     let (hash, name, bytes, opts) = prepared;
+    // Tests: a slow disk — past the point of stopping, not in the engine's list yet.
+    if let Some(d) = crate::faults::call_delay(hash.0) {
+        tokio::time::sleep(d).await;
+    }
     match sess.add_torrent(AddTorrent::from_bytes(bytes), Some(opts)).await? {
         AddTorrentResponse::Added(_, _) => Ok((hash, name)),
         AddTorrentResponse::AlreadyManaged(_, _) => anyhow::bail!("“{name}” {DUPLICATE}"),
@@ -3502,6 +3518,58 @@ mod tests {
 #[cfg(test)]
 mod more_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelling_a_feed_add_forgets_its_article() {
+        let dir = std::env::temp_dir().join(format!("corrent-cancel-rss-{}", std::process::id()));
+        let paths = Paths { data_dir: dir.clone(), portable: true };
+        let (events, _rx) = std::sync::mpsc::channel();
+        let (tx, _cmds) = mpsc::channel(8);
+        let snapshot = Arc::new(ArcSwap::from_pointee(Snapshot::default()));
+        let mut actor = Actor::new(paths, Settings::default(), Wake::noop(), events, snapshot, tx);
+        let hash = pending_hash(1);
+        actor.pending.insert(
+            1,
+            PendingAdd {
+                name: String::new(),
+                hash,
+                started: 0,
+                save_path: PathBuf::new(),
+                added_by: None,
+                cancel: Default::default(),
+                held: None,
+            },
+        );
+        actor.rss_adds.insert(
+            1,
+            crate::rss::Download {
+                link: String::new(),
+                title: String::new(),
+                rule: Default::default(),
+                key: String::new(),
+                episode: None,
+            },
+        );
+        actor.handle(EngineCommand::CancelAdd(hash)).await;
+        assert!(actor.pending.is_empty() && actor.rss_adds.is_empty());
+        assert!(actor.cancelled_adds.contains(&1), "until it reports back");
+        let req = Box::new(AddRequest {
+            source: AddSource::Magnet(String::new()),
+            torrent_bytes: None,
+            save_path: PathBuf::new(),
+            create_subfolder: false,
+            category: None,
+            tags: Vec::new(),
+            paused: false,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        });
+        actor.handle_internal(Internal::AddFinished { pending: 1, req, result: Err(ADD_CANCELLED.into()) });
+        assert!(actor.cancelled_adds.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn pending_hashes_are_unique_and_marked() {
