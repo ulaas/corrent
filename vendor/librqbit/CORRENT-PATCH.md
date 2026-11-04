@@ -34,6 +34,10 @@ used by the `webui`/`http-api` features Corrent doesn't enable), plus runtime co
 
   Diff: `docs/upstream/librqbit-http-timeouts.patch`.
 
+- `SessionDatabase` keeps a hash index (`src/session.rs`, marked `CORRENT PATCH`): finding a
+  torrent by hash scanned the whole list, so a command over many torrents was quadratic.
+  Diff: `docs/upstream/librqbit-hash-index.patch`.
+
 - Test-only kill points (`src/corrent_hooks.rs`, call sites marked `CORRENT PATCH (D8)` in
   `src/session_persistence/json.rs` and `src/bitv.rs`): after the temp file and after the rename
   of `session.json`, `<hash>.torrent` and the initial `.bitv`, and after each write and sync of

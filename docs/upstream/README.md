@@ -8,6 +8,8 @@ ready to turn into upstream pull requests:
   (Windows reports ICMP port-unreachable as WSAECONNRESET on the socket).
 - `librqbit-runtime-controls.patch` — runtime speed limits per torrent, a shared (group) limiter
   and per-file download order on `ManagedTorrent`.
+- `librqbit-hash-index.patch` — `Session::get`/`delete` by info hash in O(1) (`SessionDatabase`
+  keeps an index).
 - `librqbit-json-next-id.patch` — the JSON session store hands each concurrent add its own id
   (before, concurrent adds got the same id and all but one failed).
 - `librqbit-persistence-fsync.patch` — `session.json`, the initial `.bitv` and the `.torrent`
