@@ -364,6 +364,60 @@ async fn items_whose_file_is_gone_are_flagged() {
     h.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn text_is_compressed_and_video_is_not() {
+    let h = harness("compress", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let raw = |uri: String, header_name: header::HeaderName, value: String| {
+        let (app, admin) = (app.clone(), admin.clone());
+        async move {
+            let mut r = Request::builder()
+                .uri(uri)
+                .header(header::HOST, "127.0.0.1:8443")
+                .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                .header(header_name, value)
+                .body(Body::empty())
+                .unwrap();
+            r.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+            let res = app.oneshot(r).await.unwrap();
+            let (status, headers) = (res.status(), res.headers().clone());
+            let bytes = res.into_body().collect().await.unwrap().to_bytes();
+            (status, headers, bytes)
+        }
+    };
+    // A list long enough to be worth it.
+    let magnet = "magnet:?xt=urn:btih:0303030303030303030303030303030303030303";
+    send(app, Method::POST, "/api/v1/torrents", &admin, json!({ "urls": [magnet], "paused": true })).await;
+    testkit::wait_for(&h.l, "the torrent", 30, |sn| !sn.torrents.is_empty()).await;
+    let (s, hd, _) = raw("/api/v1/torrents".into(), header::ACCEPT_ENCODING, "br".into()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(hd[header::CONTENT_ENCODING], "br");
+    let (s, hd, _) = raw("/api/v1/torrents".into(), header::ACCEPT_ENCODING, "gzip".into()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(hd[header::CONTENT_ENCODING], "gzip");
+
+    // A video file, whole and in part.
+    let lib = empty_library(&h, &admin, "Films", "movies").await;
+    let video = h.dir.join("film.mp4");
+    std::fs::write(&video, vec![0u8; 100_000]).unwrap();
+    let item = seed_item(&h, lib, "movie", None, None, "Film", Some(video.display().to_string())).await;
+    let (s, hd, _) = raw(format!("/api/v1/items/{item}/file"), header::ACCEPT_ENCODING, "br, gzip".into()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(hd.get(header::CONTENT_ENCODING).is_none(), "{hd:?}");
+
+    // The client's page: revalidated, not sent again.
+    let (s, hd, body) = raw("/".into(), header::ACCEPT_ENCODING, "identity".into()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(!body.is_empty());
+    let etag = hd[header::ETAG].to_str().unwrap().to_string();
+    let (s, hd, body) = raw("/".into(), header::IF_NONE_MATCH, etag.clone()).await;
+    assert_eq!(s, StatusCode::NOT_MODIFIED);
+    assert_eq!(hd[header::ETAG].to_str().unwrap(), etag);
+    assert!(body.is_empty());
+    h.stop().await;
+}
+
 /// Signs in to the qBittorrent API and returns the session cookie.
 async fn qbt_login(app: &Router, name: &str, password: &str) -> String {
     let mut r = Request::builder()

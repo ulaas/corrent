@@ -72,6 +72,9 @@ Images are content-addressed (`/images/{sha}?w=`, immutable, ETag). Playback sta
 bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a session playlist;
 `DELETE /playback/sessions/{id}` ends it). Watch progress: `PUT /items/{id}/state`.
 
+Text answers (JSON, playlists, subtitles, the web client) are compressed with gzip or Brotli when
+the client asks for it. Media files, HLS and remux segments and torrent streams never are.
+
 ## Endpoints
 
 ### Accounts and sign-in
