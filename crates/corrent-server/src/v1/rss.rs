@@ -7,11 +7,12 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use corrent_core::engine::types::AddSource;
 use corrent_core::engine::{AddRequest, EngineCommand};
-use corrent_core::rss::{RssSettings, RssView};
+use corrent_core::rss::{FeedView, RssSettings, RssView};
 use corrent_proto::ErrorCode;
 use corrent_proto::auth::Perms;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use super::server::{mask_rss_settings, mask_url};
 use super::{ApiResult, Auth, ClientIp, err};
 use crate::state::AppState;
 
@@ -23,13 +24,63 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/rss/download", post(download))
 }
 
-async fn view(State(st): State<Arc<AppState>>, _auth: Auth) -> ApiResult<RssView> {
-    Ok(Json((*st.engine.snapshot().rss).clone()))
+/// A feed's stable id: masked URLs aren't unique when two feeds share a host.
+fn feed_id(url: &str) -> String {
+    let h = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, url.as_bytes());
+    h.as_ref().iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// `RssView` with each feed's id.
+#[derive(Serialize)]
+struct RssOut {
+    feeds: Vec<FeedOut>,
+}
+
+#[derive(Serialize)]
+struct FeedOut {
+    id: String,
+    #[serde(flatten)]
+    feed: FeedView,
+}
+
+/// A feed as someone sees it who may not change the settings: private trackers put the account's
+/// passkey into feed and download links, and fetch errors quote the feed's URL.
+fn mask_feed(mut f: FeedView) -> FeedView {
+    let masked = mask_url(&f.url);
+    f.error = f.error.map(|e| e.replace(&f.url, &masked));
+    f.url = masked;
+    for a in &mut f.articles {
+        a.article.torrent = a.article.torrent.as_deref().map(mask_url);
+    }
+    f
+}
+
+async fn view(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<RssOut> {
+    let all = auth.0.can(Perms::SETTINGS_WRITE);
+    let feeds = st
+        .engine
+        .snapshot()
+        .rss
+        .feeds
+        .iter()
+        .map(|f| FeedOut { id: feed_id(&f.url), feed: if all { f.clone() } else { mask_feed(f.clone()) } })
+        .collect();
+    Ok(Json(RssOut { feeds }))
 }
 
 async fn config(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<RssSettings> {
     auth.require(Perms::SETTINGS_READ)?;
-    Ok(Json(st.settings.load().rss.clone()))
+    let mut rss = st.settings.load().rss.clone();
+    if !auth.0.can(Perms::SETTINGS_WRITE) {
+        mask_rss_settings(&mut rss);
+    }
+    Ok(Json(rss))
+}
+
+/// The feeds a client's `feed` value names: its id, its URL, or its masked URL (the only form
+/// clients without `settings.write` have).
+fn feeds_named<'a>(view: &'a RssView, name: &'a str) -> impl Iterator<Item = &'a FeedView> {
+    view.feeds.iter().filter(move |f| f.url == name || feed_id(&f.url) == name || mask_url(&f.url) == name)
 }
 
 async fn set_config(
@@ -63,7 +114,17 @@ async fn refresh(
     _auth: Auth,
     body: Option<Json<Refresh>>,
 ) -> ApiResult<serde_json::Value> {
-    st.engine.send(EngineCommand::RssRefresh(body.and_then(|b| b.0.url)));
+    match body.and_then(|b| b.0.url) {
+        Some(name) => {
+            let snap = st.engine.snapshot();
+            for f in feeds_named(&snap.rss, &name) {
+                st.engine.send(EngineCommand::RssRefresh(Some(f.url.clone())));
+            }
+        }
+        None => {
+            st.engine.send(EngineCommand::RssRefresh(None));
+        }
+    }
     Ok(Json(serde_json::json!({})))
 }
 
@@ -81,13 +142,8 @@ async fn download(
 ) -> ApiResult<serde_json::Value> {
     auth.require(Perms::TORRENTS_ADD)?;
     let snap = st.engine.snapshot();
-    let article = snap
-        .rss
-        .feeds
-        .iter()
-        .filter(|f| f.url == r.feed)
-        .flat_map(|f| f.articles.iter())
-        .find(|a| a.article.guid == r.guid)
+    let (feed, article) = feeds_named(&snap.rss, &r.feed)
+        .find_map(|f| f.articles.iter().find(|a| a.article.guid == r.guid).map(|a| (f, a)))
         .ok_or_else(|| err(ErrorCode::NotFound, "no such article"))?;
     let link =
         article.article.torrent.clone().ok_or_else(|| err(ErrorCode::BadRequest, "the article has no torrent"))?;
@@ -106,6 +162,6 @@ async fn download(
         initial_peers: None,
         added_by: Some(auth.name().to_string()),
     })));
-    st.engine.send(EngineCommand::RssMarkDownloaded { feed: r.feed, guid: r.guid });
+    st.engine.send(EngineCommand::RssMarkDownloaded { feed: feed.url.clone(), guid: r.guid });
     Ok(Json(serde_json::json!({})))
 }

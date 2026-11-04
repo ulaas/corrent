@@ -256,6 +256,13 @@ bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a sess
 | POST | `/api/v1/rss/refresh` |
 | POST | `/api/v1/rss/download` |
 
+Feeds and article links can carry a tracker passkey, so callers without `settings.write` get them
+masked to scheme and host (`https://tracker.example/…`, `magnet:…`) in `GET /rss` and
+`GET /rss/config`. Each feed in `GET /rss` has a stable `id`. `POST /rss/refresh` (`url`) and
+`POST /rss/download` (`feed`) take the id, the URL or the masked URL. `GET /server/settings` also
+arrives with `default_trackers`, `proxy_host`, `proxy_username`, `blocklist_url`, `allowlist_url` and
+`run_on_complete` empty, and feed and provider URLs masked, for those callers.
+
 ### Torrent search
 
 | Method | Path |

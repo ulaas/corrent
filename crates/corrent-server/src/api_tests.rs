@@ -157,6 +157,90 @@ pub(crate) async fn admin_token(app: &Router) -> String {
     v["token"].as_str().unwrap().to_string()
 }
 
+/// A plain `user` account and its device token.
+pub(crate) async fn user_token(app: &Router, admin: &str, name: &str) -> String {
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        admin,
+        json!({ "name": name, "password": "long enough pw", "role": "user" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v, _) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call {
+            body: Some(json!({ "username": name, "password": "long enough pw", "device": device() })),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v["token"].as_str().unwrap().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn feed_passkeys_stay_with_those_who_may_change_settings() {
+    let h = harness("rss-mask", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let bob = user_token(app, &admin, "bob").await;
+    let rss = r#"<?xml version="1.0"?><rss version="2.0"><channel><title>Tracker</title>
+        <item><title>Sintel</title><guid>g1</guid>
+        <enclosure url="https://t.example/dl/SECRETKEY/sintel.torrent" length="1" type="application/x-bittorrent"/>
+        </item></channel></rss>"#;
+    let base = crate::net::test_server::serve(
+        [("/rss?passkey=SECRETKEY".to_string(), crate::net::test_server::ok(rss.as_bytes()))].into(),
+    )
+    .await;
+    let url = format!("{base}/rss?passkey=SECRETKEY");
+    let mut cfg = get(app, "/api/v1/rss/config", &admin).await.1;
+    cfg["feeds"] = json!([{ "url": url, "name": "", "enabled": true }]);
+    let (s, v, _) = send(app, Method::PUT, "/api/v1/rss/config", &admin, cfg).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let mut settings = get(app, "/api/v1/server/settings", &admin).await.1;
+    settings["bittorrent"]["default_trackers"] = json!(["https://t.example/SECRETKEY/announce"]);
+    let (s, v, _) = send(app, Method::PUT, "/api/v1/server/settings", &admin, settings).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    send(app, Method::POST, "/api/v1/rss/refresh", &admin, json!({})).await;
+    let mut seen = Value::Null;
+    for _ in 0..200 {
+        seen = get(app, "/api/v1/rss", &admin).await.1;
+        if seen["feeds"][0]["articles"][0]["article"]["guid"] == "g1" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(seen["feeds"][0]["articles"][0]["article"]["guid"], "g1", "{seen}");
+    assert!(seen.to_string().contains("SECRETKEY"), "the admin sees the real links");
+    assert!(get(app, "/api/v1/rss/config", &admin).await.1.to_string().contains("SECRETKEY"));
+    assert!(get(app, "/api/v1/server/settings", &admin).await.1.to_string().contains("SECRETKEY"));
+
+    for route in ["/api/v1/rss", "/api/v1/rss/config", "/api/v1/server/settings"] {
+        let (s, v, _) = get(app, route, &bob).await;
+        assert_eq!(s, StatusCode::OK, "{route}");
+        assert!(!v.to_string().contains("SECRETKEY"), "{route}: {v}");
+    }
+    let view = get(app, "/api/v1/rss", &bob).await.1;
+    let feed = &view["feeds"][0];
+    assert_eq!(feed["url"], format!("{base}/…"));
+    assert_eq!(feed["id"], seen["feeds"][0]["id"]);
+    assert_eq!(feed["articles"][0]["article"]["torrent"], "https://t.example/…", "still says it has a torrent");
+    // Downloading works from what the caller was given: the id or the masked URL.
+    for name in [feed["id"].clone(), feed["url"].clone()] {
+        let (s, v, _) =
+            send(app, Method::POST, "/api/v1/rss/download", &bob, json!({ "feed": name, "guid": "g1" })).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let (s, _, _) =
+        send(app, Method::POST, "/api/v1/rss/download", &bob, json!({ "feed": "nope", "guid": "g1" })).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn setup_login_and_permissions() {
     let h = harness("auth", ServerConfig { tls: false, ..Default::default() }).await;
