@@ -323,6 +323,8 @@ pub struct CorrentApp {
     rows_key: Option<u64>,
     pub scroll_to_focus: bool,
     pub column_menu: Option<egui::Pos2>,
+    /// A widget had the keyboard focus at the end of the last frame.
+    had_focus: bool,
 
     // launch / add
     pub launch_queue: VecDeque<AddSource>,
@@ -535,6 +537,7 @@ impl CorrentApp {
             rows_key: None,
             scroll_to_focus: false,
             column_menu: None,
+            had_focus: false,
             launch_queue: launch.into(),
             dropped_tx,
             dropped_rx,
@@ -1350,6 +1353,8 @@ impl CorrentApp {
             return;
         }
 
+        self.shortcuts(&ctx);
+
         egui::Panel::top("toolbar")
             .exact_size(titlebar::TITLEBAR_HEIGHT)
             .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin { left: 12, right: 0, top: 0, bottom: 0 }))
@@ -1421,7 +1426,7 @@ impl CorrentApp {
         self.batch_dialog(&ctx, &p);
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);
-        self.shortcuts(&ctx);
+        self.had_focus = ctx.memory(|m| m.focused().is_some());
         let actions = self.toasts.show(&ctx, &p);
         self.run_toast_actions(&ctx, actions);
     }

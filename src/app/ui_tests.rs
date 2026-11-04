@@ -87,6 +87,133 @@ fn harness_sized(app: CorrentApp, size: egui::Vec2) -> Harness<'static, CorrentA
     h
 }
 
+/// Replaces the app's engine with one that writes down the commands it gets.
+fn record_commands(app: &mut CorrentApp) -> Arc<std::sync::Mutex<Vec<String>>> {
+    let log: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let backend_log = log.clone();
+    let backend: crate::engine::Backend = Arc::new(move |mut io: crate::engine::BackendIo| {
+        let log = backend_log.clone();
+        Box::pin(async move {
+            while let Some(c) = io.commands.recv().await {
+                log.lock().unwrap().push(format!("{c:?}"));
+            }
+        })
+    });
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let rt = app.rt.clone();
+    app.engine =
+        crate::engine::EngineHandle::with_backend(&rt, app.paths.clone(), crate::engine::Wake::noop(), tx, backend);
+    log
+}
+
+/// Every command sent so far (the queue is in order, so all are in once a marker sent last is).
+fn commands_sent(app: &CorrentApp, log: &std::sync::Mutex<Vec<String>>) -> Vec<String> {
+    app.engine.send(crate::engine::EngineCommand::CheckHealth);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        {
+            let mut l = log.lock().unwrap();
+            if l.last().is_some_and(|c| c == "CheckHealth") {
+                l.pop();
+                // (Following the selection, not something the user asked for.)
+                l.retain(|c| !c.starts_with("SetDetailTarget"));
+                return std::mem::take(&mut *l);
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "the engine never got the marker");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+fn press_secondary(h: &mut Harness<'static, CorrentApp>, at: egui::Pos2) {
+    h.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+}
+
+#[test]
+fn space_on_a_focused_button_sends_one_command() {
+    let (_f, mut app) = app("focus-space", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let log = record_commands(&mut app);
+    app.selected.insert(InfoHash([1; 20]));
+    let mut h = harness(app);
+    h.run_steps(3);
+    // Nothing focused: the list's shortcut.
+    h.key_press(egui::Key::Space);
+    h.run_steps(2);
+    let sent = commands_sent(h.state(), &log);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].starts_with("Pause"), "{sent:?}");
+    // The button has the focus: its click only.
+    h.get_by_label("Pause").focus();
+    h.run_steps(2);
+    assert!(h.state().ctx.memory(|m| m.focused()).is_some(), "the button has the focus");
+    h.key_press(egui::Key::Space);
+    h.run_steps(2);
+    let sent = commands_sent(h.state(), &log);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].starts_with("Pause"), "{sent:?}");
+}
+
+#[test]
+fn escape_keeps_the_selection_for_menus_and_dialogs() {
+    let (_f, app) = app("escape", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    let at = h.get_by_label("Alpha").rect().center();
+    h.get_by_label("Alpha").click();
+    h.run_steps(3);
+    // A menu closes; the selection it was for stays.
+    press_secondary(&mut h, at);
+    assert!(h.query_by_label_contains("Force start").is_some(), "the menu is open");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Force start").is_none(), "the menu closed");
+    assert!(h.state().selected.contains(&InfoHash([1; 20])), "a menu's Escape keeps the selection");
+    // So does a dialog.
+    h.state_mut().open_speed_limits(vec![InfoHash([1; 20])]);
+    h.run_steps(3);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.state().modal.is_none(), "the dialog closed");
+    assert!(h.state().selected.contains(&InfoHash([1; 20])), "a dialog's Escape keeps the selection");
+    // And leaving the search box, which also empties it.
+    h.state_mut().search = "alp".into();
+    h.state().ctx.memory_mut(|m| m.request_focus(egui::Id::new("search_box")));
+    h.run_steps(3);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.state().search.is_empty(), "Escape leaves the search");
+    assert!(h.state().selected.contains(&InfoHash([1; 20])), "and keeps the selection");
+    // With nothing else to close it clears the selection.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.state().selected.is_empty());
+}
+
+#[test]
+fn list_shortcuts_stay_on_the_list() {
+    let (_f, mut app) = app("list-keys", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let log = record_commands(&mut app);
+    app.selected.insert(InfoHash([1; 20]));
+    app.main_view = super::feeds::MainView::Feeds;
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.key_press(egui::Key::Space);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(commands_sent(h.state(), &log).is_empty());
+    assert!(h.state().selected.contains(&InfoHash([1; 20])));
+}
+
 #[test]
 fn empty_list_offers_add_actions() {
     let (_f, app) = app("empty", vec![]);

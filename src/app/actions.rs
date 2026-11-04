@@ -231,7 +231,10 @@ impl CorrentApp {
         }
     }
 
-    /// Global keyboard shortcuts. Skipped while a text field has focus or a modal is open.
+    /// Global keyboard shortcuts, taken before anything is drawn: a key used here doesn't also
+    /// reach a focused widget, and a dialog that closes on this key this frame still counts as
+    /// open. Skipped while a widget has the focus or a dialog is open; the keys that act on the
+    /// list only work on the list, with no menu open.
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
         let typing = ctx.egui_wants_keyboard_input();
         let sc = |m: Modifiers, k: Key| KeyboardShortcut::new(m, k);
@@ -240,7 +243,8 @@ impl CorrentApp {
         if consume(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::S)) {
             self.engine.send(EngineCommand::SetAltSpeed(!self.snap.session.alt_speed));
         }
-        if self.modal_open() {
+        // Also the dialogs not listed in `modal_open` (About, Connect, the media pages' own).
+        if self.modal_open() || ctx.memory(|m| m.top_modal_layer().is_some()) {
             return;
         }
         if consume(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::O)) {
@@ -286,6 +290,12 @@ impl CorrentApp {
                 self.launch_queue.push_back(s);
             }
         }
+        if self.main_view != super::feeds::MainView::Torrents || egui::Popup::is_any_open(ctx) {
+            return;
+        }
+        if self.main_view != super::feeds::MainView::Torrents || egui::Popup::is_any_open(ctx) {
+            return;
+        }
         if consume(sc(Modifiers::COMMAND, Key::A)) {
             let rows = self.visible_rows().to_vec();
             self.selected = rows.iter().filter_map(|&i| self.snap.torrents.get(i).map(|t| t.hash)).collect();
@@ -325,7 +335,8 @@ impl CorrentApp {
                 super::open_path(&t.content_path.clone());
             }
         }
-        if consume(sc(Modifiers::NONE, Key::Escape)) {
+        // egui has already dropped the focus for this key: it was only for the widget that had it.
+        if !self.had_focus && consume(sc(Modifiers::NONE, Key::Escape)) {
             self.selected.clear();
         }
         // Arrow navigation

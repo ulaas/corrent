@@ -108,7 +108,8 @@ impl CorrentApp {
                         .frame(egui::Frame::NONE)
                         .desired_width(220.0),
                 );
-                if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                // (egui drops the focus for Escape before the frame starts.)
+                if (resp.has_focus() || resp.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     self.search.clear();
                     resp.surrender_focus();
                 }
