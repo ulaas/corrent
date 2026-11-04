@@ -18,7 +18,8 @@ the server never share a profile (two engines must not share one session); a sec
 on the same profile refuses to start.
 
 Create the administrator either on the server itself (open the HTTPS address shown at startup —
-setup only works from the server's own computer) or with
+setup only works from the server's own computer, so until an administrator exists any local
+account there can do it) or with
 `CORRENT_ADMIN_PASSWORD=… correntd --init-admin <name>` (without the variable the password is
 read from standard input). An existing qBittorrent-API account of the profile becomes the first
 administrator automatically.
@@ -39,7 +40,7 @@ afterwards).
 | `cert_path`, `key_path` | none | your own certificate (e.g. from ACME) instead of the built-in CA |
 | `remote_access` | `false` | off: only loopback, private, link-local, CGNAT/Tailscale (100.64.0.0/10) and `allowed_networks` clients get in |
 | `allowed_networks` | `[]` | extra CIDRs treated as local |
-| `trusted_proxies` | `[]` | reverse proxies whose `X-Forwarded-For` is believed |
+| `trusted_proxies` | `[]` | reverse proxies whose `X-Forwarded-For` is believed; a proxy on this computer that isn't listed makes every client look local, so list it |
 | `hostnames` | `[]` | host names browsers may use besides IP addresses, `localhost`, `<computer>` and `<computer>.local` |
 | `qbt_api` | `true` | serve the qBittorrent-compatible API at `/api/v2` and the classic web UI at `/` |
 | `download_roots` | `[]` | extra folders non-admin users may download to and browse |

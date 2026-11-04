@@ -50,13 +50,50 @@ async fn agent_link(state: &Arc<AppState>, user: i64, url: &str) {
     *state.agent_key.lock().unwrap_or_else(|e| e.into_inner()) = Some((key.clone(), user));
     let file = agent_link_file(&state.paths.data_dir);
     let body = serde_json::json!({ "url": url, "token": key }).to_string();
-    if let Err(e) = corrent_core::util::write_replace(&file, body.as_bytes()) {
+    let written = tokio::task::spawn_blocking(move || write_owner_only(&file, &body).map_err(|e| (file, e))).await;
+    if let Ok(Err((file, e))) = written {
         tracing::warn!("{}: {e:#}", file.display());
     }
+}
+
+/// Writes a secret only this account can read, from before it holds anything: 0600 on Unix, on
+/// Windows an ACL without inherited entries (the profile may be on a shared drive in portable
+/// mode).
+fn write_owner_only(path: &std::path::Path, data: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    let _ = std::fs::remove_file(&tmp);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    let mut f = o.open(&tmp)?;
+    #[cfg(windows)]
+    limit_to_this_account(&tmp);
+    f.write_all(data.as_bytes())?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn limit_to_this_account(path: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Ok(user) = std::env::var("USERNAME") else { return };
+    let out = std::process::Command::new("icacls")
+        .arg(path)
+        .args(["/inheritance:r", "/grant:r", &format!("{user}:F")])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => tracing::warn!("icacls: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Err(e) => tracing::warn!("icacls: {e}"),
     }
 }
 
@@ -100,4 +137,24 @@ pub async fn start(
     let base_url = format!("http://127.0.0.1:{}", listener.addr.port());
     agent_link(&state, user.id, &base_url).await;
     Ok(LocalServer { base_url, token: issued.token, user: user.name, state, _listener: listener })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_agent_key_is_readable_after_writing_it_privately() {
+        let d = std::env::temp_dir().join(format!("corrent-mcp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("mcp.json");
+        std::fs::write(&f, "old").unwrap();
+        super::write_owner_only(&f, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

@@ -42,6 +42,21 @@ impl KvStore for DbKv {
             })
             .map_err(|e| e.to_string())?
     }
+
+    fn tripped(&self, plugin: &str) {
+        let p = plugin.to_string();
+        let now = corrent_core::util::now_unix();
+        let r = self.0.write_blocking(move |t| {
+            t.execute(
+                "INSERT INTO plugins(id, enabled, settings, installed_at) VALUES (?1, 0, '{}', ?2) \
+                 ON CONFLICT(id) DO UPDATE SET enabled = 0",
+                params![p, now],
+            )
+        });
+        if let Err(e) = r {
+            tracing::warn!("recording that plugin {plugin} is disabled: {e}");
+        }
+    }
 }
 
 /// `<data>/plugins/<id>/` holds installed (non-built-in) plugins.

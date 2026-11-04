@@ -64,7 +64,7 @@ pub async fn edit<T>(st: &AppState, f: impl FnOnce(&mut Vec<Podcast>) -> T) -> R
     Ok(r)
 }
 
-/// A name safe on every file system.
+/// A name safe on every file system (`CON` and friends get a leading `_`).
 pub fn safe_name(s: &str) -> String {
     let c: String = s
         .chars()
@@ -75,8 +75,19 @@ pub fn safe_name(s: &str) -> String {
         .chars()
         .take(100)
         .collect();
-    if c.is_empty() { "Podcast".into() } else { c }
+    if c.is_empty() {
+        "Podcast".into()
+    } else if corrent_core::engine::paths::is_reserved(&c) {
+        format!("_{c}")
+    } else {
+        c
+    }
 }
+
+/// What an episode file may be called: a feed decides the URL, and the folder may be shared (a
+/// `.lnk` or `.scf` is run or read just by browsing there).
+const EPISODE_EXTENSIONS: [&str; 14] =
+    ["mp3", "m4a", "m4b", "aac", "ogg", "oga", "opus", "flac", "wav", "mp4", "m4v", "mov", "webm", "mkv"];
 
 #[derive(Debug, PartialEq)]
 pub struct Episode {
@@ -94,10 +105,8 @@ pub struct Feed {
 
 fn ext_of(url: &str, mime: Option<&str>) -> String {
     let path = url.split(['?', '#']).next().unwrap_or("");
-    let from_url = path
-        .rsplit_once('.')
-        .map(|(_, e)| e.to_ascii_lowercase())
-        .filter(|e| e.len() <= 4 && e.chars().all(|c| c.is_ascii_alphanumeric()));
+    let from_url =
+        path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).filter(|e| EPISODE_EXTENSIONS.contains(&e.as_str()));
     from_url.unwrap_or_else(|| {
         match mime.unwrap_or("") {
             "audio/mpeg" => "mp3",
@@ -365,6 +374,17 @@ mod tests {
 <item><title>Episode 1</title><pubDate>Tue, 01 Sep 2026 10:00:00 GMT</pubDate><enclosure url="https://cdn.example.org/ep1" type="audio/mp4" length="100"/></item>
 <item><title>Show notes only</title></item>
 </channel></rss>"#;
+
+    #[test]
+    fn episode_names_stay_harmless() {
+        assert_eq!(ext_of("https://x.example/ep.MP3?a=1", None), "mp3");
+        assert_eq!(ext_of("https://x.example/ep.lnk", Some("audio/mpeg")), "mp3");
+        assert_eq!(ext_of("https://x.example/ep.exe", Some("video/mp4")), "mp4");
+        assert_eq!(ext_of("https://x.example/ep.scf", None), "mp3");
+        assert_eq!(safe_name("CON"), "_CON");
+        assert_eq!(safe_name("nul.txt"), "_nul.txt");
+        assert_eq!(safe_name("Console"), "Console");
+    }
 
     #[test]
     fn parses_and_names_episodes() {

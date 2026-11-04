@@ -275,8 +275,16 @@ fn admin_tool(args: &[String]) -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!(e.message))?;
             let scheme = if cfg.tls { "https" } else { "http" };
             let base = format!("{scheme}://127.0.0.1:{}/api/v1", cfg.https_port);
-            // Loopback to our own server: its certificate is self-signed.
-            let http = reqwest::Client::builder().tls_danger_accept_invalid_certs(true).build()?;
+            // Loopback to our own server, trusting only its own CA: the token must not go to
+            // whatever else listens on that port while the server is down.
+            let mut http = reqwest::Client::builder();
+            if cfg.tls {
+                let pem = std::fs::read(paths.data_dir.join("tls").join("ca.pem")).map_err(|e| {
+                    anyhow::anyhow!("reading the server's CA ({e}); with your own certificate, use the web client")
+                })?;
+                http = http.tls_certs_only([reqwest::Certificate::from_pem(&pem)?]);
+            }
+            let http = http.build()?;
             let r: anyhow::Result<()> = rt.block_on(async {
                 let libs: Vec<corrent_proto::library::Library> = http
                     .get(format!("{base}/libraries"))

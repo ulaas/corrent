@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::header;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use corrent_proto::ErrorCode;
@@ -155,20 +155,24 @@ async fn download_backup(
     auth: Auth,
     ip: ClientIp,
     Path(name): Path<String>,
+    req: axum::extract::Request,
 ) -> Result<Response, super::ApiErr> {
+    use tower::ServiceExt as _;
     admin(&auth)?;
     let path =
         crate::backups::path_of(&st.paths.data_dir, &name).ok_or_else(|| err(ErrorCode::NotFound, "no such backup"))?;
-    let bytes = tokio::fs::read(&path).await.map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "backup_download", &name, true, "").await;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "application/zip".to_string()),
-            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"")),
-        ],
-        bytes,
-    )
-        .into_response())
+    // Streamed from the file: backups can be gigabytes.
+    let res = tower_http::services::ServeFile::new_with_mime(&path, &crate::static_mime("application/zip"))
+        .oneshot(req)
+        .await
+        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+    let mut res = res.map(axum::body::Body::new);
+    let disposition = format!("attachment; filename=\"{name}\"");
+    if let Ok(v) = header::HeaderValue::from_str(&disposition) {
+        res.headers_mut().insert(header::CONTENT_DISPOSITION, v);
+    }
+    Ok(res)
 }
 
 #[derive(serde::Serialize)]

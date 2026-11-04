@@ -182,6 +182,30 @@ pub(crate) async fn user_token(app: &Router, admin: &str, name: &str) -> String 
     v["token"].as_str().unwrap().to_string()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agent_requests_have_limits() {
+    let h = harness("agent-caps", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let lib = empty_library(&h, &admin, "Films", "movies").await;
+    let item = seed_item(&h, lib, "movie", None, None, "Sintel", None).await;
+    let ping = json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" });
+    let batch = |n: usize| Value::Array(vec![ping.clone(); n]);
+    assert_eq!(send(app, Method::POST, "/api/v1/mcp", &admin, batch(33)).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(send(app, Method::POST, "/api/v1/mcp", &admin, batch(32)).await.0, StatusCode::OK);
+    let propose = |title: String| {
+        let body = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "propose_details", "arguments": { "item_id": item, "title": title } } });
+        let (app, admin) = (app.clone(), admin.clone());
+        async move { send(&app, Method::POST, "/api/v1/mcp", &admin, body).await.1 }
+    };
+    let long = propose("x".repeat(201)).await;
+    assert!(long.to_string().contains("longer than 200"), "{long}");
+    let fine = propose("x".repeat(200)).await;
+    assert!(!fine.to_string().contains("longer than"), "{fine}");
+    h.stop().await;
+}
+
 /// A library in a new folder of the test's directory (nothing to scan) and its id.
 pub(crate) async fn empty_library(h: &H, admin: &str, name: &str, kind: &str) -> i64 {
     let folder = h.dir.join(format!("lib-{name}"));

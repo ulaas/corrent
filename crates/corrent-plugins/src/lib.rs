@@ -81,6 +81,8 @@ const BREAKER: u32 = 3;
 pub trait KvStore: Send + Sync {
     fn get(&self, plugin: &str, key: &str) -> Option<String>;
     fn set(&self, plugin: &str, key: &str, value: &str) -> Result<(), String>;
+    /// The plugin failed too often and was disabled: remember that across restarts.
+    fn tripped(&self, _plugin: &str) {}
 }
 
 /// An in-memory store (tests).
@@ -591,7 +593,8 @@ impl PluginHost {
         let state = HostState {
             wasi,
             table: ResourceTable::new(),
-            limits: StoreLimitsBuilder::new().memory_size(MEMORY_LIMIT).instances(16).tables(64).build(),
+            // One linear memory: the size limit applies per memory.
+            limits: StoreLimitsBuilder::new().memory_size(MEMORY_LIMIT).memories(1).instances(16).tables(64).build(),
             plugin: l.ctx.clone(),
             library: if l.ctx.manifest.permissions.library {
                 self.library.read().unwrap_or_else(|e| e.into_inner()).clone()
@@ -624,6 +627,9 @@ impl PluginHost {
         if n >= BREAKER {
             tracing::error!("plugin {id} is disabled after {n} failures");
             let _ = self.set_enabled(id, false);
+            // It stays off after a restart too.
+            let (kv, id) = (self.kv.clone(), id.to_string());
+            self.rt.spawn_blocking(move || kv.tripped(&id));
         }
     }
 
