@@ -860,7 +860,7 @@ mod more_tests {
     fn tag_and_tracker_filters() {
         let mut a = t(1, "a");
         a.tags = vec!["linux".into()];
-        a.trackers = vec!["udp://tracker.example.org:1337/announce".into()];
+        a.trackers = vec!["udp://tracker.example.org:1337/announce".into()].into();
         let tag = UiPrefs { tag_filter: GroupFilter::Named("linux".into()), ..Default::default() };
         assert!(matches_filters(&a, &tag, ""));
         assert!(!matches_filters(&t(2, "b"), &tag, ""));

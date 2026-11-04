@@ -35,7 +35,8 @@ pub struct TorrentView {
     pub added_at: i64,
     pub completed_at: Option<i64>,
     pub queue_pos: u32,
-    pub trackers: Vec<String>,
+    /// Shared, not copied, by every snapshot: it only changes with a re-add.
+    pub trackers: std::sync::Arc<[String]>,
     pub has_metadata: bool,
     pub file_count: usize,
     pub piece_count: u32,
@@ -59,7 +60,7 @@ impl TorrentView {
         let mut s = format!("magnet:?xt=urn:btih:{}", self.hash.to_hex());
         s.push_str("&dn=");
         s.push_str(&url_encode(&self.name));
-        for t in &self.trackers {
+        for t in self.trackers.iter() {
             s.push_str("&tr=");
             s.push_str(&url_encode(t));
         }
@@ -418,7 +419,7 @@ mod more_tests {
         let t = TorrentView {
             hash: InfoHash([1; 20]),
             name: "My File".into(),
-            trackers: vec!["udp://t.example:80".into()],
+            trackers: vec!["udp://t.example:80".into()].into(),
             ..Default::default()
         };
         let m = t.magnet();
@@ -485,7 +486,7 @@ pub mod wire {
             added_at: t.added_at,
             completed_at: t.completed_at,
             queue_pos: t.queue_pos,
-            trackers: t.trackers.clone(),
+            trackers: t.trackers.to_vec(),
             has_metadata: t.has_metadata,
             file_count: t.file_count,
             piece_count: t.piece_count,
@@ -616,7 +617,7 @@ pub mod wire {
             added_at: t.added_at,
             completed_at: t.completed_at,
             queue_pos: t.queue_pos,
-            trackers: t.trackers.clone(),
+            trackers: t.trackers.clone().into(),
             has_metadata: t.has_metadata,
             file_count: t.file_count,
             piece_count: t.piece_count,

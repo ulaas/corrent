@@ -115,6 +115,10 @@ struct StaticInfo {
     comment: Option<String>,
     created_by: Option<String>,
     creation_date: Option<i64>,
+    /// Only changes with a re-add, which drops this cache entry.
+    trackers: Arc<[String]>,
+    /// A single-file torrent's file, relative to its folder.
+    first_file: Option<PathBuf>,
 }
 
 /// Downloaded/uploaded byte counters per peer address (for rates).
@@ -146,7 +150,7 @@ pub struct Actor {
     /// Peer counters per torrent for on-demand details (remote clients), with the time taken.
     remote_prev: HashMap<InfoHash, (Instant, PeerCounters)>,
     pieces_cache: Option<(Instant, InfoHash, (Vec<u8>, u32))>,
-    static_info: HashMap<InfoHash, StaticInfo>,
+    static_info: HashMap<InfoHash, Arc<StaticInfo>>,
     /// The engine's selected size when its file selection was last copied to the store: a
     /// change means the selection may have changed (D7).
     mirrored_size: HashMap<InfoHash, u64>,
@@ -2538,7 +2542,7 @@ impl Actor {
         let stats = h.stats();
         let has_metadata = h.with_metadata(|_| ()).is_ok();
         if has_metadata && !self.static_info.contains_key(&hash) {
-            self.static_info.insert(hash, static_info(h));
+            self.static_info.insert(hash, Arc::new(static_info(h)));
         }
         let si = self.static_info.get(&hash).cloned().unwrap_or_default();
 
@@ -2689,8 +2693,8 @@ impl Actor {
         let (save_path, content_path) = if si.multi_file {
             (output.parent().map(Path::to_path_buf).unwrap_or_else(|| output.clone()), output.clone())
         } else {
-            let first = h.with_metadata(|md| md.file_infos.first().map(|f| f.relative_filename.clone())).ok().flatten();
-            (output.clone(), first.map(|f| output.join(f)).unwrap_or_else(|| output.clone()))
+            let content = si.first_file.as_ref().map(|f| output.join(f)).unwrap_or_else(|| output.clone());
+            (output.clone(), content)
         };
 
         let name = m
@@ -2727,7 +2731,12 @@ impl Actor {
             completed_at: m.completed_at,
             queue_pos: m.queue_pos,
             added_by: m.added_by.clone(),
-            trackers: h.shared().trackers.iter().map(|u| u.to_string()).collect(),
+            // (Known without metadata too: a magnet being looked for.)
+            trackers: if has_metadata {
+                si.trackers.clone()
+            } else {
+                h.shared().trackers.iter().map(|u| u.to_string()).collect()
+            },
             has_metadata,
             file_count: si.file_count,
             piece_count: si.piece_count,
@@ -3141,7 +3150,7 @@ fn pending_view(p: &PendingAdd) -> TorrentView {
         completed_at: None,
         queue_pos: u32::MAX,
         added_by: p.added_by.clone(),
-        trackers: Vec::new(),
+        trackers: Default::default(),
         has_metadata: false,
         file_count: 0,
         piece_count: 0,
@@ -3208,6 +3217,8 @@ fn static_info(h: &ManagedTorrent) -> StaticInfo {
             comment: parsed.as_ref().and_then(|p| text(&p.comment)),
             created_by: parsed.as_ref().and_then(|p| text(&p.created_by)),
             creation_date: parsed.as_ref().and_then(|p| p.creation_date.map(|d| d as i64)),
+            trackers: h.shared().trackers.iter().map(|u| u.to_string()).collect(),
+            first_file: m.file_infos.first().map(|f| f.relative_filename.clone()),
         }
     })
     .unwrap_or_default()

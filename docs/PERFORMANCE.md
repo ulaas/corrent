@@ -48,3 +48,20 @@ That's about 0.6–1 ms per write. The file is rewritten whole, so the cost per 
 the number of torrents. With thousands of torrents, or on a hard disk or network drive, writes
 should be batched (one per ~500 ms, at once on delete and stop). L4 and F16 in
 `docs/STABILITY.md` measure that first.
+
+## Per-tick static data (engine quality round, 2026-11-05)
+
+Every tick formatted each torrent's tracker URLs and every snapshot clone copied them. They only
+change with a re-add, so they are built once (`StaticInfo`) and shared: `TorrentView::trackers` is
+an `Arc<[String]>`. The ignored test measures it (release build, 2,000 paused torrents with three
+trackers each):
+
+```
+cargo test -p corrent-core --release --lib perf_engine_tick -- --ignored --nocapture
+```
+
+| What | Time |
+|---|---|
+| Snapshot clone, trackers shared | 0.35 ms |
+| The copies of the trackers a clone no longer makes | 0.30 ms |
+| Slowest of the last 60 ticks | 6 ms (before and after: dominated by other work) |

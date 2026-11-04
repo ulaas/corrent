@@ -2094,3 +2094,63 @@ async fn a_batch_add_publishes_few_snapshots() {
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// What a tick costs with many (paused) torrents, three trackers each: its slowest of the last
+/// 60, a clone of the snapshot, and copying every row's trackers (which each tick and each clone
+/// used to do). Numbers go to docs/PERFORMANCE.md.
+#[ignore = "timing, run by hand: cargo test -p corrent-core --release --lib perf_engine_tick -- --ignored --nocapture"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn perf_engine_tick_cost() {
+    let dir = temp_dir("perf-tick");
+    let l = start(&dir);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    let n = 2000;
+    let t = Instant::now();
+    for i in 0..n {
+        let name = format!("t-{i:04}.bin");
+        let list = b"8:announce19:udp://a.example:1/a13:announce-listll19:udp://a.example:1/ael19:udp://b.example:1/ael19:udp://c.example:1/aee";
+        let mut bytes = b"d".to_vec();
+        bytes.extend_from_slice(list);
+        bytes.extend_from_slice(
+            format!("4:infod6:lengthi16384e4:name{}:{name}12:piece lengthi16384e6:pieces20:", name.len()).as_bytes(),
+        );
+        bytes.extend_from_slice(&[9; 20]);
+        bytes.extend_from_slice(b"ee");
+        l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+            source: AddSource::Bytes { name, bytes },
+            torrent_bytes: None,
+            save_path: dir.join("dl"),
+            create_subfolder: false,
+            category: None,
+            tags: Vec::new(),
+            paused: true,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        })));
+        if i % 200 == 199 {
+            let want = i + 1;
+            wait_for(&l, "the batch", 300, |sn| sn.torrents.iter().filter(|t| !t.pending).count() >= want).await;
+        }
+    }
+    println!("add {n}: {:?}", t.elapsed());
+    // Past the adds' own work: 60 ticks at 200 ms.
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    let snap = l.engine.snapshot();
+    println!("slowest of the last 60 ticks: {} ms", snap.session.tick_max_ms);
+    let timed = |what: &str, f: &dyn Fn()| {
+        let t = Instant::now();
+        for _ in 0..100 {
+            f();
+        }
+        println!("{what}: {:?}", t.elapsed() / 100);
+    };
+    timed("snapshot clone", &|| drop(std::hint::black_box((*snap).clone())));
+    timed("copying the rows' trackers", &|| {
+        let copies: Vec<Vec<String>> = snap.torrents.iter().map(|t| t.trackers.to_vec()).collect();
+        drop(std::hint::black_box(copies));
+    });
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

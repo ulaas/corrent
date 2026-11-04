@@ -536,7 +536,7 @@ impl CorrentApp {
                         .color(p.text_mute),
                 );
             }
-            let mut trackers = t.trackers.clone();
+            let mut trackers = t.trackers.to_vec();
             trackers.sort_by_key(|u| super::table::tracker_host(u));
             for url in &trackers {
                 let parsed = url::Url::parse(url).ok();
