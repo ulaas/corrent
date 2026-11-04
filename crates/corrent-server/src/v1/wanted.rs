@@ -40,8 +40,8 @@ struct ListQuery {
     status: Option<String>,
 }
 
-async fn list(State(st): State<Arc<AppState>>, _auth: Auth, Query(q): Query<ListQuery>) -> ApiResult<Vec<Wanted>> {
-    Ok(Json(st.library.wanted(q.status).await.map_err(lib_err)?))
+async fn list(State(st): State<Arc<AppState>>, auth: Auth, Query(q): Query<ListQuery>) -> ApiResult<Vec<Wanted>> {
+    Ok(Json(st.library.wanted_for(auth.0.user.id, q.status).await.map_err(lib_err)?))
 }
 
 async fn add(State(st): State<Arc<AppState>>, auth: Auth, Json(w): Json<NewWanted>) -> ApiResult<Wanted> {
@@ -201,11 +201,27 @@ async fn grab_item(
     Ok(Json(serde_json::json!({ "hash": h })))
 }
 
+/// Whether a torrent's file is also a file of a library this caller can see.
+async fn in_a_visible_library(
+    st: &AppState,
+    auth: &Auth,
+    hash: InfoHash,
+    files: &[corrent_core::engine::types::FileView],
+    f: &corrent_core::engine::types::FileView,
+) -> bool {
+    let snap = st.engine.snapshot();
+    let Some(t) = snap.torrents.iter().find(|t| t.hash == hash) else { return false };
+    let multi = files.len() > 1 || f.components.len() > 1;
+    let path =
+        if multi { f.components.iter().fold(t.content_path.clone(), |p, c| p.join(c)) } else { t.content_path.clone() };
+    st.library.path_visible(auth.0.user.id, &path).await.unwrap_or(false)
+}
+
 /// A torrent file as it downloads (Range requests wait for the pieces they need): proxied
 /// from the engine's loopback stream server.
 async fn stream(
     State(st): State<Arc<AppState>>,
-    _auth: Auth,
+    auth: Auth,
     Path((hash, file)): Path<(String, usize)>,
     req: Request,
 ) -> Result<Response, super::ApiErr> {
@@ -214,6 +230,11 @@ async fn stream(
     st.engine.send(corrent_core::engine::EngineCommand::FileList { hash: h, reply: tx });
     let files = rx.await.ok().flatten().ok_or_else(|| err(ErrorCode::NotFound, "no such torrent"))?;
     let f = files.iter().find(|f| f.index == file).ok_or_else(|| err(ErrorCode::NotFound, "no such file"))?;
+    if super::torrents::may_manage_as(&st, &auth.0, &[h]).is_err()
+        && !in_a_visible_library(&st, &auth, h, &files, f).await
+    {
+        return Err(err(ErrorCode::Forbidden, "permission denied"));
+    }
     let name = f.components.last().cloned().unwrap_or_default();
     let url = integrate::loopback_stream_url(&st, h, file, &name)
         .ok_or_else(|| err(ErrorCode::EngineUnavailable, "streaming is not running"))?;
@@ -240,6 +261,8 @@ async fn monitor(
     Json(r): Json<corrent_proto::library::MonitorRequest>,
 ) -> ApiResult<Vec<corrent_proto::library::MonitoredShow>> {
     auth.require(Perms::TORRENTS_ADD)?;
+    let user = auth.0.user.id;
+    st.library.item(user, id).await.map_err(lib_err)?;
     st.library.monitor_show(id, r.profile_id, r.from_season.unwrap_or(1), auth.name()).await.map_err(lib_err)?;
     let st2 = st.clone();
     tokio::spawn(async move {
@@ -249,18 +272,19 @@ async fn monitor(
             tracing::info!("monitor {}: {e}", show.title);
         }
     });
-    Ok(Json(st.library.monitored().await.map_err(lib_err)?))
+    Ok(Json(st.library.monitored_for(user).await.map_err(lib_err)?))
 }
 
 async fn unmonitor(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<i64>) -> ApiResult<serde_json::Value> {
     auth.require(Perms::TORRENTS_ADD)?;
+    st.library.item(auth.0.user.id, id).await.map_err(lib_err)?;
     st.library.unmonitor_show(id).await.map_err(lib_err)?;
     Ok(Json(serde_json::json!({})))
 }
 
 async fn monitored(
     State(st): State<Arc<AppState>>,
-    _auth: Auth,
+    auth: Auth,
 ) -> ApiResult<Vec<corrent_proto::library::MonitoredShow>> {
-    Ok(Json(st.library.monitored().await.map_err(lib_err)?))
+    Ok(Json(st.library.monitored_for(auth.0.user.id).await.map_err(lib_err)?))
 }

@@ -173,7 +173,10 @@ async fn cancel_scan(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path
     Ok(Json(serde_json::json!({})))
 }
 
-async fn scan_status(State(st): State<Arc<AppState>>, _auth: Auth, Path(id): Path<i64>) -> ApiResult<ScanStatus> {
+async fn scan_status(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<i64>) -> ApiResult<ScanStatus> {
+    if !st.library.library_visible(auth.0.user.id, id).await.map_err(lib_err)? {
+        return Err(err(ErrorCode::NotFound, "no such library"));
+    }
     Ok(Json(st.library.scan_status(id).unwrap_or(ScanStatus { library_id: id, ..Default::default() })))
 }
 

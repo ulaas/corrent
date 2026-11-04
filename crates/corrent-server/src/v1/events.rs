@@ -278,7 +278,8 @@ impl Client {
             return Ok(());
         };
         if let Some(d) = detail(&self.st, hash).await {
-            self.send(ws, &Event::TorrentDetail { detail: wire::detail(&d) }).await?;
+            let detail = super::redact_detail(&self.st, &self.auth.0, wire::detail(&d));
+            self.send(ws, &Event::TorrentDetail { detail }).await?;
         }
         Ok(())
     }

@@ -126,7 +126,7 @@ fn attach_images(c: &Connection, raws: Vec<RawItem>) -> rusqlite::Result<Vec<Ite
 }
 
 /// Libraries the user may see (`None` = all).
-fn allowed(c: &Connection, user: i64) -> rusqlite::Result<Option<Vec<i64>>> {
+pub(crate) fn allowed(c: &Connection, user: i64) -> rusqlite::Result<Option<Vec<i64>>> {
     let mut st = c.prepare_cached("SELECT library_id FROM user_libraries WHERE user_id = ?1")?;
     let v: Vec<i64> = st.query_map([user], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
     Ok((!v.is_empty()).then_some(v))
@@ -468,6 +468,31 @@ impl Library {
             })
             .await?
             .ok_or(LibError::NotFound)
+    }
+
+    /// Whether the user may see a library.
+    pub async fn library_visible(&self, user: i64, library: i64) -> Result<bool> {
+        Ok(self.db().read(move |c| Ok(allowed(c, user)?.is_none_or(|a| a.contains(&library)))).await?)
+    }
+
+    /// Whether a file at this path belongs to an item the user may see.
+    pub async fn path_visible(&self, user: i64, path: &std::path::Path) -> Result<bool> {
+        let p = db_path(path);
+        Ok(self
+            .db()
+            .read(move |c| {
+                let mut st = c.prepare_cached(
+                    "SELECT x.item_id FROM files f JOIN item_files x ON x.file_id = f.id WHERE f.path = ?1",
+                )?;
+                let items = st.query_map([p], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                for item in items {
+                    if visible(c, user, item)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            })
+            .await?)
     }
 
     /// How many library files lie under `prefix` (the delete guard for torrents).

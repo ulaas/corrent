@@ -182,6 +182,135 @@ pub(crate) async fn user_token(app: &Router, admin: &str, name: &str) -> String 
     v["token"].as_str().unwrap().to_string()
 }
 
+/// A library in a new folder of the test's directory (nothing to scan) and its id.
+pub(crate) async fn empty_library(h: &H, admin: &str, name: &str, kind: &str) -> i64 {
+    let folder = h.dir.join(format!("lib-{name}"));
+    std::fs::create_dir_all(&folder).unwrap();
+    let (s, v, _) = send(
+        &h.app,
+        Method::POST,
+        "/api/v1/libraries",
+        admin,
+        json!({ "name": name, "kind": kind, "folders": [folder] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v["id"].as_i64().unwrap()
+}
+
+/// An item written straight into the database, with its main file when `path` is given.
+pub(crate) async fn seed_item(
+    h: &H,
+    library: i64,
+    kind: &str,
+    parent: Option<i64>,
+    index: Option<i64>,
+    title: &str,
+    path: Option<String>,
+) -> i64 {
+    let (kind, title) = (kind.to_string(), title.to_string());
+    h.st.identity
+        .db()
+        .write(move |t| {
+            t.execute(
+                "INSERT INTO items(library_id, kind, parent_id, title, sort_title, index_no, added_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, 1, 1)",
+                corrent_db::rusqlite::params![library, kind, parent, title, index],
+            )?;
+            let item = t.last_insert_rowid();
+            if let Some(path) = path {
+                t.execute(
+                    "INSERT INTO files(library_id, path, size, mtime) VALUES (?1, ?2, 1, 1)",
+                    corrent_db::rusqlite::params![library, path],
+                )?;
+                t.execute("INSERT INTO item_files(item_id, file_id) VALUES (?1, ?2)", [item, t.last_insert_rowid()])?;
+            }
+            Ok(item)
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hidden_libraries_stay_hidden_from_wanted_monitors_and_streams() {
+    let h = harness("visibility", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let bob = user_token(app, &admin, "bob").await;
+    let bob_id = get(app, "/api/v1/auth/me", &bob).await.1["user"]["id"].as_i64().unwrap();
+    let open = empty_library(&h, &admin, "Open", "shows").await;
+    let hidden = empty_library(&h, &admin, "Hidden", "shows").await;
+    h.st.library.set_user_libraries(bob_id, vec![open]).await.unwrap();
+
+    // The wanted list.
+    for (library, title) in [(Some(open), "Seen"), (Some(hidden), "Secret"), (None, "Anywhere")] {
+        let (s, v, _) = send(
+            app,
+            Method::POST,
+            "/api/v1/wanted",
+            &admin,
+            json!({ "library_id": library, "kind": "movie", "title": title }),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let titles = |v: &Value| -> Vec<String> {
+        let mut t: Vec<String> = v.as_array().unwrap().iter().map(|w| w["title"].as_str().unwrap().into()).collect();
+        t.sort();
+        t
+    };
+    assert_eq!(titles(&get(app, "/api/v1/wanted", &bob).await.1), ["Anywhere", "Seen"]);
+    assert_eq!(titles(&get(app, "/api/v1/wanted", &admin).await.1), ["Anywhere", "Secret", "Seen"]);
+
+    // Followed shows.
+    let shown = seed_item(&h, open, "show", None, None, "Open Show", None).await;
+    let secret = seed_item(&h, hidden, "show", None, None, "Secret Show", None).await;
+    for (who, id, status) in
+        [(&admin, secret, StatusCode::OK), (&bob, secret, StatusCode::NOT_FOUND), (&bob, shown, StatusCode::OK)]
+    {
+        let (s, v, _) = send(app, Method::PUT, &format!("/api/v1/items/{id}/monitor"), who, json!({})).await;
+        assert_eq!(s, status, "{v}");
+    }
+    assert_eq!(titles(&get(app, "/api/v1/monitored", &bob).await.1), ["Open Show"]);
+    assert_eq!(titles(&get(app, "/api/v1/monitored", &admin).await.1), ["Open Show", "Secret Show"]);
+    let uri = format!("/api/v1/items/{secret}/monitor");
+    let (s, _, _) = call(app, Method::DELETE, &uri, Call { bearer: Some(&bob), ..Default::default() }).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Scan progress.
+    assert_eq!(get(app, &format!("/api/v1/libraries/{open}/scan"), &bob).await.0, StatusCode::OK);
+    assert_eq!(get(app, &format!("/api/v1/libraries/{hidden}/scan"), &bob).await.0, StatusCode::NOT_FOUND);
+
+    // Someone else's download: only through a library that holds the file.
+    let seeder = testkit::seeder_with(&h.dir, "Sintel.2010.mkv", vec![7u8; 10_000]).await;
+    testkit::add(&h.l, &seeder, &h.dir);
+    testkit::wait_for(&h.l, "the download", 60, |sn| testkit::complete(sn, seeder.hash)).await;
+    let content = testkit::find(&h.l.engine.snapshot(), seeder.hash).unwrap().content_path.clone();
+    seed_item(&h, hidden, "movie", None, None, "Sintel", Some(content.display().to_string())).await;
+    let uri = format!("/api/v1/torrents/{}/files/0/stream", seeder.hash.to_hex());
+    assert_eq!(get(app, &uri, &bob).await.0, StatusCode::FORBIDDEN);
+    assert_ne!(get(app, &uri, &admin).await.0, StatusCode::FORBIDDEN);
+    h.st.library.set_user_libraries(bob_id, vec![open, hidden]).await.unwrap();
+    assert_ne!(get(app, &uri, &bob).await.0, StatusCode::FORBIDDEN);
+
+    // Peers of someone else's torrent.
+    let peer = corrent_proto::torrent::Peer { addr: "203.0.113.9:6881".into(), ..Default::default() };
+    let d = corrent_proto::torrent::TorrentDetail {
+        hash: seeder.hash,
+        files: Vec::new(),
+        peers: vec![peer],
+        pieces: None,
+        piece_count: 0,
+    };
+    let who = |t: String| {
+        let st = h.st.clone();
+        async move { st.identity.verify_token(&t, "").await.unwrap().unwrap() }
+    };
+    assert!(crate::v1::redact_detail(&h.st, &who(bob.clone()).await, d.clone()).peers.is_empty());
+    assert_eq!(crate::v1::redact_detail(&h.st, &who(admin.clone()).await, d).peers.len(), 1);
+    h.stop().await;
+}
+
 /// Signs in to the qBittorrent API and returns the session cookie.
 async fn qbt_login(app: &Router, name: &str, password: &str) -> String {
     let mut r = Request::builder()

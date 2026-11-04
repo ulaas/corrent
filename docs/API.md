@@ -285,6 +285,12 @@ arrives with `default_trackers`, `proxy_host`, `proxy_username`, `blocklist_url`
 | POST | `/api/v1/items/{id}/grab` |
 | GET | `/api/v1/torrents/{hash}/files/{file}/stream` |
 
+The stream answers those who may manage the torrent, or who can see a library holding that file;
+others get 403. `/torrents/{hash}/detail` and the `torrent` event topic leave out peers for callers
+who neither added the torrent nor have `torrents.manage_all`. `POST /auth/profile` refuses switching
+into an account with `settings.write` or `users.manage` with `password required`, unless the caller
+has `users.manage` too.
+
 ### Tasks, notifications, backups (admins)
 
 | Method | Path |

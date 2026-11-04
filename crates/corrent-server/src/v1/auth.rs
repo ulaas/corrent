@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use corrent_proto::ErrorCode;
-use corrent_proto::auth::{LoginRequest, LoginResponse, NewUser, PairRequest, PairingCode, Role, User};
+use corrent_proto::auth::{LoginRequest, LoginResponse, NewUser, PairRequest, PairingCode, Perms, Role, User};
 use serde::Deserialize;
 
 use super::{ApiErr, ApiResult, Auth, COOKIE, ClientIp, err};
@@ -52,6 +52,11 @@ async fn switch_profile(
     if target.disabled {
         return Err(err(ErrorCode::NotFound, "no such profile"));
     }
+    // A short PIN doesn't open an account that can run things on the server.
+    let privileged = target.perms.contains(Perms::SETTINGS_WRITE) || target.perms.contains(Perms::USERS_MANAGE);
+    if privileged && target.id != auth.0.user.id && !auth.0.can(Perms::USERS_MANAGE) {
+        return Err(err(ErrorCode::Forbidden, "password required"));
+    }
     let allowed = match st.identity.check_pin(target.id, req.pin.as_deref().unwrap_or("")).await? {
         Some(true) => true,
         Some(false) => {
@@ -62,7 +67,7 @@ async fn switch_profile(
         None => {
             target.id == auth.0.user.id
                 || matches!(target.role, Role::Kids | Role::Guest)
-                || auth.0.can(corrent_proto::auth::Perms::USERS_MANAGE)
+                || auth.0.can(Perms::USERS_MANAGE)
         }
     };
     if !allowed {
