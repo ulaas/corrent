@@ -90,6 +90,13 @@ export const prefs = $state<Prefs>(load());
 
 export const ACCENTS = Object.keys(accents);
 
+/** The volume slider (0..1) as an amplitude: cubic, like mpv's, so 30 % sounds the same on the web
+ *  and on the desktop. */
+export function perceptual(v: number): number {
+  const x = Math.max(0, Math.min(1, v));
+  return x * x * x;
+}
+
 const darkQuery = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
 const reducedQuery = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
 const env = $state({ systemDark: darkQuery?.matches ?? true, reduced: reducedQuery?.matches ?? false });

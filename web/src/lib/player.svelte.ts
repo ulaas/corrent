@@ -2,7 +2,7 @@
 // `resolveSource`/`attachSource`), progress reporting, and the persistent music player.
 import { api, ApiError, imageUrl, itemFileUrl } from './api';
 import { image } from './media';
-import { prefs } from './prefs.svelte';
+import { perceptual, prefs } from './prefs.svelte';
 import type { Item, ItemDetail, Page } from './types';
 
 // ---- sources ----
@@ -65,14 +65,17 @@ export function stopSession(info: PlaybackInfo | null | undefined, leaving = fal
 type HlsLike = { destroy(): void; loadSource(u: string): void; attachMedia(el: HTMLMediaElement): void; on(ev: string, f: (e: string, d: { fatal?: boolean; type?: string }) => void): void; recoverMediaError(): void; startLoad(): void };
 
 /** Attaches a source to a media element; the returned function detaches it. `onfatal` is
- *  called when an HLS stream can't continue. */
+ *  called when an HLS stream can't continue. `current` is asked once hls.js has loaded: a request
+ *  that was overtaken meanwhile must not attach over the newer one. */
 export async function attachSource(
   el: HTMLMediaElement,
   src: Pick<PlaybackInfo, 'method' | 'url'>,
   onfatal?: (msg: string) => void,
+  current?: () => boolean,
 ): Promise<() => void> {
   if ((src.method === 'hls' || src.method === 'remux') && !el.canPlayType('application/vnd.apple.mpegurl')) {
     const { default: Hls } = await import('hls.js/dist/hls.light.mjs');
+    if (current && !current()) return () => {};
     if (!Hls.isSupported()) throw new Error('HLS is not supported by this browser');
     const hls = new Hls({ maxBufferLength: 30, backBufferLength: 60, xhrSetup: (x: XMLHttpRequest) => {
         x.withCredentials = true;
@@ -105,13 +108,13 @@ export async function attachSource(
 
 // ---- progress ----
 
-/** Reports the position every 10 s while playing, and on pause and end. */
+/** Reports the position every 10 s while playing, on pause and end, and when the page closes. */
 export function reportProgress(el: HTMLMediaElement, id: () => number | null): () => void {
   let last = -1;
-  const send = (body: { position_ms: number; played?: boolean }) => {
+  const send = (body: { position_ms: number; played?: boolean }, keepalive = false) => {
     const i = id();
     if (i == null) return;
-    void api.put(`/items/${i}/state`, body).catch(() => {});
+    void api.put(`/items/${i}/state`, body, { keepalive }).catch(() => {});
   };
   const pos = () => Math.round(el.currentTime * 1000);
   const timer = setInterval(() => {
@@ -126,12 +129,18 @@ export function reportProgress(el: HTMLMediaElement, id: () => number | null): (
     send({ position_ms: last });
   };
   const onEnded = () => send({ position_ms: 0, played: true });
+  // Kept alive past the closing page: the last 10 seconds would be lost otherwise.
+  const onHide = () => {
+    if (!el.ended && el.currentTime > 1) send({ position_ms: pos() }, true);
+  };
   el.addEventListener('pause', onPause);
   el.addEventListener('ended', onEnded);
+  addEventListener('pagehide', onHide);
   return () => {
     clearInterval(timer);
     el.removeEventListener('pause', onPause);
     el.removeEventListener('ended', onEnded);
+    removeEventListener('pagehide', onHide);
     if (!el.ended && el.currentTime > 1) send({ position_ms: pos() });
   };
 }
@@ -193,7 +202,9 @@ class Music {
   repeat = $state<'off' | 'all' | 'one'>('off');
   expanded = $state(false);
   error = $state('');
+  muted = $state(false);
   private el: HTMLAudioElement | null = null;
+  private loadGen = 0;
   private info: PlaybackInfo | null = null;
   private detach: (() => void) | null = null;
   private stopReport: (() => void) | null = null;
@@ -211,7 +222,13 @@ class Music {
     if (this.el) return this.el;
     const a = new Audio();
     a.preload = 'auto';
-    a.volume = prefs.volume;
+    // Follows the volume wherever it's changed (the video player's slider too).
+    $effect.root(() => {
+      $effect(() => {
+        a.volume = perceptual(prefs.volume);
+        a.muted = this.muted;
+      });
+    });
     a.addEventListener('play', () => (this.playing = true));
     a.addEventListener('pause', () => (this.playing = false));
     a.addEventListener('timeupdate', () => (this.time = a.currentTime));
@@ -279,8 +296,10 @@ class Music {
     const cur = this.current;
     if (!cur) return;
     const a = this.audio();
+    const gen = ++this.loadGen;
     this.error = '';
     this.detach?.();
+    this.detach = null;
     this.time = 0;
     this.duration = (cur.runtime_ms ?? 0) / 1000;
     this.loading = true;
@@ -291,11 +310,16 @@ class Music {
         a.src = cur.stream;
         this.detach = () => a.removeAttribute('src');
       } else {
-        this.info = await resolveSource(cur.id);
-        this.detach = await attachSource(a, this.info);
+        const info = await resolveSource(cur.id);
+        if (gen !== this.loadGen) return stopSession(info);
+        this.info = info;
+        const detach = await attachSource(a, info, undefined, () => gen === this.loadGen);
+        if (gen !== this.loadGen) return detach();
+        this.detach = detach;
       }
       if (autoplay) await a.play();
     } catch (e) {
+      if (gen !== this.loadGen) return;
       if (!(e instanceof DOMException && e.name === 'AbortError')) this.error = String(e);
       this.loading = false;
     }
@@ -340,7 +364,12 @@ class Music {
 
   setVolume(v: number) {
     prefs.volume = v;
-    if (this.el) this.el.volume = v;
+    this.muted = false;
+  }
+
+  /** Muting keeps the volume, so unmuting goes back to it. */
+  toggleMute() {
+    this.muted = !this.muted;
   }
 
   removeAt(orderPos: number) {
@@ -358,6 +387,7 @@ class Music {
   }
 
   close() {
+    this.loadGen++;
     this.el?.pause();
     this.detach?.();
     this.detach = null;

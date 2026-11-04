@@ -126,7 +126,7 @@ async function request<T>(method: string, path: string, o: RequestOptions = {}):
 export const api = {
   get: <T>(path: string, query?: Query, signal?: AbortSignal) => request<T>('GET', path, { query, signal }),
   post: <T>(path: string, body?: unknown, o?: RequestOptions) => request<T>('POST', path, { ...o, body }),
-  put: <T>(path: string, body?: unknown) => request<T>('PUT', path, { body }),
+  put: <T>(path: string, body?: unknown, o?: RequestOptions) => request<T>('PUT', path, { ...o, body }),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, { body }),
   del: <T>(path: string, o?: RequestOptions) => request<T>('DELETE', path, { ...o }),
 };

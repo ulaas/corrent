@@ -15,7 +15,7 @@
   import { clock } from '../lib/format';
   import { cueAt, parseTrickplay, type TrickCue } from '../lib/trickplay';
   import { imageUrl } from '../lib/api';
-  import { ms, prefs } from '../lib/prefs.svelte';
+  import { ms, perceptual, prefs } from '../lib/prefs.svelte';
   import { t, tk } from '../lib/i18n.svelte';
   import type { CastDevice, Item, ItemDetail, Page } from '../lib/types';
 
@@ -120,6 +120,10 @@
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   let countTimer: ReturnType<typeof setInterval> | null = null;
   let retried = false;
+  // Overlapping start()s (a track chosen twice, the next episode while one is loading): only the
+  // newest may touch the element and the state.
+  let startGen = 0;
+  let pendingSeek: (() => void) | null = null;
 
   const file = $derived(item?.files.find((f) => f.role === 'main') ?? item?.files[0]);
   const chapters = $derived(file?.chapters ?? []);
@@ -132,62 +136,88 @@
   const TEXT_SUBS = ['srt', 'subrip', 'ass', 'ssa', 'vtt', 'webvtt'];
 
   async function start(itemId: number, o: PlaybackOptions, at: number | null) {
+    const gen = ++startGen;
+    const stale = () => gen !== startGen;
     error = '';
     waiting = true;
     nextUp = null;
     clearCountdown();
     const el = video!;
+    if (pendingSeek) el.removeEventListener('loadedmetadata', pendingSeek);
+    pendingSeek = null;
     try {
       let restoredBurn = false;
       if (!item || item.id !== itemId) {
-        item = await api.get<ItemDetail>(`/items/${itemId}`);
+        const loaded = await api.get<ItemDetail>(`/items/${itemId}`);
+        if (stale()) return;
+        item = loaded;
         if (music.playing) music.pause();
-        o = restoreTracks(item, o);
+        o = restoreTracks(loaded, o);
         restoredBurn = o.burn_subtitle != null;
         opts = o;
       }
       const old = info;
+      let next: PlaybackInfo;
       try {
-        info = await resolveSource(itemId, o);
+        next = await resolveSource(itemId, o);
       } catch (e) {
+        if (stale()) return;
         // Burning the remembered subtitle isn't possible (no transcoding): play without it.
         if (!restoredBurn) throw e;
         o = { ...o, burn_subtitle: undefined };
         opts = o;
         subtitle = null;
-        info = await resolveSource(itemId, o);
+        next = await resolveSource(itemId, o);
       }
-      stopSession(old && old.session_id !== info.session_id ? old : null);
+      if (stale()) return stopSession(next);
+      info = next;
+      stopSession(old && old.session_id !== next.session_id ? old : null);
       detach?.();
-      detach = await attachSource(el, info, (msg) => {
-        // Copied streams the browser can't take after all: transcode instead.
-        if (info?.method === 'remux' && !retried) {
-          retried = true;
-          opts = { ...opts, force_transcode: true };
-          void start(itemId, opts, el.currentTime || at);
-          return;
-        }
-        error = t('Playback failed ({reason}).', { reason: msg });
-      });
-      duration = (info.duration_ms ?? item.runtime_ms ?? 0) / 1000;
+      detach = null;
+      const attached = await attachSource(
+        el,
+        next,
+        (msg) => {
+          if (stale()) return;
+          // Copied streams the browser can't take after all: transcode instead.
+          if (info?.method === 'remux' && !retried) {
+            retried = true;
+            opts = { ...opts, force_transcode: true };
+            void start(itemId, opts, el.currentTime || at);
+            return;
+          }
+          error = t('Playback failed ({reason}).', { reason: msg });
+        },
+        () => !stale(),
+      );
+      if (stale()) return attached();
+      detach = attached;
+      duration = (next.duration_ms ?? item?.runtime_ms ?? 0) / 1000;
       const from =
         at ??
         (route.query.get('from') === '0'
           ? 0
           : route.query.get('t')
             ? +route.query.get('t')!
-            : resumeAt(item, info.duration_ms) / 1000);
+            : item
+              ? resumeAt(item, next.duration_ms) / 1000
+              : 0);
       const seekTo = () => {
+        pendingSeek = null;
         if (from > 0) el.currentTime = from;
         el.playbackRate = rate;
         void el.play().catch(() => (playing = false));
       };
       if (el.readyState >= 1) seekTo();
-      else el.addEventListener('loadedmetadata', seekTo, { once: true });
+      else {
+        pendingSeek = seekTo;
+        el.addEventListener('loadedmetadata', seekTo, { once: true });
+      }
       void loadTrickplay();
       setMediaSession();
       void findNext();
     } catch (e) {
+      if (stale()) return;
       error = errorText(e);
       waiting = false;
     }
@@ -235,7 +265,10 @@
     try {
       const eps = (await api.get<Page<Item>>('/items', { parent_id: it.parent_id, sort: 'index', limit: 1000 })).items;
       const i = eps.findIndex((e) => e.id === it.id);
-      if (i >= 0 && i + 1 < eps.length) return void (nextUp = eps[i + 1]);
+      if (i >= 0 && i + 1 < eps.length) {
+        if (item?.id === it.id) nextUp = eps[i + 1];
+        return;
+      }
       const season = await api.get<ItemDetail>(`/items/${it.parent_id}`);
       if (!season.parent_id) return;
       const seasons = (await api.get<Page<Item>>('/items', { parent_id: season.parent_id, sort: 'index', limit: 200 })).items;
@@ -269,9 +302,13 @@
   $effect(() => {
     if (!video) return;
     const el = video;
-    el.volume = untrack(() => prefs.volume);
     stopReport = reportProgress(el, () => item?.id ?? null);
     return () => stopReport?.();
+  });
+
+  // Follows the volume wherever it's changed (the mini player's slider too).
+  $effect(() => {
+    if (video) video.volume = perceptual(prefs.volume);
   });
 
   // (Re)start when the item changes.
@@ -288,6 +325,7 @@
   });
 
   onDestroy(() => {
+    startGen++;
     detach?.();
     stopSession(info);
     clearCountdown();
@@ -479,7 +517,6 @@
   function setVolume(v: number) {
     prefs.volume = Math.max(0, Math.min(1, v));
     if (video) {
-      video.volume = prefs.volume;
       video.muted = false;
       muted = false;
     }

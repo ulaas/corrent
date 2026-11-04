@@ -86,8 +86,8 @@
       <div class="side">
         <span class="time num hide-sm">{clock(music.time * 1000)} / {clock(music.duration * 1000)}</span>
         <div class="vol hide-sm">
-          <button class="btn ghost icon sm" aria-label={prefs.volume ? t('Mute') : t('Unmute')} onclick={() => music.setVolume(prefs.volume ? 0 : 1)}>
-            <Icon name={prefs.volume === 0 ? 'speaker-x' : prefs.volume < 0.5 ? 'speaker-low' : 'speaker-high'} />
+          <button class="btn ghost icon sm" aria-label={music.muted ? t('Unmute') : t('Mute')} onclick={() => music.toggleMute()}>
+            <Icon name={music.muted || prefs.volume === 0 ? 'speaker-x' : prefs.volume < 0.5 ? 'speaker-low' : 'speaker-high'} />
           </button>
           <input
             class="range"
@@ -95,8 +95,8 @@
             min="0"
             max="1"
             step="0.01"
-            value={prefs.volume}
-            style:--fill="{prefs.volume * 100}%"
+            value={music.muted ? 0 : prefs.volume}
+            style:--fill="{(music.muted ? 0 : prefs.volume) * 100}%"
             aria-label={t('Volume')}
             oninput={(e) => music.setVolume(+e.currentTarget.value)} />
         </div>
