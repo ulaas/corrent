@@ -10,6 +10,7 @@
   import { t } from '../lib/i18n.svelte';
   import { Perm, type Article, type RssSettings, type RssView } from '../lib/types';
   import { contextMenu, type MenuItem } from '../lib/contextmenu.svelte';
+  import { onRelink } from '../lib/events.svelte';
 
   let view = $state<RssView | null>(null);
   let error = $state('');
@@ -27,6 +28,7 @@
     }
   }
   void load();
+  onRelink(load);
 
   // Feeds refresh in the background: poll while something is loading (or shortly after a refresh).
   $effect(() => {

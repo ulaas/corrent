@@ -6,6 +6,7 @@
   import Spinner from '../components/Spinner.svelte';
   import PhotoViewer from '../components/PhotoViewer.svelte';
   import Modal from '../components/Modal.svelte';
+  import { onRelink } from '../lib/events.svelte';
   import { api, errorText } from '../lib/api';
   import { back, go, link, route, setQuery } from '../lib/router.svelte';
   import { backdrop, image, isPlayable, KIND_LABEL, playHref, shapeFor, watched } from '../lib/media';
@@ -188,7 +189,18 @@
     void load(id);
   });
 
-  const bg = $derived(item ? (backdrop(item) ?? backdrop(parent)) : undefined);
+  // Back from offline: the item may have changed; keep what's shown while it loads.
+  onRelink(async () => {
+    if (!item) return void load(id);
+    try {
+      const d = await api.get<ItemDetail>(`/items/${id}`);
+      if (d.id === id) item = d;
+    } catch {
+      /* the next reconnect tries again */
+    }
+  });
+
+  const bg =$derived(item ? (backdrop(item) ?? backdrop(parent)) : undefined);
   const poster = $derived(item ? (image(item, 'poster') ?? image(parent, 'poster')) : undefined);
   const file = $derived(item?.files.find((f) => f.role === 'main') ?? item?.files[0]);
   const video = $derived(file?.streams.find((s) => s.kind === 'video'));

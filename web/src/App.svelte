@@ -65,13 +65,7 @@
   let drawer = $state(false);
   let scroller: HTMLElement | undefined = $state();
 
-  boot().then(() => {
-    if (session.user) {
-      startLibraries();
-      startSessionFeed();
-      void loadExtensions();
-    }
-  });
+  void boot();
 
   $effect(() => {
     if (session.user) {

@@ -30,9 +30,27 @@ export async function loadLibraries() {
   libs.loaded = true;
 }
 
+/** Sign-out: nothing of this user's stays for the next one. */
+export function resetLibraries() {
+  if (pending) clearTimeout(pending);
+  pending = null;
+  libs.list = [];
+  libs.loaded = false;
+  libs.scans = {};
+  libs.metadata = {};
+}
+
 export function startLibraries() {
-  if (started) return;
+  if (started) {
+    if (!libs.loaded) void loadLibraries();
+    return;
+  }
   started = true;
+  // Missed `library_changed` events are gone: read everything again after a reconnect.
+  events.onReopen(() => {
+    libs.changed++;
+    refreshSoon();
+  });
   events.subscribe({ topic: 'library' });
   events.on((e) => {
     if (e.t === 'scan_status') {

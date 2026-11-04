@@ -6,6 +6,7 @@
   import { api } from '../lib/api';
   import { link, go } from '../lib/router.svelte';
   import { libs, library } from '../lib/libraries.svelte';
+  import { onRelink } from '../lib/events.svelte';
   import { backdrop, homeRowTitle, image, isPlayable, itemHref, playHref, subtitle } from '../lib/media';
   import { runtime } from '../lib/format';
   import { prefs, ms, motion } from '../lib/prefs.svelte';
@@ -28,6 +29,7 @@
     }
   }
   void load();
+  onRelink(load);
 
   // Refresh when a library changes (new items) — at most every few seconds.
   let last = 0;
