@@ -70,6 +70,8 @@ struct Status {
     loaded: bool,
     /// The server's external subtitles added to mpv: (URL, `Stream::index`).
     ext_subs: Vec<(String, i64)>,
+    /// What the filter chain needs to know about the source (kept between files).
+    source: corrent_core::audio_fx::Source,
 }
 
 impl Status {
@@ -218,12 +220,28 @@ pub struct Player {
     pub notice: Option<(crate::engine::ToastKind, String)>,
     /// The sound settings mpv has, to send only what changes.
     audio: Mutex<corrent_core::config::Playback>,
+    /// The filters running in mpv, what they were made from, and when `af` was last set.
+    fx_applied: Vec<corrent_core::audio_fx::Stage>,
+    fx_from: Option<FxInputs>,
+    fx_set_at: Option<Instant>,
     /// The position last reported: a paused player has nothing new to say.
     last_reported: f64,
     /// The volume and mute last handed over to be saved, and since when they differ.
     volume_saved: (f64, bool),
     volume_moved: Option<Instant>,
 }
+
+/// What the filter chain is built from.
+#[derive(Clone, Debug, PartialEq)]
+struct FxInputs {
+    fx: corrent_core::audio_fx::AudioFx,
+    passthrough: bool,
+    source: corrent_core::audio_fx::Source,
+    caps: corrent_core::audio_fx::Caps,
+}
+
+/// `Event::CommandReply` of a filter change: a failure is worth a line in the log.
+const FX_REPLY: u64 = 7;
 
 fn track_list(n: &Node) -> Vec<Track> {
     n.as_array()
@@ -428,6 +446,7 @@ impl Player {
             "frame-drop-count",
             "demuxer-cache-duration",
             "audio-codec-name",
+            "audio-params",
         ]
         .iter()
         .enumerate()
@@ -478,6 +497,14 @@ impl Player {
                             "estimated-vf-fps" => s.stats.fps = value.as_f64().unwrap_or(0.0),
                             "frame-drop-count" => s.stats.dropped = value.as_i64().unwrap_or(0),
                             "demuxer-cache-duration" => s.stats.cache_secs = value.as_f64().unwrap_or(0.0),
+                            "audio-params" => {
+                                if let Some(channels) = value.get("channel-count").and_then(Node::as_i64) {
+                                    s.source = corrent_core::audio_fx::Source {
+                                        channels: Some(channels),
+                                        layout: value.get("channels").and_then(Node::as_str).map(str::to_string),
+                                    };
+                                }
+                            }
                             _ => {}
                         },
                         Event::FileLoaded => {
@@ -485,6 +512,9 @@ impl Player {
                             s.error = None;
                             s.loaded = true;
                             s.apply_wanted(&m);
+                        }
+                        Event::CommandReply { userdata: FX_REPLY, error } if error < 0 => {
+                            tracing::warn!("sound filter change: {}", m.library().error_text(error))
                         }
                         Event::EndFile(EndReason::Eof) => s.ended = true,
                         Event::EndFile(EndReason::Error(code)) => {
@@ -528,6 +558,9 @@ impl Player {
             ctx: ctx.clone(),
             offline: None,
             audio: Mutex::new(audio.clone()),
+            fx_applied: audio.start_chain(),
+            fx_from: None,
+            fx_set_at: None,
             last_reported: -1.0,
             volume_saved: (audio.volume as f64, audio.muted),
             volume_moved: None,
@@ -688,14 +721,52 @@ impl Player {
         let _ = self.mpv.command_async(0, args);
     }
 
-    /// New sound settings while playing: only what changed, as a device or filter option re-creates
-    /// the audio output or the filters (an audible dropout).
+    /// New sound settings while playing: only what changed, as a device option re-creates the
+    /// audio output (an audible dropout). The filters follow on the next frame (`sync_fx`).
     pub fn apply_audio(&self, audio: &corrent_core::config::Playback) {
         let mut current = crate::util::lock(&self.audio);
         for (k, v) in audio.changed_options(&current) {
             self.cmd(&["set", k, &v]);
         }
         *current = audio.clone();
+        self.ctx.request_repaint();
+    }
+
+    /// Brings mpv's filters to what the settings say, at most once a frame, so that a dragged
+    /// slider sends one command per value it passes: a value through `af-command`, and `af` is set
+    /// only for a change of structure. Nothing here waits for mpv. Does nothing at all when nothing
+    /// changed, or runs when everything is off.
+    fn sync_fx(&mut self) {
+        let (fx, passthrough) = crate::util::with_lock(&self.audio, |a| (a.fx.clone(), a.passthrough));
+        let source = crate::util::with_lock(&self.status, |s| s.source.clone());
+        let inputs = FxInputs { fx, passthrough, source, caps: super::sound::caps().clone() };
+        if self.fx_from.as_ref() == Some(&inputs) {
+            return;
+        }
+        let want = if inputs.passthrough {
+            Vec::new()
+        } else {
+            let meters = inputs.fx.meters && inputs.source.channels.is_some();
+            let fx = corrent_core::audio_fx::AudioFx { meters, ..inputs.fx.clone() };
+            corrent_core::audio_fx::chain(&fx, &inputs.caps, &inputs.source)
+        };
+        let plan = corrent_core::audio_fx::plan(&self.fx_applied, &want, inputs.caps.target);
+        if let Some(af) = &plan.set_af {
+            // A structure change restarts the filters; never more than a few times a second
+            // (without `af-command` targets, every value is one).
+            let wait = Duration::from_millis(150).saturating_sub(self.fx_set_at.map_or(Duration::MAX, |t| t.elapsed()));
+            if !wait.is_zero() {
+                self.ctx.request_repaint_after(wait);
+                return;
+            }
+            self.fx_set_at = Some(Instant::now());
+            let _ = self.mpv.command_async(FX_REPLY, &["set", "af", af]);
+        }
+        for [label, option, value, target] in &plan.commands {
+            let _ = self.mpv.command_async(FX_REPLY, &["af-command", label, option, value, target]);
+        }
+        self.fx_applied = plan.applied;
+        self.fx_from = Some(inputs);
     }
 
     pub fn toggle_pause(&mut self) {
@@ -792,6 +863,7 @@ impl Player {
     /// Per-frame housekeeping: progress reports and advancing the queue at the end.
     pub fn tick(&mut self) {
         self.save_volume(false);
+        self.sync_fx();
         if self.last_report.elapsed() > Duration::from_secs(10) {
             // A film left paused overnight has nothing new to say every 10 s.
             let (pos, paused) = crate::util::with_lock(&self.status, |s| (s.pos, s.paused));

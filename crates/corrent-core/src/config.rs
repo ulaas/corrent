@@ -226,11 +226,11 @@ impl Playback {
     }
 
     /// The options that differ from `old`'s, to send to a running player: setting the device,
-    /// channels, exclusive mode or passthrough re-creates the audio output, and `af` the filters,
-    /// so toggling something else must not touch them.
+    /// channels, exclusive mode or passthrough re-creates the audio output, so toggling something
+    /// else must not touch them. Not `af`: the player changes filters by `audio_fx::plan`.
     pub fn changed_options(&self, old: &Playback) -> Vec<(&'static str, String)> {
         let before = old.mpv_options();
-        self.mpv_options().into_iter().filter(|o| !before.contains(o)).collect()
+        self.mpv_options().into_iter().filter(|o| o.0 != "af" && !before.contains(o)).collect()
     }
 }
 
@@ -1003,9 +1003,7 @@ mod tests {
         assert_eq!(new.changed_options(&old), vec![("gapless-audio", "no".to_string())]);
         let mut new = old.clone();
         new.fx.apply_preset("night");
-        let changed = new.changed_options(&old);
-        assert_eq!(changed.len(), 1, "{changed:?}");
-        assert_eq!(changed[0].0, "af");
+        assert!(new.changed_options(&old).is_empty(), "filters go through their own path");
     }
 
     use super::*;
