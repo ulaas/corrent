@@ -66,6 +66,12 @@ export function go(to: string, opts: { replace?: boolean } = {}) {
   Object.assign(route, read(), { restored: false });
 }
 
+/** Changes the address only: no navigation, the page stays as it is (the photo viewer stepping
+ *  through siblings, where a reload should land on the photo shown). */
+export function replaceAddress(to: string) {
+  history.replaceState(history.state, '', to);
+}
+
 /** Updates the query string without a new history entry. */
 export function setQuery(q: Record<string, string | null>) {
   const u = new URL(location.href);

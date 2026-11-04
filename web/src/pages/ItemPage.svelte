@@ -2,7 +2,7 @@
   import { fade } from 'svelte/transition';
   import Icon from '../components/Icon.svelte';
   import Img from '../components/Img.svelte';
-  import Card from '../components/Card.svelte';
+  import VirtualGrid from '../components/VirtualGrid.svelte';
   import Spinner from '../components/Spinner.svelte';
   import PhotoViewer from '../components/PhotoViewer.svelte';
   import Modal from '../components/Modal.svelte';
@@ -14,7 +14,6 @@
   import { toggleFavorite, togglePlayed } from '../lib/itemstate';
   import { music, toEntry, tracksOf } from '../lib/player.svelte';
   import { library } from '../lib/libraries.svelte';
-  import { cardWidth } from '../lib/cards.svelte';
   import { toast } from '../lib/toast.svelte';
   import { ms } from '../lib/prefs.svelte';
   import { t } from '../lib/i18n.svelte';
@@ -164,7 +163,8 @@
       }
       item = d;
       if (['show', 'season', 'artist', 'album', 'folder'].includes(d.kind)) {
-        const p = await api.get<Page<Item>>('/items', { parent_id: id, sort: 'index', limit: 1000 });
+        // A folder or artist pages through its grid; the first child tells the shape of its cards.
+        const p = await api.get<Page<Item>>('/items', { parent_id: id, sort: 'index', limit: d.kind === 'folder' || d.kind === 'artist' ? 1 : 1000 });
         children = p.items;
         if (d.kind === 'show' && children.length) {
           const next = children.find((s) => (s.state.unplayed ?? 0) > 0) ?? children[0];
@@ -236,6 +236,7 @@
     music.play([toEntry(item, item)]);
   }
 
+  const childQuery = $derived({ parent_id: id, sort: 'index' });
   const lib = $derived(item ? library(item.library_id) : undefined);
   const albumTime = $derived(children.reduce((a, c) => a + (c.runtime_ms ?? 0), 0));
   const isCurrent = (tid: number) => music.current?.id === tid;
@@ -424,9 +425,7 @@
           {/each}
         </ol>
       {:else if children.length}
-        <div class="grid" style:--w="{cardWidth(shapeFor(children[0].kind))}px">
-          {#each children as c (c.id)}<Card item={c} shape={shapeFor(c.kind)} />{/each}
-        </div>
+        <VirtualGrid query={childQuery} shape={shapeFor(children[0].kind)} />
       {/if}
 
       {#if cast.length}
@@ -851,11 +850,6 @@
     50% {
       height: 14px;
     }
-  }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(var(--w), 1fr));
-    gap: 20px;
   }
   .cast {
     display: flex;
