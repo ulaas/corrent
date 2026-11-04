@@ -1801,3 +1801,154 @@ async fn a_rebuild_without_readable_records_touches_nothing() {
     assert_eq!(std::fs::read(paths.store_file()).unwrap(), br#"{"schema_version":99,"torrents":5}"#);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The torrents the engine's list on disk holds.
+fn session_list(paths: &Paths) -> Vec<String> {
+    let db: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(paths.session_dir().join("session.json")).unwrap()).unwrap();
+    db["torrents"].as_object().unwrap().values().map(|e| e["info_hash"].as_str().unwrap().to_string()).collect()
+}
+
+fn add_url(l: &Leecher, dir: &Path, url: String) {
+    l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        source: AddSource::Url(url),
+        torrent_bytes: None,
+        save_path: dir.join("dl"),
+        create_subfolder: true,
+        category: Some("Late".into()),
+        tags: Vec::new(),
+        paused: true,
+        only_files: None,
+        add_to_top: false,
+        initial_peers: None,
+        added_by: None,
+    })));
+}
+
+/// Settings that need a session restart.
+fn restart_settings(dir: &Path) -> Box<crate::config::Settings> {
+    let mut cfg = settings(dir);
+    cfg.connection.max_peers_per_torrent += 1;
+    Box::new(cfg)
+}
+
+/// Wait for a toast with `text` in it; the other toasts seen on the way are returned too.
+async fn toast_with(l: &Leecher, text: &str, secs: u64) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let mut seen = Vec::new();
+    loop {
+        match l.events.try_recv() {
+            Ok(EngineEvent::Toast(_, t)) => {
+                let found = t.contains(text);
+                seen.push(t);
+                if found {
+                    return seen;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {
+                assert!(Instant::now() < deadline, "no toast with “{text}”: {seen:?}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
+
+/// A session restart waits for an add that is still fetching its metadata: run under it, the add
+/// would land in the old session and rewrite session.json from the old list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restart_waits_for_an_add_fetching_its_metadata() {
+    use super::faultserver::{self, Route};
+    let dir = temp_dir("restart-add");
+    let s = seeder(&dir).await;
+    let srv = faultserver::start().await;
+    let chunk = s.bytes.len() / 8 + 1;
+    srv.route("/a.torrent", Route::Slow { body: s.bytes.clone(), chunk, pause: Duration::from_millis(400) });
+    let l = start(&dir);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    add_url(&l, &dir, srv.url("/a.torrent"));
+    wait_for(&l, "the pending add", 10, |sn| sn.torrents.iter().any(|t| t.pending)).await;
+    l.engine.send(EngineCommand::ApplySettings(restart_settings(&dir)));
+    let seen = toast_with(&l, "Settings applied", 30).await;
+    assert!(seen.iter().any(|t| t.contains("will apply once")), "{seen:?}");
+    assert!(!seen.iter().any(|t| t.contains("Could not add")), "{seen:?}");
+    let snap = wait_for(&l, "the late torrent", 20, |sn| {
+        find(sn, s.hash).is_some_and(|t| t.category.as_deref() == Some("Late"))
+    })
+    .await;
+    assert_eq!(snap.torrents.iter().filter(|t| t.pending).count(), 0);
+    assert_eq!(srv.hits("/a.torrent"), 1, "it wasn't stopped");
+    // Added on the new session; the file must list this one and the one before the restart.
+    let tiny = {
+        l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+            source: AddSource::Bytes { name: "b.torrent".into(), bytes: tiny_torrent("after.bin") },
+            torrent_bytes: None,
+            save_path: dir.join("dl"),
+            create_subfolder: false,
+            category: Some("After".into()),
+            tags: Vec::new(),
+            paused: true,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        })));
+        let snap = wait_for(&l, "the new session's add", 20, |sn| {
+            sn.torrents.iter().any(|t| t.category.as_deref() == Some("After"))
+        })
+        .await;
+        snap.torrents.iter().find(|t| t.category.as_deref() == Some("After")).unwrap().hash
+    };
+    let paths = stop(l).await;
+    let list = session_list(&paths);
+    assert!(list.contains(&s.hash.to_hex()) && list.contains(&tiny.to_hex()), "{list:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// One tiny torrent's metainfo (made-up piece hash).
+fn tiny_torrent(name: &str) -> Vec<u8> {
+    let mut bytes =
+        format!("d4:infod6:lengthi16384e4:name{}:{name}12:piece lengthi16384e6:pieces20:", name.len()).into_bytes();
+    bytes.extend_from_slice(&[7; 20]);
+    bytes.extend_from_slice(b"ee");
+    bytes
+}
+
+/// A dead magnet never resolves, so the restart's wait is bounded: the add stops, the session
+/// restarts, and the add starts again on the new session (the row stays all along).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restart_stops_waiting_for_a_dead_add_and_adds_it_afterwards() {
+    use super::faultserver::{self, Route};
+    let dir = temp_dir("restart-dead-add");
+    let s = seeder(&dir).await;
+    let srv = faultserver::start().await;
+    srv.route("/a.torrent", Route::Hang);
+    let l = start(&dir);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    add_url(&l, &dir, srv.url("/a.torrent"));
+    wait_for(&l, "the pending add", 10, |sn| sn.torrents.iter().any(|t| t.pending)).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while srv.hits("/a.torrent") == 0 {
+        assert!(Instant::now() < deadline, "the add never asked the server");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let began = Instant::now();
+    l.engine.send(EngineCommand::ApplySettings(restart_settings(&dir)));
+    // It answers the next time; the first request still hangs.
+    srv.route(
+        "/a.torrent",
+        Route::Answer { status: 200, content_type: "application/x-bittorrent", body: s.bytes.clone() },
+    );
+    let seen = toast_with(&l, "Settings applied", 60).await;
+    assert!(began.elapsed() >= Duration::from_secs(14), "waited for the add: {:?}", began.elapsed());
+    assert!(!seen.iter().any(|t| t.contains("Could not add")), "{seen:?}");
+    let snap = wait_for(&l, "the add on the new session", 30, |sn| {
+        find(sn, s.hash).is_some_and(|t| t.category.as_deref() == Some("Late"))
+    })
+    .await;
+    assert_eq!(snap.torrents.iter().filter(|t| t.pending).count(), 0);
+    assert_eq!(srv.hits("/a.torrent"), 2);
+    let paths = stop(l).await;
+    assert!(session_list(&paths).contains(&s.hash.to_hex()));
+    let _ = std::fs::remove_dir_all(dir);
+}

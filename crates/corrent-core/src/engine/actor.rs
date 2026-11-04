@@ -42,7 +42,8 @@ enum Internal {
         hash: InfoHash,
         result: Result<(), String>,
     },
-    RestoreReport(Vec<super::restore::FailedRestore>),
+    /// From the session it names: a report about an earlier session is dropped.
+    RestoreReport(Arc<Session>, Vec<super::restore::FailedRestore>),
     /// `Ok(true)` = re-added; `Ok(false)` = the torrent was already back in the list.
     UndoFinished {
         hash: InfoHash,
@@ -84,6 +85,9 @@ struct UndoEntry {
 const UNDO_WINDOW: Duration = Duration::from_secs(120);
 /// Results of background tasks waiting for the actor, at most.
 const INTERNAL_QUEUE: usize = 4096;
+/// How long a session restart waits for adds still fetching their metadata. A dead magnet never
+/// resolves, so after this they stop, and start again on the new session.
+const RESTART_WAITS_FOR_ADDS: Duration = Duration::from_secs(15);
 
 struct PendingAdd {
     name: String,
@@ -93,6 +97,10 @@ struct PendingAdd {
     /// The server account that asked for it (it may cancel it).
     added_by: Option<String>,
     task: Option<JoinHandle<()>>,
+    /// Stops the add while it only waits for its metadata (see `add_torrent`).
+    cancel: tokio_util::sync::CancellationToken,
+    /// Not running: waits for the session restart to finish (see `maybe_apply_deferred`).
+    held: Option<Box<AddRequest>>,
 }
 
 /// Static per-torrent info parsed once from metadata.
@@ -164,6 +172,12 @@ pub struct Actor {
     /// before a Resume can't undo it.
     resume_epoch: Arc<std::sync::atomic::AtomicU64>,
     deferred_settings: Option<Box<Settings>>,
+    /// The IP filter's reload (a session restart) waits for adds too.
+    deferred_reload: bool,
+    /// Since when a session restart has been waiting.
+    deferred_since: Option<Instant>,
+    /// The task looking for torrents that failed to load; it adds to its session.
+    restore_task: Option<JoinHandle<()>>,
     failed: HashMap<InfoHash, super::restore::FailedRestore>,
     undo_pending: HashMap<InfoHash, UndoEntry>,
     undo: HashMap<InfoHash, UndoEntry>,
@@ -282,6 +296,9 @@ impl Actor {
             resumed_at: HashMap::new(),
             resume_epoch: Default::default(),
             deferred_settings: None,
+            deferred_reload: false,
+            deferred_since: None,
+            restore_task: None,
             failed: HashMap::new(),
             undo_pending: HashMap::new(),
             undo: HashMap::new(),
@@ -459,6 +476,10 @@ impl Actor {
         if let Some(st) = &self.stream {
             st.set_session(None);
         }
+        // It holds the session and adds to it, which would rewrite session.json after the stop.
+        if let Some(t) = self.restore_task.take() {
+            t.abort();
+        }
         let mut stopped = true;
         if self.session.is_some() {
             self.drain_engine_calls().await;
@@ -475,10 +496,23 @@ impl Actor {
         stopped
     }
 
+    /// Only with no add running on the session (they would write to session.json after the new
+    /// session has started): see `adds_running`. Held adds start again on the new session.
+    async fn restart_session(&mut self) {
+        self.deferred_reload = false;
+        self.deferred_since = None;
+        self.stop_session().await;
+        self.start_session().await;
+        self.start_held_adds();
+    }
+
     async fn shutdown(&mut self, internal: &mut mpsc::Receiver<Internal>) {
         tracing::info!("engine shutting down");
         watchdog::doing(Doing::Shutdown);
         self.stopping = true;
+        for p in self.pending.values() {
+            p.cancel.cancel();
+        }
         // Let moves/rechecks finish (bounded): a torrent is out of the session while it is
         // re-added. Anything still running is recovered from its backup at the next start.
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -781,14 +815,17 @@ impl Actor {
                 }
             }
             EngineCommand::ReloadIpFilter => {
-                if self.busy.is_empty() {
-                    self.stop_session().await;
-                    self.start_session().await;
+                if !self.busy.is_empty() {
+                    self.toast(ToastKind::Info, t!("Try again once running operations finish."));
+                } else if self.adds_running() {
+                    self.toast(ToastKind::Info, t!("Network settings will apply once running operations finish."));
+                    self.deferred_reload = true;
+                    self.deferred_since.get_or_insert_with(Instant::now);
+                } else {
+                    self.restart_session().await;
                     if self.engine_state == EngineState::Running {
                         self.toast(ToastKind::Success, t!("IP filter reloaded."));
                     }
-                } else {
-                    self.toast(ToastKind::Info, t!("Try again once running operations finish."));
                 }
             }
             EngineCommand::QueueMove { hashes, mv } => {
@@ -867,11 +904,18 @@ impl Actor {
                     }
                 }
                 let restart = self.settings.requires_restart(&new);
-                if restart && !self.busy.is_empty() {
+                if restart && (!self.busy.is_empty() || self.adds_running()) {
                     // Tasks hold the current session; restarting under them could corrupt its state.
                     self.toast(ToastKind::Info, t!("Network settings will apply once running operations finish."));
                     self.deferred_settings = Some(new);
+                    self.deferred_since.get_or_insert_with(Instant::now);
                     return;
+                }
+                // These settings are newer than any that wait.
+                self.deferred_settings = None;
+                if !restart && !self.deferred_reload {
+                    self.deferred_since = None;
+                    self.start_held_adds();
                 }
                 if self.settings.queue.enabled && !new.queue.enabled {
                     let queued: Vec<InfoHash> = self
@@ -889,8 +933,7 @@ impl Actor {
                 self.settings = *new;
                 if restart {
                     tracing::info!("settings changed; restarting session");
-                    self.stop_session().await;
-                    self.start_session().await;
+                    self.restart_session().await;
                     if self.engine_state == EngineState::Running {
                         self.toast(ToastKind::Success, t!("Settings applied — reconnected."));
                     }
@@ -1202,18 +1245,65 @@ impl Actor {
                 save_path: req.save_path.clone(),
                 added_by: req.added_by.clone(),
                 task: None,
+                cancel: Default::default(),
+                held: None,
             },
         );
+        if self.holding_adds() {
+            if let Some(p) = self.pending.get_mut(&pending) {
+                p.held = Some(req);
+            }
+        } else {
+            self.spawn_add(pending, req, sess);
+        }
+        Some(pending)
+    }
+
+    fn spawn_add(&mut self, pending: u64, req: Box<AddRequest>, sess: Arc<Session>) {
         let tx = self.internal_tx.clone();
         let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let token = cancel.clone();
         let task = tokio::spawn(async move {
-            let result = add_torrent(&sess, &req, peer_limit).await.map_err(|e| format!("{e:#}"));
+            let result = add_torrent(&sess, &req, peer_limit, &token).await.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Internal::AddFinished { pending, req, result }).await;
         });
         if let Some(p) = self.pending.get_mut(&pending) {
             p.task = Some(task);
+            p.cancel = cancel;
         }
-        Some(pending)
+    }
+
+    /// An add is at work on the current session.
+    fn adds_running(&self) -> bool {
+        self.pending.values().any(|p| p.held.is_none())
+    }
+
+    /// A session restart has waited long enough: new adds wait for the new session.
+    fn holding_adds(&self) -> bool {
+        self.deferred_since.is_some_and(|t| t.elapsed() >= RESTART_WAITS_FOR_ADDS)
+    }
+
+    /// Adds that stopped for a session restart start again (on the new session).
+    fn start_held_adds(&mut self) {
+        let ids: Vec<u64> = self.pending.iter().filter(|(_, p)| p.held.is_some()).map(|(id, _)| *id).collect();
+        for id in ids {
+            let Some(req) = self.pending.get_mut(&id).and_then(|p| p.held.take()) else { continue };
+            if let Some(sess) = self.session.clone() {
+                self.spawn_add(id, req, sess);
+                continue;
+            }
+            // The new session didn't start.
+            self.pending.remove(&id);
+            self.toast(ToastKind::Error, t!("The engine is not running; cannot add torrents."));
+            if let Some((path, _)) = self.watch_adds.remove(&id) {
+                self.watch.release(&path);
+            }
+            if let Some(d) = self.rss_adds.remove(&id) {
+                let rss = self.settings.rss.clone();
+                self.rss.forget(&d, &rss);
+            }
+        }
     }
 
     fn start_readd(
@@ -1536,7 +1626,7 @@ impl Actor {
         let tx = self.internal_tx.clone();
         let skip: HashSet<InfoHash> = self.store.data.purge.iter().copied().collect();
         let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
-        tokio::spawn(async move {
+        self.restore_task = Some(tokio::spawn(async move {
             let mut failed = Vec::new();
             for mut f in super::restore::persisted_entries(&dir) {
                 if skip.contains(&f.hash) || sess.get(TorrentIdOrHash::Hash(Id20::new(f.hash.0))).is_some() {
@@ -1552,8 +1642,8 @@ impl Actor {
                     }
                 }
             }
-            let _ = tx.send(Internal::RestoreReport(failed)).await;
-        });
+            let _ = tx.send(Internal::RestoreReport(sess, failed)).await;
+        }));
     }
 
     fn retry_failed(&mut self, hash: InfoHash) {
@@ -1727,15 +1817,31 @@ impl Actor {
         self.resumed_at.remove(hash);
     }
 
+    /// A session restart that waits: run it once nothing holds the session. Adds get a bounded
+    /// wait, then those fetching metadata stop and are held for the new session; one that is
+    /// past that (writing to the engine's list) always gets to finish.
     fn maybe_apply_deferred(&mut self) {
-        if self.busy.is_empty()
-            && let Some(s) = self.deferred_settings.take()
-            && let Err(mpsc::error::TrySendError::Full(EngineCommand::ApplySettings(s))) =
+        if (self.deferred_settings.is_none() && !self.deferred_reload) || !self.busy.is_empty() {
+            return;
+        }
+        if self.adds_running() {
+            if self.holding_adds() {
+                for p in self.pending.values() {
+                    p.cancel.cancel();
+                }
+            }
+            return;
+        }
+        // If the actor's own queue is full: try again on the next tick (waiting here would
+        // deadlock, the actor is the one that empties it).
+        if let Some(s) = self.deferred_settings.take() {
+            if let Err(mpsc::error::TrySendError::Full(EngineCommand::ApplySettings(s))) =
                 self.self_tx.try_send(EngineCommand::ApplySettings(s))
-        {
-            // The actor's own queue is full: try again on the next tick (waiting here would
-            // deadlock, the actor is the one that empties it).
-            self.deferred_settings = Some(s);
+            {
+                self.deferred_settings = Some(s);
+            }
+        } else if self.self_tx.try_send(EngineCommand::ReloadIpFilter).is_ok() {
+            self.deferred_reload = false;
         }
     }
 
@@ -1766,7 +1872,19 @@ impl Actor {
                 self.previews.remove(&req);
             }
             Internal::AddFinished { pending, req, result } => {
+                // Stopped for a session restart: nothing happened, it starts again after it.
+                if result.as_ref().is_err_and(|e| e == ADD_CANCELLED)
+                    && let Some(p) = self.pending.get_mut(&pending)
+                {
+                    p.held = Some(req);
+                    if self.deferred_since.is_none() {
+                        self.start_held_adds();
+                    }
+                    self.maybe_apply_deferred();
+                    return;
+                }
                 self.pending.remove(&pending);
+                self.maybe_apply_deferred();
                 if let Some(d) = self.rss_adds.remove(&pending)
                     && let Err(e) = &result
                     && !is_duplicate_error(e)
@@ -1887,7 +2005,10 @@ impl Actor {
                     }
                 }
             }
-            Internal::RestoreReport(list) => {
+            Internal::RestoreReport(sess, list) => {
+                if !self.session.as_ref().is_some_and(|s| Arc::ptr_eq(s, &sess)) {
+                    return;
+                }
                 if !list.is_empty() {
                     let n = list.len();
                     self.toast(
@@ -2026,6 +2147,7 @@ impl Actor {
     }
 
     fn tick_inner(&mut self) {
+        self.maybe_apply_deferred();
         let raw = self.last_tick.elapsed() + crate::faults::take_tick_jump(&self.paths.data_dir);
         self.last_tick = Instant::now();
         self.tick_count += 1;
@@ -2986,6 +3108,8 @@ fn failed_view(f: &super::restore::FailedRestore, m: Option<&crate::store::Torre
         save_path: f.output_folder.clone(),
         added_by: None,
         task: None,
+        cancel: Default::default(),
+        held: None,
     });
     v.state = TorrentState::Error;
     v.error = Some(f.error.clone());
@@ -3138,16 +3262,43 @@ pub fn sanitize_name(name: &str) -> String {
 /// The end of the error an add returns for a torrent that is already in the list.
 const DUPLICATE: &str = "is already in your list";
 
+/// The error of an add stopped through its `PendingAdd::cancel`.
+const ADD_CANCELLED: &str = "add cancelled";
+
 /// True for the error of an add that found its torrent already in the list.
 fn is_duplicate_error(e: &str) -> bool {
     e.ends_with(DUPLICATE)
 }
 
+/// Stopping (`cancel`) works up to the moment the engine is asked to add: that part only looks
+/// for the metadata and can take forever. What follows isn't stopped: it lands, or fails by
+/// itself, and either way reports back, so a torrent can't be left half-added.
 async fn add_torrent(
     sess: &Arc<Session>,
     req: &AddRequest,
     peer_limit: Option<usize>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<(InfoHash, String)> {
+    let prepared = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!(ADD_CANCELLED),
+        prepared = prepare_add(sess, req, peer_limit) => prepared?,
+    };
+    let (hash, name, bytes, opts) = prepared;
+    match sess.add_torrent(AddTorrent::from_bytes(bytes), Some(opts)).await? {
+        AddTorrentResponse::Added(_, _) => Ok((hash, name)),
+        AddTorrentResponse::AlreadyManaged(_, _) => anyhow::bail!("“{name}” {DUPLICATE}"),
+        AddTorrentResponse::ListOnly(_) => anyhow::bail!("unexpected response from engine"),
+    }
+}
+
+/// Everything before the engine is asked to add: the metainfo (a magnet's metadata, a URL), the
+/// checks, the folder.
+async fn prepare_add(
+    sess: &Arc<Session>,
+    req: &AddRequest,
+    peer_limit: Option<usize>,
+) -> anyhow::Result<(InfoHash, String, Vec<u8>, AddTorrentOptions)> {
     let bytes = match &req.torrent_bytes {
         Some(b) => b.clone(),
         None => fetch_torrent_bytes(sess, &req.source).await?,
@@ -3177,11 +3328,7 @@ async fn add_torrent(
         initial_peers: req.initial_peers.clone(),
         ..Default::default()
     };
-    match sess.add_torrent(AddTorrent::from_bytes(bytes), Some(opts)).await? {
-        AddTorrentResponse::Added(_, _) => Ok((hash, name)),
-        AddTorrentResponse::AlreadyManaged(_, _) => anyhow::bail!("“{name}” {DUPLICATE}"),
-        AddTorrentResponse::ListOnly(_) => anyhow::bail!("unexpected response from engine"),
-    }
+    Ok((hash, name, bytes, opts))
 }
 
 /// Forget a torrent and add it back with changed options. librqbit has no runtime API for
