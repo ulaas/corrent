@@ -5,7 +5,7 @@ use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
 use crate::engine::EngineCommand;
-use crate::engine::types::{AddSource, TorrentState};
+use crate::engine::types::{AddSource, TorrentState, TorrentView};
 use crate::store::QueueMove;
 use crate::ui::theme::Palette;
 
@@ -16,13 +16,13 @@ fn item(ui: &mut Ui, icon: &str, text: &str) -> bool {
 impl CorrentApp {
     pub(super) fn context_menu(&mut self, ui: &mut Ui, p: &Palette) {
         ui.set_min_width(220.0);
-        let sel: Vec<_> = self.selected_views().into_iter().cloned().collect();
-        if sel.is_empty() {
-            return;
-        }
+        // Drawn every frame while open, with possibly thousands selected: borrowed, not copied.
+        let snap = self.snap.clone();
+        let sel: Vec<&TorrentView> =
+            snap.torrents.iter().filter(|t| self.selected.contains(&t.hash) && !t.pending).collect();
         let hashes: Vec<_> = sel.iter().map(|t| t.hash).collect();
         let single = sel.len() == 1;
-        let Some(first) = sel.first().cloned() else { return };
+        let Some(&first) = sel.first() else { return };
 
         let label = if sel.iter().all(|t| t.restore_failed || t.state == TorrentState::Error) {
             t!("Retry")
@@ -111,7 +111,7 @@ impl CorrentApp {
             if ui.selectable_label(sel.iter().all(|t| t.category.is_none()), t!("None")).clicked() {
                 self.engine.send(EngineCommand::SetCategory { hashes: hashes.clone(), category: None });
             }
-            for c in self.snap.categories.keys() {
+            for c in snap.categories.keys() {
                 let on = sel.iter().all(|t| t.category.as_ref() == Some(c));
                 if ui.selectable_label(on, c).clicked() {
                     self.engine.send(EngineCommand::SetCategory { hashes: hashes.clone(), category: Some(c.clone()) });
@@ -122,13 +122,13 @@ impl CorrentApp {
             if ui.button(t!("New tag…")).clicked() {
                 self.open_new_tag(Some(hashes.clone()));
             }
-            if !self.snap.tags.is_empty() {
+            if !snap.tags.is_empty() {
                 ui.separator();
             }
-            for tag in self.snap.tags.clone() {
-                let all = sel.iter().all(|t| t.tags.contains(&tag));
+            for tag in &snap.tags {
+                let all = sel.iter().all(|t| t.tags.contains(tag));
                 let mut on = all;
-                if ui.checkbox(&mut on, &tag).changed() {
+                if ui.checkbox(&mut on, tag).changed() {
                     self.engine.send(EngineCommand::ToggleTag { hashes: hashes.clone(), tag: tag.clone(), on });
                 }
             }
@@ -224,11 +224,11 @@ impl CorrentApp {
         }
     }
 
+    /// Through eframe: the clipboard can be held by another process, and the UI thread mustn't
+    /// wait for it.
     pub fn copy(&mut self, text: String) {
-        match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-            Ok(()) => self.toasts.push(crate::engine::ToastKind::Info, t!("Copied to clipboard")),
-            Err(e) => self.toasts.push(crate::engine::ToastKind::Error, t!("Clipboard error: {e}", e = e)),
-        }
+        self.ctx.copy_text(text);
+        self.toasts.push(crate::engine::ToastKind::Info, t!("Copied to clipboard"));
     }
 
     /// Global keyboard shortcuts, taken before anything is drawn: a key used here doesn't also

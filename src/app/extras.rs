@@ -21,6 +21,51 @@ pub struct Extras {
     pub log: bool,
     pub log_filter: String,
     pub log_level: u8, // 0 = info+, 1 = warn+, 2 = error
+    log_index: LogIndex,
+}
+
+/// Which log lines match the Log window's filter, by line number: lines already looked at aren't
+/// looked at again, and only the visible ones are copied out of the buffer.
+#[derive(Default)]
+struct LogIndex {
+    filter: String,
+    min: Option<Level>,
+    /// The newest line looked at.
+    seen: u64,
+    matches: Vec<u64>,
+}
+
+impl LogIndex {
+    /// `filter` is lower case.
+    fn update(&mut self, lines: &std::collections::VecDeque<super::log::LogLine>, filter: &str, min: Level) {
+        if self.filter != filter || self.min != Some(min) {
+            *self = LogIndex { filter: filter.to_string(), min: Some(min), ..Default::default() };
+        }
+        // Lines that fell out of the buffer (or Clear).
+        let oldest = lines.front().map_or(u64::MAX, |l| l.seq);
+        let gone = self.matches.partition_point(|s| *s < oldest);
+        self.matches.drain(..gone);
+        for l in lines.iter().rev().take_while(|l| l.seq > self.seen).collect::<Vec<_>>().into_iter().rev() {
+            self.seen = l.seq;
+            if l.level <= min
+                && (filter.is_empty() || l.message.to_lowercase().contains(filter) || l.target.contains(filter))
+            {
+                self.matches.push(l.seq);
+            }
+        }
+    }
+
+    /// Copies of the matches in `range`.
+    fn visible(
+        &self,
+        lines: &std::collections::VecDeque<super::log::LogLine>,
+        range: std::ops::Range<usize>,
+    ) -> Vec<super::log::LogLine> {
+        let oldest = lines.front().map_or(0, |l| l.seq);
+        (self.matches.get(range).unwrap_or_default().iter())
+            .filter_map(|s| lines.get(usize::try_from(s.checked_sub(oldest)?).ok()?).cloned())
+            .collect()
+    }
 }
 
 impl CorrentApp {
@@ -276,18 +321,10 @@ impl CorrentApp {
                     1 => Level::WARN,
                     _ => Level::INFO,
                 };
-                let lines: Vec<super::log::LogLine> = crate::util::with_lock(&super::log::LINES, |l| {
-                    l.iter()
-                        .filter(|x| x.level <= min)
-                        .filter(|x| {
-                            filter.is_empty()
-                                || x.message.to_lowercase().contains(&filter)
-                                || x.target.contains(&filter)
-                        })
-                        .cloned()
-                        .collect()
-                });
-                if lines.is_empty() {
+                let index = &mut self.extras.log_index;
+                crate::util::with_lock(&super::log::LINES, |l| index.update(l, &filter, min));
+                let count = index.matches.len();
+                if count == 0 {
                     crate::ui::widgets::empty_compact(
                         ui,
                         p,
@@ -305,9 +342,12 @@ impl CorrentApp {
                         egui::ScrollArea::both().stick_to_bottom(true).auto_shrink([false, false]).show_rows(
                             ui,
                             18.0,
-                            lines.len(),
+                            count,
                             |ui, range| {
-                                for l in lines.get(range).unwrap_or_default() {
+                                // Copied out: drawing may log, and the buffer's lock is not reentrant.
+                                let index = &self.extras.log_index;
+                                let lines = crate::util::with_lock(&super::log::LINES, |l| index.visible(l, range));
+                                for l in &lines {
                                     let color = match l.level {
                                         Level::ERROR => p.error,
                                         Level::WARN => p.warn,
@@ -341,4 +381,38 @@ fn kv(ui: &mut Ui, p: &Palette, k: &str, v: String) {
     ui.label(RichText::new(k).color(p.text_dim));
     ui.label(RichText::new(v).monospace().color(p.text));
     ui.end_row();
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+    use crate::app::log::LogLine;
+
+    fn line(seq: u64, level: Level, message: &str) -> LogLine {
+        LogLine { seq, time: 0, level, target: "t".into(), message: message.into() }
+    }
+
+    #[test]
+    fn the_log_index_follows_the_buffer() {
+        let mut lines: std::collections::VecDeque<LogLine> =
+            [line(5, Level::INFO, "Alpha"), line(6, Level::ERROR, "beta"), line(7, Level::INFO, "ALPHA 2")].into();
+        let mut i = LogIndex::default();
+        i.update(&lines, "alpha", Level::INFO);
+        assert_eq!(i.matches, vec![5, 7]);
+        // New lines are added, old ones go; what was seen isn't counted twice.
+        lines.pop_front();
+        lines.push_back(line(8, Level::INFO, "alpha 3"));
+        i.update(&lines, "alpha", Level::INFO);
+        assert_eq!(i.matches, vec![7, 8]);
+        let shown: Vec<String> = i.visible(&lines, 1..2).into_iter().map(|l| l.message).collect();
+        assert_eq!(shown, vec!["alpha 3"]);
+        // Another filter or level starts over.
+        i.update(&lines, "", Level::ERROR);
+        assert_eq!(i.matches, vec![6]);
+        // Clear.
+        lines.clear();
+        i.update(&lines, "", Level::ERROR);
+        assert!(i.matches.is_empty());
+        assert!(i.visible(&lines, 0..5).is_empty());
+    }
 }

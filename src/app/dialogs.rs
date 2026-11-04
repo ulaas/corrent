@@ -29,6 +29,8 @@ pub enum Modal {
     Move {
         hashes: Vec<InfoHash>,
         path: String,
+        /// What the selection takes up (asked of the list once, when the dialog opens).
+        need: u64,
     },
     Rename {
         hash: InfoHash,
@@ -201,7 +203,8 @@ impl CorrentApp {
     }
 
     pub fn request_delete(&mut self, hashes: Vec<InfoHash>, with_data: bool) {
-        let sel: Vec<_> = self.snap.torrents.iter().filter(|t| hashes.contains(&t.hash)).collect();
+        let wanted: std::collections::HashSet<InfoHash> = hashes.iter().copied().collect();
+        let sel: Vec<_> = self.snap.torrents.iter().filter(|t| wanted.contains(&t.hash)).collect();
         if sel.is_empty() {
             return;
         }
@@ -222,7 +225,9 @@ impl CorrentApp {
             .find(|t| hashes.first() == Some(&t.hash))
             .map(|t| t.save_path.display().to_string())
             .unwrap_or_default();
-        self.modal = Some(Modal::Move { hashes, path });
+        let wanted: std::collections::HashSet<InfoHash> = hashes.iter().copied().collect();
+        let need = self.snap.torrents.iter().filter(|t| wanted.contains(&t.hash)).map(|t| t.done).sum();
+        self.modal = Some(Modal::Move { hashes, path, need });
     }
 
     /// The "Add to library" dialog. True when it is done (or cancelled).
@@ -599,7 +604,8 @@ impl CorrentApp {
                         }
                     });
                 }
-                Modal::Move { hashes, path } => {
+                Modal::Move { hashes, path, need } => {
+                    let need = *need;
                     ui.set_width(widgets::modal_width(ui.ctx(), 520.0));
                     title(ui, p, icons::FOLDER_SIMPLE_DASHED, t!("Move data to another folder"));
                     let w = ui.available_width();
@@ -607,8 +613,6 @@ impl CorrentApp {
                         self.pick(PickTarget::MoveFolder, PickKind::Folder, Some(PathBuf::from(path.as_str())));
                     }
                     ui.add_space(4.0);
-                    let need: u64 =
-                        self.snap.torrents.iter().filter(|t| hashes.contains(&t.hash)).map(|t| t.done).sum();
                     let free = self.cached_free_space(path);
                     let short = free.is_some_and(|f| need > f);
                     if let Some(free) = free {

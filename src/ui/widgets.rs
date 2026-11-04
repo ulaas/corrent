@@ -96,14 +96,27 @@ pub fn sparkline(ui: &mut Ui, samples: &[f32], color: Color32, size: Vec2) -> Re
 
 /// Draw one series into `r`, scaled to `max` (or its own max).
 pub fn paint_series(painter: &egui::Painter, r: Rect, samples: &[f32], color: Color32, max: Option<f32>, fill: bool) {
+    let max = max.unwrap_or_else(|| samples.iter().copied().fold(0.0f32, f32::max));
+    paint_samples(painter, r, samples.iter().copied(), color, max, fill);
+}
+
+/// [`paint_series`] from an iterator, for samples that aren't in a slice of their own (table rows
+/// draw this for every visible torrent, every frame).
+pub fn paint_samples(
+    painter: &egui::Painter,
+    r: Rect,
+    samples: impl ExactSizeIterator<Item = f32>,
+    color: Color32,
+    max: f32,
+    fill: bool,
+) {
     if samples.len() < 2 {
         painter.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, color.gamma_multiply(0.4)));
         return;
     }
-    let max = max.unwrap_or_else(|| samples.iter().copied().fold(0.0f32, f32::max)).max(1.0);
+    let max = max.max(1.0);
     let n = (samples.len() - 1) as f32;
     let pts: Vec<Pos2> = samples
-        .iter()
         .enumerate()
         .map(|(i, v)| pos2(r.left() + r.width() * i as f32 / n, r.bottom() - r.height() * (v / max).clamp(0.0, 1.0)))
         .collect();

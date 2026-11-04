@@ -134,7 +134,8 @@ impl CorrentApp {
             return;
         }
         let units = self.settings.appearance.speed_units;
-        let session = self.snap.session.clone();
+        let snap = self.snap.clone();
+        let session = &snap.session;
         let mut open = true;
         egui::Window::new(RichText::new(format!("{}  {}", icons::PLAY_CIRCLE, t!("Streaming"))).strong())
             .id(Id::new("streams_window"))

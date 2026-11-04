@@ -1088,11 +1088,11 @@ impl CorrentApp {
     fn apply_appearance_if_changed(&mut self, ctx: &Context) {
         let a = self.appearance_preview.as_ref().unwrap_or(&self.settings.appearance);
         // Also re-apply when the OS high-contrast mode is switched.
-        let key = (a.clone(), a.follow_os_high_contrast && theme::os_high_contrast());
-        if self.applied_appearance.as_ref() != Some(&key) {
+        let high_contrast = a.follow_os_high_contrast && theme::os_high_contrast();
+        if self.applied_appearance.as_ref().is_none_or(|(applied, hc)| applied != a || *hc != high_contrast) {
             crate::i18n::set_language(&a.language);
             theme::apply(ctx, a);
-            self.applied_appearance = Some(key);
+            self.applied_appearance = Some((a.clone(), high_contrast));
         }
     }
 

@@ -10,7 +10,8 @@ use crate::util::{fmt_bytes, fmt_speed};
 impl CorrentApp {
     pub(super) fn status_bar(&mut self, ui: &mut Ui, p: &Palette) {
         let units = self.settings.appearance.speed_units;
-        let s = self.snap.session.clone();
+        let snap = self.snap.clone();
+        let s = &snap.session;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             let (dot, text) = match &self.snap.engine_state {
@@ -103,8 +104,7 @@ impl CorrentApp {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                let ups: Vec<f32> = self.snap.history.iter().rev().take(90).rev().map(|(_, u)| *u as f32).collect();
-                let downs: Vec<f32> = self.snap.history.iter().rev().take(90).rev().map(|(d, _)| *d as f32).collect();
+                let recent: Vec<_> = snap.history.iter().rev().take(90).rev().collect();
                 if s.alt_speed {
                     ui.label(RichText::new(format!("{} {}", icons::GAUGE, t!("Alt speed"))).small().color(p.warn));
                 }
@@ -120,6 +120,7 @@ impl CorrentApp {
                 self.limit_menu(&up_r, false);
                 ui.label(RichText::new(icons::ARROW_UP).color(p.success));
                 if self.settings.appearance.show_sparklines {
+                    let ups: Vec<f32> = recent.iter().map(|(_, u)| *u as f32).collect();
                     sparkline(ui, &ups, p.success, vec2(70.0, 16.0));
                 }
                 ui.add_space(8.0);
@@ -135,6 +136,7 @@ impl CorrentApp {
                 self.limit_menu(&down_r, true);
                 ui.label(RichText::new(icons::ARROW_DOWN).color(p.accent));
                 if self.settings.appearance.show_sparklines {
+                    let downs: Vec<f32> = recent.iter().map(|(d, _)| *d as f32).collect();
                     sparkline(ui, &downs, p.accent, vec2(70.0, 16.0));
                 }
             });
@@ -144,7 +146,8 @@ impl CorrentApp {
     /// O5: shown only while a self-check fails; lists the problems with a way to fix each.
     fn health_chip(&mut self, ui: &mut Ui, p: &Palette) {
         use corrent_core::health::Issue;
-        let issues = self.snap.health.clone();
+        let snap = self.snap.clone();
+        let issues = &snap.health;
         if issues.is_empty() {
             return;
         }
@@ -157,7 +160,7 @@ impl CorrentApp {
             .on_hover_text(t!("Corrent's self-checks found a problem. Click for details."));
         crate::ui::widgets::popup(egui::Popup::menu(&r), |ui| {
             ui.set_max_width(360.0);
-            for issue in &issues {
+            for issue in issues {
                 ui.label(RichText::new(issue.label()).color(p.text));
                 let fix = match issue {
                     Issue::SaveFolder(_) | Issue::LowSpace(_) => t!("Choose another download folder…"),

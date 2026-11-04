@@ -165,6 +165,22 @@ pub struct SettingsDraft {
     pub trackers_text: String,
 }
 
+impl SettingsDraft {
+    /// The parts not edited as such here: the trackers' text, and what the handler card applies
+    /// straight away.
+    fn sync_derived(&mut self, saved: &Settings) {
+        let lines = || self.trackers_text.lines().map(str::trim).filter(|l| !l.is_empty());
+        if !self.settings.bittorrent.default_trackers.iter().map(String::as_str).eq(lines()) {
+            self.settings.bittorrent.default_trackers = lines().map(String::from).collect();
+        }
+        let (b, d) = (&saved.behavior, &mut self.settings.behavior);
+        d.register_magnet_handler = b.register_magnet_handler;
+        d.register_torrent_handler = b.register_torrent_handler;
+        d.keep_handler_registration = b.keep_handler_registration;
+        d.handler_prompt_dismissed = b.handler_prompt_dismissed;
+    }
+}
+
 fn row(ui: &mut Ui, p: &Palette, label: &str, help: &str, add: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
@@ -428,20 +444,10 @@ impl CorrentApp {
                             .inner_margin(egui::Margin { left: 22, right: 22, top: 10, bottom: 14 })
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    let mut pending = draft.settings.clone();
-                                    pending.bittorrent.default_trackers = draft
-                                        .trackers_text
-                                        .lines()
-                                        .map(str::trim)
-                                        .filter(|l| !l.is_empty())
-                                        .map(String::from)
-                                        .collect();
-                                    let b = &self.settings.behavior;
-                                    pending.behavior.register_magnet_handler = b.register_magnet_handler;
-                                    pending.behavior.register_torrent_handler = b.register_torrent_handler;
-                                    pending.behavior.keep_handler_registration = b.keep_handler_registration;
-                                    pending.behavior.handler_prompt_dismissed = b.handler_prompt_dismissed;
-                                    if self.settings.requires_restart(&pending) {
+                                    // What Apply would save, kept in the draft itself: no copy of all
+                                    // the settings on every frame.
+                                    draft.sync_derived(&self.settings);
+                                    if self.settings.requires_restart(&draft.settings) {
                                         ui.label(
                                             RichText::new(format!(
                                                 "{}  {}",
@@ -459,7 +465,7 @@ impl CorrentApp {
                                         }
                                         if ui
                                             .add_enabled_ui(
-                                                pending != self.settings || !draft.new_password.is_empty(),
+                                                draft.settings != self.settings || !draft.new_password.is_empty(),
                                                 |ui| secondary_button(ui, t!("Apply")),
                                             )
                                             .inner

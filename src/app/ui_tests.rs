@@ -754,6 +754,32 @@ fn perf_5000_torrents() {
     println!("frame, unchanged snapshot: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / frames as f64);
 }
 
+/// Scale check: the context menu with 5,000 selected. Run with
+/// `cargo test perf_context_menu -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn perf_context_menu_5k_selected() {
+    let views: Vec<TorrentView> = (0..5000u32)
+        .map(|i| {
+            let mut h = [0u8; 20];
+            h[..4].copy_from_slice(&i.to_le_bytes());
+            TorrentView { hash: InfoHash(h), queue_pos: i, name: format!("Torrent {i}"), ..Default::default() }
+        })
+        .collect();
+    let (_f, mut app) = app("perf-menu", views);
+    app.selected = app.snap.torrents.iter().map(|t| t.hash).collect();
+    let mut h = harness(app);
+    h.run_steps(3);
+    let at = h.get_by_label("Torrent 1").rect().center();
+    press_secondary(&mut h, at);
+    assert!(h.query_by_label_contains("Force start").is_some());
+    let t = std::time::Instant::now();
+    for _ in 0..30 {
+        h.step();
+    }
+    println!("frame with the menu open: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 30.0);
+}
+
 #[test]
 fn streaming_status_bar_and_window() {
     use crate::engine::types::{SessionView, StreamState, StreamView};

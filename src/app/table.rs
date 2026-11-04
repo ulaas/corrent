@@ -573,7 +573,10 @@ impl CorrentApp {
                 });
             }
             Col::Status => {
-                badge(ui, &status_text(t), color).on_hover_text(t.error.clone().unwrap_or_else(|| status_text(t)));
+                let status = status_text(t);
+                badge(ui, &status, color).on_hover_ui(|ui| {
+                    ui.label(t.error.as_deref().unwrap_or(&status));
+                });
             }
             Col::Peers => {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -583,12 +586,14 @@ impl CorrentApp {
                     ui.label(num(t.peers_live.to_string()));
                 })
                 .response
-                .on_hover_text(t!(
-                    "{live} connected · {connecting} connecting · {known} known\nA torrent with few seeders may only have a handful of connections.",
-                    live = t.peers_live,
-                    connecting = t.peers_connecting,
-                    known = t.peers_seen
-                ));
+                .on_hover_ui(|ui| {
+                    ui.label(t!(
+                        "{live} connected · {connecting} connecting · {known} known\nA torrent with few seeders may only have a handful of connections.",
+                        live = t.peers_live,
+                        connecting = t.peers_connecting,
+                        known = t.peers_seen
+                    ));
+                });
             }
             Col::Activity => {
                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), Sense::hover());
@@ -599,16 +604,17 @@ impl CorrentApp {
                         egui::Stroke::new(1.0, p.text_mute.gamma_multiply(0.4)),
                     );
                 } else {
-                    let downs: Vec<f32> = hist.iter().map(|(d, _)| *d as f32).collect();
-                    let ups: Vec<f32> = hist.iter().map(|(_, u)| *u as f32).collect();
-                    let max = downs.iter().chain(&ups).fold(1.0f32, |m, v| m.max(*v));
-                    widgets::paint_series(ui.painter(), rect, &ups, p.success, Some(max), false);
-                    widgets::paint_series(ui.painter(), rect, &downs, p.accent, Some(max), true);
-                    resp.on_hover_text(t!(
-                        "Last minute — down {down} · up {up}",
-                        down = fmt_speed(t.down_bps, units),
-                        up = fmt_speed(t.up_bps, units)
-                    ));
+                    let max = hist.iter().fold(1.0f32, |m, (d, u)| m.max(*d as f32).max(*u as f32));
+                    let (downs, ups) = (hist.iter().map(|(d, _)| *d as f32), hist.iter().map(|(_, u)| *u as f32));
+                    widgets::paint_samples(ui.painter(), rect, ups, p.success, max, false);
+                    widgets::paint_samples(ui.painter(), rect, downs, p.accent, max, true);
+                    resp.on_hover_ui(|ui| {
+                        ui.label(t!(
+                            "Last minute — down {down} · up {up}",
+                            down = fmt_speed(t.down_bps, units),
+                            up = fmt_speed(t.up_bps, units)
+                        ));
+                    });
                 }
             }
             Col::Down => right(
