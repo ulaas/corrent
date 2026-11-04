@@ -243,7 +243,13 @@ fn every_fixture_loads_losslessly() {
         let paths = Paths { data_dir: dir.join("data"), portable: true };
         copy_tree(&fixture, &paths.data_dir, DL, &slashes(&dl));
         let read = |f: &str| std::fs::read_to_string(paths.data_dir.join(f)).unwrap();
-        let settings_in: Value = serde_json::to_value(read("settings.toml").parse::<toml::Table>().unwrap()).unwrap();
+        let mut settings_in: Value =
+            serde_json::to_value(read("settings.toml").parse::<toml::Table>().unwrap()).unwrap();
+        // These two move into `playback.fx` (config's `old_equalizer_and_normalize_move_into_fx`).
+        if let Some(pb) = settings_in.get_mut("playback").and_then(Value::as_object_mut) {
+            pb.remove("equalizer");
+            pb.remove("normalize");
+        }
         let store_in: Value = serde_json::from_str(&read("store.json")).unwrap();
         let rss_in: Value = serde_json::from_str(&read("rss.json")).unwrap();
         // As written, before anything migrates them.

@@ -130,13 +130,13 @@ pub const SETTINGS_FIELDS: &[(&str, Rule)] = {
         ("downloads.start_paused", Keep),
         ("playback.audio_device", Keep),
         ("playback.channels", Keep),
-        ("playback.equalizer", Keep),
         ("playback.exclusive", Keep),
         ("playback.gapless", Keep),
         // stream C
+        ("playback.fx.preset", Drop), // may be the name of a user preset
+        ("playback.fx.*", Keep),
         ("playback.muted", Keep),
         ("playback.volume", Keep),
-        ("playback.normalize", Keep),
         ("playback.passthrough", Keep),
         ("playback.replaygain", Keep),
         ("queue.enabled", Keep),
@@ -503,6 +503,9 @@ mod tests {
             ..Default::default()
         });
         s.search.providers.push(crate::search::TorznabProvider::default());
+        s.playback.fx.preset = Some("mine".into());
+        s.playback.fx.night = Some(Default::default());
+        s.playback.fx.crossfeed = Some(Default::default());
         let colors = ["bg0", "bg1", "bg2", "bg3", "border", "border_hi", "text", "text_dim", "text_mute", "accent"];
         let colors = colors.iter().chain(&["success", "warn", "error", "queued", "paused", "completed"]);
         let def: String = colors

@@ -139,8 +139,11 @@ pub struct Playback {
     pub channels: String,
     /// Send Dolby/DTS untouched to a receiver (S/PDIF, HDMI).
     pub passthrough: bool,
-    /// Even out loudness between tracks and films (EBU R128).
+    /// Read from older settings files and moved into `fx` (`adopt_legacy`); never written.
+    #[serde(skip_serializing)]
     pub normalize: bool,
+    /// See `normalize`.
+    #[serde(skip_serializing)]
     pub equalizer: EqPreset,
     /// "off", "track" or "album".
     pub replaygain: String,
@@ -149,6 +152,8 @@ pub struct Playback {
     /// The player's volume (mpv's 0–130) and mute, as they were last.
     pub volume: f32,
     pub muted: bool,
+    /// Sound processing: off by default, then no filter runs at all.
+    pub fx: crate::audio_fx::AudioFx,
 }
 
 impl Default for Playback {
@@ -164,6 +169,7 @@ impl Default for Playback {
             gapless: true,
             volume: 100.0,
             muted: false,
+            fx: crate::audio_fx::AudioFx::default(),
         }
     }
 }
@@ -171,19 +177,7 @@ impl Default for Playback {
 impl Playback {
     /// The player's audio options for mpv.
     pub fn mpv_options(&self) -> Vec<(&'static str, String)> {
-        let mut filters: Vec<String> = Vec::new();
-        if self.normalize {
-            filters.push("loudnorm=I=-18:TP=-1.5:LRA=11".into());
-        }
-        // Boosts need room: at the converter to the device's format they would clip.
-        let boost = self.equalizer.bands().iter().map(|(_, g)| *g).max().unwrap_or(0);
-        if boost > 0 {
-            filters.push(format!("volume=-{boost}dB"));
-        }
-        for (f, g) in self.equalizer.bands() {
-            filters.push(format!("equalizer=f={f}:t=o:w=1:g={g}"));
-        }
-        let af = if filters.is_empty() { String::new() } else { format!("lavfi=[{}]", filters.join(",")) };
+        let af = crate::audio_fx::af_string(&self.start_chain());
         let device = if self.audio_device.trim().is_empty() { "auto".to_string() } else { self.audio_device.clone() };
         vec![
             ("audio-device", device),
@@ -197,6 +191,38 @@ impl Playback {
             ),
             ("gapless-audio", if self.gapless { "weak" } else { "no" }.into()),
         ]
+    }
+
+    /// The filters a player starts with. The source isn't known yet, and the meters wait for it: an
+    /// output opened by the source's own format stays as it is when they are added (measured: an
+    /// output opened through `ebur128` has its format instead). Compressed passthrough can't be
+    /// filtered, so with it on there is nothing to run.
+    pub fn start_chain(&self) -> Vec<crate::audio_fx::Stage> {
+        use crate::audio_fx::{AudioFx, Caps, Source, chain};
+        if self.passthrough {
+            return Vec::new();
+        }
+        chain(&AudioFx { meters: false, ..self.fx.clone() }, &Caps::assumed(), &Source::default())
+    }
+
+    /// Moves the fields of older settings files into `fx`, once: `normalize` becomes the Live
+    /// leveller (`loudnorm` is gone: it upsampled to 192 kHz and held seconds of audio), and an
+    /// equalizer preset its bands.
+    pub fn adopt_legacy(&mut self) {
+        use crate::audio_fx::Loudness;
+        if std::mem::take(&mut self.normalize) {
+            self.fx.loudness = Loudness::Live;
+            self.fx.enabled = true;
+        }
+        let preset = std::mem::take(&mut self.equalizer);
+        for (hz, db) in preset.bands() {
+            let distance = |b: &crate::audio_fx::Band| (f64::from(b.hz.max(1)) / f64::from(*hz)).ln().abs();
+            let nearest = self.fx.eq.iter_mut().min_by(|a, b| distance(a).total_cmp(&distance(b)));
+            if let Some(band) = nearest {
+                band.db = *db as f32;
+                self.fx.enabled = true;
+            }
+        }
     }
 
     /// The options that differ from `old`'s, to send to a running player: setting the device,
@@ -769,7 +795,9 @@ impl Settings {
         if text.trim().is_empty() || (text.len() < 16 && !text.contains("schema_version")) {
             return Err("the file is empty".into());
         }
-        toml::from_str(text).map_err(|e| e.to_string())
+        let mut s: Settings = toml::from_str(text).map_err(|e| e.to_string())?;
+        s.playback.adopt_legacy();
+        Ok(s)
     }
 
     /// Recover every section of a damaged settings file that still deserializes.
@@ -803,6 +831,8 @@ impl Settings {
         section!("updates", updates);
         section!("appearance", appearance);
         section!("advanced", advanced);
+        section!("playback", playback);
+        s.playback.adopt_legacy();
         (s, lost)
     }
 
@@ -917,19 +947,41 @@ mod tests {
         let get = |o: &[(&str, String)], k: &str| o.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone()).unwrap();
         assert_eq!(get(&d, "af"), "");
         assert_eq!(get(&d, "audio-device"), "auto");
-        let p = Playback {
-            normalize: true,
-            equalizer: EqPreset::BassBoost,
-            replaygain: "off".into(),
-            passthrough: true,
-            ..Default::default()
-        };
+        let mut p = Playback { replaygain: "off".into(), ..Default::default() };
+        p.fx.apply_preset("dialogue");
+        p.fx.meters = true;
         let o = p.mpv_options();
-        assert!(get(&o, "af").starts_with("lavfi=[loudnorm=") && get(&o, "af").contains("equalizer=f=60"));
-        // The largest boost is taken off in front of the bands.
-        assert!(get(&o, "af").contains("volume=-6dB,equalizer=f=60"), "{}", get(&o, "af"));
+        assert!(get(&o, "af").starts_with("@gain:lavfi=[volume=volume=-3dB],@eq:"), "{}", get(&o, "af"));
+        assert!(!get(&o, "af").contains("@out"), "the meters wait for the source: {}", get(&o, "af"));
         assert_eq!(get(&o, "replaygain"), "no");
+        // Nothing can filter what is passed through undecoded.
+        p.passthrough = true;
+        let o = p.mpv_options();
+        assert_eq!(get(&o, "af"), "");
         assert!(get(&o, "audio-spdif").contains("truehd"));
+    }
+
+    #[test]
+    fn old_equalizer_and_normalize_move_into_fx() {
+        use crate::audio_fx::Loudness;
+        let s = Settings::parse(
+            "schema_version = 1\n[playback]\nnormalize = true\nequalizer = \"bass_boost\"\ngapless = false\n",
+        )
+        .unwrap();
+        let pb = &s.playback;
+        assert!(pb.fx.enabled && !pb.gapless);
+        assert_eq!(pb.fx.loudness, Loudness::Live);
+        let db = |hz: u32| pb.fx.eq.iter().find(|b| b.hz == hz).unwrap().db;
+        assert_eq!((db(63), db(125), db(500), db(1000)), (6.0, 4.0, 1.0, 0.0));
+        assert!(!pb.normalize && pb.equalizer == EqPreset::Flat, "only once");
+        // They aren't written back, and what is written reads back the same.
+        let text = toml::to_string_pretty(&s).unwrap();
+        assert!(!text.contains("normalize") && !text.contains("equalizer ="), "{text}");
+        assert_eq!(Settings::parse(&text).unwrap().playback, s.playback);
+        // A file with neither stays off.
+        let plain = Settings::parse("schema_version = 1\n[playback]\ngapless = true\n").unwrap();
+        assert!(!plain.playback.fx.enabled);
+        assert!(plain.playback.start_chain().is_empty());
     }
 
     #[test]
@@ -949,7 +1001,8 @@ mod tests {
         assert!(old.changed_options(&old).is_empty());
         let new = Playback { gapless: false, ..old.clone() };
         assert_eq!(new.changed_options(&old), vec![("gapless-audio", "no".to_string())]);
-        let new = Playback { equalizer: EqPreset::Vocal, ..old.clone() };
+        let mut new = old.clone();
+        new.fx.apply_preset("night");
         let changed = new.changed_options(&old);
         assert_eq!(changed.len(), 1, "{changed:?}");
         assert_eq!(changed[0].0, "af");

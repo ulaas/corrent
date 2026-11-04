@@ -8,6 +8,7 @@
 #[macro_use]
 extern crate corrent_i18n;
 
+pub mod audio_fx;
 pub mod backup;
 pub mod config;
 pub mod crash;
