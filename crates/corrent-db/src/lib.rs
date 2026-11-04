@@ -26,6 +26,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("placement", include_str!("../migrations/0013_placement.sql")),
     ("placed_index", include_str!("../migrations/0014_placed_index.sql")),
     ("track_choice", include_str!("../migrations/0015_track_choice.sql")),
+    ("child_indexes", include_str!("../migrations/0016_child_indexes.sql")),
 ];
 
 pub fn schema_version() -> u32 {
@@ -343,6 +344,42 @@ mod tests {
         assert_eq!(failed, 5);
         let n: i64 = db.read(|c| c.query_row("SELECT count(*) FROM kv", [], |r| r.get(0))).await.unwrap();
         assert_eq!(n, 45, "failed jobs left nothing behind");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn foreign_key_children_have_indexes() {
+        let p = scratch("child-indexes");
+        let db = Db::open(&p).unwrap();
+        for name in [
+            "watch_state_item",
+            "playlist_items_item",
+            "collection_items_item",
+            "grabs_item",
+            "grabs_wanted",
+            "wanted_library",
+            "wanted_profile",
+            "monitored_profile",
+            "collections_library",
+        ] {
+            let n: i64 = db
+                .read(move |c| {
+                    c.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?1", [name], |r| {
+                        r.get(0)
+                    })
+                })
+                .await
+                .unwrap();
+            assert_eq!(n, 1, "{name}");
+        }
+        // What a cascade from `items` looks up.
+        let plan: String = db
+            .read(|c| {
+                c.query_row("EXPLAIN QUERY PLAN SELECT user_id FROM watch_state WHERE item_id = 1", [], |r| r.get(3))
+            })
+            .await
+            .unwrap();
+        assert!(plan.contains("watch_state_item"), "{plan}");
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
