@@ -21,6 +21,7 @@ pub mod log;
 pub mod media;
 mod notify;
 mod onboarding;
+mod palette;
 mod pickers;
 mod remote;
 mod search_view;
@@ -351,6 +352,8 @@ pub struct CorrentApp {
     dropped_rx: std::sync::mpsc::Receiver<(Vec<AddSource>, usize)>,
     /// The clipboard read for the magnet dialog, and when it was asked.
     clipboard: Option<(std::sync::mpsc::Receiver<String>, std::time::Instant)>,
+    /// Ctrl+K, while open.
+    palette: Option<palette::CommandPalette>,
     pub modal: Option<dialogs::Modal>,
     /// The open modal's text field has been given the focus.
     modal_focused: bool,
@@ -570,6 +573,7 @@ impl CorrentApp {
             dropped_tx,
             dropped_rx,
             clipboard: None,
+            palette: None,
             modal: None,
             modal_focused: false,
             add_dialogs: VecDeque::new(),
@@ -1114,7 +1118,7 @@ impl CorrentApp {
     }
 
     /// Brings the list up with these torrents visible and selected.
-    fn show_torrents(&mut self, ctx: &Context, hashes: Vec<InfoHash>) {
+    pub(super) fn show_torrents(&mut self, ctx: &Context, hashes: Vec<InfoHash>) {
         self.show_window(ctx);
         self.main_view = feeds::MainView::Torrents;
         self.clear_filters();
@@ -1311,6 +1315,7 @@ impl CorrentApp {
                 "magnet" => self.open_magnet_dialog(),
                 "about" => self.extras.about = true,
                 "shortcuts" => self.extras.shortcuts = true,
+                "palette" => self.toggle_palette(),
                 "columns" => {
                     self.column_menu = Some(egui::pos2(500.0, 90.0));
                     egui::Popup::open_id(ctx, egui::Id::new(table::COLUMN_CHOOSER));
@@ -1490,6 +1495,7 @@ impl CorrentApp {
         self.batch_dialog(&ctx, &p);
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);
+        self.palette_window(&ctx, &p);
         self.had_focus = ctx.memory(|m| m.focused().is_some());
         let actions = self.toasts.show(&ctx, &p);
         self.run_toast_actions(&ctx, actions);

@@ -34,7 +34,7 @@ pub enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 14] = [
+    pub(super) const ALL: [Page; 14] = [
         Page::Behavior,
         Page::Downloads,
         Page::Connection,
@@ -51,7 +51,7 @@ impl Page {
         Page::Advanced,
     ];
 
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Page::Behavior => t!("General"),
             Page::Downloads => t!("Downloads"),
@@ -70,7 +70,7 @@ impl Page {
         }
     }
 
-    fn icon(self) -> &'static str {
+    pub(super) fn icon(self) -> &'static str {
         match self {
             Page::Behavior => icons::SLIDERS_HORIZONTAL,
             Page::Downloads => icons::DOWNLOAD_SIMPLE,
@@ -114,7 +114,7 @@ impl Page {
     }
 
     /// Searchable keywords for every field on the page.
-    fn keywords(self) -> &'static str {
+    pub(super) fn keywords(self) -> &'static str {
         match self {
             Page::Behavior => {
                 t!(

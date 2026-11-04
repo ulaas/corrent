@@ -169,6 +169,9 @@ impl CorrentApp {
                     self.open_diagnostics();
                 }
                 ui.separator();
+                if ui.button(format!("{}  {}", icons::COMMAND, t!("Command palette  (Ctrl+K)"))).clicked() {
+                    self.toggle_palette();
+                }
                 if ui.button(format!("{}  {}", icons::KEYBOARD, t!("Keyboard shortcuts  (F1)"))).clicked() {
                     self.extras.shortcuts = true;
                 }
@@ -238,6 +241,7 @@ impl CorrentApp {
             (
                 t!("Anywhere"),
                 &[
+                    ("Ctrl+K", t!("Command palette: everything, by name")),
                     ("Ctrl+O", t!("Add torrent files")),
                     ("Ctrl+Shift+O", t!("Add magnet links or URLs")),
                     ("Ctrl+N", t!("Create a torrent")),

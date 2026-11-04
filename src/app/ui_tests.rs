@@ -678,6 +678,65 @@ fn the_shortcuts_window_opens_with_f1_and_status_bar_chips_open_settings() {
 }
 
 #[test]
+fn the_palette_runs_what_you_type() {
+    let (_f, mut app) = three_rows();
+    let log = record_commands(&mut app);
+    app.selected.insert(InfoHash([2; 20]));
+    let mut h = harness(app);
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    assert!(h.state().palette.is_some(), "open");
+    h.event(egui::Event::Text("pause".into()));
+    h.run_steps(3);
+    assert_eq!(h.state().palette.as_ref().unwrap().query, "pause");
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Enter);
+    assert!(h.state().palette.is_none(), "closed");
+    let sent = commands_sent(h.state(), &log);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].starts_with("Pause("), "{sent:?}");
+    // Keyboard moves and a torrent by name.
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    h.event(egui::Event::Text("three".into()));
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::ArrowDown);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::ArrowUp);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Enter);
+    assert!(h.state().selected.contains(&InfoHash([3; 20])));
+    assert_eq!(h.state().selected.len(), 1);
+    // Escape closes and changes nothing; while open the list's keys are off.
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Space);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Escape);
+    assert!(h.state().palette.is_none());
+    assert_eq!(h.state().selected.len(), 1);
+    assert!(commands_sent(h.state(), &log).iter().all(|c| !c.starts_with("Pause")), "Space typed into the palette");
+    // Not on top of a dialog.
+    h.state_mut().open_speed_limits(vec![InfoHash([1; 20])]);
+    h.run_steps(2);
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    assert!(h.state().palette.is_none());
+}
+
+#[test]
+fn the_palette_finds_settings_and_filters() {
+    let (_f, app) = three_rows();
+    let mut h = harness(app);
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    h.event(egui::Event::Text("connection".into()));
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Enter);
+    assert!(h.state().settings_draft.as_ref().is_some_and(|d| d.page == super::settings_window::Page::Connection));
+    h.state_mut().settings_draft = None;
+    h.run_steps(2);
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    h.event(egui::Event::Text("uncategorized".into()));
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Enter);
+    assert_eq!(h.state().prefs.category_filter, super::GroupFilter::None);
+}
+
+#[test]
 fn empty_list_offers_add_actions() {
     let (_f, app) = app("empty", vec![]);
     let mut h = harness(app);

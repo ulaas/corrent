@@ -298,9 +298,15 @@ impl CorrentApp {
         if consume(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::S)) {
             self.engine.send(EngineCommand::SetAltSpeed(!self.snap.session.alt_speed));
         }
+        if self.palette.is_some() && consume(sc(Modifiers::COMMAND, Key::K)) {
+            self.toggle_palette();
+        }
         // Also the dialogs not listed in `modal_open` (About, Connect, the media pages' own).
         if self.modal_open() || ctx.memory(|m| m.top_modal_layer().is_some()) {
             return;
+        }
+        if consume(sc(Modifiers::COMMAND, Key::K)) {
+            self.toggle_palette();
         }
         if consume(sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::O)) {
             self.open_magnet_dialog();
