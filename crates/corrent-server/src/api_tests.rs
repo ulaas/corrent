@@ -480,6 +480,18 @@ async fn the_item_list_has_in_progress_and_next_up() {
     h.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clients_share_one_conversion_per_generation() {
+    let h = harness("hub", ServerConfig { tls: false, ..Default::default() }).await;
+    let snap = h.st.engine.snapshot();
+    let before = h.st.hub.wire_builds();
+    let first = h.st.hub.wire_list(&snap);
+    let second = h.st.hub.wire_list(&snap);
+    assert_eq!(h.st.hub.wire_builds(), before + 1, "two clients, one generation, one conversion");
+    assert!(Arc::ptr_eq(&first.torrents, &second.torrents) && Arc::ptr_eq(&first.labels, &second.labels));
+    h.stop().await;
+}
+
 /// Signs in to the qBittorrent API and returns the session cookie.
 async fn qbt_login(app: &Router, name: &str, password: &str) -> String {
     let mut r = Request::builder()

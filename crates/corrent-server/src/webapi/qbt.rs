@@ -102,6 +102,33 @@ pub(super) fn parse_hashes(h: &str) -> Option<Vec<InfoHash>> {
     (h != "all").then(|| h.split('|').filter_map(|x| InfoHash::from_hex(x.trim())).collect())
 }
 
+/// A field of a torrent's JSON, ordered as qBittorrent's clients expect: numbers by value, the rest
+/// as text.
+struct SortKey(Value);
+
+impl Ord for SortKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self.0.as_f64(), other.0.as_f64()) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+            _ => self.0.as_str().unwrap_or("").cmp(other.0.as_str().unwrap_or("")),
+        }
+    }
+}
+
+impl PartialOrd for SortKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for SortKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for SortKey {}
+
 pub(super) fn truthy(v: Option<&String>) -> bool {
     v.is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
 }
@@ -355,15 +382,8 @@ async fn info(State(st): St, req: Request) -> Response {
         .filter(|t| wanted.as_ref().is_none_or(|w| w.contains(&t.hash)))
         .collect();
     if let Some(key) = f.get("sort") {
-        static NULL: Value = Value::Null;
-        list.sort_by(|a, b| {
-            let (x, y) = (torrent_json(a), torrent_json(b));
-            let (x, y) = (x.get(key.as_str()).unwrap_or(&NULL), y.get(key.as_str()).unwrap_or(&NULL));
-            match (x.as_f64(), y.as_f64()) {
-                (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
-                _ => x.as_str().unwrap_or("").cmp(y.as_str().unwrap_or("")),
-            }
-        });
+        // The key once per row: building a row's JSON isn't cheap.
+        list.sort_by_cached_key(|t| SortKey(torrent_json(t).get(key.as_str()).cloned().unwrap_or(Value::Null)));
         if truthy(f.get("reverse")) {
             list.reverse();
         }
