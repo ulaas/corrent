@@ -2269,3 +2269,37 @@ async fn adds_deletes_and_stops_reach_the_session_file_at_once() {
     assert_eq!(entry(&paths, hashes[2]).unwrap()["is_paused"], false);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A `.magnet` file in a watch folder: its link is added (peers from a tracker here), and the
+/// file follows the same rules as a `.torrent`, also when it holds something else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_magnet_file_in_a_watch_folder_is_added() {
+    use super::faultserver::{self, Route};
+    let dir = temp_dir("watch-magnet");
+    let s = seeder(&dir).await;
+    let std::net::SocketAddr::V4(addr) = s.addr else { panic!("the seeder listens on IPv4") };
+    let mut announce = b"d8:intervali60e5:peers6:".to_vec();
+    announce.extend_from_slice(&addr.ip().octets());
+    announce.extend_from_slice(&addr.port().to_be_bytes());
+    announce.push(b'e');
+    let srv = faultserver::start().await;
+    srv.route("/announce", Route::Answer { status: 200, content_type: "text/plain", body: announce });
+    let watch = dir.join("watch");
+    std::fs::create_dir_all(&watch).unwrap();
+    let tracker = super::types::url_encode(&srv.url("/announce"));
+    let link = format!("magnet:?xt=urn:btih:{}&tr={tracker}", s.hash.to_hex());
+    std::fs::write(watch.join("good.magnet"), format!("{link}\n")).unwrap();
+    std::fs::write(watch.join("bad.magnet"), b"not a magnet link").unwrap();
+    let mut cfg = settings(&dir);
+    cfg.bittorrent.trackers_enabled = true;
+    cfg.watch.push(crate::config::WatchFolder { path: watch.clone(), start_paused: true, ..Default::default() });
+    let l = start_with(&dir, cfg);
+    wait_for(&l, "the torrent from its magnet", 60, |sn| find(sn, s.hash).is_some()).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !(watch.join("good.magnet.added").exists() && watch.join("bad.magnet.failed").exists()) {
+        assert!(Instant::now() < deadline, "{:?}", std::fs::read_dir(&watch).unwrap().collect::<Vec<_>>());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}

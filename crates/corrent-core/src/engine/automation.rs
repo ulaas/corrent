@@ -88,8 +88,9 @@ pub fn scan(input: ScanInput) -> Scan {
             let Ok(entries) = std::fs::read_dir(&f.path) else { continue };
             for e in entries.flatten() {
                 let path = e.path();
+                let is_magnet = path.extension().is_some_and(|x| x.eq_ignore_ascii_case("magnet"));
                 let is_torrent = path.extension().is_some_and(|x| x.eq_ignore_ascii_case("torrent"));
-                if !is_torrent || !path.is_file() || in_flight.contains(&path) {
+                if !(is_torrent || is_magnet) || !path.is_file() || in_flight.contains(&path) {
                     continue;
                 }
                 let size = e.metadata().map(|m| m.len()).unwrap_or(0);
@@ -100,12 +101,24 @@ pub fn scan(input: ScanInput) -> Scan {
                     // The add reads it (at most MAX_TORRENT_BYTES); one that fails, also for being
                     // too large, is renamed to .failed (`finish_file`).
                     seen.remove(&path);
-                    hits.push(WatchHit { source: AddSource::File(path.clone()), folder: f.clone(), path });
+                    let source = if is_magnet { magnet_source(&path, size) } else { AddSource::File(path.clone()) };
+                    hits.push(WatchHit { source, folder: f.clone(), path });
                 }
             }
         }
     }
     Scan { sizes: seen, hits }
+}
+
+/// A `.magnet` file holds one magnet link (the qBittorrent convention). Anything else is added as
+/// the file it is: that fails as "not a torrent" and the file is renamed like any other failure.
+fn magnet_source(path: &Path, size: u64) -> AddSource {
+    const MAX_MAGNET_FILE: u64 = 64 * 1024;
+    let link = (size <= MAX_MAGNET_FILE).then(|| std::fs::read_to_string(path).ok()).flatten();
+    match link.as_deref().map(str::trim) {
+        Some(link) if link.starts_with("magnet:") => AddSource::Magnet(link.to_string()),
+        _ => AddSource::File(path.to_path_buf()),
+    }
 }
 
 /// The name a file whose add failed is given (`<name>.failed`), so it isn't tried again.
@@ -280,6 +293,27 @@ mod tests {
         assert!(!f.exists());
         assert!(dir.join("a.torrent.added").exists());
         assert!(w.poll(&[folder]).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_magnet_file_is_added_as_its_link() {
+        let dir = std::env::temp_dir().join(format!("corrent-watch-magnet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let link = "magnet:?xt=urn:btih:0123456789012345678901234567890123456789";
+        std::fs::write(dir.join("good.MAGNET"), format!("  {link}\r\n")).unwrap();
+        std::fs::write(dir.join("url.magnet"), b"http://example.org/a.torrent").unwrap();
+        std::fs::write(dir.join("other.txt"), link).unwrap();
+        let folder = WatchFolder { path: dir.clone(), ..Default::default() };
+        let mut w = WatchState::default();
+        assert!(w.poll(std::slice::from_ref(&folder)).is_empty());
+        let mut hits = w.poll(&[folder]);
+        hits.sort_by_key(|h| h.path.clone());
+        assert_eq!(hits.len(), 2);
+        assert!(matches!(&hits[0].source, AddSource::Magnet(l) if l == link), "{:?}", hits[0].source.describe());
+        // Not a magnet link: no fetching what a dropped file points at, it fails as a bad file.
+        assert!(matches!(&hits[1].source, AddSource::File(p) if *p == dir.join("url.magnet")));
         let _ = std::fs::remove_dir_all(dir);
     }
 
