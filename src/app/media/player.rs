@@ -240,6 +240,8 @@ pub struct Player {
     /// nobody asks anything of doesn't get them at all.
     observing_meters: bool,
     observing_stats: bool,
+    /// The sound sheet is up.
+    sound_open: bool,
     /// Picture in picture: the window small and on top (the size to go back to).
     pip: Option<egui::Vec2>,
     /// The end-of-episode countdown was dismissed for this item.
@@ -264,6 +266,11 @@ pub struct Player {
     fx_set_at: Option<Instant>,
     /// The position last reported: a paused player has nothing new to say.
     last_reported: f64,
+    /// The effects last handed over to be saved, and since when they differ.
+    fx_saved: Mutex<corrent_core::audio_fx::AudioFx>,
+    fx_moved: Option<Instant>,
+    /// `fx.meters` as last seen: changing that setting brings the Audio page up or down.
+    fx_meters_setting: bool,
     /// The volume and mute last handed over to be saved, and since when they differ.
     volume_saved: (f64, bool),
     volume_moved: Option<Instant>,
@@ -653,10 +660,13 @@ impl Player {
             sheets: Default::default(),
             room: None,
             room_code: String::new(),
-            stats: false,
-            meter_page: audio.fx.meters,
+            stats: cfg!(debug_assertions) && std::env::var_os("CORRENT_DEV_METERS").is_some(),
+            // CORRENT_DEV_METERS: both pages up.
+            meter_page: audio.fx.meters || (cfg!(debug_assertions) && std::env::var_os("CORRENT_DEV_METERS").is_some()),
             observing_meters: false,
             observing_stats: false,
+            // CORRENT_DEV_SOUND: with the sheet up.
+            sound_open: cfg!(debug_assertions) && std::env::var_os("CORRENT_DEV_SOUND").is_some(),
             pip: None,
             no_countdown: None,
             cast,
@@ -671,6 +681,9 @@ impl Player {
             fx_from: None,
             fx_set_at: None,
             last_reported: -1.0,
+            fx_saved: Mutex::new(audio.fx.clone()),
+            fx_meters_setting: audio.fx.meters,
+            fx_moved: None,
             volume_saved: (audio.volume as f64, audio.muted),
             volume_moved: None,
         };
@@ -833,6 +846,7 @@ impl Player {
     /// New sound settings while playing: only what changed, as a device option re-creates the
     /// audio output (an audible dropout). The filters follow on the next frame (`sync_fx`).
     pub fn apply_audio(&self, audio: &corrent_core::config::Playback) {
+        *crate::util::lock(&self.fx_saved) = audio.fx.clone();
         let mut current = crate::util::lock(&self.audio);
         for (k, v) in audio.changed_options(&current) {
             self.cmd(&["set", k, &v]);
@@ -847,6 +861,10 @@ impl Player {
     /// changed, or runs when everything is off.
     fn sync_fx(&mut self) {
         let (mut fx, passthrough) = crate::util::with_lock(&self.audio, |a| (a.fx.clone(), a.passthrough));
+        if fx.meters != self.fx_meters_setting {
+            self.fx_meters_setting = fx.meters;
+            self.meter_page = fx.meters;
+        }
         let source = crate::util::with_lock(&self.status, |s| s.source.clone());
         // The filters follow the page, and wait for the source: an output opened by the source's
         // own format keeps it when they are added.
@@ -1031,6 +1049,7 @@ impl Player {
     /// Per-frame housekeeping: progress reports and advancing the queue at the end.
     pub fn tick(&mut self) {
         self.save_volume(false);
+        self.save_fx(false);
         self.sync_fx();
         if self.last_report.elapsed() > Duration::from_secs(10) {
             // A film left paused overnight has nothing new to say every 10 s.
@@ -1052,6 +1071,65 @@ impl Player {
             if self.no_countdown != self.current().map(|e| e.item_id) || self.audio_only {
                 self.next();
             }
+        }
+    }
+
+    /// The sound sheet over the picture, above the controls at the right; too tall for the window,
+    /// it scrolls. It stays while the picture plays, to hear what the knobs do.
+    fn sound_area(&mut self, ui: &mut Ui, p: &Palette, rect: Rect) {
+        let width = (rect.width() - 24.0).min(320.0);
+        let max_height = (rect.height() - 170.0).max(120.0);
+        let at = pos2(rect.right() - 12.0, rect.bottom() - 110.0);
+        let mut close = false;
+        egui::Area::new(ui.id().with("sound-sheet"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(t!("Sound")).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            close = ui
+                                .add(egui::Button::new(egui_phosphor::regular::X).frame(false))
+                                .on_hover_text(t!("Close"))
+                                .clicked();
+                        });
+                    });
+                    egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).show(ui, |ui| {
+                        self.sound_sheet(ui, p);
+                    });
+                });
+            });
+        if close {
+            self.sound_open = false;
+        }
+    }
+
+    /// The sound sheet's contents, for the player.
+    fn sound_sheet(&mut self, ui: &mut Ui, p: &Palette) {
+        let (mut fx, passthrough) = crate::util::with_lock(&self.audio, |a| (a.fx.clone(), a.passthrough));
+        if super::sound::sheet(ui, p, &mut fx, passthrough) {
+            crate::util::with_lock(&self.audio, |a| a.fx = fx);
+        }
+    }
+
+    /// Hands changed effects over to be saved, once they have rested for 2 s (or now). The settings
+    /// window's own changes come back the other way, and need no saving.
+    fn save_fx(&mut self, now: bool) {
+        let current = crate::util::with_lock(&self.audio, |a| a.fx.clone());
+        if current == *crate::util::lock(&self.fx_saved) {
+            self.fx_moved = None;
+            return;
+        }
+        let moved = *self.fx_moved.get_or_insert_with(Instant::now);
+        if now || moved.elapsed() >= Duration::from_secs(2) {
+            *crate::util::lock(&self.fx_saved) = current.clone();
+            self.fx_moved = None;
+            super::sound::post_fx(current);
+        } else {
+            self.ctx.request_repaint_after(Duration::from_secs(2));
         }
     }
 
@@ -1168,7 +1246,9 @@ impl Player {
         }
         let (pos, dur, paused) = self.position();
         self.thumb_tick();
-        let show = paused || Instant::now() < self.controls_until;
+        // An open popup or the sound sheet keep them up: hiding the controls would close a popup
+        // under someone reading it.
+        let show = paused || Instant::now() < self.controls_until || popup_open || self.sound_open;
         crate::util::with_lock(&self.status, |s| s.controls_visible = show);
         let k = crate::ui::motion::toggle(&ctx, ui.id().with("controls"), show, crate::ui::motion::PANEL);
         if !show {
@@ -1197,6 +1277,9 @@ impl Player {
         }
         action = self.skip_button(ui, p, rect, pos, dur, k).or(action);
         self.countdown(ui, p, rect, pos, dur);
+        if self.sound_open && self.pip.is_none() {
+            self.sound_area(ui, p, rect);
+        }
         let mut below = rect.top() + if self.pip.is_some() { 40.0 } else { 90.0 };
         if self.stats {
             below = self.stats_overlay(ui, rect, below) + 8.0;
@@ -1348,8 +1431,10 @@ impl Player {
         if f {
             *action = PlayerAction::ToggleFullscreen;
         }
-        // Escape closes what is on top: a popup, then fullscreen, then the player.
-        if esc && !popup_open {
+        // Escape closes what is on top: a popup, the sound sheet, then fullscreen, then the player.
+        if esc && self.sound_open && !popup_open {
+            self.sound_open = false;
+        } else if esc && !popup_open {
             *action = if self.fullscreen { PlayerAction::ToggleFullscreen } else { PlayerAction::Close };
         }
         if left || right || up || down || m {
@@ -1757,7 +1842,7 @@ impl Player {
         action
     }
 
-    /// Speed, delays, subtitle size, picture shape, screenshot and stats.
+    /// Speed, delays, subtitle size, picture shape, screenshot, stats and sound.
     fn settings_button(&mut self, ui: &mut Ui, at: egui::Pos2, white: Color32) {
         let r = Rect::from_center_size(at, vec2(30.0, 30.0));
         let resp = ui.interact(r, ui.id().with("psettings"), Sense::click()).on_hover_text(t!("Playback settings"));
@@ -1860,6 +1945,13 @@ impl Player {
                     }
                     ui.checkbox(&mut self.stats, t!("Stats"));
                 });
+                ui.separator();
+                if ui
+                    .selectable_label(self.sound_open, format!("{}  {}", egui_phosphor::regular::SLIDERS, t!("Sound")))
+                    .clicked()
+                {
+                    self.sound_open = !self.sound_open;
+                }
             },
         );
         for c in cmds {
@@ -1898,6 +1990,20 @@ impl Player {
     /// The Audio page: on the right when it fits next to the A/V page, or below it. Compact when
     /// the window is small.
     fn meters_overlay(&self, ui: &mut Ui, rect: Rect, below: f32) {
+        let compact = rect.width() < 640.0 || rect.height() < 420.0;
+        let width = if compact { 230.0 } else { 330.0 };
+        // Beside the A/V page when there is room, and under it when not.
+        let top = if self.stats && rect.width() < 900.0 {
+            below
+        } else {
+            rect.top() + if self.pip.is_some() { 40.0 } else { 90.0 }
+        };
+        let left = if self.stats && rect.width() < 900.0 { rect.left() + 12.0 } else { rect.right() - width - 12.0 };
+        let area = Rect::from_min_max(pos2(left, top), pos2(left + width, rect.bottom() - 8.0));
+        self.paint_meters_into(ui.painter(), area, compact);
+    }
+
+    fn paint_meters_into(&self, painter: &egui::Painter, area: Rect, compact: bool) {
         let (passthrough, makeup) = crate::util::with_lock(&self.audio, |a| {
             (a.passthrough, a.fx.night.as_ref().filter(|_| a.fx.enabled).map(|n| n.makeup_db))
         });
@@ -1912,17 +2018,7 @@ impl Player {
             passthrough,
             makeup,
         };
-        let compact = rect.width() < 640.0 || rect.height() < 420.0;
-        let width = if compact { 230.0 } else { 330.0 };
-        // Beside the A/V page when there is room, and under it when not.
-        let top = if self.stats && rect.width() < 900.0 {
-            below
-        } else {
-            rect.top() + if self.pip.is_some() { 40.0 } else { 90.0 }
-        };
-        let left = if self.stats && rect.width() < 900.0 { rect.left() + 12.0 } else { rect.right() - width - 12.0 };
-        let area = Rect::from_min_max(pos2(left, top), pos2(left + width, rect.bottom() - 8.0));
-        super::sound::paint_meters(ui.painter(), area, &s.meters, &info, compact);
+        super::sound::paint_meters(painter, area, &s.meters, &info, compact);
     }
 
     /// The last seconds of an episode: what comes next, with "Play now" and "Cancel".
@@ -2148,6 +2244,17 @@ impl Player {
             ui.label(
                 egui::RichText::new(format!("{} / {}", fmt_time(pos), fmt_time(dur))).monospace().color(p.text_dim),
             );
+            let sr = ui
+                .add(egui::Button::new(egui::RichText::new(egui_phosphor::regular::SLIDERS).size(16.0)).frame(false))
+                .on_hover_text(t!("Sound"));
+            crate::ui::widgets::popup(
+                egui::Popup::from_toggle_button_response(&sr)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                |ui| {
+                    ui.set_width(300.0);
+                    self.sound_sheet(ui, p);
+                },
+            );
             let lr = ui
                 .add(
                     egui::Button::new(egui::RichText::new(egui_phosphor::regular::MICROPHONE_STAGE).size(16.0))
@@ -2162,6 +2269,17 @@ impl Player {
                 action = PlayerAction::Close;
             }
         });
+        // Music has no picture to put them on: above the bar, at the right.
+        if self.meter_page {
+            let content = ui.ctx().content_rect();
+            let area = Rect::from_min_max(
+                pos2(content.right() - 342.0, content.top() + 120.0),
+                pos2(content.right() - 12.0, ui.min_rect().top() - 8.0),
+            );
+            let layer = egui::LayerId::new(egui::Order::Foreground, ui.id().with("meters"));
+            let painter = ui.ctx().layer_painter(layer);
+            self.paint_meters_into(&painter, area, area.width() < 300.0 || area.height() < 200.0);
+        }
         action
     }
 
@@ -2296,6 +2414,7 @@ impl Drop for Player {
     fn drop(&mut self) {
         self.report(true);
         self.save_volume(true);
+        self.save_fx(true);
         // Nothing here may block the UI thread: a stalled network read can hold mpv up.
         let _ = self.mpv.command_async(0, &["stop"]);
         self.stop_events.store(true, Ordering::Relaxed);

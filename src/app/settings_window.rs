@@ -1615,27 +1615,8 @@ impl CorrentApp {
                     );
                     ui.add_space(8.0);
                     heading(ui, p, t!("Sound processing"));
-                    toggle(
-                        ui,
-                        p,
-                        t!("Even out loudness"),
-                        t!("Quiet and loud films and tracks play at a similar level."),
-                        &mut pb.normalize,
-                    );
-                    row(ui, p, t!("Equalizer"), "", |ui| {
-                        let label = |e: corrent_core::config::EqPreset| match e {
-                            corrent_core::config::EqPreset::Flat => t!("Off"),
-                            corrent_core::config::EqPreset::BassBoost => t!("More bass"),
-                            corrent_core::config::EqPreset::Treble => t!("More treble"),
-                            corrent_core::config::EqPreset::Vocal => t!("Voices"),
-                            corrent_core::config::EqPreset::Loudness => t!("Loudness"),
-                        };
-                        egui::ComboBox::from_id_salt("eq").selected_text(label(pb.equalizer)).show_ui(ui, |ui| {
-                            for e in corrent_core::config::EqPreset::ALL {
-                                ui.selectable_value(&mut pb.equalizer, e, label(e));
-                            }
-                        });
-                    });
+                    super::media::sound::sheet(ui, p, &mut pb.fx, pb.passthrough);
+                    ui.add_space(8.0);
                     row(ui, p, t!("ReplayGain"), t!("Uses the volume levels stored in music files."), |ui| {
                         let opts = [("album", t!("By album")), ("track", t!("By track")), ("off", t!("Off"))];
                         let shown =

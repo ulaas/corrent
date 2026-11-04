@@ -1250,6 +1250,7 @@ impl CorrentApp {
                 "settings" => self.open_settings(),
                 "remote" => self.open_settings_at(settings_window::Page::Remote),
                 "appearance" => self.open_settings_at(settings_window::Page::Appearance),
+                "playback" => self.open_settings_at(settings_window::Page::Playback),
                 "magnet" => self.open_magnet_dialog(),
                 "about" => self.extras.about = true,
                 "creator" => self.open_creator(),

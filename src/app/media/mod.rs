@@ -503,6 +503,14 @@ impl CorrentApp {
             self.settings.playback.muted = muted;
             self.save_settings();
         }
+        if let Some(fx) = sound::take_fx() {
+            self.settings.playback.fx = fx.clone();
+            // A settings window open meanwhile must not put the old ones back.
+            if let Some(draft) = &mut self.settings_draft {
+                draft.settings.playback.fx = fx;
+            }
+            self.save_settings();
+        }
         // Lists go stale as scans and metadata land: refresh every 30 s while visible.
         if self.main_view == super::feeds::MainView::Media
             && self.media.refreshed.is_none_or(|t| t.elapsed().as_secs() > 30)

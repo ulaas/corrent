@@ -5,9 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use corrent_core::audio_fx::{Caps, FILTERS};
+use corrent_core::audio_fx::{AudioFx, Band, Caps, FILTERS, Loudness};
 use corrent_mpv::{Mpv, Node};
-use egui::{Color32, CornerRadius, Rect, pos2, vec2};
+use egui::{Color32, CornerRadius, Rect, Ui, pos2, vec2};
+
+use crate::ui::theme::Palette;
 
 static PROBED: OnceLock<Caps> = OnceLock::new();
 static PROBING: AtomicBool = AtomicBool::new(false);
@@ -59,6 +61,15 @@ fn probe() -> Result<Caps, corrent_mpv::Error> {
 /// A closing player has no way to the settings, so what is left to save waits here for the next
 /// frame.
 static VOLUME: Mutex<Option<(f32, bool)>> = Mutex::new(None);
+static FX: Mutex<Option<AudioFx>> = Mutex::new(None);
+
+pub(super) fn post_fx(fx: AudioFx) {
+    *crate::util::lock(&FX) = Some(fx);
+}
+
+pub(super) fn take_fx() -> Option<AudioFx> {
+    crate::util::lock(&FX).take()
+}
 
 pub(super) fn post_volume(volume: f32, muted: bool) {
     *crate::util::lock(&VOLUME) = Some((volume, muted));
@@ -384,9 +395,172 @@ pub fn paint_meters(painter: &egui::Painter, area: Rect, m: &Meters, info: &Mete
     }
 }
 
+/// The response of one band at `hz` in dB (the equalizer's own biquad at 48 kHz), for the curve.
+pub fn band_response_db(band: &Band, hz: f32) -> f32 {
+    use std::f64::consts::PI;
+    const RATE: f64 = 48_000.0;
+    let (f0, q, gain) = (f64::from(band.hz.max(1)), f64::from(band.q.max(0.01)), f64::from(band.db));
+    let a = 10f64.powf(gain / 40.0);
+    let w0 = 2.0 * PI * f0.min(RATE * 0.49) / RATE;
+    let alpha = w0.sin() / (2.0 * q);
+    let (b0, b1, b2) = (1.0 + alpha * a, -2.0 * w0.cos(), 1.0 - alpha * a);
+    let (a0, a1, a2) = (1.0 + alpha / a, -2.0 * w0.cos(), 1.0 - alpha / a);
+    let w = 2.0 * PI * f64::from(hz) / RATE;
+    // |H(e^jw)|² from the coefficients.
+    let power = |c0: f64, c1: f64, c2: f64| {
+        let re = c0 + c1 * w.cos() + c2 * (2.0 * w).cos();
+        let im = c1 * w.sin() + c2 * (2.0 * w).sin();
+        re * re + im * im
+    };
+    (10.0 * (power(b0, b1, b2) / power(a0, a1, a2)).log10()) as f32
+}
+
+/// The equalizer's combined response, -12 to +12 dB over 20 Hz to 20 kHz.
+fn eq_curve(ui: &mut Ui, p: &Palette, eq: &[Band]) {
+    let width = ui.available_width().clamp(200.0, 420.0);
+    let (r, _) = ui.allocate_exact_size(vec2(width, 54.0), egui::Sense::hover());
+    let painter = ui.painter_at(r);
+    painter.rect_filled(r, CornerRadius::same(4), p.bg2);
+    let zero = r.center().y;
+    painter.line_segment([pos2(r.left(), zero), pos2(r.right(), zero)], egui::Stroke::new(1.0, p.border));
+    let steps = 96;
+    let points: Vec<egui::Pos2> = (0..=steps)
+        .map(|i| {
+            let t = i as f32 / steps as f32;
+            let hz = 20.0 * 1000f32.powf(t);
+            let db: f32 = eq.iter().map(|b| band_response_db(b, hz)).sum();
+            pos2(r.left() + r.width() * t, zero - (db / 12.0).clamp(-1.0, 1.0) * (r.height() / 2.0 - 2.0))
+        })
+        .collect();
+    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, p.accent)));
+}
+
+fn band_label(hz: u32) -> String {
+    if hz >= 1000 { format!("{}k", hz / 1000) } else { hz.to_string() }
+}
+
+/// The sound sheet: presets, equalizer, night mode, dialogue, crossfeed, loudness and meters, each
+/// offered only when this libmpv has its filters. Used in the player's settings and in Settings →
+/// Playback. Returns whether something changed.
+pub fn sheet(ui: &mut Ui, p: &Palette, fx: &mut AudioFx, passthrough: bool) -> bool {
+    let caps = caps();
+    let before = fx.clone();
+    let mut picked = false;
+    if passthrough {
+        ui.label(
+            egui::RichText::new(t!("Processing is off while Dolby and DTS pass through to the receiver."))
+                .color(p.warn),
+        );
+    }
+    ui.add_enabled_ui(!passthrough, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if ui.selectable_label(!fx.has_effects() && fx.preset.is_none(), t!("Flat")).clicked() {
+                fx.flatten();
+                picked = true;
+            }
+            for (name, label, there) in [
+                ("night", t!("Night"), caps.night()),
+                ("dialogue", t!("Dialogue"), caps.eq()),
+                ("crossfeed", t!("Crossfeed"), caps.crossfeed()),
+            ] {
+                if there && ui.selectable_label(fx.preset.as_deref() == Some(name), label).clicked() {
+                    fx.apply_preset(name);
+                    picked = true;
+                }
+            }
+        });
+        if caps.eq() {
+            ui.add_space(4.0);
+            eq_curve(ui, p, &fx.eq);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().slider_width = 84.0;
+                for b in &mut fx.eq {
+                    ui.allocate_ui(vec2(24.0, 110.0), |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add(
+                                egui::Slider::new(&mut b.db, -12.0..=12.0).vertical().step_by(0.5).show_value(false),
+                            )
+                            .on_hover_text(t!(
+                                "{hz} Hz  {db} dB",
+                                hz = b.hz,
+                                db = format!("{:+.1}", b.db)
+                            ));
+                            ui.label(egui::RichText::new(band_label(b.hz)).small().color(p.text_dim));
+                        })
+                    });
+                }
+            });
+        }
+        egui::CollapsingHeader::new(t!("Effects")).id_salt("sound-effects").show(ui, |ui| {
+            ui.checkbox(&mut fx.enabled, t!("On (off to compare)"));
+            if caps.night() {
+                let mut on = fx.night.is_some();
+                if ui
+                    .checkbox(&mut on, t!("Night mode"))
+                    .on_hover_text(t!("Quiet parts come up, loud ones go down."))
+                    .changed()
+                {
+                    fx.night = on.then(Default::default);
+                }
+                if let Some(n) = &mut fx.night {
+                    ui.indent("night", |ui| {
+                        ui.add(egui::Slider::new(&mut n.threshold_db, -60.0..=0.0).suffix(" dB").text(t!("Threshold")));
+                        ui.add(egui::Slider::new(&mut n.ratio, 1.0..=20.0).text(t!("Ratio")));
+                        ui.add(egui::Slider::new(&mut n.makeup_db, 0.0..=24.0).suffix(" dB").text(t!("Makeup")));
+                    });
+                }
+            }
+            if caps.eq() {
+                ui.checkbox(&mut fx.dialogue, t!("Clearer dialogue"))
+                    .on_hover_text(t!("Lifts voices; on 5.1 also the centre channel."));
+            }
+            if caps.crossfeed() {
+                let mut on = fx.crossfeed.is_some();
+                if ui
+                    .checkbox(&mut on, t!("Headphone crossfeed"))
+                    .on_hover_text(t!("Mixes a little of each side into the other. Stereo sources only."))
+                    .changed()
+                {
+                    fx.crossfeed = on.then(Default::default);
+                }
+                if let Some(c) = &mut fx.crossfeed {
+                    ui.indent("crossfeed", |ui| {
+                        ui.add(egui::Slider::new(&mut c.strength, 0.0..=1.0).text(t!("Strength")));
+                        ui.add(egui::Slider::new(&mut c.range, 0.0..=1.0).text(t!("Range")));
+                    });
+                }
+            }
+        });
+        if caps.loudness() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(t!("Even out loudness")).on_hover_text(t!(
+                    "A slow leveller: quiet and loud parts come closer. Holds about a second of sound."
+                ));
+                ui.selectable_value(&mut fx.loudness, Loudness::Off, t!("Off"));
+                ui.selectable_value(&mut fx.loudness, Loudness::Live, t!("Live"));
+            });
+        }
+    });
+    if caps.meters() {
+        ui.checkbox(&mut fx.meters, t!("Show meters"))
+            .on_hover_text(t!("Loudness, peaks and more over the picture (Shift+I). They run only while shown."));
+    }
+    let changed = *fx != before;
+    if changed && !picked {
+        // By hand: no longer the preset, and on if an effect changed (the switch itself stays as set).
+        let meters_only = AudioFx { meters: before.meters, enabled: before.enabled, ..fx.clone() } == before;
+        if !meters_only {
+            fx.preset = None;
+            fx.enabled = true;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
-    use corrent_core::audio_fx::{AudioFx, Crossfeed, Loudness, Night, Source, af_string, chain, plan};
+    use corrent_core::audio_fx::{Crossfeed, Night, Source, af_string, chain, plan};
     use corrent_mpv::{Event, Library};
 
     use super::*;
@@ -689,5 +863,13 @@ mod tests {
         );
         assert_eq!(audio_format(&params), "s16 44100 Hz stereo");
         assert_eq!(audio_format(&Node::None), "");
+    }
+
+    #[test]
+    fn the_curve_matches_the_band() {
+        let b = Band { hz: 1000, q: 1.0, db: 6.0 };
+        assert!((band_response_db(&b, 1000.0) - 6.0).abs() < 0.01);
+        assert!(band_response_db(&b, 20.0).abs() < 0.1, "far away it does nothing");
+        assert_eq!(band_response_db(&Band { db: 0.0, ..b }, 500.0), 0.0);
     }
 }
