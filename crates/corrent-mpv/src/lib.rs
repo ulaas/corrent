@@ -4,6 +4,8 @@
 //! machines without mpv development files and still starts when mpv is missing: playback,
 //! probing and transcoding then report [`Error::NotAvailable`] instead of the process failing.
 
+#[cfg(test)]
+mod audio_tests;
 pub mod encode;
 mod ffi;
 pub mod probe;
