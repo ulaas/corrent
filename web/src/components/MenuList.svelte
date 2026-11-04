@@ -9,7 +9,7 @@
   import MenuList from './MenuList.svelte';
   import { ms } from '../lib/prefs.svelte';
   import { t } from '../lib/i18n.svelte';
-  import { jump, place, placeSub, step } from '../lib/menuplace';
+  import { EDGE, jump, place, placeSub, step } from '../lib/menuplace';
   import type { MenuItem } from '../lib/contextmenu.svelte';
 
   let {
@@ -20,6 +20,7 @@
     onback,
     label = '',
     focusFirst = false,
+    above = false,
   }: {
     items: MenuItem[];
     /** Where the pointer was (the first level). */
@@ -32,6 +33,8 @@
     onback: (byKey: boolean) => void;
     label?: string;
     focusFirst?: boolean;
+    /** Opens above `at` with its right edge there (a player menu over its button). */
+    above?: boolean;
   } = $props();
 
   let el: HTMLDivElement | undefined = $state();
@@ -46,7 +49,8 @@
   onMount(() => {
     if (!el) return;
     const r = el.getBoundingClientRect();
-    pos = row ? placeSub(row, r.width, r.height, innerWidth, innerHeight) : place(at?.x ?? 0, at?.y ?? 0, r.width, r.height, innerWidth, innerHeight);
+    if (above) pos = { left: Math.max(EDGE, Math.min((at?.x ?? 0) - r.width, innerWidth - EDGE - r.width)), top: Math.max(EDGE, (at?.y ?? 0) - r.height) };
+    else pos = row ? placeSub(row, r.width, r.height, innerWidth, innerHeight) : place(at?.x ?? 0, at?.y ?? 0, r.width, r.height, innerWidth, innerHeight);
     el.focus({ preventScroll: true });
     if (focusFirst) focusRow(step(enabled, -1, 1));
     return () => {

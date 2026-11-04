@@ -619,3 +619,4 @@
 "Copy it now: the token is shown only once." = "Şimdi kopyalayın: anahtar yalnızca bir kez gösterilir."
 "{dropped}/{total} frames dropped" = "{dropped}/{total} kare düştü"
 "{s} s buffered" = "{s} sn arabellekte"
+"{n} s" = "{n} sn"
