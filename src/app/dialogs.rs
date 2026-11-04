@@ -100,6 +100,7 @@ pub struct AddDialog {
     pub filter: String,
     pub started: Instant,
     pub tag_input: String,
+    pub tree: file_tree::TreeState,
 }
 
 fn modal_frame(p: &Palette) -> egui::Frame {
@@ -475,6 +476,7 @@ impl CorrentApp {
             filter: String::new(),
             started: Instant::now(),
             tag_input: String::new(),
+            tree: Default::default(),
         });
     }
 
@@ -1120,47 +1122,43 @@ impl CorrentApp {
                                     );
                                 });
                                 ui.add_space(4.0);
+                                let mut change = None;
                                 egui::Frame::new()
                                     .fill(p.bg0)
                                     .corner_radius(egui::CornerRadius::same(8))
                                     .inner_margin(egui::Margin::same(8))
                                     .show(ui, |ui| {
-                                        egui::ScrollArea::vertical()
-                                            .max_height(tree_h)
-                                            .min_scrolled_height(tree_h)
-                                            .auto_shrink([false, false])
-                                            .show(ui, |ui| {
-                                                let entries: Vec<file_tree::Entry<'_>> = pv
-                                                    .files
-                                                    .iter()
-                                                    .enumerate()
-                                                    .map(|(i, f)| file_tree::Entry {
-                                                        index: i,
-                                                        components: &f.components,
-                                                        len: f.len,
-                                                        done: None,
-                                                        priority: None,
-                                                        streaming: false,
-                                                    })
-                                                    .collect();
-                                                let checked = d.checked.clone();
-                                                if let Some(ch) = file_tree::show(
-                                                    ui,
-                                                    p,
-                                                    Id::new(("addtree", d.req)),
-                                                    &entries,
-                                                    &|i| checked.get(i).copied().unwrap_or(true),
-                                                    &d.filter,
-                                                    true,
-                                                ) {
-                                                    for (i, on) in ch.set {
-                                                        if let Some(c) = d.checked.get_mut(i) {
-                                                            *c = on;
-                                                        }
-                                                    }
-                                                }
-                                            });
+                                        let checked = &d.checked;
+                                        let entry = |i: usize| {
+                                            pv.files.get(i).map(|f| file_tree::Entry {
+                                                index: i,
+                                                components: &f.components,
+                                                len: f.len,
+                                                done: None,
+                                                priority: None,
+                                                streaming: false,
+                                                checked: checked.get(i).copied().unwrap_or(true),
+                                            })
+                                        };
+                                        change = file_tree::show(
+                                            ui,
+                                            p,
+                                            &mut d.tree,
+                                            Id::new(("addtree", d.req)),
+                                            pv.files.len(),
+                                            &entry,
+                                            &d.filter,
+                                            true,
+                                            tree_h,
+                                        );
                                     });
+                                if let Some(ch) = change {
+                                    for (i, on) in ch.set {
+                                        if let Some(c) = d.checked.get_mut(i) {
+                                            *c = on;
+                                        }
+                                    }
+                                }
                                 let sel = d.checked.iter().filter(|c| **c).count();
                                 ui.label(
                                     RichText::new(t!(

@@ -9,6 +9,10 @@ use crate::engine::types::{AddSource, TorrentState, TorrentView};
 use crate::store::QueueMove;
 use crate::ui::theme::Palette;
 
+/// (torrent, its files, how many are selected) and its playable files.
+pub(super) type MediaFilesCache =
+    (crate::engine::types::InfoHash, usize, usize, std::sync::Arc<Vec<(usize, String, u64)>>);
+
 fn item(ui: &mut Ui, icon: &str, text: &str) -> bool {
     ui.button(format!("{icon}  {text}")).clicked()
 }
@@ -191,8 +195,16 @@ impl CorrentApp {
     }
 
     /// Playable files of a torrent (from the details data), largest first: (index, path, size).
-    pub fn media_files(&self, hash: crate::engine::types::InfoHash) -> Vec<(usize, String, u64)> {
-        let Some(d) = self.snap.detail.as_ref().filter(|d| d.hash == hash) else { return Vec::new() };
+    /// Asked every frame by the Files tab and the context menu; worked out when the files change.
+    pub fn media_files(&mut self, hash: crate::engine::types::InfoHash) -> std::sync::Arc<Vec<(usize, String, u64)>> {
+        let snap = self.snap.clone();
+        let Some(d) = snap.detail.as_ref().filter(|d| d.hash == hash) else { return Default::default() };
+        let included = d.files.iter().filter(|f| f.included).count();
+        if let Some((h, n, i, list)) = &self.media_files_cache
+            && (*h, *n, *i) == (hash, d.files.len(), included)
+        {
+            return list.clone();
+        }
         let mut v: Vec<(usize, String, u64)> = d
             .files
             .iter()
@@ -201,7 +213,9 @@ impl CorrentApp {
             .filter(|(_, n, _)| crate::engine::stream::is_media(n))
             .collect();
         v.sort_by_key(|f| std::cmp::Reverse(f.2));
-        v
+        let list = std::sync::Arc::new(v);
+        self.media_files_cache = Some((hash, d.files.len(), included, list.clone()));
+        list
     }
 
     pub fn stream_url(&self, hash: crate::engine::types::InfoHash, idx: usize, name: &str) -> Option<String> {

@@ -436,6 +436,71 @@ fn small_progress_changes_dont_keep_repainting() {
     assert!(tick(&mut h, 0.9, 100) >= 1);
 }
 
+/// A torrent with 10,000 files in the Files tab.
+fn many_files_app(name: &str) -> (Fixture, CorrentApp) {
+    let (f, mut app) = app(name, vec![torrent(1, "Season pack", TorrentState::Downloading)]);
+    let files = (0..10_000usize)
+        .map(|i| crate::engine::types::FileView {
+            index: i,
+            components: vec![format!("dir{}", i / 100), format!("file{i:05}.mkv")],
+            len: 1000,
+            done: 500,
+            included: i % 2 == 0,
+            priority: 0,
+        })
+        .collect();
+    let detail = crate::engine::types::TorrentDetail { hash: InfoHash([1; 20]), files, ..Default::default() };
+    app.snap = Arc::new(Snapshot { detail: Some(detail), ..(*app.snap).clone() });
+    app.selected.insert(InfoHash([1; 20]));
+    app.prefs.details_tab = super::DetailsTab::Files;
+    (f, app)
+}
+
+#[test]
+fn the_files_tab_only_draws_the_rows_in_view() {
+    let (_f, mut app) = many_files_app("files");
+    let log = record_commands(&mut app);
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label("dir0");
+    h.get_by_label("file00000.mkv");
+    assert!(h.state().file_tree.drawn > 0);
+    assert!(h.state().file_tree.drawn < 60, "{} rows laid out for 10,100", h.state().file_tree.drawn);
+    // A folder's tri-state checkbox reaches all of its files.
+    let boxes: Vec<_> = h.query_all_by_role(egui::accesskit::Role::CheckBox).map(|n| n.rect().center()).collect();
+    assert!(!boxes.is_empty());
+    let dir_box = h.get_by_label("dir0").rect().left_center() - egui::vec2(30.0, 0.0);
+    let nearest = boxes.iter().min_by(|a, b| a.distance(dir_box).partial_cmp(&b.distance(dir_box)).unwrap()).unwrap();
+    h.event(egui::Event::PointerMoved(*nearest));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: *nearest,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    let sent = commands_sent(h.state(), &log);
+    let set_files = sent.iter().find(|c| c.starts_with("SetFiles")).unwrap_or_else(|| panic!("{sent:?}"));
+    assert!(set_files.contains(" 1,"), "a half-checked folder gets all its files: {set_files:.200}");
+}
+
+/// Scale check: run with `cargo test perf_files_tab -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn perf_files_tab_10k_files() {
+    let (_f, app) = many_files_app("perf-files");
+    let mut h = harness(app);
+    h.run_steps(3);
+    let t = std::time::Instant::now();
+    for _ in 0..30 {
+        h.step();
+    }
+    println!("frame with 10,000 files: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 30.0);
+}
+
 #[test]
 fn empty_list_offers_add_actions() {
     let (_f, app) = app("empty", vec![]);

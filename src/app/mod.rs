@@ -358,6 +358,10 @@ pub struct CorrentApp {
     counts: sidebar::Counts,
     sent_detail_target: Option<InfoHash>,
     pub file_filter: String,
+    /// The Files tab's tree.
+    file_tree: crate::ui::file_tree::TreeState,
+    /// Playable files of the torrent in the details data: (hash, files, files selected), list.
+    media_files_cache: Option<actions::MediaFilesCache>,
     pub show_all_peers: bool,
     pub speed_scope_torrent: bool,
     tray: Option<tray::Tray>,
@@ -560,6 +564,8 @@ impl CorrentApp {
             counts: sidebar::Counts::default(),
             sent_detail_target: None,
             file_filter: String::new(),
+            file_tree: Default::default(),
+            media_files_cache: None,
             show_all_peers: false,
             speed_scope_torrent: true,
             tray: None,
