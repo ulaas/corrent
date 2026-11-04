@@ -668,10 +668,17 @@ pub(crate) fn parse_range(v: &str) -> Option<(u64, Option<u64>)> {
     Some((start, end))
 }
 
+/// Takes the same time wherever the two differ, so the token can't be guessed byte by byte from
+/// how fast a wrong one is refused. (Its length isn't a secret: all tokens have the same one.)
+fn same_token(given: &str, token: &str) -> bool {
+    let (given, token) = (given.as_bytes(), token.as_bytes());
+    given.len() == token.len() && given.iter().zip(token).fold(0, |diff, (a, b)| diff | (a ^ b)) == 0
+}
+
 /// `/<token>/<hash>/<file>/<name>` → (hash, file), only with the right token.
 pub(crate) fn parse_path(path: &str, token: &str) -> Option<(InfoHash, usize)> {
     let mut parts = path.trim_start_matches('/').split('/');
-    if parts.next()? != token {
+    if !same_token(parts.next()?, token) {
         return None;
     }
     let hash = InfoHash::from_hex(parts.next()?)?;
@@ -724,6 +731,15 @@ pub fn open_in_player(dir: &std::path::Path, title: &str, url: &str) -> std::io:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokens_are_compared_whole() {
+        assert!(same_token("secret", "secret"));
+        assert!(same_token("", ""));
+        for other in ["secreT", "Secret", "secre", "secrets", ""] {
+            assert!(!same_token(other, "secret"), "{other}");
+        }
+    }
 
     #[test]
     fn request_parsing() {
