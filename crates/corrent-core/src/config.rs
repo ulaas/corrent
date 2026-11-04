@@ -170,6 +170,11 @@ impl Playback {
         if self.normalize {
             filters.push("loudnorm=I=-18:TP=-1.5:LRA=11".into());
         }
+        // Boosts need room: at the converter to the device's format they would clip.
+        let boost = self.equalizer.bands().iter().map(|(_, g)| *g).max().unwrap_or(0);
+        if boost > 0 {
+            filters.push(format!("volume=-{boost}dB"));
+        }
         for (f, g) in self.equalizer.bands() {
             filters.push(format!("equalizer=f={f}:t=o:w=1:g={g}"));
         }
@@ -187,6 +192,14 @@ impl Playback {
             ),
             ("gapless-audio", if self.gapless { "weak" } else { "no" }.into()),
         ]
+    }
+
+    /// The options that differ from `old`'s, to send to a running player: setting the device,
+    /// channels, exclusive mode or passthrough re-creates the audio output, and `af` the filters,
+    /// so toggling something else must not touch them.
+    pub fn changed_options(&self, old: &Playback) -> Vec<(&'static str, String)> {
+        let before = old.mpv_options();
+        self.mpv_options().into_iter().filter(|o| !before.contains(o)).collect()
     }
 }
 
@@ -908,8 +921,22 @@ mod tests {
         };
         let o = p.mpv_options();
         assert!(get(&o, "af").starts_with("lavfi=[loudnorm=") && get(&o, "af").contains("equalizer=f=60"));
+        // The largest boost is taken off in front of the bands.
+        assert!(get(&o, "af").contains("volume=-6dB,equalizer=f=60"), "{}", get(&o, "af"));
         assert_eq!(get(&o, "replaygain"), "no");
         assert!(get(&o, "audio-spdif").contains("truehd"));
+    }
+
+    #[test]
+    fn only_changed_playback_options_are_sent() {
+        let old = Playback::default();
+        assert!(old.changed_options(&old).is_empty());
+        let new = Playback { gapless: false, ..old.clone() };
+        assert_eq!(new.changed_options(&old), vec![("gapless-audio", "no".to_string())]);
+        let new = Playback { equalizer: EqPreset::Vocal, ..old.clone() };
+        let changed = new.changed_options(&old);
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(changed[0].0, "af");
     }
 
     use super::*;

@@ -216,6 +216,10 @@ pub struct Player {
     thumb_job: Option<super::client::Slot<serde_json::Value>>,
     /// A message for the app's toasts (taken by the media view).
     pub notice: Option<(crate::engine::ToastKind, String)>,
+    /// The sound settings mpv has, to send only what changes.
+    audio: Mutex<corrent_core::config::Playback>,
+    /// The position last reported: a paused player has nothing new to say.
+    last_reported: f64,
 }
 
 fn track_list(n: &Node) -> Vec<Track> {
@@ -471,7 +475,9 @@ impl Player {
                             s.apply_wanted(&m);
                         }
                         Event::EndFile(EndReason::Eof) => s.ended = true,
-                        Event::EndFile(EndReason::Error(code)) => s.error = Some(format!("playback failed ({code})")),
+                        Event::EndFile(EndReason::Error(code)) => {
+                            s.error = Some(t!("Playback failed: {why}", why = m.library().error_text(code)))
+                        }
                         _ => {}
                     }
                     drop(s);
@@ -509,6 +515,8 @@ impl Player {
             notice: None,
             ctx: ctx.clone(),
             offline: None,
+            audio: Mutex::new(audio.clone()),
+            last_reported: -1.0,
         };
         p.load_current();
         Ok(p)
@@ -596,13 +604,17 @@ impl Player {
                     for s in info.subtitles.iter().filter_map(|s| s.url.as_ref().map(|u| (u, s))) {
                         let url = client.url(s.0);
                         crate::util::lock(&status).ext_subs.push((url.clone(), s.1.index));
-                        let _ = mpv.command(&[
-                            "sub-add",
-                            &url,
-                            if e.subtitle_track == Some(s.1.index) { "select" } else { "auto" },
-                            s.1.title.as_deref().unwrap_or(""),
-                            s.1.lang.as_deref().unwrap_or(""),
-                        ]);
+                        // mpv opens the URL during `sub-add`: don't hold a runtime worker for it.
+                        let _ = mpv.command_async(
+                            0,
+                            &[
+                                "sub-add",
+                                &url,
+                                if e.subtitle_track == Some(s.1.index) { "select" } else { "auto" },
+                                s.1.title.as_deref().unwrap_or(""),
+                                s.1.lang.as_deref().unwrap_or(""),
+                            ],
+                        );
                     }
                 }
                 Err(e) => tracing::warn!("playback: {e}"),
@@ -662,11 +674,14 @@ impl Player {
         let _ = self.mpv.command_async(0, args);
     }
 
-    /// New sound settings while playing.
+    /// New sound settings while playing: only what changed, as a device or filter option re-creates
+    /// the audio output or the filters (an audible dropout).
     pub fn apply_audio(&self, audio: &corrent_core::config::Playback) {
-        for (k, v) in audio.mpv_options() {
+        let mut current = crate::util::lock(&self.audio);
+        for (k, v) in audio.changed_options(&current) {
             self.cmd(&["set", k, &v]);
         }
+        *current = audio.clone();
     }
 
     pub fn toggle_pause(&mut self) {
@@ -757,12 +772,19 @@ impl Player {
             }
         });
         self.last_report = Instant::now();
+        self.last_reported = pos;
     }
 
     /// Per-frame housekeeping: progress reports and advancing the queue at the end.
     pub fn tick(&mut self) {
         if self.last_report.elapsed() > Duration::from_secs(10) {
-            self.report(false);
+            // A film left paused overnight has nothing new to say every 10 s.
+            let (pos, paused) = crate::util::with_lock(&self.status, |s| (s.pos, s.paused));
+            if paused && pos == self.last_reported {
+                self.last_report = Instant::now();
+            } else {
+                self.report(false);
+            }
         }
         let ended = crate::util::with_lock(&self.status, |s| s.ended);
         if ended {
@@ -797,6 +819,8 @@ impl Player {
     pub fn show(&mut self, ui: &mut Ui, p: &Palette) -> PlayerAction {
         let mut action = PlayerAction::None;
         let ctx = ui.ctx().clone();
+        // Drawing a popup closes it on Escape, so this has to be asked before the controls are drawn.
+        let popup_open = egui::Popup::is_any_open(&ctx);
         // Space plays and pauses. Taken before the controls are drawn: a focused button would
         // also take it as a click (and undo the toggle). Not while typing (the room code).
         if !ctx.text_edit_focused() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space)) {
@@ -903,7 +927,7 @@ impl Player {
         if self.stats {
             self.stats_overlay(ui, rect);
         }
-        self.keys(&ctx, &mut action);
+        self.keys(&ctx, &mut action, popup_open);
         self.extra_keys(&ctx);
         action
     }
@@ -1005,9 +1029,13 @@ impl Player {
         }
     }
 
-    fn keys(&mut self, ctx: &egui::Context, action: &mut PlayerAction) {
-        // T: this frame becomes the thumbnail (not while typing).
-        if !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(egui::Key::T)) && self.can_set_thumbnail() {
+    fn keys(&mut self, ctx: &egui::Context, action: &mut PlayerAction, popup_open: bool) {
+        // Typing the room code: `m` isn't mute, and the arrows move the caret.
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        // T: this frame becomes the thumbnail.
+        if ctx.input(|i| i.key_pressed(egui::Key::T)) && self.can_set_thumbnail() {
             let (pos, _, _) = self.position();
             self.set_thumbnail(pos);
         }
@@ -1040,7 +1068,8 @@ impl Player {
         if f {
             *action = PlayerAction::ToggleFullscreen;
         }
-        if esc {
+        // Escape closes what is on top: a popup, then fullscreen, then the player.
+        if esc && !popup_open {
             *action = if self.fullscreen { PlayerAction::ToggleFullscreen } else { PlayerAction::Close };
         }
         if left || right || up || down || m {
@@ -1407,8 +1436,7 @@ impl Player {
             self.toggle_pip(&ctx);
         }
         if icon_button(ui, rect.right_top() + vec2(-24.0, 24.0), pr::X, 18.0, "pip-close", t!("Close")) {
-            let ctx = ui.ctx().clone();
-            self.toggle_pip(&ctx);
+            // `Drop` puts the window back.
             action = PlayerAction::Close;
         }
         let (pp, tip) = if paused { (pr::PLAY, t!("Play")) } else { (pr::PAUSE, t!("Pause")) };
@@ -1963,6 +1991,11 @@ impl Drop for Player {
         let _ = self.mpv.command_async(0, &["stop"]);
         self.stop_events.store(true, Ordering::Relaxed);
         self.mpv.wakeup();
+        // Closed from picture in picture: the window goes back to what it was.
+        if let Some(size) = self.pip.take() {
+            self.ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+            self.ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+        }
         // The last reference (and `mpv_terminate_destroy`) goes to a helper thread once the
         // render context, dropped with `video`, has let go of its own.
         let mpv = self.mpv.clone();

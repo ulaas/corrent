@@ -151,6 +151,19 @@ mod tests {
         assert!(bad.is_empty(), "placeholders differ:\n{}", bad.join("\n"));
     }
 
+    /// A sentence built with `format!`.
+    const PROSE: &str = r#"format!\(\s*"[^"]*[A-Za-z]{3,} [A-Za-z]{2,}"#;
+
+    /// The player's old error text escaped the gate because only the top of `src/app` was read,
+    /// not because of the pattern.
+    #[test]
+    fn the_gate_reads_subfolders_and_catches_built_sentences() {
+        let prose = regex::Regex::new(PROSE).unwrap();
+        assert!(prose.is_match(r#"s.error = Some(format!("playback failed ({code})"))"#));
+        let files = rust_files(&workspace_root().join("src/app"));
+        assert!(files.iter().any(|p| p.ends_with("media/player.rs") || p.ends_with(r"media\player.rs")));
+    }
+
     /// CI gate: user-visible text in the UI goes through `t!`. Flags plain literals passed to
     /// the usual text-taking calls in src/app and src/ui (outside tests).
     #[test]
@@ -160,7 +173,7 @@ mod tests {
         )
         .unwrap();
         let icon_label = regex::Regex::new(r#"format!\("\{\}\s+(\{\}\s+)?[A-Za-z]{2,}"#).unwrap();
-        let prose = regex::Regex::new(r#"format!\(\s*"[^"]*[A-Za-z]{3,} [A-Za-z]{2,}"#).unwrap();
+        let prose = regex::Regex::new(PROSE).unwrap();
         let open_paren = regex::Regex::new(r#"\(\s*\n\s*""#).unwrap();
         let continuation = regex::Regex::new(r"\\\n\s*").unwrap();
         let mut found = Vec::new();
@@ -168,7 +181,7 @@ mod tests {
         let mut files: Vec<std::path::PathBuf> = Vec::new();
         // GUI crate folders and files with user-visible text (paths that moved to crates/ are skipped).
         for dir in ["src/app", "src/ui", "src/engine", "src/rss"] {
-            files.extend(std::fs::read_dir(root.join(dir)).into_iter().flatten().flatten().map(|e| e.path()));
+            files.extend(rust_files(&root.join(dir)));
         }
         files.extend(["src/util.rs", "src/config.rs", "src/store.rs", "src/backup.rs"].map(|f| root.join(f)));
         files.retain(|p| p.exists());

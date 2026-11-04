@@ -1513,7 +1513,7 @@ impl CorrentApp {
                 (None, None) => {}
             }
             if let Some(rt) = site("rotten_tomatoes") {
-                facts.push(format!("Rotten Tomatoes {rt}"));
+                facts.push(t!("Rotten Tomatoes {rt}", rt = rt));
             }
             if let Some(mc) = site("metacritic") {
                 facts.push(format!("Metacritic {mc}"));

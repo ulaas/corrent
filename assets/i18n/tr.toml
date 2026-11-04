@@ -1394,3 +1394,8 @@
 "Mark as unplayed" = "İzlenmedi olarak işaretle"
 "Nothing here" = "Burada bir şey yok"
 "Remove from favorites" = "Favorilerden çıkar"
+
+# stream C
+"Playback failed: {why}" = "Oynatma başarısız: {why}"
+"Rotten Tomatoes {rt}" = "Rotten Tomatoes {rt}"
+"SDH" = "SDH"

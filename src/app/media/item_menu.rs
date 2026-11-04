@@ -134,7 +134,7 @@ impl CorrentApp {
                     ));
                 }
                 let detail = self.media.menu_detail.as_ref().and_then(|(_, s)| ready(s));
-                menu_button(ui, format!("{}  IMDb / TMDB", icons::ARROW_SQUARE_OUT), |ui| match detail {
+                menu_button(ui, [icons::ARROW_SQUARE_OUT, "IMDb / TMDB"].join("  "), |ui| match detail {
                     None => {
                         ui.spinner();
                     }

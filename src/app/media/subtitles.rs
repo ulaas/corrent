@@ -95,7 +95,7 @@ impl CorrentApp {
                                 ui.label(RichText::new(t!("Exact match")).small().color(p.success));
                             }
                             if s.hearing_impaired {
-                                ui.label(RichText::new("SDH").small().color(p.text_dim));
+                                ui.label(RichText::new(t!("SDH")).small().color(p.text_dim));
                             }
                             ui.label(RichText::new(&s.name).color(p.text)).on_hover_text(&s.provider);
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

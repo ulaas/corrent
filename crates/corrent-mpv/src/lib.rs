@@ -184,7 +184,8 @@ impl Library {
         format!("{}.{}", self.version >> 16, self.version & 0xffff)
     }
 
-    pub(crate) fn error_text(&self, code: c_int) -> String {
+    /// mpv's text for an error code.
+    pub fn error_text(&self, code: c_int) -> String {
         // SAFETY: mpv_error_string returns a static string for any code.
         unsafe { cstr_to_string((self.api.error_string)(code)) }
     }
