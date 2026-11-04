@@ -1394,3 +1394,8 @@
 "Mark as unplayed" = "İzlenmedi olarak işaretle"
 "Nothing here" = "Burada bir şey yok"
 "Remove from favorites" = "Favorilerden çıkar"
+
+# stream D
+"Added {n} torrents" = "{n} torrent eklendi"
+"Show all" = "Tümünü göster"
+"Current: {limit}" = "Şu anki: {limit}"

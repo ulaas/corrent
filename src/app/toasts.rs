@@ -15,6 +15,8 @@ pub enum ToastAction {
     OpenFolder(std::path::PathBuf),
     OpenFile(std::path::PathBuf),
     Show(crate::engine::types::InfoHash),
+    /// Show these torrents, all selected.
+    ShowAll(Vec<crate::engine::types::InfoHash>),
     Copy(String),
     OpenUrl(String),
     SkipVersion(String),
@@ -33,6 +35,10 @@ struct Toast {
 pub struct Toasts {
     items: Vec<Toast>,
     next: u64,
+    /// The toast counting a run of added torrents, with the torrents so far.
+    added: Option<(u64, Vec<crate::engine::types::InfoHash>)>,
+    /// Space to keep free below the stack (the status bar and mini player); see `show`.
+    pub bottom_inset: f32,
 }
 
 impl Toasts {
@@ -85,6 +91,27 @@ impl Toasts {
         }
     }
 
+    /// A torrent was added: one toast for a whole run of them (a folder of files, a feed rule),
+    /// however long it takes them to arrive.
+    pub fn push_added(&mut self, hash: crate::engine::types::InfoHash, name: &str) {
+        tracing::info!(target: "corrent::notice", "{}", t!("Added “{name}”", name = name));
+        if let Some((id, hashes)) = &mut self.added
+            && let Some(toast) = self.items.iter_mut().find(|t| t.id == *id)
+        {
+            hashes.push(hash);
+            toast.text = t!("Added {n} torrents", n = hashes.len());
+            toast.created = Instant::now();
+            toast.actions = vec![(t!("Show all").into(), ToastAction::ShowAll(hashes.clone()))];
+            return;
+        }
+        self.push_with(
+            ToastKind::Success,
+            t!("Added “{name}”", name = name),
+            vec![(t!("Show").into(), ToastAction::Show(hash))],
+        );
+        self.added = Some((self.next, vec![hash]));
+    }
+
     /// Draw toasts; returns the actions the user clicked.
     pub fn show(&mut self, ctx: &Context, p: &Palette) -> Vec<ToastAction> {
         let mut clicked = Vec::new();
@@ -92,7 +119,8 @@ impl Toasts {
             return clicked;
         }
         let screen = ctx.content_rect();
-        let mut y = screen.bottom() - 40.0;
+        // Never over the status bar: its speeds are what you look at when something finishes.
+        let mut y = screen.bottom() - self.bottom_inset.max(16.0);
         let mut remove = Vec::new();
         let mut remove_now: Vec<u64> = Vec::new();
         let now = Instant::now();
@@ -220,6 +248,26 @@ mod tests {
         );
         assert_eq!(t.items.len(), 1);
         assert_eq!(t.items[0].actions[0].1, ToastAction::Undo(vec![InfoHash([2; 20]), InfoHash([1; 20])]));
+    }
+
+    #[test]
+    fn a_run_of_adds_is_one_toast() {
+        use crate::engine::types::InfoHash;
+        let mut t = Toasts::default();
+        t.push_added(InfoHash([1; 20]), "one");
+        assert_eq!(t.items[0].actions[0].1, ToastAction::Show(InfoHash([1; 20])));
+        for n in 2..=300u32 {
+            let mut h = [0; 20];
+            h[..4].copy_from_slice(&n.to_le_bytes());
+            t.push_added(InfoHash(h), "more");
+        }
+        assert_eq!(t.items.len(), 1);
+        assert_eq!(t.items[0].text, "Added 300 torrents");
+        assert!(matches!(&t.items[0].actions[0].1, ToastAction::ShowAll(v) if v.len() == 300));
+        // Once it has gone, the next add starts over.
+        t.items.clear();
+        t.push_added(InfoHash([9; 20]), "later");
+        assert_eq!(t.items[0].actions[0].1, ToastAction::Show(InfoHash([9; 20])));
     }
 
     #[test]

@@ -325,6 +325,61 @@ fn dialogs_keep_to_a_small_window() {
 }
 
 #[test]
+fn show_all_selects_the_added_torrents_and_clears_the_filters() {
+    let (_f, mut app) =
+        app("show-all", vec![torrent(1, "Alpha", TorrentState::Seeding), torrent(2, "Beta", TorrentState::Seeding)]);
+    app.prefs.status_filter = StatusFilter::Paused;
+    app.search = "nothing".into();
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().toasts.push_added(InfoHash([1; 20]), "Alpha");
+    h.state_mut().toasts.push_added(InfoHash([2; 20]), "Beta");
+    h.run_steps(2);
+    h.get_by_label("Added 2 torrents");
+    h.get_by_label("Show all").click();
+    h.run_steps(3);
+    assert_eq!(h.state().selected.len(), 2);
+    assert_eq!(h.state().prefs.status_filter, StatusFilter::All);
+    assert!(h.state().search.is_empty());
+}
+
+#[test]
+fn toasts_stay_above_the_status_bar() {
+    let (_f, app) = app("toast-place", vec![torrent(1, "Alpha", TorrentState::Seeding)]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().toasts.push(crate::engine::ToastKind::Info, "Something happened");
+    h.run_steps(3);
+    let toast = h.get_by_label("Something happened").rect();
+    let peers = h.get_by_label_contains("peers").rect();
+    assert!(toast.bottom() < peers.top(), "{toast:?} over the status bar at {peers:?}");
+}
+
+#[test]
+fn the_limit_menu_shows_a_custom_limit() {
+    let (_f, mut app) = app("limit", vec![torrent(1, "Alpha", TorrentState::Seeding)]);
+    app.settings.speed.download_limit = 3000;
+    let mut h = harness(app);
+    h.run_steps(3);
+    let speed = crate::util::fmt_speed(0, h.state().settings.appearance.speed_units);
+    let readouts: Vec<_> = h.query_all_by_label(&speed).map(|n| n.rect().center()).collect();
+    // The status bar's readouts are the lowest ones; the second from the right is the download.
+    let at = readouts.into_iter().max_by(|a, b| (a.y, -a.x).partial_cmp(&(b.y, -b.x)).unwrap()).unwrap();
+    h.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    h.get_by_label_contains("Current:");
+}
+
+#[test]
 fn empty_list_offers_add_actions() {
     let (_f, app) = app("empty", vec![]);
     let mut h = harness(app);

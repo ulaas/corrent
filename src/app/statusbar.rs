@@ -187,14 +187,21 @@ impl CorrentApp {
             ui.set_min_width(170.0);
             ui.label(RichText::new(if download { t!("Download limit") } else { t!("Upload limit") }).strong());
             let current = if download { self.settings.speed.download_limit } else { self.settings.speed.upload_limit };
-            for (label, kib) in [
+            let presets = [
                 (t!("Unlimited"), 0u32),
                 (t!("256 KiB/s"), 256),
                 (t!("1 MiB/s"), 1024),
                 (t!("5 MiB/s"), 5120),
                 (t!("10 MiB/s"), 10240),
                 (t!("50 MiB/s"), 51200),
-            ] {
+            ];
+            // A limit set in Settings that isn't one of the presets.
+            if !presets.iter().any(|(_, kib)| *kib == current) {
+                let units = self.settings.appearance.speed_units;
+                let text = t!("Current: {limit}", limit = fmt_speed(u64::from(current) * 1024, units));
+                ui.add_enabled(false, egui::Button::selectable(true, text));
+            }
+            for (label, kib) in presets {
                 if ui.selectable_label(current == kib, label).clicked() {
                     let mut s = self.settings.clone();
                     if download {

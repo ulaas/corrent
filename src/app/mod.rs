@@ -951,6 +951,7 @@ impl CorrentApp {
 
     fn drain_events(&mut self, ctx: &Context) {
         let mut removed: Vec<(InfoHash, String)> = Vec::new();
+        let mut added: Vec<String> = Vec::new();
         while let Ok(ev) = self.events.try_recv() {
             // The in-process media server acts on engine events too (imports, wanted list).
             if let Some(local) = self.media.local() {
@@ -965,14 +966,8 @@ impl CorrentApp {
             match ev {
                 EngineEvent::Toast(kind, text) => self.toasts.push(kind, text),
                 EngineEvent::Added { name, hash } => {
-                    self.toasts.push_with(
-                        ToastKind::Success,
-                        t!("Added “{name}”", name = name),
-                        vec![(t!("Show").into(), toasts::ToastAction::Show(hash))],
-                    );
-                    if self.settings.behavior.notify_on_add && self.window_hidden {
-                        self.notify(t!("Torrent added"), &name);
-                    }
+                    self.toasts.push_added(hash, &name);
+                    added.push(name);
                 }
                 EngineEvent::Completed { name, size, content_path, save_path, .. } => {
                     let actions = if self.server.is_none() {
@@ -1030,6 +1025,13 @@ impl CorrentApp {
                 EngineEvent::PreviewReady { req, result } => self.on_preview_ready(req, result),
             }
         }
+        if self.settings.behavior.notify_on_add && self.window_hidden {
+            match added.as_slice() {
+                [] => {}
+                [name] => self.notify(t!("Torrent added"), name),
+                many => self.notify(t!("Torrent added"), &t!("Added {n} torrents", n = many.len())),
+            }
+        }
         #[cfg(debug_assertions)]
         if !removed.is_empty() && std::env::var("CORRENT_DEV_OPEN").as_deref() == Ok("remove-undo") {
             self.engine.send(crate::engine::EngineCommand::UndoRemove(removed.iter().map(|(h, _)| *h).collect()));
@@ -1064,20 +1066,26 @@ impl CorrentApp {
                     self.settings.updates.skip_version = v;
                     self.save_settings();
                 }
-                toasts::ToastAction::Show(h) => {
-                    self.show_window(ctx);
-                    self.prefs.status_filter = StatusFilter::All;
-                    self.prefs.category_filter = GroupFilter::All;
-                    self.prefs.tag_filter = GroupFilter::All;
-                    self.search.clear();
-                    self.selected.clear();
-                    self.selected.insert(h);
-                    self.focus = Some(h);
-                    self.anchor = Some(h);
-                    self.scroll_to_focus = true;
-                }
+                toasts::ToastAction::Show(h) => self.show_torrents(ctx, vec![h]),
+                toasts::ToastAction::ShowAll(hashes) => self.show_torrents(ctx, hashes),
             }
         }
+    }
+
+    /// Brings the list up with these torrents visible and selected.
+    fn show_torrents(&mut self, ctx: &Context, hashes: Vec<InfoHash>) {
+        self.show_window(ctx);
+        self.main_view = feeds::MainView::Torrents;
+        self.prefs.status_filter = StatusFilter::All;
+        self.prefs.category_filter = GroupFilter::All;
+        self.prefs.tag_filter = GroupFilter::All;
+        self.prefs.tracker_filter = GroupFilter::All;
+        self.search.clear();
+        let first = hashes.first().copied();
+        self.selected = hashes.into_iter().collect();
+        self.focus = first;
+        self.anchor = first;
+        self.scroll_to_focus = true;
     }
 
     fn apply_appearance_if_changed(&mut self, ctx: &Context) {
@@ -1341,6 +1349,7 @@ impl CorrentApp {
         if self.tv.on {
             egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg0)).show(ui, |ui| self.tv_view(ui, &p));
             self.dialogs(&ctx, &p);
+            self.toasts.bottom_inset = 16.0;
             let actions = self.toasts.show(&ctx, &p);
             self.run_toast_actions(&ctx, actions);
             return;
@@ -1355,6 +1364,7 @@ impl CorrentApp {
             // No title bar while a video plays, but the edges still resize the window.
             self.window_frame(&ctx, &p);
             self.dialogs(&ctx, &p);
+            self.toasts.bottom_inset = 16.0;
             let actions = self.toasts.show(&ctx, &p);
             self.run_toast_actions(&ctx, actions);
             return;
@@ -1368,14 +1378,16 @@ impl CorrentApp {
             .show_separator_line(true)
             .show(ui, |ui| self.toolbar(ui, &p));
 
-        egui::Panel::bottom("statusbar")
+        let status = egui::Panel::bottom("statusbar")
             .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin::symmetric(12, 4)))
             .show(ui, |ui| self.status_bar(ui, &p));
+        self.toasts.bottom_inset = status.response.rect.height() + 8.0;
 
         if self.media.player.as_ref().is_some_and(|pl| pl.audio_only) {
-            egui::Panel::bottom("mini-player")
+            let mini = egui::Panel::bottom("mini-player")
                 .frame(egui::Frame::new().fill(p.bg2).inner_margin(egui::Margin::symmetric(14, 8)))
                 .show(ui, |ui| self.media_mini_player(ui, &p));
+            self.toasts.bottom_inset += mini.response.rect.height();
         }
 
         let mut show_sidebar = self.prefs.show_sidebar;
