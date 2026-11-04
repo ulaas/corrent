@@ -91,13 +91,13 @@ jobs:
             (Get-Content $_) -replace '\{\{VERSION\}\}', $version -replace '\{\{URL\}\}', $url -replace '\{\{SHA256\}\}', $sha |
               Set-Content (Join-Path dist/winget $_.Name)
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/**
       # Not shipped: crash reports carry addresses that only these exact files resolve
       # (scripts/symbolize.ps1). LTO builds aren't reproducible, so keep them with each release.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: symbols-windows
           path: |
@@ -127,7 +127,7 @@ jobs:
           tar -C target/release -czf "dist/Corrent-$version-linux-x86_64.tar.gz" corrent corrent-mpvw
       - name: Server tarball
         run: scripts/package-server.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: dist/**
@@ -167,7 +167,7 @@ jobs:
         run: scripts/package-macos.sh
       - name: Server tarball
         run: scripts/package-server.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: dist/**
