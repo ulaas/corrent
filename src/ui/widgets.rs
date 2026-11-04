@@ -40,7 +40,7 @@ pub fn paint_progress(
     let r = (rect.height() / 2.0).min(255.0) as u8;
     painter.rect_filled(rect, CornerRadius::same(r), track);
     let frac = frac.clamp(0.0, 1.0);
-    let t = if animate { super::motion::value(ui.ctx(), id.with("p"), frac, super::motion::SLOW) } else { frac };
+    let t = if animate { eased_progress(ui.ctx(), id.with("p"), frac, rect.width()) } else { frac };
     if t <= 0.0005 {
         return;
     }
@@ -84,6 +84,19 @@ pub fn paint_progress(
         }
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
     }
+}
+
+/// Progress eases only when you could see it: a change of a pixel or more, in the focused window.
+/// Otherwise every engine tick of every downloading torrent would mean a third of a second of
+/// full-rate repainting, also with the window in the background.
+fn eased_progress(ctx: &egui::Context, id: Id, target: f32, width: f32) -> f32 {
+    let shown_id = id.with("shown");
+    let shown = ctx.data(|d| d.get_temp::<f32>(shown_id));
+    let visible = shown.is_some_and(|s| (target - s).abs() * width >= 1.0);
+    let secs = if visible && ctx.input(|i| i.focused) { super::motion::SLOW } else { 0.0 };
+    let now = super::motion::value(ctx, id, target, secs);
+    ctx.data_mut(|d| d.insert_temp(shown_id, now));
+    now
 }
 
 /// Area sparkline with a vertical gradient fill. `samples` newest last.

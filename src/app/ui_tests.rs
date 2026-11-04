@@ -417,6 +417,25 @@ fn filtering_by_tracker_shows_only_its_torrents() {
     assert!(commands_sent(h.state(), &log).is_empty());
 }
 
+/// A downloading torrent's tick repaints once, unless the bar visibly moves.
+#[test]
+fn small_progress_changes_dont_keep_repainting() {
+    let (_f, app) = app("idle", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    let tick = |h: &mut Harness<'static, CorrentApp>, progress: f32, generation: u64| -> u64 {
+        let t = TorrentView { progress, ..torrent(1, "Alpha", TorrentState::Downloading) };
+        h.state_mut().snap = Arc::new(Snapshot { torrents: vec![t], generation, ..Default::default() });
+        h.run()
+    };
+    tick(&mut h, 0.5, 2);
+    // A hundredth of a percent: not even a pixel on a bar this size.
+    let frames: u64 = (0..20).map(|i| tick(&mut h, 0.5 + 0.0001 * i as f32, 3 + i)).sum();
+    assert!(frames <= 20 * 2, "{frames} frames for 20 ticks");
+    // A big step does ease.
+    assert!(tick(&mut h, 0.9, 100) >= 1);
+}
+
 #[test]
 fn empty_list_offers_add_actions() {
     let (_f, app) = app("empty", vec![]);

@@ -94,11 +94,14 @@ impl CorrentApp {
         }
         let tx = self.pickers.tx.clone();
         let ctx = self.ctx.clone();
-        let mut dialog = rfd::AsyncFileDialog::new();
-        if let Some(dir) = start.filter(|d| d.is_dir()) {
-            dialog = dialog.set_directory(dir);
-        }
         self.rt.spawn(async move {
+            // The folder is whatever was typed: maybe a sleeping disk or a network path, which
+            // the window must not wait for.
+            let start = tokio::task::spawn_blocking(move || start.filter(|d| d.is_dir())).await.ok().flatten();
+            let mut dialog = rfd::AsyncFileDialog::new();
+            if let Some(dir) = start {
+                dialog = dialog.set_directory(dir);
+            }
             let paths: Vec<PathBuf> = match kind {
                 PickKind::Folder => {
                     dialog.pick_folder().await.map(|h| vec![h.path().to_path_buf()]).unwrap_or_default()
