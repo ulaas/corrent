@@ -76,6 +76,24 @@ never exit); an `ffprobe.exe` from a Python package may be on `PATH` and isn't t
 
 ## Recent work worth knowing
 
+- **Quality round, 2026-11-05 (after v0.3.8; see `CHANGELOG.md`, Unreleased):** reviewed, planned and
+  re-reviewed with Fable. Sound processing lives in `crates/corrent-core/src/audio_fx.rs` (pure chain
+  and diff), `src/app/media/sound.rs` (probe, meters, sheet) and `web/src/lib/{audiofx,audiodsp,fxhost}`.
+  Facts measured on the pinned libmpv: `af-metadata/<label>` carries the meters; `af-command` needs
+  its 4th `target` argument; `ebur128` keeps 44.1 kHz; `aphasemeter` and `crossfeed` take stereo only;
+  `dynaudnorm` holds about g×f of sound; `@probe:<filter>` is the only reliable check for a filter;
+  `sine` is 1/8 of full scale. `estimated-display-fps` and `vsync-jitter` stay unavailable in render-API
+  mode even with `report_swap`. Open from this round:
+  - Next round: Loudness Target (a server-side measurement per file), `sync/maindata` deltas, the
+    named-pipe owner-only DACL, inline edits in Details, `SetTrackers`, per-category seed limits.
+  - Chosen to stay: a new file briefly runs the previous file's chain when its channel layout differs
+    (clearing it would restart the filters, audibly, at every gapless join); `Hub::wire_list` converts
+    under its lock (single-flight, or every client would convert at the same tick).
+  - Never run: real exclusive mode, passthrough, 5.1 speakers, iPhone fullscreen, TV remotes, Safari,
+    sound processing over remux/HLS in a browser (Playwright's Chromium lacks H.264/AAC), `macos_events.rs`
+    (not compiled here). `mcp.json`'s Windows ACL isn't asserted by its test. On Windows, reading
+    `index.m3u8` can make the muxer's rename fail (a logged error, at most one extra encoder restart).
+
 - **Media round MS18 (2026-10-21, `023e519`..):** wrapping Home/library pages, frame thumbnails,
   Add to library…, "use this frame", provider keys in Settings → Metadata, Identify…, OMDb
   ratings, and an MCP server for AI agents whose changes are approved in Media → AI agent
