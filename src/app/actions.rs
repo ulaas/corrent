@@ -343,7 +343,7 @@ impl CorrentApp {
             })
         });
         if let Some(text) = pasted {
-            let sources: Vec<AddSource> = text.lines().filter_map(AddSource::parse).collect();
+            let sources: Vec<AddSource> = text.lines().filter_map(AddSource::parse_text).collect();
             if sources.is_empty() {
                 self.toasts.push(
                     crate::engine::ToastKind::Warning,

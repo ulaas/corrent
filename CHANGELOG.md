@@ -3,6 +3,75 @@
 All notable changes to Corrent. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may break things).
 
+## [Unreleased]
+
+### Added
+
+- **Real-time sound processing in the player** (desktop and web): a 10-band equalizer with its
+  curve, Night mode, Clearer dialogue (with a centre-channel lift on 5.1), headphone crossfeed and
+  a live loudness leveller, with Flat/Night/Dialogue/Crossfeed presets and your own saved ones. The
+  desktop also has output profiles (device, channels, exclusive mode, effects). With everything
+  off, no filter runs at all.
+- **Meters and stats over the picture**: `Shift+I` shows LUFS M/S/I, LRA, true peak per channel,
+  RMS, stereo correlation and compressor gain reduction, plus the live chain and the audio format
+  in and out. `I` shows a fuller A/V page. The web adds a spectrum.
+- Desktop: command palette (`Ctrl+K`), Trackers in the sidebar, saved views, an Error column, Fit
+  columns, a Keyboard shortcuts window, Home/End/PageUp/PageDown and `/` for search, bulk Add
+  trackers, Invert selection, Select same category/tag/tracker, a double-click setting, and settings
+  search that highlights the matching rows.
+- Web: Back keeps your scroll position without reloading the grid; phone gestures (a tap shows the
+  controls, double-tap skips ±10 s); TV remote and media keys in the player; "See all" lists the
+  whole of Continue watching and Next up; a `?` shortcuts overlay; images sized to the screen.
+- Watch folders also pick up `.magnet` files holding one magnet link.
+- API: `GET /items` takes `in_progress=true` and `next_up=true`, and items carry `missing`.
+- Server: gzip and Brotli on text responses.
+
+### Changed
+
+- "Even out loudness" uses a live leveller instead of `loudnorm`, so it sounds different, delays
+  sound less and no longer changes the output's sample rate. Your setting carries over.
+- Equalizer presets keep headroom, so a boost no longer clips on loud masters.
+- The player remembers its volume and mute.
+- Library scans run several probes at once and write in batches, which is much faster on first
+  scan.
+- Far fewer idle repaints in the desktop app, and much less memory and work per tick with thousands
+  of torrents. Pause all writes the torrent list once rather than once per torrent; a crash can now
+  lose the last half second of pauses, resumes and file selections (adds and deletes are saved at
+  once as before).
+
+### Fixed
+
+- A Resume made while a torrent was still being checked was lost; with many torrents, Resume all
+  left a lot of them paused with no error.
+- Music and video queues now advance on their own and mark the last item played; gapless albums
+  really are gapless (music only).
+- Settings changes no longer drop the sound while something plays, unless the output itself changed.
+- Player shortcuts no longer fire while typing in the player's own text box. Closing the player
+  from picture-in-picture restores the window.
+- A magnet add waiting for metadata can no longer overwrite the torrent list after a settings
+  restart, and re-adding a torrent keeps its category, tags and date.
+- A mixed-case 32-character clipboard text (a password or token) is no longer taken for an info
+  hash, and the magnet dialog no longer touches the disk on every frame.
+- The delete dialog no longer confirms "also delete files" on a bare Enter. Esc keeps the selection
+  while closing menus. Bulk adds show one toast. Fixed-width dialogs fit small windows at high zoom.
+- Web: signing in as another user no longer shows the previous user's libraries; a dead connection
+  is noticed and every page recovers after sleep; rapid track changes no longer leak a player; a
+  tap on a phone no longer pauses the video.
+- Server: an HLS encoder that ended early was restarted up to 600 times per request; a failed
+  trickplay was retried with a full decode on every play; files added during a scan were missed;
+  items whose file is gone are now marked.
+
+### Security
+
+- `.torrent` URLs and artwork are fetched pinned to the checked address, with every redirect checked
+  (they could reach the server's own network).
+- RSS feed links, default trackers, proxy details and list URLs (private-tracker passkeys) are
+  masked for accounts without `settings.write`.
+- qBittorrent API sessions end when the account is disabled, deleted, or loses the permission.
+- The DLNA listener checks `Host` (DNS rebinding). Jellyfin's `/users/public` answers on the LAN only.
+- Wanted, monitored and scan status respect library visibility. Restores cap entry sizes and keep
+  private keys owner-only. Response bodies are capped while reading rather than after.
+
 ## [0.3.8] — 2026-10-31
 
 The 0.3.6 and 0.3.7 tags never got release builds (CI failed); this release carries their

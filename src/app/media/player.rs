@@ -2664,7 +2664,7 @@ fn stats_lines(s: &Status, render: &str) -> Vec<String> {
         format!("{} {} → {} ({})", st.audio_codec, st.audio_in, st.audio_out, st.current_ao),
     ];
     if !st.chain.is_empty() {
-        lines.push(format!("{} {}", t!("Filters"), st.chain.join(" · ")));
+        lines.push(format!("{}: {}", t!("Filters"), st.chain.join(" · ")));
     }
     if !render.is_empty() {
         lines.push(render.to_string());

@@ -368,7 +368,7 @@ pub fn paint_meters(painter: &egui::Painter, area: Rect, m: &Meters, info: &Mete
         if !compact {
             let mut lines = Vec::new();
             if !info.chain.is_empty() {
-                lines.push(format!("{} {}", t!("Filters"), info.chain.join(" · ")));
+                lines.push(format!("{}: {}", t!("Filters"), info.chain.join(" · ")));
             }
             if !info.audio_in.is_empty() {
                 lines.push(format!("{} {}", t!("In"), info.audio_in));
@@ -597,17 +597,23 @@ fn effects_sheet(ui: &mut Ui, p: &Palette, pb: &mut Playback, passthrough: bool)
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.spacing_mut().slider_width = 84.0;
                 for b in &mut fx.eq {
-                    ui.allocate_ui(vec2(24.0, 110.0), |ui| {
+                    ui.allocate_ui(vec2(26.0, 124.0), |ui| {
                         ui.vertical_centered(|ui| {
-                            ui.add(
-                                egui::Slider::new(&mut b.db, -12.0..=12.0).vertical().step_by(0.5).show_value(false),
-                            )
-                            .on_hover_text(t!(
-                                "{hz} Hz  {db} dB",
-                                hz = b.hz,
-                                db = format!("{:+.1}", b.db)
-                            ));
+                            let slider = ui
+                                .add(
+                                    egui::Slider::new(&mut b.db, -12.0..=12.0)
+                                        .vertical()
+                                        .step_by(0.5)
+                                        .show_value(false),
+                                )
+                                .on_hover_text(t!("{hz} Hz  {db} dB", hz = b.hz, db = format!("{:+.1}", b.db)));
+                            if slider.double_clicked() {
+                                b.db = 0.0;
+                            }
                             ui.label(egui::RichText::new(band_label(b.hz)).small().color(p.text_dim));
+                            // A blank at 0 keeps the row, so the sliders don't move.
+                            let value = if b.db == 0.0 { " ".to_string() } else { format!("{:+.1}", b.db) };
+                            ui.label(egui::RichText::new(value).small().color(p.text));
                         })
                     });
                 }

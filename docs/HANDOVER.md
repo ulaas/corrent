@@ -202,8 +202,9 @@ and a first tagged release.
     shutdown has run; the service path handles this.
   - On Windows, E1 refuses torrents with a `:` in a file name (for example `Title: Subtitle.mkv`).
     Offering a rename in the add dialog would be friendlier.
-  - A watch-folder add that the user cancels renames the file to `.failed`, the same as a failed
-    add.
+  - A watch-folder add that the user cancels while it is still fetching metadata renames the file
+    to `.failed`, the same as a failed add. (One that had already landed is now recorded and
+    becomes `.added`.)
 
 ## Conventions that bit during this work
 

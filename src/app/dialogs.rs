@@ -526,7 +526,7 @@ impl CorrentApp {
                             .font(egui::TextStyle::Monospace),
                     );
                     self.focus_once(&r);
-                    let sources: Vec<AddSource> = text.lines().filter_map(AddSource::parse).collect();
+                    let sources: Vec<AddSource> = text.lines().filter_map(AddSource::parse_text).collect();
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         ui.label(

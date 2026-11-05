@@ -281,6 +281,13 @@ impl AddSource {
         AddSource::parse_with(input, |p| p.is_file())
     }
 
+    /// [`AddSource::parse`] for text being typed or pasted on the UI thread: nothing touches the
+    /// disk (a path on an offline share can block for many seconds), so only a `.torrent` path
+    /// counts as a file.
+    pub fn parse_text(input: &str) -> Option<AddSource> {
+        AddSource::parse_with(input, |_| false)
+    }
+
     /// [`AddSource::parse`] with the "is it a file?" check given (the fuzz target passes a pure
     /// one: on Windows `\host\share\x` looks up a server and `\.\pipe\x` opens a pipe).
     pub fn parse_with(input: &str, is_file: impl Fn(&std::path::Path) -> bool) -> Option<AddSource> {
@@ -295,9 +302,7 @@ impl AddSource {
         if lower.starts_with("http://") || lower.starts_with("https://") {
             return Some(AddSource::Url(s.to_string()));
         }
-        if (s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
-            || (s.len() == 32 && s.chars().all(|c| c.is_ascii_alphanumeric()))
-        {
+        if (s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())) || is_base32_hash(s) {
             return Some(AddSource::Magnet(format!("magnet:?xt=urn:btih:{s}")));
         }
         let path = PathBuf::from(s);
@@ -306,6 +311,14 @@ impl AddSource {
         }
         None
     }
+}
+
+/// A base32 info hash, in one case. Parsing also decides what the clipboard's text is, and a
+/// mixed-case 32-character string is far more likely a password or an API token.
+fn is_base32_hash(s: &str) -> bool {
+    s.len() == 32
+        && (s.bytes().all(|b| matches!(b, b'A'..=b'Z' | b'2'..=b'7'))
+            || s.bytes().all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7')))
 }
 
 pub fn magnet_display_name(m: &str) -> Option<String> {
@@ -434,7 +447,31 @@ mod more_tests {
         assert!(matches!(AddSource::parse("HTTP://X/Y"), Some(AddSource::Url(_))));
         let b32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
         assert!(matches!(AddSource::parse(b32), Some(AddSource::Magnet(m)) if m.ends_with(b32)));
+        let lower = b32.to_ascii_lowercase();
+        assert!(matches!(AddSource::parse(&lower), Some(AddSource::Magnet(_))));
         assert_eq!(AddSource::parse("hello world"), None);
+    }
+
+    /// What may be sitting in a clipboard isn't taken for a hash.
+    #[test]
+    fn passwords_and_tokens_are_not_hashes() {
+        for s in [
+            "aB3dE5gH7jK2mN4pQ6sT7vW2yZ3bC5dF", // mixed case
+            "abcdefghijklmnopqrstuvwxyz012345", // 0 and 1 aren't base32
+            "0123456789abcdef0123456789abcdef", // an MD5 or a hex API key
+        ] {
+            assert_eq!(s.len(), 32);
+            assert_eq!(AddSource::parse_text(s), None, "{s}");
+        }
+    }
+
+    #[test]
+    fn typed_text_never_asks_the_disk() {
+        assert!(matches!(AddSource::parse_text("\\\\nas\\x\\a.torrent"), Some(AddSource::File(_))));
+        // An existing file without the extension: `parse` would look, `parse_text` doesn't.
+        let exe = std::env::current_exe().unwrap();
+        assert!(matches!(AddSource::parse(exe.to_str().unwrap()), Some(AddSource::File(_))));
+        assert_eq!(AddSource::parse_text(exe.to_str().unwrap()), None);
     }
 
     #[test]
