@@ -219,7 +219,14 @@ pub(crate) async fn empty_library(h: &H, admin: &str, name: &str, kind: &str) ->
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    v["id"].as_i64().unwrap()
+    let id = v["id"].as_i64().unwrap();
+    // A new library's first scan prunes what has no file on disk, which is what `seed_item` makes.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while h.st.library.scan_active(id) {
+        assert!(std::time::Instant::now() < deadline, "the first scan of {name} never ended");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    id
 }
 
 /// An item written straight into the database, with its main file when `path` is given.

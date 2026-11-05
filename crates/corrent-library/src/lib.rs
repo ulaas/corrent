@@ -176,6 +176,11 @@ impl Library {
         }
     }
 
+    /// A scan started with [`Self::start_scan`] hasn't ended yet, or another is due after it.
+    pub fn scan_active(&self, library_id: i64) -> bool {
+        self.inner.cancel.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&library_id)
+    }
+
     /// Starts a scan in the background. Returns false when one was running: another then follows
     /// it (the running one may have passed the folder that changed).
     pub fn start_scan(&self, library_id: i64) -> bool {
