@@ -477,6 +477,32 @@ async fn the_item_list_has_in_progress_and_next_up() {
     h.stop().await;
 }
 
+/// A release link is trusted to reach the LAN only on an indexer the admin set up.
+#[test]
+fn only_an_enabled_indexers_links_count_as_its_own() {
+    use corrent_core::search::TorznabProvider;
+    let providers = [
+        TorznabProvider { url: "http://192.168.1.5:9117/api/torznab".into(), ..Default::default() },
+        TorznabProvider { url: "http://192.168.1.6:9117/api".into(), enabled: false, ..Default::default() },
+    ];
+    let is = |l: &str| crate::integrate::is_indexer_link(&providers, l);
+    assert!(is("http://192.168.1.5:9117/dl/1.torrent"));
+    assert!(!is("http://192.168.1.5:8080/admin"), "another port");
+    assert!(!is("https://192.168.1.5:9117/dl/1.torrent"), "another scheme");
+    assert!(!is("http://192.168.1.6:9117/dl/1.torrent"), "switched off");
+    assert!(!is("http://192.168.1.5.evil.example:9117/x"));
+    assert!(!is("not a link"));
+}
+
+/// Someone who may not reach the server's network can't aim a grab at it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_confined_grab_cannot_reach_the_servers_network() {
+    let h = harness("grab-ssrf", ServerConfig { tls: false, ..Default::default() }).await;
+    let r = crate::integrate::grab(&h.st, "http://192.168.1.5:9117/dl/1.torrent", None, "bob", true).await;
+    assert!(r.is_err(), "a private address");
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn clients_share_one_conversion_per_generation() {
     let h = harness("hub", ServerConfig { tls: false, ..Default::default() }).await;

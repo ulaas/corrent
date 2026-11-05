@@ -421,10 +421,19 @@ pub async fn ensure_category_folders(st: &AppState) {
 }
 
 /// Fetches a release link: magnets as they are, `.torrent` URLs downloaded by the server (so
-/// the info hash is known). Torznab links that redirect to a magnet are followed.
-async fn source_for(link: &str) -> Result<AddSource, ApiErr> {
+/// the info hash is known). Torznab links that redirect to a magnet are followed. `confined`: a
+/// link from someone who may not reach the server's own network, which must be public unless it
+/// is on an indexer the admin set up (those are often on the LAN).
+async fn source_for(st: &AppState, link: &str, confined: bool) -> Result<AddSource, ApiErr> {
     if link.starts_with("magnet:") {
         return Ok(AddSource::Magnet(link.to_string()));
+    }
+    if confined && !is_indexer_link(&st.settings.load().search.providers, link) {
+        crate::net::check_public_url(link).await.map_err(|e| err(ErrorCode::Forbidden, e))?;
+        let bytes = crate::net::fetch_public(link, MAX_RELEASE_FILE, Duration::from_secs(30))
+            .await
+            .map_err(|e| err(ErrorCode::BadRequest, format!("fetching the release: {e}")))?;
+        return Ok(AddSource::Bytes { name: "release.torrent".into(), bytes });
     }
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -453,13 +462,28 @@ async fn source_for(link: &str) -> Result<AddSource, ApiErr> {
         if !res.status().is_success() {
             return Err(err(ErrorCode::BadRequest, format!("the indexer answered {}", res.status())));
         }
-        let bytes = res.bytes().await.map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
-        if bytes.len() > 16 * 1024 * 1024 {
-            return Err(err(ErrorCode::PayloadTooLarge, "torrent file too large"));
-        }
-        return Ok(AddSource::Bytes { name: "release.torrent".into(), bytes: bytes.to_vec() });
+        let bytes = crate::net::read_capped(res, MAX_RELEASE_FILE).await.map_err(|e| {
+            if e == crate::net::TOO_LARGE {
+                err(ErrorCode::PayloadTooLarge, "torrent file too large")
+            } else {
+                err(ErrorCode::BadRequest, e)
+            }
+        })?;
+        return Ok(AddSource::Bytes { name: "release.torrent".into(), bytes });
     }
     Err(err(ErrorCode::BadRequest, "too many redirects"))
+}
+
+const MAX_RELEASE_FILE: usize = 16 * 1024 * 1024;
+
+/// On the host and port of an enabled indexer.
+pub(crate) fn is_indexer_link(providers: &[corrent_core::search::TorznabProvider], link: &str) -> bool {
+    let place = |u: &str| {
+        let u = url::Url::parse(u).ok()?;
+        Some((u.scheme().to_string(), u.host_str()?.to_ascii_lowercase(), u.port_or_known_default()?))
+    };
+    let Some(at) = place(link) else { return false };
+    providers.iter().any(|p| p.enabled && place(&p.url).as_ref() == Some(&at))
 }
 
 /// Adds a release for a library: into the library's first folder with its first import
@@ -469,8 +493,9 @@ pub async fn grab(
     link: &str,
     library: Option<&LibraryInfo>,
     by: &str,
+    confined: bool,
 ) -> Result<Option<InfoHash>, ApiErr> {
-    let source = source_for(link).await?;
+    let source = source_for(st, link, confined).await?;
     let hash = source.info_hash();
     let settings = st.settings.load_full();
     let snap = st.engine.snapshot();
@@ -527,7 +552,8 @@ pub async fn run_wanted(st: &AppState) -> usize {
             None => None,
         };
         let by = w.added_by.clone().unwrap_or_else(|| "wanted".into());
-        match grab(st, best.link.as_deref().unwrap_or_default(), lib.as_ref(), &by).await {
+        // A link the indexers gave the server itself, not one somebody typed.
+        match grab(st, best.link.as_deref().unwrap_or_default(), lib.as_ref(), &by, false).await {
             Ok(hash) => {
                 let h = hash.map(|h| h.to_hex());
                 let _ = st.library.set_wanted_status(w.id, "grabbed", h.clone()).await;

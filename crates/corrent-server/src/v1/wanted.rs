@@ -83,7 +83,8 @@ async fn grab_wanted(
         Some(l) => st.library.get(l).await.ok(),
         None => None,
     };
-    let hash = integrate::grab(&st, &g.link, lib.as_ref(), auth.name()).await?;
+    let confined = !crate::paths::unconfined(&auth);
+    let hash = integrate::grab(&st, &g.link, lib.as_ref(), auth.name(), confined).await?;
     let h = hash.map(|h| h.to_hex());
     st.library.set_wanted_status(id, "grabbed", h.clone()).await.map_err(lib_err)?;
     let _ = st.library.record_grab(Some(id), None, &h.clone().unwrap_or_default(), &w.title, 0).await;
@@ -194,7 +195,8 @@ async fn grab_item(
 ) -> ApiResult<serde_json::Value> {
     auth.require(Perms::TORRENTS_ADD)?;
     let (w, lib) = wanted_for_item(&st, auth.0.user.id, id).await?;
-    let hash = integrate::grab(&st, &g.link, lib.as_ref(), auth.name()).await?;
+    let confined = !crate::paths::unconfined(&auth);
+    let hash = integrate::grab(&st, &g.link, lib.as_ref(), auth.name(), confined).await?;
     let h = hash.map(|h| h.to_hex());
     let _ = st.library.record_grab(None, Some(id), &h.clone().unwrap_or_default(), &w.title, 0).await;
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), "grab", &w.title, true, "").await;

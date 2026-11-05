@@ -51,6 +51,8 @@ fn mask_feed(mut f: FeedView) -> FeedView {
     f.url = masked;
     for a in &mut f.articles {
         a.article.torrent = a.article.torrent.as_deref().map(mask_url);
+        // Some trackers put the passkey into every item's page link as well.
+        a.article.page = a.article.page.as_deref().map(mask_url);
     }
     f
 }

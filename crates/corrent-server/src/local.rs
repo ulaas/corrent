@@ -104,15 +104,10 @@ pub async fn start(
     paths: Paths,
 ) -> anyhow::Result<LocalServer> {
     // A staged restore was applied by the app at startup, before its settings were read.
-    // The app's window shouldn't wait for every page to be read: the check runs next to it.
-    let db =
-        corrent_db::Db::open_with(&paths.data_dir.join("corrent.db"), corrent_db::OpenOptions { quick_check: false })?;
-    let check = db.clone();
-    tokio::spawn(async move {
-        if let Err(e) = check.quick_check().await {
-            tracing::error!("{e}");
-        }
-    });
+    // Reading every page is for when it could have been damaged, like correntd: a damaged database
+    // then stops here, and the app says so on its media page.
+    let quick_check = corrent_core::crash::previous_run_unclean();
+    let db = corrent_db::Db::open_with(&paths.data_dir.join("corrent.db"), corrent_db::OpenOptions { quick_check })?;
     let identity = Identity::new(db.clone(), HashCost::STANDARD);
     let library = corrent_library::Library::new(
         db,
