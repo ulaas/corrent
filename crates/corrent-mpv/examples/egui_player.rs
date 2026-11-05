@@ -1,6 +1,9 @@
 //! Spike MS0b/MS0c: libmpv video inside an eframe (glow) window, composed with egui widgets.
 //!
-//! `cargo run -p corrent-mpv --example egui_player -- [--sw] [--shot out.png] [file or URL]`
+//! `cargo run -p corrent-mpv --example egui_player -- [--sw] [--swap] [--simple] [--secs N] [--shot out.png] [file or URL]`
+//!
+//! `--swap`: report each presented frame to mpv. `--simple`: no advanced render control, as the
+//! player runs. `--secs`: how long before the shot (default 3); the frame numbers go to stderr.
 //!
 //! GL path: mpv renders into our own FBO-backed texture inside an `egui_glow` paint callback, and
 //! the texture is drawn as an ordinary egui image, so egui overlays compose on top of the video.
@@ -24,6 +27,7 @@ struct GlVideo {
     tex: glow::Texture,
     size: [i32; 2],
     renders: u64,
+    swap: bool,
 }
 
 impl GlVideo {
@@ -61,6 +65,9 @@ impl GlVideo {
                 eprintln!("render: {e}");
             }
             self.renders += 1;
+            if self.swap {
+                self.rc.report_swap();
+            }
             gl.bind_framebuffer(glow::FRAMEBUFFER, std::num::NonZeroU32::new(prev as u32).map(glow::NativeFramebuffer));
         }
     }
@@ -88,6 +95,7 @@ struct App {
     shot_sent: bool,
     last_frame: Instant,
     frame_ms: Vec<f32>,
+    secs: f32,
 }
 
 fn create_target(gl: &glow::Context) -> (glow::Framebuffer, glow::Texture) {
@@ -123,9 +131,12 @@ fn create_target(gl: &glow::Context) -> (glow::Framebuffer, glow::Texture) {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, input: &str, sw: bool, shot: Option<String>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, input: &str, sw: bool, shot: Option<String>, flags: Flags) -> Self {
         let mut opts: Vec<(&str, &str)> = corrent_mpv::HEADLESS.to_vec();
         opts.extend([("vo", "libmpv"), ("hwdec", "auto-safe"), ("loop-file", "inf"), ("ao", "null")]);
+        if flags.swap {
+            opts.push(("dither-depth", "8"));
+        }
         let mpv = Arc::new(Mpv::new(corrent_mpv::Library::get().expect("libmpv"), &opts).expect("mpv"));
         let ctx = cc.egui_ctx.clone();
         let mut video = if sw {
@@ -139,10 +150,10 @@ impl App {
         } else {
             let gl = cc.gl.clone().expect("glow backend");
             let gpa = cc.get_proc_address.clone().expect("get_proc_address");
-            let rc = RenderContext::new_gl(mpv.clone(), move |name| gpa(name), true).expect("gl render");
+            let rc = RenderContext::new_gl(mpv.clone(), move |name| gpa(name), !flags.simple).expect("gl render");
             let (fbo, tex) = create_target(&gl);
             Video::Gl {
-                state: Arc::new(Mutex::new(GlVideo { rc, gl, fbo, tex, size: [16, 16], renders: 0 })),
+                state: Arc::new(Mutex::new(GlVideo { rc, gl, fbo, tex, size: [16, 16], renders: 0, swap: flags.swap })),
                 id: None,
             }
         };
@@ -193,6 +204,7 @@ impl App {
             shot_sent: false,
             last_frame: Instant::now(),
             frame_ms: Vec::new(),
+            secs: flags.secs,
         }
     }
 }
@@ -292,7 +304,24 @@ impl eframe::App for App {
         });
 
         if let Some(path) = self.shot.clone() {
-            if !self.shot_sent && self.started.elapsed().as_secs_f32() > 3.0 {
+            if !self.shot_sent && self.started.elapsed().as_secs_f32() > self.secs {
+                let mut sorted = self.frame_ms.clone();
+                sorted.sort_by(f32::total_cmp);
+                let at = |q: usize| sorted.get(sorted.len() * q / 100).copied().unwrap_or(0.0);
+                eprintln!(
+                    "frames {} p50 {:.1} ms p99 {:.1} ms max {:.1} ms",
+                    sorted.len(),
+                    at(50),
+                    at(99),
+                    sorted.last().copied().unwrap_or(0.0)
+                );
+                // A thread of its own: with advanced control the render thread must not ask mpv.
+                let mpv = self.mpv.clone();
+                std::thread::spawn(move || {
+                    for p in ["display-fps", "estimated-display-fps", "vsync-jitter", "vsync-ratio", "dither-depth"] {
+                        eprintln!("{p} = {:?}", mpv.get(p));
+                    }
+                });
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
                 self.shot_sent = true;
             }
@@ -318,8 +347,23 @@ fn egui_glow_callback(f: impl Fn(egui::PaintCallbackInfo) + Send + Sync + 'stati
     eframe::egui_glow::CallbackFn::new(move |info, _painter| f(info))
 }
 
+#[derive(Clone, Copy)]
+struct Flags {
+    swap: bool,
+    simple: bool,
+    secs: f32,
+}
+
 fn main() -> eframe::Result {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let swap = args.iter().any(|a| a == "--swap");
+    let simple = args.iter().any(|a| a == "--simple");
+    args.retain(|a| a != "--swap" && a != "--simple");
+    let secs = args.iter().position(|a| a == "--secs").map_or(3.0, |i| {
+        let v = args.remove(i + 1);
+        args.remove(i);
+        v.parse().unwrap()
+    });
     let sw = args.iter().any(|a| a == "--sw");
     args.retain(|a| a != "--sw");
     let shot = args.iter().position(|a| a == "--shot").map(|i| {
@@ -336,6 +380,6 @@ fn main() -> eframe::Result {
             renderer: eframe::Renderer::Glow,
             ..Default::default()
         },
-        Box::new(move |cc| Ok(Box::new(App::new(cc, &input, sw, shot)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, &input, sw, shot, Flags { swap, simple, secs })))),
     )
 }

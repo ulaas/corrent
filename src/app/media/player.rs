@@ -56,6 +56,10 @@ struct Status {
     /// Skippable parts found by analysis (from the playback info).
     segments: Vec<corrent_proto::library::MediaSegment>,
     ended: bool,
+    /// The entry that was playing reached its end, and mpv has moved on or is about to.
+    entry_ended: bool,
+    /// `playlist-playing-pos`.
+    playlist_pos: i64,
     buffering: bool,
     error: Option<String>,
     hwdec: String,
@@ -70,6 +74,18 @@ struct Status {
     loaded: bool,
     /// The server's external subtitles added to mpv: (URL, `Stream::index`).
     ext_subs: Vec<(String, i64)>,
+    /// What the filter chain needs to know about the source (kept between files).
+    source: corrent_core::audio_fx::Source,
+    meters: super::sound::Meters,
+    /// The metering filters run, the Audio page is up, the A/V page is up, the controls are up.
+    meters_on: bool,
+    meter_page: bool,
+    stats_page: bool,
+    controls_visible: bool,
+    /// The whole second of `pos` last drawn.
+    shown_second: i64,
+    /// When the metering filters were last read.
+    meter_read: Option<Instant>,
 }
 
 impl Status {
@@ -107,6 +123,28 @@ struct Stats {
     fps: f64,
     dropped: i64,
     cache_secs: f64,
+    /// `video-params`: what a nerd wants to see of the picture.
+    pixelformat: String,
+    primaries: String,
+    gamma: String,
+    sig_peak: f64,
+    container_fps: f64,
+    display_fps: f64,
+    vsync_jitter: f64,
+    decoder_drops: i64,
+    vo_delayed: i64,
+    avsync: f64,
+    cache_bytes: i64,
+    input_rate: f64,
+    video_bitrate: f64,
+    audio_bitrate: f64,
+    audio_in: String,
+    audio_out: String,
+    current_ao: String,
+    /// The labels of the filters mpv actually runs.
+    chain: Vec<String>,
+    mpv_version: String,
+    ffmpeg_version: String,
 }
 
 struct GlVideo {
@@ -148,6 +186,8 @@ impl GlVideo {
             if let Err(e) = self.rc.render_gl(self.fbo.0.get() as i32, want[0], want[1], false) {
                 tracing::debug!("video render: {e}");
             }
+            // Feeds mpv's timing statistics (display fps, jitter on the A/V page).
+            self.rc.report_swap();
             gl.bind_framebuffer(glow::FRAMEBUFFER, std::num::NonZeroU32::new(prev as u32).map(glow::NativeFramebuffer));
         }
     }
@@ -200,6 +240,17 @@ pub struct Player {
     room_code: String,
     /// Showing "Stats for nerds".
     stats: bool,
+    /// Showing the Audio page (the metering filters run only while it is up).
+    meter_page: bool,
+    /// The extra properties are observed from the first time a page needs them, so that a player
+    /// nobody asks anything of doesn't get them at all.
+    observing_meters: bool,
+    observing_stats: bool,
+    /// The sound sheet is up.
+    sound_open: bool,
+    /// CORRENT_DEV_WINDOW=<w>x<h> or `pip`: the layout to check, once.
+    #[cfg(debug_assertions)]
+    dev_window: Option<String>,
     /// Picture in picture: the window small and on top (the size to go back to).
     pip: Option<egui::Vec2>,
     /// The end-of-episode countdown was dismissed for this item.
@@ -216,7 +267,43 @@ pub struct Player {
     thumb_job: Option<super::client::Slot<serde_json::Value>>,
     /// A message for the app's toasts (taken by the media view).
     pub notice: Option<(crate::engine::ToastKind, String)>,
+    /// The sound settings mpv has, to send only what changes.
+    audio: Mutex<corrent_core::config::Playback>,
+    /// The filters running in mpv, what they were made from, and when `af` was last set.
+    fx_applied: Vec<corrent_core::audio_fx::Stage>,
+    fx_from: Option<FxInputs>,
+    fx_set_at: Option<Instant>,
+    /// The position last reported: a paused player has nothing new to say.
+    last_reported: f64,
+    /// The queue index of the entry at position 0 of mpv's playlist.
+    playlist_start: usize,
+    /// The queue index whose `loadfile append` was started, and that it was sent (it asks the
+    /// server first).
+    appending: Option<usize>,
+    appended: Arc<std::sync::atomic::AtomicI64>,
+    /// Counts replaced playlists: an append still on its way after one is dropped.
+    playlist_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// The effects last handed over to be saved, and since when they differ.
+    fx_saved: Mutex<corrent_core::config::Playback>,
+    fx_moved: Option<Instant>,
+    /// `fx.meters` as last seen: changing that setting brings the Audio page up or down.
+    fx_meters_setting: bool,
+    /// The volume and mute last handed over to be saved, and since when they differ.
+    volume_saved: (f64, bool),
+    volume_moved: Option<Instant>,
 }
+
+/// What the filter chain is built from.
+#[derive(Clone, Debug, PartialEq)]
+struct FxInputs {
+    fx: corrent_core::audio_fx::AudioFx,
+    passthrough: bool,
+    source: corrent_core::audio_fx::Source,
+    caps: &'static corrent_core::audio_fx::Caps,
+}
+
+/// `Event::CommandReply` of a filter change: a failure is worth a line in the log.
+const FX_REPLY: u64 = 7;
 
 fn track_list(n: &Node) -> Vec<Track> {
     n.as_array()
@@ -321,13 +408,24 @@ impl Player {
         opts.extend([
             ("idle", "yes"),
             ("keep-open", "yes"),
+            // Pausing at the end would carry over to the next file; `tick` pauses where it stays.
+            ("keep-open-pause", "no"),
             ("hwdec", "auto-safe"),
             ("http-header-fields", header.as_str()),
             ("audio-display", "no"),
         ]);
         let audio_opts = audio.mpv_options();
         opts.extend(audio_opts.iter().map(|(k, v)| (*k, v.as_str())));
+        // As it was left: no film at 100 % after a late evening at 35 %.
+        let volume = format!("{}", if audio.volume.is_finite() { audio.volume.clamp(0.0, 130.0) } else { 100.0 });
+        opts.extend([("volume", volume.as_str()), ("mute", if audio.muted { "yes" } else { "no" })]);
         opts.push(if audio_only { ("vid", "no") } else { ("vo", "libmpv") });
+        // The texture is 8 bits a channel: HDR tone-mapped or 10-bit sources would band without.
+        opts.push(("dither-depth", "8"));
+        // Albums go through mpv's own playlist, opened ahead of time: see `gapless_tick`.
+        if audio_only && audio.gapless {
+            opts.push(("prefetch-playlist", "yes"));
+        }
         // mpv sends the token: always verify HTTPS (mpv doesn't by default), against the
         // server's own CA when it has one.
         opts.push(("tls-verify", "yes"));
@@ -389,7 +487,13 @@ impl Player {
             }
             Video::None => Video::None,
         };
-        let status = Arc::new(Mutex::new(Status { volume: 100.0, speed: 1.0, sub_scale: 1.0, ..Default::default() }));
+        let status = Arc::new(Mutex::new(Status {
+            volume: audio.volume as f64,
+            muted: audio.muted,
+            speed: 1.0,
+            sub_scale: 1.0,
+            ..Default::default()
+        }));
         for (i, p) in [
             "time-pos",
             "duration",
@@ -412,6 +516,9 @@ impl Player {
             "frame-drop-count",
             "demuxer-cache-duration",
             "audio-codec-name",
+            "audio-params",
+            "eof-reached",
+            "playlist-playing-pos",
         ]
         .iter()
         .enumerate()
@@ -424,58 +531,142 @@ impl Player {
             .name("mpv-events".into())
             .spawn(move || {
                 while !stop2.load(Ordering::Relaxed) {
-                    let Some(ev) = m.wait_event(0.5) else { continue };
+                    let (wait, poll) = {
+                        let s = st.lock().unwrap_or_else(|e| e.into_inner());
+                        let late = s.meter_read.is_none_or(|t| t.elapsed() > Duration::from_millis(300));
+                        (if s.meters_on { 0.1 } else { 0.5 }, s.meters_on && late)
+                    };
+                    // Metadata normally arrives as events (about 10 a second); where a libmpv
+                    // doesn't send them, it is read instead. This thread may wait for mpv.
+                    if poll {
+                        let (input, output) = (m.get("af-metadata/in"), m.get("af-metadata/out"));
+                        let mut s = st.lock().unwrap_or_else(|e| e.into_inner());
+                        s.meter_read = Some(Instant::now());
+                        if let Ok(v) = input {
+                            s.meters.read_input(&v);
+                        }
+                        if let Ok(v) = output {
+                            s.meters.read_output(&v, Instant::now());
+                        }
+                        if s.meter_page {
+                            c2.request_repaint();
+                        }
+                    }
+                    let Some(ev) = m.wait_event(wait) else { continue };
                     let mut s = st.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut repaint = true;
                     match ev {
                         Event::Shutdown => break,
-                        Event::PropertyChange { name, value, .. } => match name.as_str() {
-                            "time-pos" => s.pos = value.as_f64().unwrap_or(s.pos),
-                            "duration" => s.duration = value.as_f64().unwrap_or(0.0),
-                            "pause" => s.paused = value.as_bool().unwrap_or(false),
-                            "volume" => s.volume = value.as_f64().unwrap_or(100.0),
-                            "mute" => s.muted = value.as_bool().unwrap_or(false),
-                            "track-list" => {
-                                s.tracks = track_list(&value);
-                                s.apply_wanted(&m);
+                        Event::PropertyChange { name, value, .. } => {
+                            repaint = needs_repaint(&name, &value, &mut s);
+                            match name.as_str() {
+                                "time-pos" => s.pos = value.as_f64().unwrap_or(s.pos),
+                                // With `keep-open` the last entry doesn't end with `EndFile`.
+                                "eof-reached" if value.as_bool() == Some(true) => s.ended = true,
+                                "playlist-playing-pos" => s.playlist_pos = value.as_i64().unwrap_or(-1),
+                                "duration" => s.duration = value.as_f64().unwrap_or(0.0),
+                                "pause" => s.paused = value.as_bool().unwrap_or(false),
+                                "volume" => s.volume = value.as_f64().unwrap_or(100.0),
+                                "mute" => s.muted = value.as_bool().unwrap_or(false),
+                                "track-list" => {
+                                    s.tracks = track_list(&value);
+                                    s.apply_wanted(&m);
+                                }
+                                "chapter-list" => {
+                                    s.chapters = value
+                                        .as_array()
+                                        .iter()
+                                        .filter_map(|c| {
+                                            let t = c.get("time").and_then(Node::as_f64)?;
+                                            Some((t, c.get("title").and_then(Node::as_str).map(str::to_string)))
+                                        })
+                                        .collect()
+                                }
+                                "paused-for-cache" => s.buffering = value.as_bool().unwrap_or(false),
+                                "hwdec-current" => s.hwdec = value.as_str().unwrap_or("no").to_string(),
+                                "video-params/aspect" => s.aspect = value.as_f64().unwrap_or(0.0),
+                                "speed" => s.speed = value.as_f64().unwrap_or(1.0),
+                                "sub-delay" => s.sub_delay = value.as_f64().unwrap_or(0.0),
+                                "audio-delay" => s.audio_delay = value.as_f64().unwrap_or(0.0),
+                                "sub-scale" => s.sub_scale = value.as_f64().unwrap_or(1.0),
+                                "video-codec" => s.stats.video_codec = value.as_str().unwrap_or("").to_string(),
+                                "audio-codec-name" => s.stats.audio_codec = value.as_str().unwrap_or("").to_string(),
+                                "video-params/w" => s.stats.width = value.as_i64().unwrap_or(0),
+                                "video-params/h" => s.stats.height = value.as_i64().unwrap_or(0),
+                                "estimated-vf-fps" => s.stats.fps = value.as_f64().unwrap_or(0.0),
+                                "frame-drop-count" => s.stats.dropped = value.as_i64().unwrap_or(0),
+                                "demuxer-cache-duration" => s.stats.cache_secs = value.as_f64().unwrap_or(0.0),
+                                "audio-params" => {
+                                    if let Some(channels) = value.get("channel-count").and_then(Node::as_i64) {
+                                        s.source = corrent_core::audio_fx::Source {
+                                            channels: Some(channels),
+                                            layout: value.get("channels").and_then(Node::as_str).map(str::to_string),
+                                        };
+                                    }
+                                    s.stats.audio_in = super::sound::audio_format(&value);
+                                }
+                                "audio-out-params" => s.stats.audio_out = super::sound::audio_format(&value),
+                                "af-metadata/in" => {
+                                    s.meter_read = Some(Instant::now());
+                                    s.meters.read_input(&value);
+                                }
+                                "af-metadata/out" => {
+                                    s.meter_read = Some(Instant::now());
+                                    s.meters.read_output(&value, Instant::now());
+                                }
+                                "af" => {
+                                    s.stats.chain = value
+                                        .as_array()
+                                        .iter()
+                                        .filter_map(|f| f.get("label").and_then(Node::as_str).map(str::to_string))
+                                        .collect();
+                                }
+                                "current-ao" => s.stats.current_ao = value.as_str().unwrap_or("").to_string(),
+                                "video-params/pixelformat" => {
+                                    s.stats.pixelformat = value.as_str().unwrap_or("").to_string()
+                                }
+                                "video-params/primaries" => {
+                                    s.stats.primaries = value.as_str().unwrap_or("").to_string()
+                                }
+                                "video-params/gamma" => s.stats.gamma = value.as_str().unwrap_or("").to_string(),
+                                "video-params/sig-peak" => s.stats.sig_peak = value.as_f64().unwrap_or(0.0),
+                                "container-fps" => s.stats.container_fps = value.as_f64().unwrap_or(0.0),
+                                "estimated-display-fps" => s.stats.display_fps = value.as_f64().unwrap_or(0.0),
+                                "vsync-jitter" => s.stats.vsync_jitter = value.as_f64().unwrap_or(0.0),
+                                "decoder-frame-drop-count" => s.stats.decoder_drops = value.as_i64().unwrap_or(0),
+                                "vo-delayed-frame-count" => s.stats.vo_delayed = value.as_i64().unwrap_or(0),
+                                "avsync" => s.stats.avsync = value.as_f64().unwrap_or(0.0),
+                                "demuxer-cache-state" => {
+                                    s.stats.cache_bytes = value.get("fw-bytes").and_then(Node::as_i64).unwrap_or(0);
+                                    s.stats.input_rate =
+                                        value.get("raw-input-rate").and_then(Node::as_f64).unwrap_or(0.0);
+                                }
+                                "video-bitrate" => s.stats.video_bitrate = value.as_f64().unwrap_or(0.0),
+                                "audio-bitrate" => s.stats.audio_bitrate = value.as_f64().unwrap_or(0.0),
+                                "mpv-version" => s.stats.mpv_version = value.as_str().unwrap_or("").to_string(),
+                                "ffmpeg-version" => s.stats.ffmpeg_version = value.as_str().unwrap_or("").to_string(),
+                                _ => {}
                             }
-                            "chapter-list" => {
-                                s.chapters = value
-                                    .as_array()
-                                    .iter()
-                                    .filter_map(|c| {
-                                        let t = c.get("time").and_then(Node::as_f64)?;
-                                        Some((t, c.get("title").and_then(Node::as_str).map(str::to_string)))
-                                    })
-                                    .collect()
-                            }
-                            "paused-for-cache" => s.buffering = value.as_bool().unwrap_or(false),
-                            "hwdec-current" => s.hwdec = value.as_str().unwrap_or("no").to_string(),
-                            "video-params/aspect" => s.aspect = value.as_f64().unwrap_or(0.0),
-                            "speed" => s.speed = value.as_f64().unwrap_or(1.0),
-                            "sub-delay" => s.sub_delay = value.as_f64().unwrap_or(0.0),
-                            "audio-delay" => s.audio_delay = value.as_f64().unwrap_or(0.0),
-                            "sub-scale" => s.sub_scale = value.as_f64().unwrap_or(1.0),
-                            "video-codec" => s.stats.video_codec = value.as_str().unwrap_or("").to_string(),
-                            "audio-codec-name" => s.stats.audio_codec = value.as_str().unwrap_or("").to_string(),
-                            "video-params/w" => s.stats.width = value.as_i64().unwrap_or(0),
-                            "video-params/h" => s.stats.height = value.as_i64().unwrap_or(0),
-                            "estimated-vf-fps" => s.stats.fps = value.as_f64().unwrap_or(0.0),
-                            "frame-drop-count" => s.stats.dropped = value.as_i64().unwrap_or(0),
-                            "demuxer-cache-duration" => s.stats.cache_secs = value.as_f64().unwrap_or(0.0),
-                            _ => {}
-                        },
+                        }
                         Event::FileLoaded => {
                             s.ended = false;
                             s.error = None;
                             s.loaded = true;
                             s.apply_wanted(&m);
                         }
-                        Event::EndFile(EndReason::Eof) => s.ended = true,
-                        Event::EndFile(EndReason::Error(code)) => s.error = Some(format!("playback failed ({code})")),
+                        Event::CommandReply { userdata: FX_REPLY, error } if error < 0 => {
+                            tracing::warn!("sound filter change: {}", m.library().error_text(error))
+                        }
+                        Event::EndFile(EndReason::Eof) => s.entry_ended = true,
+                        Event::EndFile(EndReason::Error(code)) => {
+                            s.error = Some(t!("Playback failed: {why}", why = m.library().error_text(code)))
+                        }
                         _ => {}
                     }
                     drop(s);
-                    c2.request_repaint();
+                    if repaint {
+                        c2.request_repaint();
+                    }
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -499,7 +690,15 @@ impl Player {
             sheets: Default::default(),
             room: None,
             room_code: String::new(),
-            stats: false,
+            stats: cfg!(debug_assertions) && std::env::var_os("CORRENT_DEV_METERS").is_some(),
+            // CORRENT_DEV_METERS: both pages up.
+            meter_page: audio.fx.meters || (cfg!(debug_assertions) && std::env::var_os("CORRENT_DEV_METERS").is_some()),
+            observing_meters: false,
+            observing_stats: false,
+            // CORRENT_DEV_SOUND: with the sheet up.
+            sound_open: cfg!(debug_assertions) && std::env::var_os("CORRENT_DEV_SOUND").is_some(),
+            #[cfg(debug_assertions)]
+            dev_window: std::env::var("CORRENT_DEV_WINDOW").ok(),
             pip: None,
             no_countdown: None,
             cast,
@@ -509,6 +708,20 @@ impl Player {
             notice: None,
             ctx: ctx.clone(),
             offline: None,
+            audio: Mutex::new(audio.clone()),
+            fx_applied: audio.start_chain(),
+            fx_from: None,
+            fx_set_at: None,
+            last_reported: -1.0,
+            playlist_start: 0,
+            appending: None,
+            appended: Arc::new(std::sync::atomic::AtomicI64::new(-1)),
+            playlist_generation: Arc::default(),
+            fx_saved: Mutex::new(audio.clone()),
+            fx_meters_setting: audio.fx.meters,
+            fx_moved: None,
+            volume_saved: (audio.volume as f64, audio.muted),
+            volume_moved: None,
         };
         p.load_current();
         Ok(p)
@@ -520,8 +733,14 @@ impl Player {
 
     fn load_current(&mut self) {
         let Some(e) = self.current().cloned() else { return };
+        self.playlist_start = self.index;
+        self.appending = None;
+        self.appended.store(-1, Ordering::Relaxed);
+        self.playlist_generation.fetch_add(1, Ordering::Relaxed);
         {
             let mut s = crate::util::lock(&self.status);
+            s.playlist_pos = -1;
+            s.entry_ended = false;
             s.tracks.clear();
             s.ext_subs.clear();
             s.loaded = false;
@@ -531,8 +750,12 @@ impl Player {
         }
         if let Some(url) = &e.stream {
             let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
-            let args = self.mpv.loadfile_args(url, &title);
-            let _ = self.mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            let (mpv, url) = (self.mpv.clone(), url.clone());
+            // `loadfile_args` asks mpv the first time, which isn't for the UI thread.
+            self.rt.spawn_blocking(move || {
+                let args = mpv.loadfile_args(&url, &title);
+                let _ = mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            });
             return;
         }
         if let Some(path) = &e.local {
@@ -543,8 +766,11 @@ impl Player {
             self.sheets.clear();
             let start = format!("start={}", e.resume_ms as f64 / 1000.0);
             let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
-            let args = self.mpv.loadfile_args(&path.to_string_lossy(), &format!("{start},{title}"));
-            let _ = self.mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            let (mpv, path) = (self.mpv.clone(), path.to_string_lossy().into_owned());
+            self.rt.spawn_blocking(move || {
+                let args = mpv.loadfile_args(&path, &format!("{start},{title}"));
+                let _ = mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            });
             {
                 let mut s = crate::util::lock(&self.status);
                 s.pos = e.resume_ms as f64 / 1000.0;
@@ -596,13 +822,17 @@ impl Player {
                     for s in info.subtitles.iter().filter_map(|s| s.url.as_ref().map(|u| (u, s))) {
                         let url = client.url(s.0);
                         crate::util::lock(&status).ext_subs.push((url.clone(), s.1.index));
-                        let _ = mpv.command(&[
-                            "sub-add",
-                            &url,
-                            if e.subtitle_track == Some(s.1.index) { "select" } else { "auto" },
-                            s.1.title.as_deref().unwrap_or(""),
-                            s.1.lang.as_deref().unwrap_or(""),
-                        ]);
+                        // mpv opens the URL during `sub-add`: don't hold a runtime worker for it.
+                        let _ = mpv.command_async(
+                            0,
+                            &[
+                                "sub-add",
+                                &url,
+                                if e.subtitle_track == Some(s.1.index) { "select" } else { "auto" },
+                                s.1.title.as_deref().unwrap_or(""),
+                                s.1.lang.as_deref().unwrap_or(""),
+                            ],
+                        );
                     }
                 }
                 Err(e) => tracing::warn!("playback: {e}"),
@@ -662,10 +892,115 @@ impl Player {
         let _ = self.mpv.command_async(0, args);
     }
 
-    /// New sound settings while playing.
+    /// New sound settings while playing: only what changed, as a device option re-creates the
+    /// audio output (an audible dropout). The filters follow on the next frame (`sync_fx`).
     pub fn apply_audio(&self, audio: &corrent_core::config::Playback) {
-        for (k, v) in audio.mpv_options() {
+        *crate::util::lock(&self.fx_saved) = audio.clone();
+        let mut current = crate::util::lock(&self.audio);
+        for (k, v) in audio.changed_options(&current) {
             self.cmd(&["set", k, &v]);
+        }
+        *current = audio.clone();
+        self.ctx.request_repaint();
+    }
+
+    /// Brings mpv's filters to what the settings say, at most once a frame, so that a dragged
+    /// slider sends one command per value it passes: a value through `af-command`, and `af` is set
+    /// only for a change of structure. Nothing here waits for mpv. Does nothing at all when nothing
+    /// changed, or runs when everything is off.
+    fn sync_fx(&mut self) {
+        let (mut fx, passthrough) = crate::util::with_lock(&self.audio, |a| (a.fx.clone(), a.passthrough));
+        if fx.meters != self.fx_meters_setting {
+            self.fx_meters_setting = fx.meters;
+            self.meter_page = fx.meters;
+        }
+        let source = crate::util::with_lock(&self.status, |s| s.source.clone());
+        // The filters follow the page, and wait for the source: an output opened by the source's
+        // own format keeps it when they are added.
+        fx.meters = self.meter_page && source.channels.is_some();
+        self.observe_pages();
+        let inputs = FxInputs { fx, passthrough, source, caps: super::sound::caps() };
+        if self.fx_from.as_ref() == Some(&inputs) {
+            return;
+        }
+        let want = if inputs.passthrough {
+            Vec::new()
+        } else {
+            corrent_core::audio_fx::chain(&inputs.fx, inputs.caps, &inputs.source)
+        };
+        let plan = corrent_core::audio_fx::plan(&self.fx_applied, &want, inputs.caps.target);
+        if let Some(af) = &plan.set_af {
+            // A structure change restarts the filters; never more than a few times a second
+            // (without `af-command` targets, every value is one).
+            let wait = Duration::from_millis(150).saturating_sub(self.fx_set_at.map_or(Duration::MAX, |t| t.elapsed()));
+            if !wait.is_zero() {
+                self.ctx.request_repaint_after(wait);
+                return;
+            }
+            self.fx_set_at = Some(Instant::now());
+            let _ = self.mpv.command_async(FX_REPLY, &["set", "af", af]);
+        }
+        for [label, option, value, target] in &plan.commands {
+            let _ = self.mpv.command_async(FX_REPLY, &["af-command", label, option, value, target]);
+        }
+        let meters_on = self.fx_applied_meters(&plan.applied);
+        crate::util::with_lock(&self.status, |s| {
+            if meters_on && !s.meters_on {
+                s.meters = Default::default();
+            }
+            s.meters_on = meters_on;
+        });
+        self.fx_applied = plan.applied;
+        self.fx_from = Some(inputs);
+    }
+
+    fn fx_applied_meters(&self, stages: &[corrent_core::audio_fx::Stage]) -> bool {
+        stages.iter().any(|s| s.label == "out")
+    }
+
+    /// Asks for what the pages show, the first time one is up, and tells the events thread which
+    /// are up. Properties stay observed afterwards, but it only repaints for the pages that show.
+    fn observe_pages(&mut self) {
+        let (meter_page, stats) = (self.meter_page, self.stats);
+        crate::util::with_lock(&self.status, |s| {
+            s.meter_page = meter_page;
+            s.stats_page = stats;
+        });
+        if meter_page && !self.observing_meters {
+            self.observing_meters = true;
+            for (i, p) in
+                ["af-metadata/in", "af-metadata/out", "audio-out-params", "af", "current-ao"].iter().enumerate()
+            {
+                let _ = self.mpv.observe(100 + i as u64, p);
+            }
+        }
+        if stats && !self.observing_stats {
+            self.observing_stats = true;
+            for (i, p) in [
+                "video-params/pixelformat",
+                "video-params/primaries",
+                "video-params/gamma",
+                "video-params/sig-peak",
+                "container-fps",
+                "estimated-display-fps",
+                "vsync-jitter",
+                "decoder-frame-drop-count",
+                "vo-delayed-frame-count",
+                "avsync",
+                "demuxer-cache-state",
+                "video-bitrate",
+                "audio-bitrate",
+                "audio-out-params",
+                "current-ao",
+                "af",
+                "mpv-version",
+                "ffmpeg-version",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let _ = self.mpv.observe(200 + i as u64, p);
+            }
         }
     }
 
@@ -717,7 +1052,20 @@ impl Player {
         if self.index + 1 < self.queue.len() {
             self.report(true);
             self.index += 1;
-            self.load_current();
+            // Already in mpv's playlist: let it move on.
+            if self.appended.load(Ordering::Relaxed) == self.index as i64 {
+                self.appending = None;
+                self.cmd(&["playlist-next"]);
+                let resume = crate::util::with_lock(&self.status, |s| {
+                    s.pos = 0.0;
+                    s.ended = false;
+                    s.entry_ended = false;
+                    s.pos
+                });
+                self.last_reported = resume;
+            } else {
+                self.load_current();
+            }
             true
         } else {
             false
@@ -757,13 +1105,24 @@ impl Player {
             }
         });
         self.last_report = Instant::now();
+        self.last_reported = pos;
     }
 
     /// Per-frame housekeeping: progress reports and advancing the queue at the end.
     pub fn tick(&mut self) {
+        self.save_volume(false);
+        self.save_fx(false);
+        self.sync_fx();
         if self.last_report.elapsed() > Duration::from_secs(10) {
-            self.report(false);
+            // A film left paused overnight has nothing new to say every 10 s.
+            let (pos, paused) = crate::util::with_lock(&self.status, |s| (s.pos, s.paused));
+            if paused && pos == self.last_reported {
+                self.last_report = Instant::now();
+            } else {
+                self.report(false);
+            }
         }
+        self.gapless_tick();
         let ended = crate::util::with_lock(&self.status, |s| s.ended);
         if ended {
             self.report(true);
@@ -771,10 +1130,151 @@ impl Player {
                 let mut s = crate::util::lock(&self.status);
                 s.ended = false;
             }
-            // "Cancel" on the countdown: stay at the end.
-            if self.no_countdown != self.current().map(|e| e.item_id) || self.audio_only {
-                self.next();
+            // "Cancel" on the countdown: stay at the end. So does the end of the queue, paused.
+            let on = self.no_countdown != self.current().map(|e| e.item_id) || self.audio_only;
+            if !(on && self.next()) {
+                self.cmd(&["set", "pause", "yes"]);
             }
+        }
+    }
+
+    /// The sound sheet over the picture, above the controls at the right; too tall for the window,
+    /// it scrolls. It stays while the picture plays, to hear what the knobs do.
+    fn sound_area(&mut self, ui: &mut Ui, p: &Palette, rect: Rect) {
+        let width = (rect.width() - 24.0).min(320.0);
+        let max_height = (rect.height() - 170.0).max(120.0);
+        let at = pos2(rect.right() - 12.0, rect.bottom() - 110.0);
+        let mut close = false;
+        egui::Area::new(ui.id().with("sound-sheet"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(t!("Sound")).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            close = ui
+                                .add(egui::Button::new(egui_phosphor::regular::X).frame(false))
+                                .on_hover_text(t!("Close"))
+                                .clicked();
+                        });
+                    });
+                    egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).show(ui, |ui| {
+                        self.sound_sheet(ui, p);
+                    });
+                });
+            });
+        if close {
+            self.sound_open = false;
+        }
+    }
+
+    /// The sound sheet's contents, for the player.
+    fn sound_sheet(&mut self, ui: &mut Ui, p: &Palette) {
+        let mut pb = crate::util::with_lock(&self.audio, |a| a.clone());
+        let before = pb.clone();
+        if super::sound::sheet(ui, p, &mut pb) {
+            // A profile may have changed the output: the one thing that re-creates it.
+            for (k, v) in pb.changed_options(&before) {
+                self.cmd(&["set", k, &v]);
+            }
+            crate::util::with_lock(&self.audio, |a| *a = pb);
+            // `sync_fx` runs next frame, and a released slider may not ask for one.
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// Albums play through mpv's own playlist, which is what makes them gapless: when an entry has
+    /// loaded, the next one is resolved and appended (`prefetch-playlist` opens it ahead of time),
+    /// and mpv moves on by itself. Only for music: a film's next episode has its subtitles, its
+    /// countdown with a Cancel, and a start position, which all belong to one file at a time.
+    fn gapless_tick(&mut self) {
+        let (pos, loaded, entry_ended) =
+            crate::util::with_lock(&self.status, |s| (s.playlist_pos, s.loaded, s.entry_ended));
+        // mpv moved on by itself: the one before was played to its end if it said so.
+        let playing = usize::try_from(pos).ok().map(|p| self.playlist_start + p);
+        if loaded && let Some(playing) = playing.filter(|p| *p > self.index && *p < self.queue.len()) {
+            crate::util::with_lock(&self.status, |s| s.ended = entry_ended);
+            self.report(true);
+            crate::util::with_lock(&self.status, |s| {
+                s.ended = false;
+                s.entry_ended = false;
+            });
+            self.index = playing;
+            self.appending = None;
+        }
+        let gapless = self.audio_only && crate::util::with_lock(&self.audio, |a| a.gapless);
+        let next = self.index + 1;
+        if !gapless || !loaded || self.appending == Some(next) || self.appended.load(Ordering::Relaxed) >= next as i64 {
+            return;
+        }
+        let Some(e) = self.queue.get(next).filter(|e| e.stream.is_none()).cloned() else { return };
+        self.appending = Some(next);
+        let (client, mpv, appended, generation) =
+            (self.client.clone(), self.mpv.clone(), self.appended.clone(), self.playlist_generation.clone());
+        let at = generation.load(Ordering::Relaxed);
+        self.rt.spawn(async move {
+            let url = match &e.local {
+                Some(path) => path.to_string_lossy().into_owned(),
+                None => {
+                    let info: Result<corrent_proto::library::PlaybackInfo, String> = client
+                        .send(
+                            reqwest::Method::POST,
+                            &format!("/api/v1/playback/{}", e.item_id),
+                            &serde_json::json!({ "profile": "native" }),
+                        )
+                        .await;
+                    match info {
+                        Ok(info) => client.url(&info.url),
+                        // At its end the queue falls back to loading the next one the usual way.
+                        Err(e) => return tracing::debug!("next track: {e}"),
+                    }
+                }
+            };
+            if generation.load(Ordering::Relaxed) != at {
+                return;
+            }
+            let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
+            let args = mpv.loadfile_mode_args(&url, "append", &title);
+            let _ = mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            appended.store(next as i64, Ordering::Relaxed);
+        });
+    }
+
+    /// Hands changed effects over to be saved, once they have rested for 2 s (or now). The settings
+    /// window's own changes come back the other way, and need no saving.
+    fn save_fx(&mut self, now: bool) {
+        let current = crate::util::with_lock(&self.audio, |a| a.clone());
+        if current == *crate::util::lock(&self.fx_saved) {
+            self.fx_moved = None;
+            return;
+        }
+        let moved = *self.fx_moved.get_or_insert_with(Instant::now);
+        if now || moved.elapsed() >= Duration::from_secs(2) {
+            *crate::util::lock(&self.fx_saved) = current.clone();
+            self.fx_moved = None;
+            super::sound::post_sound(current);
+        } else {
+            self.ctx.request_repaint_after(Duration::from_secs(2));
+        }
+    }
+
+    /// Hands a changed volume over to be saved, once it has rested for 2 s (or now).
+    fn save_volume(&mut self, now: bool) {
+        let current = crate::util::with_lock(&self.status, |s| (s.volume, s.muted));
+        if current == self.volume_saved {
+            self.volume_moved = None;
+            return;
+        }
+        let moved = *self.volume_moved.get_or_insert_with(Instant::now);
+        if now || moved.elapsed() >= Duration::from_secs(2) {
+            self.volume_saved = current;
+            self.volume_moved = None;
+            super::sound::post_volume(current.0 as f32, current.1);
+        } else {
+            self.ctx.request_repaint_after(Duration::from_secs(2));
         }
     }
 
@@ -797,6 +1297,15 @@ impl Player {
     pub fn show(&mut self, ui: &mut Ui, p: &Palette) -> PlayerAction {
         let mut action = PlayerAction::None;
         let ctx = ui.ctx().clone();
+        #[cfg(debug_assertions)]
+        if let Some(w) = self.dev_window.take() {
+            match w.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))) {
+                Some((a, b)) => ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(a, b))),
+                None => self.toggle_pip(&ctx),
+            }
+        }
+        // Drawing a popup closes it on Escape, so this has to be asked before the controls are drawn.
+        let popup_open = egui::Popup::is_any_open(&ctx);
         // Space plays and pauses. Taken before the controls are drawn: a focused button would
         // also take it as a click (and undo the toggle). Not while typing (the room code).
         if !ctx.text_edit_focused() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space)) {
@@ -872,7 +1381,10 @@ impl Player {
         }
         let (pos, dur, paused) = self.position();
         self.thumb_tick();
-        let show = paused || Instant::now() < self.controls_until;
+        // An open popup or the sound sheet keep them up: hiding the controls would close a popup
+        // under someone reading it.
+        let show = paused || Instant::now() < self.controls_until || popup_open || self.sound_open;
+        crate::util::with_lock(&self.status, |s| s.controls_visible = show);
         let k = crate::ui::motion::toggle(&ctx, ui.id().with("controls"), show, crate::ui::motion::PANEL);
         if !show {
             ctx.request_repaint_after(Duration::from_millis(500));
@@ -900,16 +1412,24 @@ impl Player {
         }
         action = self.skip_button(ui, p, rect, pos, dur, k).or(action);
         self.countdown(ui, p, rect, pos, dur);
-        if self.stats {
-            self.stats_overlay(ui, rect);
+        if self.sound_open && self.pip.is_none() {
+            self.sound_area(ui, p, rect);
         }
-        self.keys(&ctx, &mut action);
+        let mut below = rect.top() + if self.pip.is_some() { 40.0 } else { 90.0 };
+        if self.stats {
+            below = self.stats_overlay(ui, rect, below) + 8.0;
+        }
+        if self.meter_page {
+            self.meters_overlay(ui, rect, below);
+        }
+        self.keys(&ctx, &mut action, popup_open);
         self.extra_keys(&ctx);
         action
     }
 
     /// mpv's keys for the less common things: `[` `]` speed (Backspace resets), `z`/`x`
-    /// subtitle delay, `,`/`.` frame step, `s` screenshot, `i` stats, `n`/`p` next/previous.
+    /// subtitle delay, `,`/`.` frame step, `s` screenshot, `i` stats, `I` the Audio page,
+    /// `n`/`p` next/previous.
     fn extra_keys(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
             return;
@@ -936,7 +1456,9 @@ impl Player {
                 "," => self.cmd(&["frame-back-step"]),
                 "." => self.cmd(&["frame-step"]),
                 "s" => self.screenshot(),
-                "i" => self.stats = !self.stats,
+                // The dotted and the dotless one: a Turkish keyboard has both.
+                "i" | "ı" => self.stats = !self.stats,
+                "I" | "İ" => self.meter_page = !self.meter_page,
                 "n" => {
                     self.next();
                 }
@@ -1005,9 +1527,13 @@ impl Player {
         }
     }
 
-    fn keys(&mut self, ctx: &egui::Context, action: &mut PlayerAction) {
-        // T: this frame becomes the thumbnail (not while typing).
-        if !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(egui::Key::T)) && self.can_set_thumbnail() {
+    fn keys(&mut self, ctx: &egui::Context, action: &mut PlayerAction, popup_open: bool) {
+        // Typing the room code: `m` isn't mute, and the arrows move the caret.
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        // T: this frame becomes the thumbnail.
+        if ctx.input(|i| i.key_pressed(egui::Key::T)) && self.can_set_thumbnail() {
             let (pos, _, _) = self.position();
             self.set_thumbnail(pos);
         }
@@ -1040,7 +1566,10 @@ impl Player {
         if f {
             *action = PlayerAction::ToggleFullscreen;
         }
-        if esc {
+        // Escape closes what is on top: a popup, the sound sheet, then fullscreen, then the player.
+        if esc && self.sound_open && !popup_open {
+            self.sound_open = false;
+        } else if esc && !popup_open {
             *action = if self.fullscreen { PlayerAction::ToggleFullscreen } else { PlayerAction::Close };
         }
         if left || right || up || down || m {
@@ -1407,8 +1936,7 @@ impl Player {
             self.toggle_pip(&ctx);
         }
         if icon_button(ui, rect.right_top() + vec2(-24.0, 24.0), pr::X, 18.0, "pip-close", t!("Close")) {
-            let ctx = ui.ctx().clone();
-            self.toggle_pip(&ctx);
+            // `Drop` puts the window back.
             action = PlayerAction::Close;
         }
         let (pp, tip) = if paused { (pr::PLAY, t!("Play")) } else { (pr::PAUSE, t!("Pause")) };
@@ -1449,7 +1977,7 @@ impl Player {
         action
     }
 
-    /// Speed, delays, subtitle size, picture shape, screenshot and stats.
+    /// Speed, delays, subtitle size, picture shape, screenshot, stats and sound.
     fn settings_button(&mut self, ui: &mut Ui, at: egui::Pos2, white: Color32) {
         let r = Rect::from_center_size(at, vec2(30.0, 30.0));
         let resp = ui.interact(r, ui.id().with("psettings"), Sense::click()).on_hover_text(t!("Playback settings"));
@@ -1552,6 +2080,13 @@ impl Player {
                     }
                     ui.checkbox(&mut self.stats, t!("Stats"));
                 });
+                ui.separator();
+                if ui
+                    .selectable_label(self.sound_open, format!("{}  {}", egui_phosphor::regular::SLIDERS, t!("Sound")))
+                    .clicked()
+                {
+                    self.sound_open = !self.sound_open;
+                }
             },
         );
         for c in cmds {
@@ -1563,30 +2098,62 @@ impl Player {
         }
     }
 
-    /// "Stats for nerds": what is playing and how.
-    fn stats_overlay(&self, ui: &mut Ui, rect: Rect) {
-        let s = crate::util::lock(&self.status);
-        let st = &s.stats;
-        let text = format!(
-            "{} {}×{}  {:.2} fps  {}\n{}\n{} {} · {} {:.1} s · {} {}",
-            st.video_codec,
-            st.width,
-            st.height,
-            st.fps,
-            if s.hwdec.is_empty() || s.hwdec == "no" { t!("software decoding").to_string() } else { s.hwdec.clone() },
-            st.audio_codec,
-            t!("Speed"),
-            format_args!("{:.2}×", s.speed),
-            t!("Buffered"),
-            st.cache_secs,
-            t!("Dropped frames"),
-            st.dropped,
-        );
-        let pos = rect.left_top() + vec2(20.0, 90.0);
-        let galley = ui.painter().layout_no_wrap(text, egui::FontId::monospace(12.0), Color32::WHITE);
+    /// "Stats for nerds": what is playing and how. Returns the bottom of the box. In picture in
+    /// picture, the first lines only.
+    fn stats_overlay(&self, ui: &mut Ui, rect: Rect, top: f32) -> f32 {
+        let lines = {
+            let s = crate::util::lock(&self.status);
+            let render = match &self.video {
+                Video::Gl(v, _) => {
+                    let size = crate::util::with_lock(v, |g| g.size);
+                    format!("OpenGL {}×{}", size[0], size[1])
+                }
+                Video::Sw { size, .. } => format!("{} {}×{}", t!("software"), size[0], size[1]),
+                Video::None => String::new(),
+            };
+            stats_lines(&s, &render)
+        };
+        let lines = if self.pip.is_some() { lines.get(..3).unwrap_or(&lines) } else { &lines[..] };
+        let pos = pos2(rect.left() + 20.0, top);
+        let galley = ui.painter().layout_no_wrap(lines.join("\n"), egui::FontId::monospace(12.0), Color32::WHITE);
         let bg = Rect::from_min_size(pos - vec2(8.0, 6.0), galley.size() + vec2(16.0, 12.0));
         ui.painter().rect_filled(bg, CornerRadius::same(6), Color32::from_black_alpha(170));
         ui.painter().galley(pos, galley, Color32::WHITE);
+        bg.bottom()
+    }
+
+    /// The Audio page: on the right when it fits next to the A/V page, or below it. Compact when
+    /// the window is small.
+    fn meters_overlay(&self, ui: &mut Ui, rect: Rect, below: f32) {
+        let compact = rect.width() < 640.0 || rect.height() < 420.0;
+        let width = if compact { 230.0 } else { 330.0 };
+        // Beside the A/V page when there is room, and under it when not.
+        let top = if self.stats && rect.width() < 900.0 {
+            below
+        } else {
+            rect.top() + if self.pip.is_some() { 40.0 } else { 90.0 }
+        };
+        let left = if self.stats && rect.width() < 900.0 { rect.left() + 12.0 } else { rect.right() - width - 12.0 };
+        let area = Rect::from_min_max(pos2(left, top), pos2(left + width, rect.bottom() - 8.0));
+        self.paint_meters_into(ui.painter(), area, compact);
+    }
+
+    fn paint_meters_into(&self, painter: &egui::Painter, area: Rect, compact: bool) {
+        let (passthrough, makeup) = crate::util::with_lock(&self.audio, |a| {
+            (a.passthrough, a.fx.night.as_ref().filter(|_| a.fx.enabled).map(|n| n.makeup_db))
+        });
+        let s = crate::util::lock(&self.status);
+        let info = super::sound::MeterInfo {
+            layout: s.source.layout.as_deref().unwrap_or(""),
+            chain: &s.stats.chain,
+            audio_in: &s.stats.audio_in,
+            audio_out: &s.stats.audio_out,
+            ao: &s.stats.current_ao,
+            running: s.meters_on,
+            passthrough,
+            makeup,
+        };
+        super::sound::paint_meters(painter, area, &s.meters, &info, compact);
     }
 
     /// The last seconds of an episode: what comes next, with "Play now" and "Cancel".
@@ -1812,6 +2379,17 @@ impl Player {
             ui.label(
                 egui::RichText::new(format!("{} / {}", fmt_time(pos), fmt_time(dur))).monospace().color(p.text_dim),
             );
+            let sr = ui
+                .add(egui::Button::new(egui::RichText::new(egui_phosphor::regular::SLIDERS).size(16.0)).frame(false))
+                .on_hover_text(t!("Sound"));
+            crate::ui::widgets::popup(
+                egui::Popup::from_toggle_button_response(&sr)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                |ui| {
+                    ui.set_width(300.0);
+                    self.sound_sheet(ui, p);
+                },
+            );
             let lr = ui
                 .add(
                     egui::Button::new(egui::RichText::new(egui_phosphor::regular::MICROPHONE_STAGE).size(16.0))
@@ -1826,6 +2404,17 @@ impl Player {
                 action = PlayerAction::Close;
             }
         });
+        // Music has no picture to put them on: above the bar, at the right.
+        if self.meter_page {
+            let content = ui.ctx().content_rect();
+            let area = Rect::from_min_max(
+                pos2(content.right() - 342.0, content.top() + 120.0),
+                pos2(content.right() - 12.0, ui.min_rect().top() - 8.0),
+            );
+            let layer = egui::LayerId::new(egui::Order::Foreground, ui.id().with("meters"));
+            let painter = ui.ctx().layer_painter(layer);
+            self.paint_meters_into(&painter, area, area.width() < 300.0 || area.height() < 200.0);
+        }
         action
     }
 
@@ -1959,10 +2548,17 @@ impl Player {
 impl Drop for Player {
     fn drop(&mut self) {
         self.report(true);
+        self.save_volume(true);
+        self.save_fx(true);
         // Nothing here may block the UI thread: a stalled network read can hold mpv up.
         let _ = self.mpv.command_async(0, &["stop"]);
         self.stop_events.store(true, Ordering::Relaxed);
         self.mpv.wakeup();
+        // Closed from picture in picture: the window goes back to what it was.
+        if let Some(size) = self.pip.take() {
+            self.ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+            self.ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+        }
         // The last reference (and `mpv_terminate_destroy`) goes to a helper thread once the
         // render context, dropped with `video`, has let go of its own.
         let mpv = self.mpv.clone();
@@ -1971,6 +2567,110 @@ impl Drop for Player {
             drop(mpv);
         });
     }
+}
+
+/// Whether a property's change is worth a frame of the whole app. A status bar's worth of numbers
+/// arrive many times a second; with no page up, they redraw nothing (and a playing album redraws
+/// the app once a second, not at every audio frame).
+fn needs_repaint(name: &str, value: &Node, s: &mut Status) -> bool {
+    match name {
+        "time-pos" => {
+            let second = value.as_f64().unwrap_or(s.pos) as i64;
+            let new = second != s.shown_second;
+            s.shown_second = second;
+            new || s.controls_visible || s.stats_page || s.meter_page
+        }
+        "af-metadata/in" | "af-metadata/out" => s.meter_page,
+        "video-codec"
+        | "video-params/w"
+        | "video-params/h"
+        | "estimated-vf-fps"
+        | "frame-drop-count"
+        | "demuxer-cache-duration"
+        | "audio-codec-name"
+        | "hwdec-current"
+        | "video-params/pixelformat"
+        | "video-params/primaries"
+        | "video-params/gamma"
+        | "video-params/sig-peak"
+        | "container-fps"
+        | "estimated-display-fps"
+        | "vsync-jitter"
+        | "decoder-frame-drop-count"
+        | "vo-delayed-frame-count"
+        | "avsync"
+        | "demuxer-cache-state"
+        | "video-bitrate"
+        | "audio-bitrate"
+        | "mpv-version"
+        | "ffmpeg-version"
+        | "current-ao"
+        | "af"
+        | "audio-out-params" => s.stats_page || s.meter_page,
+        _ => true,
+    }
+}
+
+/// The lines of the A/V page.
+fn stats_lines(s: &Status, render: &str) -> Vec<String> {
+    let st = &s.stats;
+    let or_dash = |v: f64, text: String| if v > 0.0 { text } else { "—".to_string() };
+    let kbps = |v: f64| or_dash(v, format!("{:.0} kb/s", v / 1000.0));
+    let decoding =
+        if s.hwdec.is_empty() || s.hwdec == "no" { t!("software decoding").to_string() } else { s.hwdec.clone() };
+    let mut lines = vec![
+        format!("{} {}×{}  {}", st.video_codec, st.width, st.height, decoding),
+        format!(
+            "{} {} · {} {:.2} · {} {}",
+            t!("Dropped frames"),
+            st.dropped,
+            t!("Decoder drops"),
+            st.decoder_drops,
+            t!("Late frames"),
+            st.vo_delayed,
+        ),
+        format!("{} {:.1} s · {} {:.2}×", t!("Buffered"), st.cache_secs, t!("Speed"), s.speed),
+        format!(
+            "{} {} {} {}",
+            st.pixelformat,
+            st.primaries,
+            st.gamma,
+            or_dash(st.sig_peak, format!("{:.1}", st.sig_peak))
+        ),
+        format!(
+            "{} {} · {} {} · {} {}",
+            t!("Container"),
+            or_dash(st.container_fps, format!("{:.3}", st.container_fps)),
+            t!("Filtered"),
+            or_dash(st.fps, format!("{:.3}", st.fps)),
+            t!("Display"),
+            or_dash(st.display_fps, format!("{:.3}", st.display_fps)),
+        ),
+        format!(
+            "{} {:+.1} ms · {} {}",
+            t!("A/V sync"),
+            st.avsync * 1000.0,
+            t!("Jitter"),
+            or_dash(st.vsync_jitter, format!("{:.3}", st.vsync_jitter)),
+        ),
+        format!(
+            "{} {:.1} MB · {} {}",
+            t!("Cache"),
+            st.cache_bytes as f64 / 1e6,
+            t!("Input"),
+            or_dash(st.input_rate, format!("{:.1} MB/s", st.input_rate / 1e6)),
+        ),
+        format!("{} {} · {} {}", t!("Video"), kbps(st.video_bitrate), t!("Audio"), kbps(st.audio_bitrate)),
+        format!("{} {} → {} ({})", st.audio_codec, st.audio_in, st.audio_out, st.current_ao),
+    ];
+    if !st.chain.is_empty() {
+        lines.push(format!("{} {}", t!("Filters"), st.chain.join(" · ")));
+    }
+    if !render.is_empty() {
+        lines.push(render.to_string());
+    }
+    lines.push(format!("{} · FFmpeg {}", st.mpv_version, st.ffmpeg_version));
+    lines
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2023,6 +2723,38 @@ fn create_target(gl: &glow::Context) -> Result<(glow::Framebuffer, glow::Texture
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With nothing up, what arrives all the time draws nothing.
+    #[test]
+    fn numbers_nobody_sees_draw_nothing() {
+        let mut s = Status::default();
+        let t = |v: f64| Node::Double(v);
+        for name in ["frame-drop-count", "estimated-vf-fps", "demuxer-cache-duration", "avsync", "video-bitrate"] {
+            assert!(!needs_repaint(name, &t(1.0), &mut s), "{name}");
+        }
+        assert!(!needs_repaint("af-metadata/out", &Node::None, &mut s));
+        // The time: when the second changes, and not between.
+        assert!(needs_repaint("time-pos", &t(1.0), &mut s));
+        s.pos = 1.0;
+        for v in [1.02, 1.5, 1.98] {
+            assert!(!needs_repaint("time-pos", &t(v), &mut s), "{v}");
+        }
+        assert!(needs_repaint("time-pos", &t(2.0), &mut s));
+        // Anything else on screen is drawn.
+        assert!(needs_repaint("pause", &Node::Flag(true), &mut s));
+        assert!(needs_repaint("volume", &t(40.0), &mut s));
+        // A page or the controls up: all of it.
+        s.controls_visible = true;
+        assert!(needs_repaint("time-pos", &t(2.5), &mut s));
+        s.controls_visible = false;
+        s.meter_page = true;
+        assert!(needs_repaint("af-metadata/out", &Node::None, &mut s));
+        assert!(needs_repaint("time-pos", &t(2.6), &mut s));
+        s.meter_page = false;
+        s.stats_page = true;
+        assert!(needs_repaint("frame-drop-count", &t(1.0), &mut s));
+        assert!(!needs_repaint("af-metadata/out", &Node::None, &mut s));
+    }
 
     #[test]
     fn trickplay_index() {

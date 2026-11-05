@@ -4,6 +4,8 @@
 //! machines without mpv development files and still starts when mpv is missing: playback,
 //! probing and transcoding then report [`Error::NotAvailable`] instead of the process failing.
 
+#[cfg(test)]
+mod audio_tests;
 pub mod encode;
 mod ffi;
 pub mod probe;
@@ -182,7 +184,8 @@ impl Library {
         format!("{}.{}", self.version >> 16, self.version & 0xffff)
     }
 
-    pub(crate) fn error_text(&self, code: c_int) -> String {
+    /// mpv's text for an error code.
+    pub fn error_text(&self, code: c_int) -> String {
         // SAFETY: mpv_error_string returns a static string for any code.
         unsafe { cstr_to_string((self.api.error_string)(code)) }
     }
@@ -482,6 +485,11 @@ impl Mpv {
     /// mpv 0.38 added a playlist index before the options; older versions (Ubuntu 24.04 ships
     /// 0.37) refuse that form, so this asks mpv's `command-list` once which one it takes.
     pub fn loadfile_args(&self, url: &str, options: &str) -> Vec<String> {
+        self.loadfile_mode_args(url, "replace", options)
+    }
+
+    /// [`Mpv::loadfile_args`] with a mode (`replace`, `append`…).
+    pub fn loadfile_mode_args(&self, url: &str, mode: &str, options: &str) -> Vec<String> {
         let index = *self.loadfile_index.get_or_init(|| {
             self.get("command-list").is_ok_and(|list| {
                 list.as_array().iter().any(|c| {
@@ -492,7 +500,7 @@ impl Mpv {
                 })
             })
         });
-        let mut args = vec!["loadfile".to_string(), url.to_string(), "replace".to_string()];
+        let mut args = vec!["loadfile".to_string(), url.to_string(), mode.to_string()];
         if index {
             args.push("-1".into());
         }

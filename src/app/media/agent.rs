@@ -85,7 +85,8 @@ impl CorrentApp {
         if portable {
             args.insert(0, "--portable".into());
         }
-        let claude_code = format!("claude mcp add corrent -- \"{exe}\" {}", args.join(" "));
+        // A command line, not a sentence.
+        let claude_code = ["claude mcp add corrent --", &format!("\"{exe}\""), &args.join(" ")].join(" ");
         let desktop = serde_json::to_string_pretty(&serde_json::json!({
             "mcpServers": { "corrent": { "command": exe, "args": args } }
         }))

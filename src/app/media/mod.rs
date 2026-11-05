@@ -18,6 +18,7 @@ pub mod player;
 pub mod profiles;
 pub mod providers;
 mod refresh;
+pub mod sound;
 pub mod subtitles;
 pub mod syncplay;
 
@@ -333,6 +334,31 @@ impl CorrentApp {
             };
             self.play_queue(vec![e], false);
         }
+        // CORRENT_DEV_QUEUE=<id>,<id>…: music, in the mini player.
+        if let Ok(ids) = std::env::var("CORRENT_DEV_QUEUE")
+            && self.media.player.is_none()
+            && self.media.client.is_some()
+            && !self.media_dev_played
+        {
+            self.media_dev_played = true;
+            self.main_view = super::feeds::MainView::Media;
+            let queue = ids
+                .split(',')
+                .filter_map(|id| id.trim().parse().ok())
+                .map(|item_id: i64| QueueEntry {
+                    item_id,
+                    title: format!("#{item_id}"),
+                    subtitle: String::new(),
+                    resume_ms: 0,
+                    poster: None,
+                    local: None,
+                    stream: None,
+                    audio_track: None,
+                    subtitle_track: None,
+                })
+                .collect();
+            self.play_queue(queue, true);
+        }
         if let Ok(spec) = std::env::var("CORRENT_DEV_LIBRARY")
             && !self.media_dev_library_sent
             && let Some(c) = self.media.client.clone()
@@ -495,6 +521,21 @@ impl CorrentApp {
         self.media.images.tick(ctx);
         if let Some(pl) = &mut self.media.player {
             pl.tick();
+        }
+        // Also after the player is gone: it hands over what it had left when closed.
+        if let Some((volume, muted)) = sound::take_volume() {
+            self.settings.playback.volume = volume;
+            self.settings.playback.muted = muted;
+            self.save_settings();
+        }
+        if let Some(sound) = sound::take_sound() {
+            let (volume, muted) = (self.settings.playback.volume, self.settings.playback.muted);
+            self.settings.playback = corrent_core::config::Playback { volume, muted, ..sound };
+            // A settings window open meanwhile must not put the old ones back.
+            if let Some(draft) = &mut self.settings_draft {
+                draft.settings.playback = self.settings.playback.clone();
+            }
+            self.save_settings();
         }
         // Lists go stale as scans and metadata land: refresh every 30 s while visible.
         if self.main_view == super::feeds::MainView::Media
@@ -1513,7 +1554,7 @@ impl CorrentApp {
                 (None, None) => {}
             }
             if let Some(rt) = site("rotten_tomatoes") {
-                facts.push(format!("Rotten Tomatoes {rt}"));
+                facts.push(t!("Rotten Tomatoes {rt}", rt = rt));
             }
             if let Some(mc) = site("metacritic") {
                 facts.push(format!("Metacritic {mc}"));

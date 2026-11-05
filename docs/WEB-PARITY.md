@@ -111,3 +111,17 @@ and desktop, dark and light), next to desktop shots from the `CORRENT_DEV_*` hoo
 No file-system actions (Open, Open folder), no offline downloads, no TV
 mode, no mpv-only player features; long-press sheets on phones; Play ▸ for torrents streams from
 the server rather than an external player.
+
+## Sound processing, desktop side (quality round, stream C)
+
+The sound sheet (Player → Playback settings → Sound; the mini player's sliders button; Settings →
+Playback) and the Audio page (`Shift+I`) have a web counterpart with the same `AudioFx` shape and
+meaning (`crates/corrent-core/src/audio_fx.rs`). What only the desktop has, and why:
+
+- Output device, speakers, exclusive mode and passthrough, and with them output profiles (saved
+  sounds exist on both): a browser chooses its own output and can't pass compressed audio through.
+- Dialogue's centre channel lift on 5.1: the web graph plays what the browser hands it.
+- Loudness Live is FFmpeg's `dynaudnorm` here, a worklet AGC on the web; they aim at the same thing
+  but don't sound the same.
+- Metering runs FFmpeg's `ebur128`/`astats`/`aphasemeter` here. There is no spectrum on the desktop,
+  because no filter reports its bands as numbers.
