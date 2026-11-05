@@ -205,6 +205,8 @@ file is gone from disk has `missing: true`; the field is left out otherwise.
 | Method | Path |
 |---|---|
 | GET | `/api/v1/cast/devices` |
+| GET | `/api/v1/cast/active` |
+| GET PUT | `/api/v1/cast/config` |
 | GET | `/api/v1/cast/{device}` |
 | POST | `/api/v1/cast/{device}/play` |
 | POST | `/api/v1/cast/{device}/command` |

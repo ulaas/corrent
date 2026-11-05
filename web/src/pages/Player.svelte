@@ -8,7 +8,7 @@
   import { api, errorText } from '../lib/api';
   import { back, go, route, setQuery } from '../lib/router.svelte';
   import { SyncRoom } from '../lib/syncplay.svelte';
-  import { Cast, castDevices } from '../lib/cast.svelte';
+  import { Cast, castDevices, castErrorText, castsActive } from '../lib/cast.svelte';
   import { toast } from '../lib/toast.svelte';
   import { attachSource, reportProgress, resolveSource, resumeAt, stopSession, type PlaybackInfo, type PlaybackOptions } from '../lib/player.svelte';
   import { music } from '../lib/player.svelte';
@@ -194,7 +194,8 @@
         pendingSeek = null;
         if (from > 0) el.currentTime = from;
         el.playbackRate = rate;
-        void el.play().catch(() => (playing = false));
+        // The picture is on a device: this one waits.
+        if (!cast) void el.play().catch(() => (playing = false));
       };
       if (el.readyState >= 1) seekTo();
       else {
@@ -204,6 +205,7 @@
       void loadTrickplay();
       setMediaSession();
       void findNext();
+      void followCast(itemId);
     } catch (e) {
       if (stale()) return;
       error = errorText(e);
@@ -371,9 +373,20 @@
     countdown = 0;
   }
 
-  function playNext() {
+  async function playNext() {
     clearCountdown();
-    if (nextUp) go(`/play/${nextUp.id}?from=0`, { replace: true });
+    if (!nextUp) return;
+    const next = nextUp;
+    if (cast) {
+      castItem = next.id;
+      try {
+        await cast.start(next.id, 0);
+      } catch (e) {
+        toast(castErrorText(e), 'error');
+        return;
+      }
+    }
+    go(`/play/${next.id}?from=0`, { replace: true });
   }
 
   // Watching together (?room=<id>).
@@ -441,6 +454,23 @@
   let cast = $state<Cast | null>(null);
   let castList = $state<CastDevice[] | null>(null);
   let castLoading = $state(false);
+  /** The item the cast is meant to be playing. */
+  let castItem = $state<number | null>(null);
+  /** A cast of this item already running (started earlier, or elsewhere): follow it. */
+  async function followCast(itemId: number) {
+    if (cast) return;
+    try {
+      const s = (await castsActive()).find((a) => a.item_id === itemId);
+      if (!s || cast || itemId !== id) return;
+      video?.pause();
+      const c = new Cast(s.device);
+      c.attach(s);
+      castItem = itemId;
+      cast = c;
+    } catch {
+      /* nothing to follow, as far as we can tell */
+    }
+  }
   async function openCast(refresh = false) {
     menu = 'cast';
     castLoading = true;
@@ -448,7 +478,7 @@
       castList = await castDevices(refresh);
     } catch (e) {
       castList = [];
-      toast(errorText(e), 'error');
+      toast(castErrorText(e), 'error');
     } finally {
       castLoading = false;
     }
@@ -458,23 +488,33 @@
     video?.pause();
     cast?.close();
     const c = new Cast(d);
+    castItem = id;
     cast = c;
     try {
-      await c.start(id, time * 1000, opts.audio_track);
+      await c.start(id, time * 1000, opts.audio_track, subtitle);
     } catch (e) {
-      toast(errorText(e), 'error');
+      toast(castErrorText(e), 'error');
       c.close();
       cast = null;
     }
   }
-  function stopCast() {
-    const c = cast;
-    if (!c) return;
+  /** The device gets the same choice of tracks, carrying on from where it is. */
+  function recast(audio: number | null | undefined, sub: number | null) {
+    if (!cast) return;
+    void cast.start(id, cast.position() * 1000, audio, sub).catch((e) => toast(castErrorText(e), 'error'));
+  }
+  /** Back to this computer, at the device's position. */
+  function leaveCast(c: Cast) {
     const at = c.position();
-    void c.send('stop').catch(() => {});
     c.close();
     cast = null;
     if (video && at > 0) video.currentTime = at;
+  }
+  function stopCast() {
+    const c = cast;
+    if (!c) return;
+    void c.send('stop').catch(() => {});
+    leaveCast(c);
   }
   $effect(() => {
     const s = cast?.status;
@@ -483,11 +523,24 @@
     if (s.duration_ms) duration = s.duration_ms / 1000;
     playing = s.state === 'playing' || s.state === 'buffering';
   });
+  // How a cast ends: on to the next item, or back here when it stopped or was replaced.
+  $effect(() => {
+    const c = cast;
+    const s = c?.status;
+    if (!c || !s) return;
+    const ours = s.item_id === castItem;
+    if (s.state === 'idle' && s.finished && ours) {
+      if (nextUp) void playNext();
+    } else if (s.state === 'idle' || (!ours && s.state !== 'error' && s.item_id != null)) {
+      toast(t('Casting to {name} ended', { name: c.device.name }), 'info');
+      leaveCast(c);
+    }
+  });
   onDestroy(() => cast?.close());
 
   function toggle() {
     if (cast) {
-      void cast.send(playing ? 'pause' : 'play').catch((e) => toast(errorText(e), 'error'));
+      void cast.send(playing ? 'pause' : 'play').catch((e) => toast(castErrorText(e), 'error'));
       return;
     }
     if (!video) return;
@@ -498,7 +551,7 @@
   function seek(s: number) {
     if (cast) {
       time = s;
-      void cast.send('seek', s).catch((e) => toast(errorText(e), 'error'));
+      void cast.send('seek', s).catch((e) => toast(castErrorText(e), 'error'));
       return;
     }
     if (video) video.currentTime = Math.max(0, Math.min(s, duration || s));
@@ -510,13 +563,26 @@
   }
 
   function setVolume(v: number) {
+    if (cast) {
+      cast.setVolume(v);
+      if (cast.status?.muted) void cast.send('mute', false).catch(() => {});
+      return;
+    }
     prefs.volume = Math.max(0, Math.min(1, v));
     muted = false;
   }
 
   function toggleMute() {
+    if (cast) {
+      void cast.send('mute', !cast.status?.muted).catch((e) => toast(castErrorText(e), 'error'));
+      return;
+    }
     muted = !muted;
   }
+
+  // The device's while casting.
+  const shownVolume = $derived(cast?.volume() ?? prefs.volume);
+  const shownMuted = $derived(cast ? !!cast.status?.muted : muted);
 
   function setRate(r: number) {
     rate = r;
@@ -562,6 +628,10 @@
     menu = '';
     subtitle = idx;
     rememberTrack({ subtitle_track: idx ?? 0 });
+    if (cast) {
+      recast(opts.audio_track, idx);
+      return;
+    }
     const track = idx == null ? null : info?.subtitles.find((s) => s.index === idx);
     if (idx != null && track && !track.url) {
       // Image subtitles: have the server burn them into the picture.
@@ -587,6 +657,10 @@
     menu = '';
     rememberTrack({ audio_track: idx });
     opts = { ...opts, audio_track: idx };
+    if (cast) {
+      recast(idx, subtitle);
+      return;
+    }
     void start(item!.id, opts, time);
   }
 
@@ -774,8 +848,8 @@
       toggle();
     } else if (k === 'arrowleft' || k === 'j') skip(k === 'j' ? -10 : -5);
     else if (k === 'arrowright' || k === 'l') skip(k === 'l' ? 10 : 5);
-    else if (k === 'arrowup') setVolume(prefs.volume + 0.05);
-    else if (k === 'arrowdown') setVolume(prefs.volume - 0.05);
+    else if (k === 'arrowup') setVolume(shownVolume + 0.05);
+    else if (k === 'arrowdown') setVolume(shownVolume - 0.05);
     else if (k === 'f') void toggleFullscreen();
     else if (k === 'm') toggleMute();
     else if (k === 'i') {
@@ -907,15 +981,16 @@
     <div class="castbox" transition:fade={{ duration: ms(150) }}>
       <Icon name="screencast" size={36} />
       <div class="stext">
-        <strong>{t('Playing on {name}', { name: cast.device.name })}</strong>
+        <strong>{cast.status?.state === 'error' ? t('Couldn’t play on {name}', { name: cast.device.name }) : t('Playing on {name}', { name: cast.device.name })}</strong>
         <span class="small muted">
-          {#if cast.status?.state === 'error'}{!cast.status.error || cast.status.error === 'cant_play' ? t('The device couldn’t play this.') : cast.status.error}
+          {#if cast.status?.state === 'error'}{!cast.status.error || cast.status.error === 'cant_play' ? t('The device couldn’t play this.') : cast.status.error === 'cant_reach' ? t('The device couldn’t reach this computer. Allow Corrent through the firewall for private networks, then try again.') : cast.status.error}
           {:else if cast.status?.state === 'connecting' || cast.status?.state === 'loading'}{t('Connecting…')}
           {:else if cast.status?.state === 'idle'}{t('Finished')}
           {/if}
         </span>
       </div>
-      <button class="btn sm" onclick={stopCast}><Icon name="stop" size={14} />{t('Stop casting')}</button>
+      {#if cast.status?.state === 'error'}<button class="btn sm" onclick={() => recast(opts.audio_track, subtitle)}><Icon name="arrows-clockwise" size={14} />{t('Try again')}</button>{/if}
+      <button class="btn sm" onclick={stopCast}><Icon name="stop" size={14} />{cast.status?.state === 'error' ? t('Back to this computer') : t('Stop casting')}</button>
     </div>
   {:else if !playing && !waiting && !error && countdown === 0}
     <button class="bigplay" aria-label={t('Play')} onclick={toggle} transition:fade={{ duration: ms(150) }}><Icon name="play-fill" size={40} /></button>
@@ -937,10 +1012,10 @@
         <button class="btn ghost icon" aria-label={t('Next episode')} title={t('Next episode')} onclick={playNext}><Icon name="skip-forward-fill" size={20} /></button>
       {/if}
       <div class="vol">
-        <button class="btn ghost icon" aria-label={muted ? t('Unmute') : t('Mute')} title={muted ? t('Unmute') : t('Mute')} onclick={toggleMute}>
-          <Icon name={muted || prefs.volume === 0 ? 'speaker-x' : prefs.volume < 0.5 ? 'speaker-low' : 'speaker-high'} size={20} />
+        <button class="btn ghost icon" aria-label={shownMuted ? t('Unmute') : t('Mute')} title={shownMuted ? t('Unmute') : t('Mute')} onclick={toggleMute}>
+          <Icon name={shownMuted || shownVolume === 0 ? 'speaker-x' : shownVolume < 0.5 ? 'speaker-low' : 'speaker-high'} size={20} />
         </button>
-        <input class="range" type="range" min="0" max="1" step="0.01" value={muted ? 0 : prefs.volume} style:--fill="{(muted ? 0 : prefs.volume) * 100}%" aria-label={t('Volume')} oninput={(e) => setVolume(+e.currentTarget.value)} />
+        <input class="range" type="range" min="0" max="1" step="0.01" value={shownMuted ? 0 : shownVolume} style:--fill="{(shownMuted ? 0 : shownVolume) * 100}%" aria-label={t('Volume')} oninput={(e) => setVolume(+e.currentTarget.value)} />
       </div>
       <span class="time num">{clock(time * 1000)} <span class="muted">/ {clock(duration * 1000)}</span></span>
       <span class="spacer"></span>

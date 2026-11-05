@@ -77,6 +77,47 @@ impl MediaClient {
         serde_json::from_slice(&bytes).map_err(|e| e.to_string())
     }
 
+    /// Like `decode`, keeping the server's reason: a code's general text would mislead where the
+    /// same code means several things (casting). Permissions still read as permissions.
+    async fn decode_reason<T: DeserializeOwned>(res: reqwest::Response) -> Result<T, String> {
+        let status = res.status();
+        let bytes = res.bytes().await.map_err(|e| e.to_string())?;
+        if !status.is_success() {
+            return Err(match serde_json::from_slice::<corrent_proto::ApiError>(&bytes) {
+                Ok(e) if e.code == corrent_proto::ErrorCode::Forbidden => e.code.text().to_string(),
+                Ok(e) => e.message,
+                Err(_) => status.to_string(),
+            });
+        }
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+    }
+
+    /// `get`, with the server's reason when it fails.
+    pub async fn get_reason<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+        let res = self.http.get(self.url(path)).bearer_auth(&self.token).send().await.map_err(|e| e.to_string())?;
+        Self::decode_reason(res).await
+    }
+
+    /// `send`, with the server's reason when it fails.
+    pub async fn send_reason<T: DeserializeOwned, B: Serialize>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &B,
+    ) -> Result<T, String> {
+        let body = serde_json::to_vec(body).map_err(|e| e.to_string())?;
+        let res = self
+            .http
+            .request(method, self.url(path))
+            .bearer_auth(&self.token)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        Self::decode_reason(res).await
+    }
+
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
         let res = self.http.get(self.url(path)).bearer_auth(&self.token).send().await.map_err(|e| e.to_string())?;
         Self::decode(res).await

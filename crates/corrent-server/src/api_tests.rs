@@ -2479,6 +2479,85 @@ async fn cast_fixture(h: &H, admin: &str, addr: SocketAddr) -> i64 {
     item
 }
 
+/// A text subtitle from a file goes to the device as a track it fetches itself, with CORS.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_subtitle_from_a_file_goes_to_the_device() {
+    if !corrent_mpv::Library::available() {
+        eprintln!("libmpv not found; skipping");
+        return;
+    }
+    let h = harness("cast-subtitle", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let movies = h.dir.join("dl/Movies/Clip (2024)");
+    std::fs::create_dir_all(&movies).unwrap();
+    let job = corrent_mpv::encode::EncodeJob {
+        input: "av://lavfi:testsrc=duration=4:size=160x120:rate=10,format=yuv420p".into(),
+        audio_file: Some("av://lavfi:sine=duration=4".into()),
+        output: movies.join("Clip.2024.mkv").display().to_string(),
+        options: vec![
+            ("of".into(), "matroska".into()),
+            ("ovc".into(), "libx264".into()),
+            ("ovcopts".into(), "preset=ultrafast".into()),
+            ("oac".into(), "aac".into()),
+        ],
+    };
+    corrent_mpv::encode::run(&job, std::time::Duration::from_secs(60), &mut |_| true).unwrap();
+    std::fs::write(movies.join("Clip.2024.en.srt"), "1\n00:00:01,000 --> 00:00:02,000\nHello\n").unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Movies", "kind": "movies", "folders": [h.dir.join("dl/Movies")] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let (item, index) = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if let Some(id) = v["items"][0]["id"].as_i64()
+            && h.st.hls_encoder.lock().unwrap().is_some()
+        {
+            let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
+            let sub = d["files"][0]["streams"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|s| s["kind"] == "subtitle" && s["external"] == true)
+                .and_then(|s| s["index"].as_i64());
+            if let Some(i) = sub {
+                break (id, i);
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "scan finished: {v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let (tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
+    let addr = fake_receiver(tx).await;
+    h.st.casts.inject(crate::cast::Found {
+        device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), model: String::new() },
+        addr,
+    });
+    let (s, v, _) =
+        send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item, "subtitle": index })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let next = async |seen: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
+        tokio::time::timeout(std::time::Duration::from_secs(10), seen.recv()).await.unwrap().unwrap()
+    };
+    assert!(next(&mut seen).await.starts_with("LOAD "));
+    let track = next(&mut seen).await;
+    let url = track.strip_prefix("TRACK ").unwrap();
+    let res = reqwest::get(url).await.unwrap();
+    assert_eq!(res.headers()["access-control-allow-origin"], "*");
+    assert_eq!(res.headers()["content-type"], "text/vtt; charset=utf-8");
+    let body = res.text().await.unwrap();
+    assert!(body.starts_with("WEBVTT") && body.contains("Hello"), "{body}");
+    let forged = url.replace(&format!("/{index}/"), &format!("/{}/", index + 1));
+    assert_eq!(reqwest::get(&forged).await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
+    h.stop().await;
+}
+
 /// The desktop app's server: its API on this computer only, and still able to cast.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_server_in_the_app_casts_with_its_api_on_loopback() {

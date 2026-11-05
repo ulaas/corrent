@@ -262,7 +262,34 @@ is off): the file when the device plays it (MP4/WebM, H.264/VP8/VP9, AAC/MP3/Opu
 go through a transcode. The players then drive the device (play, pause, seek, stop) and show its
 position. API: `GET /api/v1/cast/devices[?refresh=true]`, `POST /cast/{device}/play`
 `{item_id, position_ms}`, `GET /cast/{device}`, `POST /cast/{device}/command`
-`{action: play|pause|seek|volume|stop}`. AirPlay isn't supported.
+`{action: play|pause|seek|volume|mute|stop}`, `GET /cast/active`, `GET/PUT /cast/config`. AirPlay
+isn't supported.
+
+The players' volume and mute drive the device while casting. Next and previous play on the device,
+and an item played to its end moves on to the next. The chosen audio track goes along; a subtitle
+from a text file (SRT, ASS, VTT) goes to the device as a track, any other is burned in (a transcode).
+Changing either reloads the item at the same position. A player opened on an item that is casting
+follows that cast. Settings → Casting (web) or Settings → Playback (app) lists what is casting, with
+Stop.
+
+**Settings** (`[cast]` in `server.toml`, or those settings pages; admins):
+
+| Setting | Default | |
+|---|---|---|
+| `enabled` | `true` | Off: no devices, and nothing can be cast. |
+| `devices` | `[]` | Devices to offer besides what the search finds: `192.168.1.20`, `192.168.1.20:8009` or `Bedroom=192.168.1.20`. For networks where mDNS doesn't pass (VLANs, guest Wi-Fi). Local addresses only. |
+| `max_height` | `1080` | Taller videos are transcoded. 0: no limit. |
+| `max_bitrate_kbps` | `0` | Files above this are transcoded. 0: no limit. |
+| `hevc` | `false` | The devices play H.265, so such files needn't be transcoded. |
+| `port` | `0` | The port devices fetch from. 0: `dlna_port`, or any free port if that's taken. A running DLNA listener is used instead of this. |
+
+**In the desktop app** the server's API stays on `127.0.0.1`. Only while something is casting, the
+app also opens the media listener on the network: plain HTTP, signed links, local addresses only, with
+none of the rest of the API. It closes a minute after casting ends, and the links die with it. Windows
+may ask to allow Corrent through the firewall on the first cast (again for a portable copy in a new
+folder); if that's refused, the cast fails with "The device couldn't reach this computer". A `correntd`
+whose owner set `bind = "127.0.0.1"` stays on loopback and refuses to cast. Closing the app ends what
+the device can fetch.
 
 ## Jellyfin apps
 

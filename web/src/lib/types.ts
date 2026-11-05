@@ -757,7 +757,22 @@ export interface CastStatus {
   item_id?: number;
   title: string;
   by: string;
+  /** `cant_play`, `cant_reach` (the device never fetched anything) or a message. */
   error?: string;
+  /** The device's volume, 0 to 1. */
+  volume?: number;
+  muted?: boolean;
+  /** Played to its end (not stopped, replaced or failed). */
+  finished: boolean;
+}
+
+export interface CastConfig {
+  enabled: boolean;
+  devices: string[];
+  max_height: number;
+  max_bitrate_kbps: number;
+  hevc: boolean;
+  port: number;
 }
 
 export interface Lyrics {

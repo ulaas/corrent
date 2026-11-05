@@ -260,7 +260,8 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
     // listener that only serves casts stays when DLNA is off.
     let dlna_changed = previous.as_ref().is_some_and(|p| p.dlna != key_dlna(&cfg) || p.name != name);
     let announcing = run.dlna.as_ref().is_some_and(|d| d.announcing());
-    if (!cfg.dlna && announcing) || (cfg.dlna && !announcing) || dlna_changed {
+    // A hosted server's listener only ever serves casts: its settings can't be about that one.
+    if !cfg.hosted && ((!cfg.dlna && announcing) || (cfg.dlna && !announcing) || dlna_changed) {
         run.dlna = None;
         update(st, |s| {
             s.dlna_port = None;

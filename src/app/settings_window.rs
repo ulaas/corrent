@@ -151,7 +151,7 @@ impl Page {
                 )
             }
             Page::Playback => t!(
-                "audio sound output device speakers headphones exclusive bit-perfect channels surround stereo 5.1 7.1 passthrough receiver hdmi spdif dolby dts normalize loudness equalizer bass treble replaygain gapless"
+                "audio sound output device speakers headphones exclusive bit-perfect channels surround stereo 5.1 7.1 passthrough receiver hdmi spdif dolby dts normalize loudness equalizer bass treble replaygain gapless cast casting chromecast google tv"
             ),
             Page::Advanced => t!("log level refresh interval checking concurrent data folder reset defaults"),
         }
@@ -217,7 +217,7 @@ fn row_is_dimmed(ui: &Ui, label: &str, help: &str) -> bool {
     dim
 }
 
-fn row(ui: &mut Ui, p: &Palette, label: &str, help: &str, add: impl FnOnce(&mut Ui)) {
+pub(super) fn row(ui: &mut Ui, p: &Palette, label: &str, help: &str, add: impl FnOnce(&mut Ui)) {
     let dim = row_is_dimmed(ui, label, help);
     ui.scope(|ui| {
         if dim {
@@ -240,7 +240,7 @@ fn row(ui: &mut Ui, p: &Palette, label: &str, help: &str, add: impl FnOnce(&mut 
     ui.add_space(6.0);
 }
 
-fn toggle(ui: &mut Ui, p: &Palette, label: &str, help: &str, value: &mut bool) {
+pub(super) fn toggle(ui: &mut Ui, p: &Palette, label: &str, help: &str, value: &mut bool) {
     row(ui, p, label, help, |ui| {
         toggle_switch(ui, p, value);
     });
@@ -265,7 +265,7 @@ pub fn toggle_switch(ui: &mut Ui, p: &Palette, on: &mut bool) -> egui::Response 
     resp
 }
 
-fn heading(ui: &mut Ui, p: &Palette, title: &str) {
+pub(super) fn heading(ui: &mut Ui, p: &Palette, title: &str) {
     ui.add_space(4.0);
     ui.label(RichText::new(title).font(theme::heading()).color(p.text));
     ui.add_space(6.0);
@@ -1742,6 +1742,7 @@ impl CorrentApp {
                 if get {
                     self.open_get_mpv(false);
                 }
+                self.cast_settings(ui, p);
             }
             Page::Advanced => {
                 card(p).show(ui, |ui| {

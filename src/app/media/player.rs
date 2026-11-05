@@ -17,6 +17,9 @@ use corrent_proto::library::{CastCommand, RoomCommand};
 use super::client::MediaClient;
 use crate::ui::theme::Palette;
 
+/// CORRENT_DEV_CAST has been acted on.
+static DEV_CAST_DONE: AtomicBool = AtomicBool::new(false);
+
 /// What is playing.
 #[derive(Clone, Debug)]
 pub struct QueueEntry {
@@ -940,6 +943,10 @@ impl Player {
             volume_moved: None,
         };
         p.load_current();
+        // CORRENT_DEV_PANEL=cast: the list, as when the button opens it.
+        if p.panel == Some(Panel::Cast) {
+            p.cast.find(ctx, false);
+        }
         Ok(p)
     }
 
@@ -949,6 +956,9 @@ impl Player {
 
     fn load_current(&mut self) {
         let Some(e) = self.current().cloned() else { return };
+        if self.casting.is_none() {
+            self.cast.find_active(&self.ctx);
+        }
         self.playlist_start = self.index;
         self.appending = None;
         self.appended.store(-1, Ordering::Relaxed);
@@ -1268,6 +1278,11 @@ impl Player {
         if self.index + 1 < self.queue.len() {
             self.report(true);
             self.index += 1;
+            if self.casting.is_some() {
+                self.load_current();
+                self.cast_current();
+                return true;
+            }
             // Already in mpv's playlist: let it move on.
             if self.appended.load(Ordering::Relaxed) == self.index as i64 {
                 self.appending = None;
@@ -1289,17 +1304,132 @@ impl Player {
     }
 
     pub fn previous(&mut self) {
-        if crate::util::with_lock(&self.status, |s| s.pos > 5.0) || self.index == 0 {
+        if self.position().0 > 5.0 || self.index == 0 {
             self.seek(0.0, false);
         } else {
             self.report(true);
             self.index -= 1;
             self.load_current();
+            if self.casting.is_some() {
+                self.cast_current();
+            }
+        }
+    }
+
+    /// The entry a device can be told to play: the library's, not a live stream or a stray file.
+    fn castable_item(&self) -> Option<i64> {
+        self.current().filter(|e| e.stream.is_none() && e.item_id > 0).map(|e| e.item_id)
+    }
+
+    /// The tracks to cast with: the ones chosen for the entry, else the ones playing here.
+    fn cast_tracks(&self) -> (Option<i64>, Option<i64>) {
+        let (mut audio, mut sub) = crate::util::with_lock(&self.status, |s| {
+            let selected = |kind: &str| s.tracks.iter().find(|t| t.kind == kind && t.selected);
+            let sub = selected("sub").and_then(|t| match &t.external {
+                Some(f) => s.ext_subs.iter().find(|(u, _)| u == f).map(|(_, i)| *i),
+                None => Some(t.id),
+            });
+            (selected("audio").map(|t| t.id), sub)
+        });
+        if let Some(e) = self.current() {
+            audio = e.audio_track.or(audio);
+            sub = e.subtitle_track.or(sub);
+        }
+        (audio, sub)
+    }
+
+    /// Plays the current entry on the device being cast to, from where it would start here. An
+    /// entry a device can't play ends the cast.
+    fn cast_current(&mut self) {
+        let start = self.current().map_or(0.0, |e| e.resume_ms as f64 / 1000.0);
+        self.cast_from(start);
+    }
+
+    fn cast_from(&mut self, pos: f64) {
+        let Some(device) = self.casting.as_ref().map(|c| c.device.clone()) else { return };
+        let Some(item) = self.castable_item() else {
+            if let Some(c) = &self.casting {
+                self.cast.command(c, CastCommand::Stop);
+            }
+            self.casting = None;
+            return;
+        };
+        let (audio, sub) = self.cast_tracks();
+        self.casting = Some(self.cast.start(device, item, pos, audio, sub));
+    }
+
+    /// Back to this computer, at `at`.
+    fn cast_ended(&mut self, at: f64) {
+        self.casting = None;
+        self.cmd(&["seek", &format!("{at}"), "absolute"]);
+    }
+
+    /// Follows the cast: what the device is doing, the next entry when one ended, and a cast
+    /// already running when an entry is opened.
+    fn cast_tick(&mut self, ctx: &egui::Context) {
+        let Some(c) = &mut self.casting else {
+            if let Some(attached) = self.castable_item().and_then(|i| self.cast.attach(i)) {
+                self.cmd(&["set", "pause", "yes"]);
+                self.casting = Some(attached);
+            }
+            return;
+        };
+        self.cast.poll(c, ctx);
+        if self.cast.starting() {
+            return;
+        }
+        let Some(s) = self.cast.status() else { return };
+        // Someone else's item now: it isn't ours to follow.
+        let ours = s.item_id == self.castable_item();
+        let at = s.position_ms as f64 / 1000.0;
+        if s.state == "idle" && s.finished && ours {
+            if !self.next() {
+                self.notice = Some((crate::engine::ToastKind::Info, t!("Finished playing on {name}", name = s.device.name)));
+                self.casting = None;
+            }
+        } else if s.state == "idle" || (!ours && s.state != "error" && s.item_id.is_some()) {
+            self.notice = Some((crate::engine::ToastKind::Info, t!("Casting to {name} ended", name = s.device.name)));
+            self.cast_ended(at);
+        }
+    }
+
+    /// The device's volume when casting, in the player's 0 to 100; else the player's own.
+    fn shown_volume(&self) -> (f64, bool) {
+        if let Some(c) = &self.casting {
+            let (v, muted) = self.cast.volume(c);
+            return (v.unwrap_or(0.0) * 100.0, muted);
+        }
+        crate::util::with_lock(&self.status, |s| (s.volume, s.muted))
+    }
+
+    fn toggle_mute(&mut self) {
+        if let Some(c) = &self.casting {
+            let (_, muted) = self.cast.volume(c);
+            self.cast.command(c, CastCommand::Mute { muted: !muted });
+        } else {
+            self.cmd(&["cycle", "mute"]);
+        }
+    }
+
+    /// Up or down by `by`, on the device when casting.
+    fn step_volume(&mut self, by: f64) {
+        if let Some(mut c) = self.casting.take() {
+            let (v, _) = self.cast.volume(&c);
+            if let Some(v) = v {
+                self.cast.set_volume(&mut c, v + by / 100.0, true);
+            }
+            self.casting = Some(c);
+        } else {
+            self.cmd(&["add", "volume", &format!("{by}")]);
         }
     }
 
     /// Tells the server how far we got (`done`: the item ended or we moved on).
     pub fn report(&mut self, done: bool) {
+        // The server records how far a cast got; the paused picture here says nothing.
+        if self.casting.is_some() {
+            return;
+        }
         let Some(e) = self.current() else { return };
         if e.stream.is_some() {
             return;
@@ -1663,9 +1793,7 @@ impl Player {
             action = PlayerAction::ToggleFullscreen;
         }
         self.sync_room(&ctx);
-        if let Some(c) = &mut self.casting {
-            self.cast.poll(c, &ctx);
-        }
+        self.cast_tick(&ctx);
         let (pos, dur, paused) = self.position();
         self.thumb_tick();
         // An open panel keeps them up: its button is how it closes.
@@ -1839,13 +1967,13 @@ impl Player {
             self.seek(10.0, true);
         }
         if up {
-            self.cmd(&["add", "volume", "5"]);
+            self.step_volume(5.0);
         }
         if down {
-            self.cmd(&["add", "volume", "-5"]);
+            self.step_volume(-5.0);
         }
         if m {
-            self.cmd(&["cycle", "mute"]);
+            self.toggle_mute();
         }
         if f {
             *action = PlayerAction::ToggleFullscreen;
@@ -2015,9 +2143,9 @@ impl Player {
         if !tiny && button(ui, pf::SKIP_FORWARD, 22.0, "next") {
             self.next();
         }
-        let (vol, muted) = crate::util::with_lock(&self.status, |s| (s.volume, s.muted));
+        let (vol, muted) = self.shown_volume();
         if button(ui, if muted { pr::SPEAKER_X } else { pr::SPEAKER_HIGH }, 22.0, "mute") {
-            self.cmd(&["cycle", "mute"]);
+            self.toggle_mute();
         }
         let time = format!("{} / {}", fmt_time(shown), fmt_time(dur));
         // "Use this frame as the thumbnail", right after the time.
@@ -2056,7 +2184,12 @@ impl Player {
             let resp = ui.interact(vr.expand(8.0), ui.id().with("vol"), Sense::click_and_drag());
             if let Some(pp) = resp.interact_pointer_pos() {
                 let v = ((pp.x - vr.left()) / vr.width()).clamp(0.0, 1.0) * 100.0;
-                self.cmd(&["set", "volume", &format!("{v:.0}")]);
+                if let Some(mut c) = self.casting.take() {
+                    self.cast.set_volume(&mut c, f64::from(v) / 100.0, resp.clicked() || resp.drag_stopped());
+                    self.casting = Some(c);
+                } else {
+                    self.cmd(&["set", "volume", &format!("{v:.0}")]);
+                }
             }
             ui.painter().rect_filled(vr, CornerRadius::same(3), Color32::from_white_alpha((k * 70.0) as u8));
             ui.painter().rect_filled(
@@ -2119,12 +2252,12 @@ impl Player {
                 self.toggle_pip(&ctx);
             }
         }
-        if let Some(c) = &self.casting {
-            let line = match self.cast.status() {
-                Some(s) if s.state == "error" => s
-                    .error
-                    .filter(|e| e != "cant_play")
-                    .unwrap_or_else(|| t!("The device couldn’t play this.").to_string()),
+        // The Cast panel says all this itself, and would cover it.
+        if let Some(c) = self.casting.as_ref().filter(|_| self.panel != Some(Panel::Cast)) {
+            let status = self.cast.status();
+            let failed = status.as_ref().is_some_and(|s| s.state == "error");
+            let line = match &status {
+                Some(s) if s.state == "error" => super::cast::error_text(s),
                 Some(s) if s.state == "connecting" || s.state == "loading" => t!("Connecting…").to_string(),
                 _ => String::new(),
             };
@@ -2132,7 +2265,11 @@ impl Player {
             ui.painter().text(
                 center,
                 egui::Align2::CENTER_CENTER,
-                t!("Playing on {name}", name = c.device.name),
+                if failed {
+                    t!("Couldn’t play on {name}", name = c.device.name)
+                } else {
+                    t!("Playing on {name}", name = c.device.name)
+                },
                 egui::FontId::proportional(22.0),
                 Color32::WHITE,
             );
@@ -2344,6 +2481,11 @@ impl Player {
         }
         if let Some((kind, tr)) = chosen {
             self.remember_track(kind, tr);
+            // The device gets the same choice, carrying on from where it is.
+            if self.casting.is_some() {
+                let at = self.position().0;
+                self.cast_from(at);
+            }
         }
         pick
     }
@@ -2454,16 +2596,50 @@ impl Player {
 
     /// "Cast to a device": the devices the server found; casting pauses the local player.
     fn cast_panel(&mut self, ui: &mut Ui, tone: &Tone, pos: f64) {
-        let item = self.current().map(|e| e.item_id);
-        if let Some(c) = &self.casting {
-            ui.label(t!("Playing on {name}", name = c.device.name));
-            ui.add_space(4.0);
-            if glass::button(ui, tone, t!("Stop casting")).clicked() {
-                self.cast.command(c, CastCommand::Stop);
-                let at = self.cast.status().map(|s| s.position_ms as f64 / 1000.0).unwrap_or(pos);
-                self.casting = None;
-                self.cmd(&["seek", &format!("{at}"), "absolute"]);
+        let item = self.castable_item();
+        if let Some(mut c) = self.casting.take() {
+            let status = self.cast.status();
+            let failed = status.as_ref().is_some_and(|s| s.state == "error");
+            let at = status.as_ref().map_or(pos, |s| s.position_ms as f64 / 1000.0);
+            if let Some(s) = status.as_ref().filter(|_| failed) {
+                ui.label(t!("Couldn’t play on {name}", name = c.device.name));
+                ui.label(super::cast::error_text(s));
+            } else {
+                ui.label(t!("Playing on {name}", name = c.device.name));
             }
+            ui.add_space(4.0);
+            let (volume, muted) = self.cast.volume(&c);
+            if let (Some(v), false) = (volume, failed) {
+                let mut level = v as f32;
+                let text = format!("{:.0} %", level * 100.0);
+                let r = glass::slider(ui, tone, t!("Volume"), &mut level, 0.0..=1.0, 0.01, 0.5, text);
+                // Against what the slider was given: the same number as an f32 isn't `v` again.
+                if level != v as f32 {
+                    self.cast.set_volume(&mut c, f64::from(level), r.drag_stopped() || !r.dragged());
+                } else if r.drag_stopped() {
+                    self.cast.set_volume(&mut c, v, true);
+                }
+                let mut mute = muted;
+                if glass::switch(ui, tone, &mut mute, t!("Mute")).clicked() {
+                    self.cast.command(&c, CastCommand::Mute { muted: mute });
+                }
+            }
+            let again = failed && glass::button(ui, tone, t!("Try again")).clicked();
+            let stop = glass::button(ui, tone, if failed { t!("Back to this computer") } else { t!("Stop casting") }).clicked();
+            self.casting = Some(c);
+            if again {
+                self.cast_from(at);
+            }
+            if stop {
+                if let Some(c) = &self.casting {
+                    self.cast.command(c, CastCommand::Stop);
+                }
+                self.cast_ended(at);
+            }
+            return;
+        }
+        if item.is_none() {
+            ui.label(t!("Only items from a library can be cast."));
             return;
         }
         match self.cast.devices() {
@@ -2483,11 +2659,17 @@ impl Player {
                 for d in list {
                     let label =
                         if d.model.is_empty() { d.name.clone() } else { format!("{}  ·  {}", d.name, d.model) };
+                    // CORRENT_DEV_CAST=<device name>: chosen as soon as it is listed.
+                    let hooked = cfg!(debug_assertions)
+                        && std::env::var("CORRENT_DEV_CAST").is_ok_and(|n| n == d.name)
+                        && !DEV_CAST_DONE.swap(true, Ordering::Relaxed);
+                    let clicked = glass::item(ui, tone, Some(egui_phosphor::regular::TELEVISION), &label, false).clicked();
                     if let Some(item) = item
-                        && glass::item(ui, tone, Some(egui_phosphor::regular::TELEVISION), &label, false).clicked()
+                        && (clicked || hooked)
                     {
                         self.cmd(&["set", "pause", "yes"]);
-                        self.casting = Some(self.cast.start(d, item, pos));
+                        let (audio, sub) = self.cast_tracks();
+                        self.casting = Some(self.cast.start(d, item, pos, audio, sub));
                     }
                 }
             }

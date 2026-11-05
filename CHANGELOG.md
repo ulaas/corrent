@@ -5,6 +5,18 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+### Added
+
+- Casting to Chromecasts from the desktop app without a separate server. The app opens a port on the local network only while something is casting (signed links, plain HTTP), closed a minute later.
+- Device volume and mute in the players, next and previous on the device, moving on when an item ends, subtitles and the chosen audio track on the device, and a player opened on an item that is casting follows it.
+- Casting settings: on or off, devices typed by address for networks where the search finds nothing, largest picture, highest bitrate, H.265, port. Those settings list what is casting, with Stop. API: `GET /cast/active`, `GET/PUT /cast/config`.
+
+### Fixed
+
+- A cast that played to its end no longer keeps its transcode running until the device gives up, and the position is saved when a cast ends. Closing the desktop player while casting no longer overwrites that position with the paused one.
+- Cast errors say what happened instead of a general text ("The torrent engine isn't running"). A device that never fetched anything is told apart from one that couldn't play the file (most likely a firewall).
+- A cast that fails no longer says "Playing on …".
+
 ## [0.4.0] — 2026-11-05
 
 ### Added

@@ -1619,6 +1619,32 @@ fn metadata_settings_list_providers_and_save_a_key() {
     });
 }
 
+/// Settings → Playback saves casting on the server this app hosts: a typed device is offered, and
+/// the server's file keeps what the app only forces on it.
+#[test]
+fn casting_settings_are_saved_on_the_hosted_server() {
+    let (f, mut app) = app("cast-settings", vec![]);
+    app.main_view = super::feeds::MainView::Media;
+    let mut h = harness(app);
+    step_until(&mut h, "the in-process server", |h| h.state().media.client.is_some());
+    h.state_mut().open_settings_at(super::settings_window::Page::Playback);
+    step_until(&mut h, "the casting settings", |h| h.query_by_label_contains("Allow casting").is_some());
+    h.state_mut().media.cast_settings.dev_type_devices("Bedroom=192.168.1.20");
+    h.run_steps(2);
+    h.get_by_label("Save").click_accesskit();
+    step_until(&mut h, "the saved settings", |h| h.query_by_label_contains("Saved.").is_some());
+    let file = std::fs::read_to_string(f.dir.join("data/server.toml")).unwrap();
+    assert!(file.contains("Bedroom=192.168.1.20"), "{file}");
+    assert!(!file.contains("127.0.0.1"), "the app's own address isn't a setting: {file}");
+    // Something this server can't use isn't saved.
+    h.state_mut().media.cast_settings.dev_type_devices("8.8.8.8");
+    h.run_steps(2);
+    h.get_by_label("Save").click_accesskit();
+    step_until(&mut h, "the refusal", |h| h.query_by_label_contains("not a device on this network").is_some());
+    let file = std::fs::read_to_string(f.dir.join("data/server.toml")).unwrap();
+    assert!(!file.contains("8.8.8.8"), "{file}");
+}
+
 /// Identify… searches the providers for the item; without any (no keys) it says how to get one.
 #[test]
 fn identify_dialog_searches_and_explains_missing_keys() {

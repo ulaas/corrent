@@ -376,6 +376,15 @@ pub fn apply_media_status(s: &mut CastStatus, v: &Value) -> Option<i64> {
     session
 }
 
+/// A status of the media session being replaced, while its replacement loads: even a failure there
+/// says nothing about the new item. Only then: a device reusing the number would otherwise go
+/// unheard.
+fn about_replaced(v: &Value, replaced: Option<i64>, state: &str) -> bool {
+    state == "loading"
+        && replaced.is_some()
+        && v.pointer("/status/0/mediaSessionId").and_then(Value::as_i64) == replaced
+}
+
 /// The volume fields of a receiver status.
 fn apply_receiver_status(s: &mut CastStatus, v: &Value) {
     if let Some(level) = v.pointer("/status/volume/level").and_then(Value::as_f64) {
@@ -406,9 +415,8 @@ fn load_message(media: &Media, request: i64) -> Value {
             "trackId": 1, "type": "TEXT", "subtype": "SUBTITLES", "trackContentId": t.url,
             "trackContentType": "text/vtt", "name": t.name,
         });
-        if let Some(lang) = &t.lang {
-            track["language"] = json!(lang);
-        }
+        // Required for subtitles, also when the file doesn't say: "undetermined".
+        track["language"] = json!(t.lang.as_deref().unwrap_or("und"));
         load["media"]["tracks"] = json!([track]);
         load["activeTrackIds"] = json!([1]);
     }
@@ -470,6 +478,8 @@ async fn connection(
     let mut last_report = Instant::now();
     // Where the current item really was (a status while loading says where it starts).
     let mut played_at = 0i64;
+    // The media session the item now loading replaces.
+    let mut replaced: Option<i64> = None;
     let (frames_tx, mut frames) = mpsc::channel::<anyhow::Result<CastMessage>>(32);
     // Reading runs on its own so a half-read frame is never dropped by `select!`.
     let reader = tokio::spawn(async move {
@@ -549,7 +559,7 @@ async fn connection(
                             }
                             stop_hls(&current);
                             current = None;
-                            media_session = None;
+                            replaced = media_session.take();
                             match &transport {
                                 Some(_) => pending = Some(m),
                                 None => {
@@ -630,6 +640,8 @@ async fn connection(
                         (NS_MEDIA, "MEDIA_STATUS") => {
                             let (state, pos, dur, finished) = {
                                 let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
+                                let stale = about_replaced(&v, replaced, &s.state);
+                                let v = if stale { Value::Null } else { v };
                                 if let Some(ms) = apply_media_status(&mut s, &v) {
                                     media_session = Some(ms);
                                 }
@@ -756,6 +768,15 @@ mod tests {
     }
 
     #[test]
+    fn a_late_failure_of_the_replaced_session_isnt_the_new_items() {
+        let late = json!({ "status": [{ "mediaSessionId": 3, "playerState": "IDLE", "idleReason": "ERROR" }] });
+        assert!(about_replaced(&late, Some(3), "loading"));
+        assert!(!about_replaced(&late, Some(4), "loading"), "another session's is news");
+        assert!(!about_replaced(&late, Some(3), "playing"), "once under way the number may come back");
+        assert!(!about_replaced(&late, None, "loading"));
+    }
+
+    #[test]
     fn typed_devices() {
         let f = manual_device("Bedroom = 192.168.1.20").unwrap();
         assert_eq!((f.device.name.as_str(), f.addr), ("Bedroom", "192.168.1.20:8009".parse().unwrap()));
@@ -798,6 +819,10 @@ mod tests {
         m.subtitle_track = Some(SideTrack { url: "http://h/s.vtt".into(), name: "English".into(), lang: Some("en".into()) });
         let v = load_message(&m, 8);
         assert_eq!(v["activeTrackIds"], json!([1]));
+        m.subtitle_track = Some(SideTrack { url: "http://h/s.vtt".into(), name: "1".into(), lang: None });
+        assert_eq!(load_message(&m, 9)["media"]["tracks"][0]["language"], "und");
+        m.subtitle_track = Some(SideTrack { url: "http://h/s.vtt".into(), name: "English".into(), lang: Some("en".into()) });
+        let v = load_message(&m, 8);
         let t = &v["media"]["tracks"][0];
         assert_eq!((&t["trackContentId"], &t["trackContentType"], &t["language"]), (&json!("http://h/s.vtt"), &json!("text/vtt"), &json!("en")));
     }

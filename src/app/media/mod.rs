@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod cast;
+pub mod cast_settings;
 pub mod client;
 pub mod downloads;
 pub mod glass;
@@ -111,6 +112,7 @@ pub struct MediaState {
     refresh: refresh::RefreshUi,
     /// Settings → Metadata.
     pub providers: providers::ProvidersUi,
+    pub cast_settings: cast_settings::CastSettingsUi,
     /// Media → AI agent.
     pub agent: agent::AgentUi,
     remove_library: Option<(i64, String)>,

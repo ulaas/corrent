@@ -36,6 +36,7 @@
     { id: 'metadata', label: tk('Metadata'), icon: 'film-slate', group: tk('Server'), perm: Perm.SETTINGS_READ, load: () => import('./settings/Metadata.svelte') },
     { id: 'rss', label: tk('RSS feeds and rules'), icon: 'rss', group: tk('Server'), perm: Perm.SETTINGS_READ, load: () => import('./settings/RssSettings.svelte') },
     { id: 'remote', label: tk('Remote access'), icon: 'globe', group: tk('Administration'), perm: Perm.SETTINGS_WRITE, load: () => import('./settings/Remote.svelte') },
+    { id: 'casting', label: tk('Casting'), icon: 'screencast', group: tk('Administration'), perm: Perm.SETTINGS_WRITE, load: () => import('./settings/Casting.svelte') },
     { id: 'plugins', label: tk('Plugins'), icon: 'puzzle-piece', group: tk('Administration'), perm: Perm.SETTINGS_READ, load: () => import('./settings/Plugins.svelte') },
     { id: 'tasks', label: tk('Tasks and backups'), icon: 'clock', group: tk('Administration'), perm: Perm.SETTINGS_READ, load: () => import('./settings/Tasks.svelte') },
     { id: 'podcasts', label: tk('Podcasts'), icon: 'microphone-stage', group: tk('Server'), perm: Perm.SETTINGS_WRITE, load: () => import('./settings/Podcasts.svelte') },
