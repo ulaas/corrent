@@ -619,11 +619,10 @@ async fn subtitle(
     }
     // Still checked: the account may have lost access since the link was made.
     match crate::v1::playback::subtitle_vtt(&d.st, user, file, index).await {
-        Ok(vtt) => (
-            [(header::CONTENT_TYPE, "text/vtt; charset=utf-8"), (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
-            vtt,
-        )
-            .into_response(),
+        Ok(vtt) => {
+            ([(header::CONTENT_TYPE, "text/vtt; charset=utf-8"), (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")], vtt)
+                .into_response()
+        }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }

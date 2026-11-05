@@ -1384,7 +1384,8 @@ impl Player {
         let at = s.position_ms as f64 / 1000.0;
         if s.state == "idle" && s.finished && ours {
             if !self.next() {
-                self.notice = Some((crate::engine::ToastKind::Info, t!("Finished playing on {name}", name = s.device.name)));
+                self.notice =
+                    Some((crate::engine::ToastKind::Info, t!("Finished playing on {name}", name = s.device.name)));
                 self.casting = None;
             }
         } else if s.state == "idle" || (!ours && s.state != "error" && s.item_id.is_some()) {
@@ -2625,7 +2626,8 @@ impl Player {
                 }
             }
             let again = failed && glass::button(ui, tone, t!("Try again")).clicked();
-            let stop = glass::button(ui, tone, if failed { t!("Back to this computer") } else { t!("Stop casting") }).clicked();
+            let stop = glass::button(ui, tone, if failed { t!("Back to this computer") } else { t!("Stop casting") })
+                .clicked();
             self.casting = Some(c);
             if again {
                 self.cast_from(at);
@@ -2663,7 +2665,8 @@ impl Player {
                     let hooked = cfg!(debug_assertions)
                         && std::env::var("CORRENT_DEV_CAST").is_ok_and(|n| n == d.name)
                         && !DEV_CAST_DONE.swap(true, Ordering::Relaxed);
-                    let clicked = glass::item(ui, tone, Some(egui_phosphor::regular::TELEVISION), &label, false).clicked();
+                    let clicked =
+                        glass::item(ui, tone, Some(egui_phosphor::regular::TELEVISION), &label, false).clicked();
                     if let Some(item) = item
                         && (clicked || hooked)
                     {

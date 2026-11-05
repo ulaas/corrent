@@ -816,15 +816,20 @@ mod tests {
         let v = load_message(&m, 7);
         assert_eq!(v["currentTime"], 5.0);
         assert!(v.get("activeTrackIds").is_none() && v["media"].get("tracks").is_none());
-        m.subtitle_track = Some(SideTrack { url: "http://h/s.vtt".into(), name: "English".into(), lang: Some("en".into()) });
+        m.subtitle_track =
+            Some(SideTrack { url: "http://h/s.vtt".into(), name: "English".into(), lang: Some("en".into()) });
         let v = load_message(&m, 8);
         assert_eq!(v["activeTrackIds"], json!([1]));
         m.subtitle_track = Some(SideTrack { url: "http://h/s.vtt".into(), name: "1".into(), lang: None });
         assert_eq!(load_message(&m, 9)["media"]["tracks"][0]["language"], "und");
-        m.subtitle_track = Some(SideTrack { url: "http://h/s.vtt".into(), name: "English".into(), lang: Some("en".into()) });
+        m.subtitle_track =
+            Some(SideTrack { url: "http://h/s.vtt".into(), name: "English".into(), lang: Some("en".into()) });
         let v = load_message(&m, 8);
         let t = &v["media"]["tracks"][0];
-        assert_eq!((&t["trackContentId"], &t["trackContentType"], &t["language"]), (&json!("http://h/s.vtt"), &json!("text/vtt"), &json!("en")));
+        assert_eq!(
+            (&t["trackContentId"], &t["trackContentType"], &t["language"]),
+            (&json!("http://h/s.vtt"), &json!("text/vtt"), &json!("en"))
+        );
     }
 
     #[test]

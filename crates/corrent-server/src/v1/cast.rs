@@ -139,8 +139,7 @@ async fn play(
 ) -> ApiResult<CastStatus> {
     let cfg = enabled(&st)?;
     may_control(&st, &auth, &device)?;
-    let found =
-        st.casts.device(&device, &cfg.devices).await.map_err(|e| err(ErrorCode::NotFound, format!("{e:#}")))?;
+    let found = st.casts.device(&device, &cfg.devices).await.map_err(|e| err(ErrorCode::NotFound, format!("{e:#}")))?;
     let host =
         crate::cast::local_ip_towards(found.addr).ok_or_else(|| err(ErrorCode::Internal, "no route to the device"))?;
     let links = crate::remote::lan_links(&st).await.map_err(|e| err(ErrorCode::EngineUnavailable, format!("{e:#}")))?;

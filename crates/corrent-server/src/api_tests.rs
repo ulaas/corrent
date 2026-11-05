@@ -2281,7 +2281,8 @@ async fn fake_receiver_with(seen: tokio::sync::mpsc::UnboundedSender<String>, re
                 "LOAD" => {
                     let _ = seen.send(format!("LOAD {}", v["media"]["contentId"].as_str().unwrap()));
                     if v["activeTrackIds"] == json!([1]) {
-                        let _ = seen.send(format!("TRACK {}", v["media"]["tracks"][0]["trackContentId"].as_str().unwrap()));
+                        let _ =
+                            seen.send(format!("TRACK {}", v["media"]["tracks"][0]["trackContentId"].as_str().unwrap()));
                     }
                     state = "PLAYING";
                     Some(send(
@@ -2582,8 +2583,14 @@ async fn the_server_in_the_app_casts_with_its_api_on_loopback() {
     let url = load.strip_prefix("LOAD ").unwrap();
     assert!(reqwest::get(url).await.unwrap().bytes().await.unwrap().starts_with(b"\x89PNG"));
     let root = url.split("/dlna/").next().unwrap();
-    assert_eq!(reqwest::get(format!("{root}/api/v1/server/info")).await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
-    assert_eq!(reqwest::get(format!("{root}/dlna/description.xml")).await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(
+        reqwest::get(format!("{root}/api/v1/server/info")).await.unwrap().status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        reqwest::get(format!("{root}/dlna/description.xml")).await.unwrap().status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
     // While casting it stays, however long nothing asks for links.
     assert!(crate::remote::close_cast_listener(&h.st, std::time::Duration::ZERO).await);
     assert!(reqwest::get(url).await.is_ok());
@@ -2640,7 +2647,8 @@ async fn cast_settings_are_saved_and_followed() {
     assert_eq!((s, v["enabled"].as_bool(), v["max_height"].as_i64()), (StatusCode::OK, Some(true), Some(1080)));
     // Nonsense and addresses out on the internet are refused.
     for bad in ["tv.local", "8.8.8.8"] {
-        let (s, _, _) = send(app, Method::PUT, "/api/v1/cast/config", &admin, json!({ "enabled": true, "devices": [bad] })).await;
+        let (s, _, _) =
+            send(app, Method::PUT, "/api/v1/cast/config", &admin, json!({ "enabled": true, "devices": [bad] })).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
     }
     let (s, v, _) = send(
