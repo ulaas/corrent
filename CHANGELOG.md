@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-11-05
+
 ### Added
 
 - A new logo that says media rather than torrents: a C with a play button, on a warm tile for the app and a dark one for `correntd`, which now has an icon of its own on Windows.
