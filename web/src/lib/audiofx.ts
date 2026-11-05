@@ -25,13 +25,33 @@ let workletReady: Promise<void> | null = null;
 
 /** A graph on `el`, or null when the browser won't start audio yet (no gesture so far): the element
  *  keeps playing by itself and nothing has been taken from it. */
-export async function createChain(el: HTMLMediaElement, onReading: (r: Reading) => void): Promise<FxChain | null> {
-  shared ??= new AudioContext();
+export async function createChain(
+  el: HTMLMediaElement,
+  onReading: (r: Reading) => void,
+  level: () => number,
+): Promise<FxChain | null> {
+  if (!shared) {
+    shared = new AudioContext();
+    keepRunning(shared);
+  }
   const ctx = shared;
   if (ctx.state !== 'running') {
     await Promise.race([ctx.resume().catch(() => {}), new Promise((f) => setTimeout(f, 400))]);
   }
-  return ctx.state === 'running' ? new FxChain(el, ctx, onReading) : null;
+  return ctx.state === 'running' ? new FxChain(el, ctx, onReading, level()) : null;
+}
+
+/** The element's sound goes only through here now, so a context the browser stops (a call, another
+ *  app taking the audio) would mean silence until a reload: it starts again, on the next gesture if
+ *  the browser wants one. */
+function keepRunning(ctx: AudioContext) {
+  ctx.addEventListener('statechange', () => {
+    if (ctx.state === 'running' || ctx.state === 'closed') return;
+    const go = () => void ctx.resume().catch(() => {});
+    go();
+    addEventListener('pointerdown', go, { once: true });
+    addEventListener('keydown', go, { once: true });
+  });
 }
 
 type Stage = [AudioNode, AudioNode];
@@ -63,10 +83,16 @@ export class FxChain {
     el: HTMLMediaElement,
     readonly ctx: AudioContext,
     private onReading: (r: Reading) => void,
+    level: number,
   ) {
     this.source = ctx.createMediaElementSource(el);
     this.headroom = ctx.createGain();
     this.volume = ctx.createGain();
+    // At the listener's level from the first sample, and the element's own volume hands over in the
+    // same step: a gain of 1 here would be a burst at full volume when turned on during playback.
+    this.volume.gain.value = level;
+    el.volume = 1;
+    el.muted = false;
     this.dialogueCut = this.peaking(DIALOGUE_CUT_HZ, 1.2, DIALOGUE_CUT_DB);
     this.dialogueBoost = this.peaking(DIALOGUE_BOOST_HZ, 1, DIALOGUE_BOOST_DB);
     this.comp = ctx.createDynamicsCompressor();
@@ -239,7 +265,11 @@ export class FxChain {
   dispose() {
     this.unwire();
     this.volume.disconnect();
-    if (this.worklet) this.worklet.port.onmessage = null;
-    this.worklet?.disconnect();
+    if (this.worklet) {
+      this.worklet.port.onmessage = null;
+      // Otherwise it stays alive in the shared context, a meter for nothing.
+      this.worklet.port.postMessage({ stop: true });
+      this.worklet.disconnect();
+    }
   }
 }

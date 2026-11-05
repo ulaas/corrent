@@ -16,7 +16,7 @@ export class FxHost {
 
   constructor(
     readonly el: HTMLMediaElement,
-    muted: () => boolean,
+    private muted: () => boolean,
     private bypass: () => boolean,
   ) {
     el.addEventListener('play', this.onplay);
@@ -61,7 +61,8 @@ export class FxHost {
     this.building = true;
     try {
       const { createChain } = await import('./audiofx');
-      const chain = await createChain(this.el, (r) => (this.reading = r));
+      const level = () => (this.muted() ? 0 : perceptual(prefs.volume));
+      const chain = await createChain(this.el, (r) => (this.reading = r), level);
       if (this.disposed) return chain?.dispose();
       if (chain) {
         chain.update($state.snapshot(prefs.audioFx));

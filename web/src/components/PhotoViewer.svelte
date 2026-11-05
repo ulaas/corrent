@@ -54,8 +54,11 @@
   $effect(() => {
     const x = cur;
     const original = itemFileUrl(x.id);
-    src = zoomed ? original : preview(x);
-    if (zoomed || !sharp() || src === original) return;
+    const first = preview(x);
+    // Not read back from `src`: the effect would depend on what it sets, and start over each time
+    // the original arrives.
+    src = zoomed ? original : first;
+    if (zoomed || !sharp() || first === original) return;
     const full = new Image();
     let live = true;
     full.onload = () => {
