@@ -114,8 +114,10 @@ pub async fn start(
         &paths.data_dir,
         corrent_library::probe::Prober::new(corrent_library::probe::Prober::find_worker(), 2),
     );
-    // Loopback only, no TLS, no qBittorrent API (the app has its own setting for that).
+    // Loopback only, no TLS, no qBittorrent API (the app has its own setting for that). Devices
+    // fetch what is cast to them from a listener of its own, open only while casting.
     let cfg = ServerConfig {
+        hosted: true,
         bind: "127.0.0.1".into(),
         tls: false,
         qbt_api: false,

@@ -901,8 +901,40 @@ pub struct CastStatus {
     pub title: String,
     /// Who started it.
     pub by: String,
+    /// `cant_play`, `cant_reach` (the device never fetched anything) or a message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The device's volume, 0 to 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub muted: Option<bool>,
+    /// The item played to its end (not stopped, replaced or failed).
+    pub finished: bool,
+}
+
+/// How the server casts (`GET/PUT /api/v1/cast/config`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CastConfig {
+    pub enabled: bool,
+    /// Devices to offer besides the ones found on the network, for networks where the search
+    /// doesn't pass: `192.168.1.20`, `192.168.1.20:8009` or `Bedroom=192.168.1.20`.
+    pub devices: Vec<String>,
+    /// The tallest picture sent as it is, in lines (0: no limit).
+    pub max_height: u32,
+    /// The highest bitrate sent as it is, in kbit/s (0: no limit).
+    pub max_bitrate_kbps: u32,
+    /// The devices play H.265 (newer ones do): such files needn't be converted.
+    pub hevc: bool,
+    /// The port devices fetch media from (0: automatic). A running DLNA listener is used instead.
+    pub port: u16,
+}
+
+impl Default for CastConfig {
+    fn default() -> Self {
+        CastConfig { enabled: true, devices: Vec::new(), max_height: 1080, max_bitrate_kbps: 0, hevc: false, port: 0 }
+    }
 }
 
 /// `POST /api/v1/cast/{device}/command`.
@@ -913,6 +945,7 @@ pub enum CastCommand {
     Pause,
     Seek { position_ms: i64 },
     Volume { level: f64 },
+    Mute { muted: bool },
     Stop,
 }
 

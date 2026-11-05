@@ -33,7 +33,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/files/{id}/trickplay/{name}", get(trickplay))
 }
 
-const TEXT_SUBS: &[&str] = &["srt", "subrip", "ass", "ssa", "vtt", "webvtt"];
+pub(crate) const TEXT_SUBS: &[&str] = &["srt", "subrip", "ass", "ssa", "vtt", "webvtt"];
 
 pub(crate) fn facts(f: &MediaFile) -> MediaFacts {
     let video = f.streams.iter().find(|s| s.kind == "video").map(|s| VideoFacts {
@@ -448,16 +448,20 @@ async fn subtitle(
         .strip_suffix(".vtt")
         .and_then(|n| n.parse().ok())
         .ok_or_else(|| err(ErrorCode::NotFound, "no such subtitle"))?;
-    let path = st.library.subtitle_path(auth.0.user.id, id, idx).await.map_err(lib_err)?;
+    let vtt = subtitle_vtt(&st, auth.0.user.id, id, idx).await?;
+    Ok(([(header::CONTENT_TYPE, "text/vtt; charset=utf-8"), (header::CACHE_CONTROL, "private, max-age=600")], vtt)
+        .into_response())
+}
+
+/// An external text subtitle `user` may see, as WebVTT.
+pub(crate) async fn subtitle_vtt(st: &AppState, user: i64, file: i64, index: i64) -> Result<String, ApiErr> {
+    let path = st.library.subtitle_path(user, file, index).await.map_err(lib_err)?;
     let ext = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
     let bytes = tokio::fs::read(&path).await.map_err(|e| err(ErrorCode::NotFound, e.to_string()))?;
     if bytes.len() > 20 * 1024 * 1024 {
         return Err(err(ErrorCode::PayloadTooLarge, "subtitle file too large"));
     }
-    let vtt = corrent_transcode::vtt::to_vtt(&ext, &bytes)
-        .ok_or_else(|| err(ErrorCode::BadRequest, "not a text subtitle"))?;
-    Ok(([(header::CONTENT_TYPE, "text/vtt; charset=utf-8"), (header::CACHE_CONTROL, "private, max-age=600")], vtt)
-        .into_response())
+    corrent_transcode::vtt::to_vtt(&ext, &bytes).ok_or_else(|| err(ErrorCode::BadRequest, "not a text subtitle"))
 }
 
 async fn trickplay(

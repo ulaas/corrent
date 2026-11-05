@@ -8,13 +8,15 @@
 //! certificates. The service descriptions (`*.xml`) come from librqbit-upnp-serve (Apache-2.0).
 //!
 //! The same listener serves Chromecasts (`crate::cast`) their signed media and HLS links; when
-//! only casting needs it, it runs without announcing and without browsing.
+//! only casting needs it, it runs without announcing and without browsing, closes again when
+//! casting ends, and in the desktop app is the only part of the server on the network.
 
 mod didl;
 mod ssdp;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::Router;
 use axum::body::Body;
@@ -59,6 +61,12 @@ impl Running {
         self.ssdp.is_some()
     }
 
+    /// Where the listener is (tests).
+    #[cfg(test)]
+    pub fn addr(&self) -> SocketAddr {
+        self._http.addr
+    }
+
     /// Links for other devices on the network (casting).
     pub fn links(&self) -> Links {
         Links { d: self.d.clone(), port: self.port }
@@ -82,6 +90,17 @@ impl Links {
     pub fn art(&self, host: std::net::IpAddr, sha: &str) -> String {
         let sig = sign(&self.d, &format!("art:{sha}"));
         format!("http://{}/dlna/art/{sha}/{sig}", host_port(host, self.port))
+    }
+
+    /// A text subtitle of a library file, as WebVTT.
+    pub fn subtitle(&self, host: std::net::IpAddr, user: i64, file: i64, index: i64) -> String {
+        let sig = sign(&self.d, &format!("sub:{user}:{file}:{index}"));
+        format!("http://{}/dlna/sub/{user}/{file}/{index}/{sig}.vtt", host_port(host, self.port))
+    }
+
+    /// Counts what the listener served: whether a device ever reached it.
+    pub fn hits(&self) -> Arc<AtomicU64> {
+        self.d.hits.clone()
     }
 
     /// An HLS session's playlist.
@@ -111,13 +130,20 @@ struct Dlna {
     name: String,
     /// Changes when the server starts (clients drop cached listings).
     update_id: u32,
+    /// Requests from allowed addresses so far.
+    hits: Arc<AtomicU64>,
+}
+
+/// Where the listener goes on `port`: the server's address, or every interface when the app hosts
+/// the server (whose own address is loopback).
+pub fn address(cfg: &crate::ServerConfig, port: u16) -> SocketAddr {
+    let any = std::net::IpAddr::from([0, 0, 0, 0]);
+    SocketAddr::new(if cfg.hosted { any } else { cfg.bind.parse().unwrap_or(any) }, port)
 }
 
 /// Starts the HTTP side, and with `announce` browsing and the SSDP announcer (DLNA).
-pub async fn start(st: Arc<AppState>, announce: bool) -> anyhow::Result<Running> {
+pub async fn start(st: Arc<AppState>, announce: bool, addr: SocketAddr) -> anyhow::Result<Running> {
     let d = prepare(st, announce).await?;
-    let cfg = d.st.cfg.load_full();
-    let addr = SocketAddr::new(cfg.bind.parse().unwrap_or([0, 0, 0, 0].into()), cfg.dlna_port);
     let http = crate::serve_http(router(d.clone()), addr).await?;
     let port = http.addr.port();
     let ssdp = if announce {
@@ -154,6 +180,7 @@ async fn prepare(st: Arc<AppState>, announce: bool) -> anyhow::Result<Arc<Dlna>>
             .map(|d| d.as_secs())
             .unwrap_or(1)
             & 0x7fff_ffff) as u32,
+        hits: Arc::default(),
         st: st.clone(),
     });
     Ok(d)
@@ -182,9 +209,11 @@ fn udn(server_id: &str) -> String {
 
 fn router(d: Arc<Dlna>) -> Router {
     let st = d.st.clone();
+    let hits = d.hits.clone();
     let mut r = Router::new()
         .route("/dlna/media/{user}/{file}/{sig}", get(media))
         .route("/dlna/hls/{session}/{sig}/{name}", get(hls))
+        .route("/dlna/sub/{user}/{file}/{index}/{sig}", get(subtitle))
         .route("/dlna/art/{sha}/{sig}", get(art));
     if d.user.is_some() {
         r = r
@@ -209,6 +238,9 @@ fn router(d: Arc<Dlna>) -> Router {
                 // a name of its own. Players use the IP address from the announcement.
                 let ok = crate::net::is_local(peer.ip(), &crate::net::parse_cidrs(&st.cfg.load().allowed_networks))
                     && crate::net::host_allowed(&crate::v1::request_host(&req), &st.nets.load().hostnames);
+                if ok {
+                    hits.fetch_add(1, Ordering::Relaxed);
+                }
                 async move { if ok { next.run(req).await } else { StatusCode::FORBIDDEN.into_response() } }
             },
         ))
@@ -574,6 +606,26 @@ async fn hls(
     };
     res.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     res
+}
+
+/// A text subtitle for casting (the receiver fetches it with CORS).
+async fn subtitle(
+    State(d): State<Arc<Dlna>>,
+    Path((user, file, index, sig)): Path<(i64, i64, i64, String)>,
+) -> Response {
+    let sig = sig.strip_suffix(".vtt").unwrap_or("");
+    if !signed(&d, &format!("sub:{user}:{file}:{index}"), sig) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    // Still checked: the account may have lost access since the link was made.
+    match crate::v1::playback::subtitle_vtt(&d.st, user, file, index).await {
+        Ok(vtt) => (
+            [(header::CONTENT_TYPE, "text/vtt; charset=utf-8"), (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
+            vtt,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn art(State(d): State<Arc<Dlna>>, Path((sha, sig)): Path<(String, String)>, req: Request) -> Response {

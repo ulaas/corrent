@@ -2,6 +2,7 @@
 //! and stopped as the remote-access settings change.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use corrent_proto::server::{RemoteConfig, RemoteStatus};
 
@@ -270,7 +271,7 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
         let started = if loopback_only(&cfg.bind) {
             Err(anyhow::anyhow!("the server listens on this computer only (bind = {:?})", cfg.bind))
         } else {
-            crate::dlna::start(st.clone(), true).await
+            crate::dlna::start(st.clone(), true, crate::dlna::address(&cfg, cfg.dlna_port)).await
         };
         match started {
             Ok(d) => {
@@ -334,20 +335,66 @@ pub async fn apply(st: &Arc<AppState>, port: u16) {
     }
 }
 
-/// Links on the media listener (for casting), starting it without DLNA when needed.
+/// How long a listener that only serves casts stays open once nothing is casting.
+const CAST_LISTENER_IDLE: Duration = Duration::from_secs(60);
+
+/// Links on the media listener (for casting), starting it without DLNA when needed. A server the
+/// app hosts opens it to the network although its API stays on this computer; one whose owner
+/// bound it to loopback doesn't.
 pub async fn lan_links(st: &Arc<AppState>) -> anyhow::Result<crate::dlna::Links> {
+    st.casts.touch();
     let mut run = st.remote.lock().await;
     if let Some(d) = &run.dlna {
         return Ok(d.links());
     }
     let cfg = st.cfg.load_full();
-    if loopback_only(&cfg.bind) {
+    if loopback_only(&cfg.bind) && !cfg.hosted {
         anyhow::bail!("the server listens on this computer only (bind = {:?})", cfg.bind);
     }
-    let d = crate::dlna::start(st.clone(), false).await?;
+    let port = if cfg.cast.port != 0 { cfg.cast.port } else { cfg.dlna_port };
+    let d = match crate::dlna::start(st.clone(), false, crate::dlna::address(&cfg, port)).await {
+        Ok(d) => d,
+        // Any port will do unless one was asked for: the links carry it.
+        Err(e) if cfg.cast.port == 0 && port != 0 => {
+            tracing::info!("casting: port {port}: {e:#}; using a free one");
+            crate::dlna::start(st.clone(), false, crate::dlna::address(&cfg, 0)).await?
+        }
+        Err(e) => return Err(e),
+    };
     let links = d.links();
     run.dlna = Some(d);
+    let st = st.clone();
+    tokio::spawn(async move {
+        let stopped = st.stopped();
+        tokio::pin!(stopped);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(CAST_LISTENER_IDLE / 2) => {}
+                _ = &mut stopped => {
+                    close_cast_listener(&st, Duration::ZERO).await;
+                    return;
+                }
+            }
+            if !close_cast_listener(&st, CAST_LISTENER_IDLE).await {
+                return;
+            }
+        }
+    });
     Ok(links)
+}
+
+/// Closes a listener that only serves casts if nothing used it for `idle`. True while one stays
+/// open: there's something to look at again later.
+pub(crate) async fn close_cast_listener(st: &AppState, idle: Duration) -> bool {
+    let mut run = st.remote.lock().await;
+    if run.dlna.as_ref().is_none_or(|d| d.announcing()) {
+        return false;
+    }
+    if st.casts.in_use(idle) && !*st.stopping.borrow() {
+        return true;
+    }
+    run.dlna = None;
+    false
 }
 
 fn key_dlna(c: &ServerConfig) -> (bool, u16, String) {

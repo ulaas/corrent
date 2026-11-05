@@ -51,6 +51,12 @@ pub struct ServerConfig {
     pub plugin_catalog: String,
     /// Ed25519 public keys (hex) whose signatures on catalog plugins are trusted.
     pub plugin_keys: Vec<String>,
+    /// Set by the desktop app for the server it hosts: the API stays on this computer whatever
+    /// `bind` says, but casting may still open its media listener to the network.
+    #[serde(skip)]
+    pub hosted: bool,
+    /// Casting to Chromecasts.
+    pub cast: corrent_proto::library::CastConfig,
     /// DLNA/UPnP media server for TVs and players on the local network (plain HTTP).
     pub dlna: bool,
     pub dlna_port: u16,
@@ -103,6 +109,8 @@ impl Default for ServerConfig {
             metrics_token: String::new(),
             plugin_catalog: String::new(),
             plugin_keys: Vec::new(),
+            hosted: false,
+            cast: Default::default(),
             dlna: false,
             dlna_port: 8201,
             dlna_user: String::new(),

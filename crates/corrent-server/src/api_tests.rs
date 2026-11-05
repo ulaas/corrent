@@ -2191,8 +2191,14 @@ async fn dlna_browses_and_streams() {
 }
 
 /// A pretend Chromecast: TLS on a random port, the Default Media Receiver's messages. Sends
-/// every LOAD's URL and every control message type to `seen`.
+/// every LOAD's URL (and subtitle) and every control message type to `seen`. A seek past 1000 s
+/// plays the item to its end.
 async fn fake_receiver(seen: tokio::sync::mpsc::UnboundedSender<String>) -> SocketAddr {
+    fake_receiver_with(seen, false).await
+}
+
+/// `refuse_load`: every LOAD fails, without the device fetching anything.
+async fn fake_receiver_with(seen: tokio::sync::mpsc::UnboundedSender<String>, refuse_load: bool) -> SocketAddr {
     use crate::cast::wire::CastMessage;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let key = rcgen::generate_simple_self_signed(vec!["chromecast".into()]).unwrap();
@@ -2221,6 +2227,7 @@ async fn fake_receiver(seen: tokio::sync::mpsc::UnboundedSender<String>) -> Sock
             .encode()
         };
         let mut state = "IDLE";
+        let mut volume = json!({ "level": 0.5, "muted": false });
         loop {
             let mut len = [0u8; 4];
             if s.read_exact(&mut len).await.is_err() {
@@ -2231,7 +2238,41 @@ async fn fake_receiver(seen: tokio::sync::mpsc::UnboundedSender<String>) -> Sock
             let m = CastMessage::decode(&body).unwrap();
             let v: Value = serde_json::from_str(&m.payload).unwrap();
             let ty = v["type"].as_str().unwrap_or("").to_string();
+            let media = |state: &str, reason: Option<&str>| {
+                let mut st = json!({ "mediaSessionId": 9, "playerState": state, "currentTime": 3.0 });
+                if let Some(r) = reason {
+                    st["idleReason"] = json!(r);
+                }
+                send("urn:x-cast:com.google.cast.media", "t-1", json!({ "type": "MEDIA_STATUS", "status": [st] }))
+            };
             let out = match ty.as_str() {
+                "GET_STATUS" if m.namespace == "urn:x-cast:com.google.cast.receiver" => Some(send(
+                    "urn:x-cast:com.google.cast.receiver",
+                    "receiver-0",
+                    json!({ "type": "RECEIVER_STATUS", "status": { "applications": [], "volume": volume } }),
+                )),
+                "SET_VOLUME" => {
+                    let _ = seen.send(format!("VOLUME {}", v["volume"]));
+                    for k in ["level", "muted"] {
+                        if let Some(x) = v["volume"].get(k) {
+                            volume[k] = x.clone();
+                        }
+                    }
+                    Some(send(
+                        "urn:x-cast:com.google.cast.receiver",
+                        "receiver-0",
+                        json!({ "type": "RECEIVER_STATUS", "status": { "volume": volume, "applications": [{ "appId": "CC1AD845", "transportId": "t-1", "sessionId": "s-1" }] } }),
+                    ))
+                }
+                "LOAD" if refuse_load => Some(send(
+                    "urn:x-cast:com.google.cast.media",
+                    "t-1",
+                    json!({ "type": "LOAD_FAILED", "requestId": v["requestId"] }),
+                )),
+                "SEEK" if v["currentTime"].as_f64().unwrap_or(0.0) > 1000.0 => {
+                    state = "IDLE";
+                    Some(media("IDLE", Some("FINISHED")))
+                }
                 "LAUNCH" => Some(send(
                     "urn:x-cast:com.google.cast.receiver",
                     "receiver-0",
@@ -2239,6 +2280,9 @@ async fn fake_receiver(seen: tokio::sync::mpsc::UnboundedSender<String>) -> Sock
                 )),
                 "LOAD" => {
                     let _ = seen.send(format!("LOAD {}", v["media"]["contentId"].as_str().unwrap()));
+                    if v["activeTrackIds"] == json!([1]) {
+                        let _ = seen.send(format!("TRACK {}", v["media"]["tracks"][0]["trackContentId"].as_str().unwrap()));
+                    }
                     state = "PLAYING";
                     Some(send(
                         "urn:x-cast:com.google.cast.media",
@@ -2363,6 +2407,212 @@ async fn casts_to_a_receiver() {
     let other = v["token"].as_str().unwrap().to_string();
     let (s, _, _) = send(app, Method::POST, "/api/v1/cast/tv/command", &other, json!({ "action": "pause" })).await;
     assert_eq!(s, StatusCode::CONFLICT);
+    // Only yours (or an administrator's view) to attach to.
+    let (_, v, _) = get(app, "/api/v1/cast/active", &admin).await;
+    assert_eq!((v.as_array().unwrap().len(), v[0]["item_id"].as_i64()), (1, Some(item)), "{v}");
+    let (_, v, _) = get(app, "/api/v1/cast/active", &other).await;
+    assert_eq!(v, json!([]));
+    // The device's volume: read at the start, changed from here.
+    let (_, v, _) = get(app, "/api/v1/cast/tv", &admin).await;
+    assert_eq!((v["volume"].as_f64(), v["muted"].as_bool()), (Some(0.5), Some(false)), "{v}");
+    send(app, Method::POST, "/api/v1/cast/tv/command", &admin, json!({ "action": "volume", "level": 0.25 })).await;
+    assert_eq!(next(&mut seen).await, "VOLUME {\"level\":0.25}");
+    send(app, Method::POST, "/api/v1/cast/tv/command", &admin, json!({ "action": "mute", "muted": true })).await;
+    assert_eq!(next(&mut seen).await, "VOLUME {\"muted\":true}");
+    let v = wait_cast(app, &admin, |v| v["muted"] == true).await;
+    assert_eq!(v["volume"].as_f64(), Some(0.25));
+    // Played to its end: said so, no longer active, and the watch state knows.
+    send(app, Method::POST, "/api/v1/cast/tv/command", &admin, json!({ "action": "seek", "position_ms": 2_000_000 }))
+        .await;
+    let v = wait_cast(app, &admin, |v| v["state"] == "idle").await;
+    assert_eq!(v["finished"], true, "{v}");
+    let (_, v, _) = get(app, "/api/v1/cast/active", &admin).await;
+    assert_eq!(v, json!([]));
+    // The next item goes over the same connection and is the status straight away.
+    let (s, v, _) = send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!((v["state"].as_str(), v["finished"].as_bool()), (Some("loading"), Some(false)), "{v}");
+    assert!(next(&mut seen).await.starts_with("LOAD "));
+    h.stop().await;
+}
+
+async fn wait_cast(app: &Router, token: &str, done: impl Fn(&Value) -> bool) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let (_, v, _) = get(app, "/api/v1/cast/tv", token).await;
+        if done(&v) {
+            return v;
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// A photo library with one item, and a fake device for it.
+async fn cast_fixture(h: &H, admin: &str, addr: SocketAddr) -> i64 {
+    let app = &h.app;
+    let photos = h.dir.join("Pics");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])).save(photos.join("a.png")).unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        admin,
+        json!({ "name": "Pics", "kind": "photos", "folders": [photos] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let item = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), admin).await;
+        if let Some(id) = v["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    h.st.casts.inject(crate::cast::Found {
+        device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), model: String::new() },
+        addr,
+    });
+    item
+}
+
+/// The desktop app's server: its API on this computer only, and still able to cast.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_server_in_the_app_casts_with_its_api_on_loopback() {
+    let cfg = ServerConfig {
+        hosted: true,
+        bind: "127.0.0.1".into(),
+        tls: false,
+        dlna_port: 0,
+        cast: corrent_proto::library::CastConfig { port: 0, ..Default::default() },
+        ..Default::default()
+    };
+    let h = harness("cast-hosted", cfg).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let (tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
+    let addr = fake_receiver(tx).await;
+    let item = cast_fixture(&h, &admin, addr).await;
+    // Only the media listener opens to the network, and it serves only signed links.
+    let (s, v, _) = send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let load = tokio::time::timeout(std::time::Duration::from_secs(10), seen.recv()).await.unwrap().unwrap();
+    let url = load.strip_prefix("LOAD ").unwrap();
+    assert!(reqwest::get(url).await.unwrap().bytes().await.unwrap().starts_with(b"\x89PNG"));
+    let root = url.split("/dlna/").next().unwrap();
+    assert_eq!(reqwest::get(format!("{root}/api/v1/server/info")).await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(reqwest::get(format!("{root}/dlna/description.xml")).await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
+    // While casting it stays, however long nothing asks for links.
+    assert!(crate::remote::close_cast_listener(&h.st, std::time::Duration::ZERO).await);
+    assert!(reqwest::get(url).await.is_ok());
+    // Once casting has ended it closes, and its links die with it.
+    send(app, Method::POST, "/api/v1/cast/tv/command", &admin, json!({ "action": "stop" })).await;
+    wait_cast(app, &admin, |v| v["state"] == "idle").await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while crate::remote::close_cast_listener(&h.st, std::time::Duration::ZERO).await {
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(reqwest::get(url).await.is_err(), "still serving {url}");
+    h.stop().await;
+}
+
+/// A server its owner bound to loopback stays there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_bound_to_loopback_by_its_owner_doesnt_open_a_listener_to_cast() {
+    let cfg = ServerConfig { bind: "127.0.0.1".into(), tls: false, dlna_port: 0, ..Default::default() };
+    let h = harness("cast-loopback", cfg).await;
+    let admin = admin_token(&h.app).await;
+    let (tx, _seen) = tokio::sync::mpsc::unbounded_channel();
+    let addr = fake_receiver(tx).await;
+    let item = cast_fixture(&h, &admin, addr).await;
+    let (s, v, _) = send(&h.app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
+    assert_ne!(s, StatusCode::OK, "{v}");
+    assert!(v.to_string().contains("listens on this computer only"), "{v}");
+    h.stop().await;
+}
+
+/// A device that never fetched anything isn't told it couldn't play it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_load_failing_before_any_fetch_says_the_device_cant_reach_us() {
+    let h = harness("cast-reach", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
+    let admin = admin_token(&h.app).await;
+    let (tx, _seen) = tokio::sync::mpsc::unbounded_channel();
+    let addr = fake_receiver_with(tx, true).await;
+    let item = cast_fixture(&h, &admin, addr).await;
+    let (s, v, _) = send(&h.app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let v = wait_cast(&h.app, &admin, |v| v["state"] == "error").await;
+    assert_eq!(v["error"], "cant_reach", "{v}");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cast_settings_are_saved_and_followed() {
+    let cfg = ServerConfig { hosted: true, bind: "127.0.0.1".into(), tls: false, dlna_port: 0, ..Default::default() };
+    let h = harness("cast-config", cfg).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let (s, v, _) = get(app, "/api/v1/cast/config", &admin).await;
+    assert_eq!((s, v["enabled"].as_bool(), v["max_height"].as_i64()), (StatusCode::OK, Some(true), Some(1080)));
+    // Nonsense and addresses out on the internet are refused.
+    for bad in ["tv.local", "8.8.8.8"] {
+        let (s, _, _) = send(app, Method::PUT, "/api/v1/cast/config", &admin, json!({ "enabled": true, "devices": [bad] })).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let (s, v, _) = send(
+        app,
+        Method::PUT,
+        "/api/v1/cast/config",
+        &admin,
+        json!({ "enabled": true, "devices": [" Den=192.168.77.9 ", ""], "max_height": 2160, "hevc": true }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["devices"], json!(["Den=192.168.77.9"]));
+    // Offered at once, next to what the search found.
+    h.st.casts.inject(crate::cast::Found {
+        device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), model: String::new() },
+        addr: "192.168.77.8:8009".parse().unwrap(),
+    });
+    let (_, v, _) = get(app, "/api/v1/cast/devices", &admin).await;
+    assert_eq!((v[0]["name"].as_str(), v[1]["name"].as_str()), (Some("TV"), Some("Den")), "{v}");
+    // In the file; what the app forces on its server isn't.
+    let file = crate::ServerConfig::load(&h.st.paths.data_dir).unwrap();
+    assert_eq!((file.cast.max_height, file.cast.hevc, file.bind.as_str()), (2160, true, "0.0.0.0"));
+    // Turned off, nothing casts.
+    let (s, _, _) = send(app, Method::PUT, "/api/v1/cast/config", &admin, json!({ "enabled": false })).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v, _) = get(app, "/api/v1/cast/devices", &admin).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let (s, _, _) = send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": 1 })).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // Only people who may change settings see or change them.
+    send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        &admin,
+        json!({ "name": "guest2", "password": "long enough pw", "role": "user" }),
+    )
+    .await;
+    let (_, v, _) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call {
+            body: Some(json!({ "username": "guest2", "password": "long enough pw", "device": device() })),
+            ..Default::default()
+        },
+    )
+    .await;
+    let other = v["token"].as_str().unwrap().to_string();
+    let (s, _, _) = get(app, "/api/v1/cast/config", &other).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
     h.stop().await;
 }
 

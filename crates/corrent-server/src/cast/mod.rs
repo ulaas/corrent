@@ -8,6 +8,7 @@ pub mod wire;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,12 @@ const NS_MEDIA: &str = "urn:x-cast:com.google.cast.media";
 const SENDER: &str = "sender-corrent";
 /// The error clients translate ("The device couldn't play this").
 pub const CANT_PLAY: &str = "cant_play";
+/// The same, when the device never fetched anything: most likely a firewall on this computer.
+pub const CANT_REACH: &str = "cant_reach";
+/// How long a device may take to start playing what it was told to load.
+const LOAD_DEADLINE: Duration = Duration::from_secs(60);
+/// The port receivers listen on.
+const DEVICE_PORT: u16 = 8009;
 /// Devices are looked for again after this long.
 const FRESH: Duration = Duration::from_secs(60);
 
@@ -53,6 +60,18 @@ pub struct Media {
     /// The HLS session to stop when the cast ends.
     pub hls_session: Option<String>,
     pub duration_ms: Option<i64>,
+    /// A subtitle the device shows itself.
+    pub subtitle_track: Option<SideTrack>,
+    /// What the media listener served so far (see [`CANT_REACH`]).
+    pub hits: Arc<AtomicU64>,
+}
+
+/// A WebVTT subtitle for the receiver.
+#[derive(Clone, Debug)]
+pub struct SideTrack {
+    pub url: String,
+    pub name: String,
+    pub lang: Option<String>,
 }
 
 enum Cmd {
@@ -69,6 +88,57 @@ struct Session {
 pub struct Casts {
     found: Mutex<Option<(Instant, Vec<Found>)>>,
     sessions: Mutex<HashMap<String, Session>>,
+    /// When links on the media listener were last asked for.
+    last_use: Mutex<Option<Instant>>,
+}
+
+/// A device typed into the settings: `address`, `address:port` or `name=address[:port]`. Local
+/// addresses only: this is where the server opens connections.
+pub fn manual_device(line: &str) -> Option<Found> {
+    let line = line.trim();
+    let (name, at) = match line.split_once('=') {
+        Some((n, a)) => (n.trim(), a.trim()),
+        None => ("", line),
+    };
+    let addr = match at.parse::<IpAddr>() {
+        Ok(ip) => SocketAddr::new(ip, DEVICE_PORT),
+        Err(_) => at.parse::<SocketAddr>().ok()?,
+    };
+    if !crate::net::is_local(addr.ip(), &[]) {
+        return None;
+    }
+    let id = format!("manual-{}-{}", addr.ip(), addr.port()).replace(':', "-");
+    let name = if name.is_empty() { addr.ip().to_string() } else { name.to_string() };
+    Some(Found { device: CastDevice { id, name, model: String::new() }, addr })
+}
+
+/// What was found, then the typed devices that aren't among them.
+fn merged(mut found: Vec<Found>, manual: &[String]) -> Vec<Found> {
+    for m in manual.iter().filter_map(|l| manual_device(l)) {
+        if !found.iter().any(|f| f.addr.ip() == m.addr.ip()) {
+            found.push(m);
+        }
+    }
+    found
+}
+
+fn is_live(state: &str) -> bool {
+    matches!(state, "connecting" | "loading" | "buffering" | "playing" | "paused")
+}
+
+/// A new item on `status`, at once: whoever asks next gets the new item, never the one before.
+fn mark_loading(status: &Mutex<CastStatus>, m: &Media) {
+    let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
+    if s.state != "connecting" {
+        s.state = "loading".into();
+    }
+    s.item_id = Some(m.item_id);
+    s.title = m.title.clone();
+    s.by = m.by.clone();
+    s.position_ms = (m.start_s * 1000.0) as i64;
+    s.duration_ms = m.duration_ms;
+    s.error = None;
+    s.finished = false;
 }
 
 /// Our address as `peer` sees it (the interface the route to it leaves through).
@@ -114,24 +184,32 @@ fn browse(wait: Duration) -> anyhow::Result<Vec<Found>> {
 }
 
 impl Casts {
-    /// The devices on the network (looked for at most once a minute unless `refresh`).
-    pub async fn devices(&self, refresh: bool) -> anyhow::Result<Vec<Found>> {
+    /// The devices on the network (looked for at most once a minute unless `refresh`) and the
+    /// typed ones. Typed ones are offered even when the search can't run.
+    pub async fn devices(&self, refresh: bool, manual: &[String]) -> anyhow::Result<Vec<Found>> {
         if !refresh
             && let Some((at, list)) = self.found.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
             && at.elapsed() < FRESH
         {
-            return Ok(list.clone());
+            return Ok(merged(list.clone(), manual));
         }
-        let list = tokio::task::spawn_blocking(|| browse(Duration::from_secs(3))).await??;
+        let list = match tokio::task::spawn_blocking(|| browse(Duration::from_secs(3))).await? {
+            Ok(list) => list,
+            Err(e) if manual.iter().any(|l| manual_device(l).is_some()) => {
+                tracing::info!("casting: can't look for devices: {e:#}");
+                Vec::new()
+            }
+            Err(e) => return Err(e),
+        };
         *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), list.clone()));
-        Ok(list)
+        Ok(merged(list, manual))
     }
 
-    pub async fn device(&self, id: &str) -> anyhow::Result<Found> {
-        if let Some(f) = self.devices(false).await?.into_iter().find(|f| f.device.id == id) {
+    pub async fn device(&self, id: &str, manual: &[String]) -> anyhow::Result<Found> {
+        if let Some(f) = self.devices(false, manual).await?.into_iter().find(|f| f.device.id == id) {
             return Ok(f);
         }
-        self.devices(true)
+        self.devices(true, manual)
             .await?
             .into_iter()
             .find(|f| f.device.id == id)
@@ -149,6 +227,31 @@ impl Casts {
         s.get(id).map(|s| s.status.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
+    /// What is casting right now.
+    pub fn active(&self) -> Vec<CastStatus> {
+        let s = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut list: Vec<CastStatus> = s
+            .values()
+            .filter(|s| !s.tx.is_closed())
+            .map(|s| s.status.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            .filter(|s| is_live(&s.state))
+            .collect();
+        list.sort_by_key(|s| s.device.name.to_lowercase());
+        list
+    }
+
+    /// Links on the media listener were just asked for.
+    pub fn touch(&self) {
+        *self.last_use.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+
+    /// Whether the media listener may still be needed: a connection is open, or it was asked for
+    /// links within `idle` (the cast they are for may not have started yet).
+    pub fn in_use(&self, idle: Duration) -> bool {
+        let recent = self.last_use.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t.elapsed() < idle);
+        recent || self.sessions.lock().unwrap_or_else(|e| e.into_inner()).values().any(|s| !s.tx.is_closed())
+    }
+
     /// Plays `media` on `found`, reusing the connection when there is one.
     pub fn play(&self, st: Arc<crate::state::AppState>, found: Found, media: Media) {
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -156,6 +259,7 @@ impl Casts {
         if let Some(s) = sessions.get(&id)
             && s.tx.try_send(Cmd::Load(Box::new(media.clone()))).is_ok()
         {
+            mark_loading(&s.status, &media);
             return;
         }
         let status = Arc::new(Mutex::new(CastStatus {
@@ -163,6 +267,7 @@ impl Casts {
             state: "connecting".into(),
             ..Default::default()
         }));
+        mark_loading(&status, &media);
         let (tx, rx) = mpsc::channel(16);
         let _ = tx.try_send(Cmd::Load(Box::new(media)));
         let s2 = status.clone();
@@ -238,10 +343,16 @@ fn msg(destination: &str, namespace: &str, payload: Value) -> Vec<u8> {
     .encode()
 }
 
-/// The media-status fields a sender shows.
+/// The media-status fields a sender shows. Returns the media session.
 pub fn apply_media_status(s: &mut CastStatus, v: &Value) -> Option<i64> {
     let m = v.get("status")?.as_array()?.first()?;
     let session = m.get("mediaSessionId").and_then(Value::as_i64);
+    let idle_reason = (m.get("playerState").and_then(Value::as_str) == Some("IDLE"))
+        .then(|| m.get("idleReason").and_then(Value::as_str).unwrap_or(""));
+    // The item being replaced says it ended: that isn't about the one on its way.
+    if s.state == "loading" && idle_reason.is_some_and(|r| r != "ERROR") {
+        return None;
+    }
     if let Some(t) = m.get("currentTime").and_then(Value::as_f64) {
         s.position_ms = (t * 1000.0) as i64;
     }
@@ -253,8 +364,9 @@ pub fn apply_media_status(s: &mut CastStatus, v: &Value) -> Option<i64> {
         Some("PAUSED") => s.state = "paused".into(),
         Some("BUFFERING") => s.state = "buffering".into(),
         Some("IDLE") => {
-            let reason = m.get("idleReason").and_then(Value::as_str).unwrap_or("");
+            let reason = idle_reason.unwrap_or("");
             s.state = if reason == "ERROR" { "error".into() } else { "idle".into() };
+            s.finished = reason == "FINISHED";
             if reason == "ERROR" {
                 s.error = Some(CANT_PLAY.into());
             }
@@ -262,6 +374,59 @@ pub fn apply_media_status(s: &mut CastStatus, v: &Value) -> Option<i64> {
         _ => {}
     }
     session
+}
+
+/// The volume fields of a receiver status.
+fn apply_receiver_status(s: &mut CastStatus, v: &Value) {
+    if let Some(level) = v.pointer("/status/volume/level").and_then(Value::as_f64) {
+        s.volume = Some(level);
+    }
+    if let Some(muted) = v.pointer("/status/volume/muted").and_then(Value::as_bool) {
+        s.muted = Some(muted);
+    }
+}
+
+/// The LOAD message's body for `media`.
+fn load_message(media: &Media, request: i64) -> Value {
+    let mut meta = json!({ "metadataType": 0, "title": media.title, "subtitle": media.subtitle });
+    if let Some(img) = &media.image {
+        meta["images"] = json!([{ "url": img }]);
+    }
+    let mut info = json!({
+        "contentId": media.url, "contentType": media.content_type, "streamType": "BUFFERED", "metadata": meta,
+    });
+    if let Some(d) = media.duration_ms {
+        info["duration"] = json!(d as f64 / 1000.0);
+    }
+    let mut load = json!({
+        "type": "LOAD", "requestId": request, "media": info, "autoplay": true, "currentTime": media.start_s,
+    });
+    if let Some(t) = &media.subtitle_track {
+        let mut track = json!({
+            "trackId": 1, "type": "TEXT", "subtype": "SUBTITLES", "trackContentId": t.url,
+            "trackContentType": "text/vtt", "name": t.name,
+        });
+        if let Some(lang) = &t.lang {
+            track["language"] = json!(lang);
+        }
+        load["media"]["tracks"] = json!([track]);
+        load["activeTrackIds"] = json!([1]);
+    }
+    load
+}
+
+/// Records how far `m` got, as the players do.
+fn report_progress(st: &Arc<crate::state::AppState>, m: &Media, pos: i64, dur: Option<i64>, finished: bool) {
+    let near_end = dur.is_some_and(|d| d > 0 && pos * 10 > d * 9);
+    let u = if finished || near_end {
+        corrent_proto::library::StateUpdate { played: Some(true), ..Default::default() }
+    } else {
+        corrent_proto::library::StateUpdate { position_ms: Some(pos), ..Default::default() }
+    };
+    let (lib, user, item) = (st.library.clone(), m.user_id, m.item_id);
+    tokio::spawn(async move {
+        let _ = lib.set_state(user, item, u).await;
+    });
 }
 
 async fn connection(
@@ -287,6 +452,8 @@ async fn connection(
     let (mut r, mut w) = tokio::io::split(stream);
 
     w.write_all(&msg("receiver-0", NS_CONNECTION, json!({ "type": "CONNECT" }))).await?;
+    // For its volume.
+    w.write_all(&msg("receiver-0", NS_RECEIVER, json!({ "type": "GET_STATUS", "requestId": 1 }))).await?;
     let mut req = 1i64;
     let mut transport: Option<String> = None;
     let mut session_id: Option<String> = None;
@@ -297,7 +464,12 @@ async fn connection(
     let mut poll = tokio::time::interval(Duration::from_secs(1));
     let mut last_seen = Instant::now();
     let mut launched: Option<Instant> = None;
+    // Told to load and not playing yet; what the media listener had served when it was told.
+    let mut loading_since: Option<Instant> = None;
+    let mut hits_at_load: Option<(Arc<AtomicU64>, u64)> = None;
     let mut last_report = Instant::now();
+    // Where the current item really was (a status while loading says where it starts).
+    let mut played_at = 0i64;
     let (frames_tx, mut frames) = mpsc::channel::<anyhow::Result<CastMessage>>(32);
     // Reading runs on its own so a half-read frame is never dropped by `select!`.
     let reader = tokio::spawn(async move {
@@ -331,6 +503,11 @@ async fn connection(
             tokio::spawn(async move { hls.stop(&id).await });
         }
     };
+    // Why a load failed: the device reached us and couldn't play it, or never came.
+    let failure = |hits: &Option<(Arc<AtomicU64>, u64)>| match hits {
+        Some((now, then)) if now.load(Ordering::Relaxed) == *then => CANT_REACH,
+        _ => CANT_PLAY,
+    };
 
     let result: anyhow::Result<()> = async {
         loop {
@@ -347,6 +524,15 @@ async fn connection(
                     if last_seen.elapsed() > Duration::from_secs(30) {
                         anyhow::bail!("the device stopped answering");
                     }
+                    if loading_since.is_some_and(|t: Instant| t.elapsed() > LOAD_DEADLINE) {
+                        loading_since = None;
+                        let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
+                        s.state = "error".into();
+                        s.error = Some(failure(&hits_at_load).into());
+                        drop(s);
+                        stop_hls(&current);
+                        current = None;
+                    }
                 }
                 _ = poll.tick(), if transport.is_some() && media_session.is_some() => {
                     let t = transport.clone().unwrap_or_default();
@@ -357,15 +543,9 @@ async fn connection(
                     let Some(cmd) = cmd else { return Ok(()) };
                     match cmd {
                         Cmd::Load(m) => {
-                            {
-                                let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
-                                s.state = "loading".into();
-                                s.item_id = Some(m.item_id);
-                                s.title = m.title.clone();
-                                s.by = m.by.clone();
-                                s.position_ms = (m.start_s * 1000.0) as i64;
-                                s.duration_ms = m.duration_ms;
-                                s.error = None;
+                            status.lock().unwrap_or_else(|e| e.into_inner()).state = "loading".into();
+                            if let Some(c) = &current {
+                                report_progress(&st, c, played_at, c.duration_ms, false);
                             }
                             stop_hls(&current);
                             current = None;
@@ -380,6 +560,19 @@ async fn connection(
                                 }
                             }
                         }
+                        // The device's, whatever it is playing.
+                        Cmd::Control(CastCommand::Volume { level }) => {
+                            req += 1;
+                            w.write_all(&msg("receiver-0", NS_RECEIVER, json!({
+                                "type": "SET_VOLUME", "requestId": req, "volume": { "level": level.clamp(0.0, 1.0) },
+                            }))).await?;
+                        }
+                        Cmd::Control(CastCommand::Mute { muted }) => {
+                            req += 1;
+                            w.write_all(&msg("receiver-0", NS_RECEIVER, json!({
+                                "type": "SET_VOLUME", "requestId": req, "volume": { "muted": muted },
+                            }))).await?;
+                        }
                         Cmd::Control(c) => {
                             let (Some(t), Some(ms)) = (transport.clone(), media_session) else {
                                 if c == CastCommand::Stop { return Ok(()) }
@@ -392,12 +585,7 @@ async fn connection(
                                 CastCommand::Seek { position_ms } => json!({
                                     "type": "SEEK", "mediaSessionId": ms, "requestId": req, "currentTime": position_ms.max(0) as f64 / 1000.0,
                                 }),
-                                CastCommand::Volume { level } => {
-                                    w.write_all(&msg("receiver-0", NS_RECEIVER, json!({
-                                        "type": "SET_VOLUME", "requestId": req, "volume": { "level": level.clamp(0.0, 1.0) },
-                                    }))).await?;
-                                    continue;
-                                }
+                                CastCommand::Volume { .. } | CastCommand::Mute { .. } => continue,
                                 CastCommand::Stop => {
                                     if let Some(sid) = &session_id {
                                         w.write_all(&msg("receiver-0", NS_RECEIVER, json!({ "type": "STOP", "sessionId": sid, "requestId": req }))).await?;
@@ -419,6 +607,7 @@ async fn connection(
                             w.write_all(&CastMessage { source: SENDER.into(), destination: m.source.clone(), namespace: NS_HEARTBEAT.into(), payload: r#"{"type":"PONG"}"#.into() }.encode()).await?;
                         }
                         (NS_RECEIVER, "RECEIVER_STATUS") => {
+                            apply_receiver_status(&mut status.lock().unwrap_or_else(|e| e.into_inner()), &v);
                             let app = v.pointer("/status/applications").and_then(Value::as_array).and_then(|a| {
                                 a.iter().find(|x| x.get("appId").and_then(Value::as_str) == Some(APP_ID))
                             });
@@ -439,36 +628,54 @@ async fn connection(
                         }
                         (NS_RECEIVER, "LAUNCH_ERROR") => anyhow::bail!("the device refused to start the player"),
                         (NS_MEDIA, "MEDIA_STATUS") => {
-                            let (state, pos, dur) = {
+                            let (state, pos, dur, finished) = {
                                 let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
                                 if let Some(ms) = apply_media_status(&mut s, &v) {
                                     media_session = Some(ms);
                                 }
-                                (s.state.clone(), s.position_ms, s.duration_ms)
-                            };
-                            // Watch progress, as the players record it (every 10 s, and at the end).
-                            if let Some(m) = &current {
-                                let finished = state == "idle"
-                                    && v.pointer("/status/0/idleReason").and_then(Value::as_str) == Some("FINISHED");
-                                if finished || (state == "playing" && last_report.elapsed() > Duration::from_secs(10)) {
-                                    last_report = Instant::now();
-                                    let near_end = dur.is_some_and(|d| d > 0 && pos * 10 > d * 9);
-                                    let u = if finished || near_end {
-                                        corrent_proto::library::StateUpdate { played: Some(true), ..Default::default() }
-                                    } else {
-                                        corrent_proto::library::StateUpdate { position_ms: Some(pos), ..Default::default() }
-                                    };
-                                    let (lib, user, item) = (st.library.clone(), m.user_id, m.item_id);
-                                    tokio::spawn(async move {
-                                        let _ = lib.set_state(user, item, u).await;
-                                    });
+                                // No media session any more: it ended without saying how (or we
+                                // missed that), which right at the end means it played through.
+                                let gone = v.get("status").and_then(Value::as_array).is_some_and(Vec::is_empty);
+                                if gone && media_session.is_some() && matches!(s.state.as_str(), "playing" | "paused" | "buffering") {
+                                    s.finished = s.duration_ms.is_some_and(|d| d > 0 && s.position_ms + 5000 >= d);
+                                    s.state = "idle".into();
                                 }
+                                if s.state == "error" && s.error.as_deref() == Some(CANT_PLAY) {
+                                    s.error = Some(failure(&hits_at_load).into());
+                                }
+                                (s.state.clone(), s.position_ms, s.duration_ms, s.finished)
+                            };
+                            if matches!(state.as_str(), "playing" | "paused" | "buffering") {
+                                loading_since = None;
+                                played_at = pos;
+                            }
+                            // Watch progress, as the players record it (every 10 s, and at the end).
+                            if let Some(m) = &current
+                                && (finished || (state == "playing" && last_report.elapsed() > Duration::from_secs(10)))
+                            {
+                                last_report = Instant::now();
+                                report_progress(&st, m, pos, dur, finished);
+                            }
+                            // Over: nothing more will be asked of its transcode, and nothing more
+                            // to ask the device. The connection stays for what comes next.
+                            if matches!(state.as_str(), "idle" | "error") && (current.is_some() || media_session.is_some()) {
+                                if !finished && let Some(m) = &current {
+                                    report_progress(&st, m, played_at, dur, false);
+                                }
+                                stop_hls(&current);
+                                current = None;
+                                media_session = None;
+                                loading_since = None;
                             }
                         }
                         (NS_MEDIA, "LOAD_FAILED" | "LOAD_CANCELLED" | "INVALID_REQUEST") => {
                             let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
                             s.state = "error".into();
-                            s.error = Some(CANT_PLAY.into());
+                            s.error = Some(failure(&hits_at_load).into());
+                            drop(s);
+                            stop_hls(&current);
+                            current = None;
+                            loading_since = None;
                         }
                         (NS_CONNECTION, "CLOSE") if Some(&m.source) == transport.as_ref() => return Ok(()),
                         _ => {}
@@ -480,24 +687,18 @@ async fn connection(
                 && let Some(media) = pending.take()
             {
                 req += 1;
-                let mut meta = json!({ "metadataType": 0, "title": media.title, "subtitle": media.subtitle });
-                if let Some(img) = &media.image {
-                    meta["images"] = json!([{ "url": img }]);
-                }
-                let mut info = json!({
-                    "contentId": media.url, "contentType": media.content_type, "streamType": "BUFFERED", "metadata": meta,
-                });
-                if let Some(d) = media.duration_ms {
-                    info["duration"] = json!(d as f64 / 1000.0);
-                }
-                w.write_all(&msg(&t, NS_MEDIA, json!({
-                    "type": "LOAD", "requestId": req, "media": info, "autoplay": true, "currentTime": media.start_s,
-                }))).await?;
+                w.write_all(&msg(&t, NS_MEDIA, load_message(&media, req))).await?;
+                loading_since = Some(Instant::now());
+                hits_at_load = Some((media.hits.clone(), media.hits.load(Ordering::Relaxed)));
+                played_at = (media.start_s * 1000.0) as i64;
                 current = Some(media);
             }
         }
     }
     .await;
+    if let Some(m) = &current {
+        report_progress(&st, m, played_at, m.duration_ms, false);
+    }
     stop_hls(&current);
     result
 }
@@ -529,6 +730,76 @@ mod tests {
         apply_media_status(&mut s, &v);
         assert_eq!(s.state, "error");
         assert_eq!(apply_media_status(&mut s, &json!({ "status": [] })), None);
+    }
+
+    #[test]
+    fn only_finished_counts_as_played_through() {
+        let idle = |r: &str| json!({ "status": [{ "mediaSessionId": 3, "playerState": "IDLE", "idleReason": r }] });
+        let mut s = CastStatus { state: "playing".into(), ..Default::default() };
+        apply_media_status(&mut s, &idle("FINISHED"));
+        assert_eq!((s.state.as_str(), s.finished), ("idle", true));
+        let mut s = CastStatus { state: "playing".into(), ..Default::default() };
+        apply_media_status(&mut s, &idle("CANCELLED"));
+        assert_eq!((s.state.as_str(), s.finished), ("idle", false));
+    }
+
+    #[test]
+    fn the_item_being_replaced_ending_says_nothing_about_the_next() {
+        let mut s = CastStatus { state: "loading".into(), position_ms: 1000, ..Default::default() };
+        let old = json!({ "status": [{ "mediaSessionId": 3, "playerState": "IDLE", "idleReason": "INTERRUPTED", "currentTime": 900 }] });
+        assert_eq!(apply_media_status(&mut s, &old), None);
+        assert_eq!((s.state.as_str(), s.position_ms, s.finished), ("loading", 1000, false));
+        // A failure is about the new one.
+        let bad = json!({ "status": [{ "mediaSessionId": 4, "playerState": "IDLE", "idleReason": "ERROR" }] });
+        apply_media_status(&mut s, &bad);
+        assert_eq!(s.state, "error");
+    }
+
+    #[test]
+    fn typed_devices() {
+        let f = manual_device("Bedroom = 192.168.1.20").unwrap();
+        assert_eq!((f.device.name.as_str(), f.addr), ("Bedroom", "192.168.1.20:8009".parse().unwrap()));
+        let f = manual_device(" 10.0.0.5:9000 ").unwrap();
+        assert_eq!((f.device.name.as_str(), f.addr.port()), ("10.0.0.5", 9000));
+        assert_eq!(manual_device("[fd00::1]:8009").unwrap().device.id, "manual-fd00--1-8009");
+        for bad in ["", "tv.local", "8.8.8.8", "Far=8.8.8.8:8009", "192.168.1.20:port"] {
+            assert!(manual_device(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_typed_device_gives_way_to_the_same_one_found() {
+        let found = manual_device("Found=192.168.1.20").unwrap();
+        let list = merged(vec![found], &["192.168.1.20".into(), "192.168.1.21".into(), "nonsense".into()]);
+        let names: Vec<_> = list.iter().map(|f| f.device.name.as_str()).collect();
+        assert_eq!(names, ["Found", "192.168.1.21"]);
+    }
+
+    #[test]
+    fn load_carries_a_subtitle_the_device_shows() {
+        let mut m = Media {
+            url: "http://h/a.mp4".into(),
+            content_type: "video/mp4".into(),
+            title: "T".into(),
+            subtitle: String::new(),
+            image: None,
+            start_s: 5.0,
+            item_id: 1,
+            by: String::new(),
+            user_id: 1,
+            hls_session: None,
+            duration_ms: Some(60_000),
+            subtitle_track: None,
+            hits: Arc::default(),
+        };
+        let v = load_message(&m, 7);
+        assert_eq!(v["currentTime"], 5.0);
+        assert!(v.get("activeTrackIds").is_none() && v["media"].get("tracks").is_none());
+        m.subtitle_track = Some(SideTrack { url: "http://h/s.vtt".into(), name: "English".into(), lang: Some("en".into()) });
+        let v = load_message(&m, 8);
+        assert_eq!(v["activeTrackIds"], json!([1]));
+        let t = &v["media"]["tracks"][0];
+        assert_eq!((&t["trackContentId"], &t["trackContentType"], &t["language"]), (&json!("http://h/s.vtt"), &json!("text/vtt"), &json!("en")));
     }
 
     #[test]
