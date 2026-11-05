@@ -1550,3 +1550,5 @@
 "Mute" = "Sessize al"
 "Volume" = "Ses düzeyi"
 "Casting is turned off in the settings." = "Yayınlama ayarlarda kapalı."
+"Copy streams when only the file type is in the way" = "Yalnızca dosya türü engelse akışları kopyala"
+"MKV files the device can play aren’t converted, which is much lighter on this computer. If a device fails on the copy, it gets a converted stream instead." = "Cihazın oynatabildiği MKV dosyaları dönüştürülmez; bu, bilgisayarı çok daha az yorar. Cihaz kopyayı oynatamazsa dönüştürülmüş akış alır."

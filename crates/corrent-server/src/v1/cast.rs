@@ -141,6 +141,26 @@ struct PlayBody {
     subtitle: Option<i64>,
 }
 
+/// Where a device fetches what `info` describes: its URL, type, and whether it's copied streams.
+async fn source(
+    st: &AppState,
+    links: &crate::dlna::Links,
+    host: std::net::IpAddr,
+    user: i64,
+    info: &corrent_proto::library::PlaybackInfo,
+) -> Result<(String, String, bool), super::ApiErr> {
+    if let Some(session) = &info.session_id {
+        return Ok((links.hls(host, session), "application/x-mpegurl".to_string(), false));
+    }
+    if info.method == "remux" {
+        let audio = info.url.rsplit('/').nth(1).and_then(|a| a.parse().ok()).unwrap_or(0);
+        return Ok((links.remux(host, user, info.file_id, audio), "application/x-mpegurl".to_string(), true));
+    }
+    let path = std::path::PathBuf::from(st.library.file_path(user, info.file_id).await.map_err(lib_err)?);
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("bin").to_ascii_lowercase();
+    Ok((links.media(host, user, info.file_id, &ext), super::library::mime_for(&path).to_string(), false))
+}
+
 async fn play(
     State(st): State<Arc<AppState>>,
     auth: Auth,
@@ -150,43 +170,49 @@ async fn play(
     let cfg = enabled(&st)?;
     may_control(&st, &auth, &device)?;
     let found = st.casts.device(&device, &cfg.devices).await.map_err(|e| err(ErrorCode::NotFound, format!("{e:#}")))?;
-    let host =
-        crate::cast::local_ip_towards(found.addr).ok_or_else(|| err(ErrorCode::Internal, "no route to the device"))?;
-    let links = crate::remote::lan_links(&st).await.map_err(|e| err(ErrorCode::EngineUnavailable, format!("{e:#}")))?;
     let user = auth.0.user.id;
     let detail = st.library.item(user, b.item_id).await.map_err(lib_err)?;
     let file = match b.file_id {
         Some(id) => detail.files.iter().find(|f| f.id == id),
         None => detail.files.iter().find(|f| f.role == "main" && !f.missing),
     };
-    let chosen =
-        b.subtitle.filter(|i| *i > 0).and_then(|i| file?.streams.iter().find(|s| s.kind == "subtitle" && s.index == i));
+    let streams = || file.into_iter().flat_map(|f| f.streams.iter()).filter(|s| s.kind == "subtitle");
+    let is_text = |s: &&corrent_proto::library::Stream| {
+        s.external && s.codec.as_deref().is_some_and(|c| super::playback::TEXT_SUBS.contains(&c))
+    };
+    let chosen = b.subtitle.filter(|i| *i > 0).and_then(|i| streams().find(|s| s.index == i));
     // The device shows text from a file by itself; anything else has to be in the picture.
-    let side =
-        chosen.filter(|s| s.external && s.codec.as_deref().is_some_and(|c| super::playback::TEXT_SUBS.contains(&c)));
+    let burn = chosen.filter(|s| !is_text(s)).map(|s| s.index);
+    let active = chosen.filter(is_text).map(|s| s.index);
+    let loaded = crate::cast::Loaded {
+        item_id: b.item_id,
+        audio_track: b.audio_track,
+        file_id: b.file_id,
+        burned: burn.is_some(),
+    };
+    // Only the subtitle changed, and the device has it: no need to load anything.
+    if st.casts.switch_subtitle(&device, &loaded, active) {
+        return Ok(Json(st.casts.status(&found.device.id).unwrap_or_default()));
+    }
+    let host =
+        crate::cast::local_ip_towards(found.addr).ok_or_else(|| err(ErrorCode::Internal, "no route to the device"))?;
+    let links = crate::remote::lan_links(&st).await.map_err(|e| err(ErrorCode::EngineUnavailable, format!("{e:#}")))?;
     let mut req = PlaybackRequest {
         profile: Some("chromecast".into()),
         file_id: b.file_id,
         audio_track: b.audio_track,
-        burn_subtitle: chosen.filter(|_| side.is_none()).map(|s| s.index),
+        burn_subtitle: burn,
         ..Default::default()
     };
     let shape = profile(&cfg);
-    let mut info = super::playback::prepare(&st, &auth, b.item_id, req.clone(), Some(shape.clone()), false).await?;
+    let mut info =
+        super::playback::prepare(&st, &auth, b.item_id, req.clone(), Some(shape.clone()), cfg.copy_streams).await?;
     // Unfinished downloads only play through the engine: transcode (which reads through it).
     if info.method == "direct" && info.downloading {
         req.force_transcode = true;
-        info = super::playback::prepare(&st, &auth, b.item_id, req, Some(shape), false).await?;
+        info = super::playback::prepare(&st, &auth, b.item_id, req.clone(), Some(shape.clone()), false).await?;
     }
-    let (url, content_type) = match info.session_id.clone() {
-        Some(session) => (links.hls(host, &session), "application/x-mpegurl".to_string()),
-        None => {
-            let path = st.library.file_path(user, info.file_id).await.map_err(lib_err)?;
-            let path = std::path::PathBuf::from(path);
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("bin").to_ascii_lowercase();
-            (links.media(host, user, info.file_id, &ext), super::library::mime_for(&path).to_string())
-        }
-    };
+    let (url, content_type, copied) = source(&st, &links, host, user, &info).await?;
     let image = detail
         .item
         .images
@@ -194,31 +220,66 @@ async fn play(
         .find(|i| matches!(i.kind.as_str(), "backdrop" | "poster" | "primary"))
         .or(detail.item.images.first())
         .map(|i| links.art(host, &i.sha));
-    let subtitle_track = side.map(|s| crate::cast::SideTrack {
-        url: links.subtitle(host, user, info.file_id, s.index),
-        name: s.title.clone().or_else(|| s.lang.clone()).unwrap_or_else(|| s.index.to_string()),
-        lang: s.lang.clone(),
+    let tracks = streams()
+        .filter(is_text)
+        .map(|s| crate::cast::SideTrack {
+            id: s.index,
+            url: links.subtitle(host, user, info.file_id, s.index),
+            name: s.title.clone().or_else(|| s.lang.clone()).unwrap_or_else(|| s.index.to_string()),
+            lang: s.lang.clone(),
+        })
+        .collect();
+    let media = crate::cast::Media {
+        url,
+        content_type,
+        title: detail.item.title.clone(),
+        subtitle: detail.item.context.join(" · "),
+        image,
+        start_s: b.position_ms.max(0) as f64 / 1000.0,
+        item_id: b.item_id,
+        by: auth.name().to_string(),
+        user_id: user,
+        hls_session: info.session_id,
+        duration_ms: info.duration_ms,
+        tracks,
+        active,
+        copied,
+        fallback: None,
+        loaded,
+        hits: links.hits(),
+    };
+    // Copied streams the device fails on: a transcode, as for a browser.
+    let fallback = copied.then(|| {
+        let (st, principal, found, media) = (st.clone(), auth.0.clone(), found.clone(), media.clone());
+        let (links, shape) = (links.clone(), shape.clone());
+        req.force_transcode = true;
+        let req = req.clone();
+        crate::cast::Fallback(Arc::new(move || {
+            let (st, principal, found, mut media) = (st.clone(), principal.clone(), found.clone(), media.clone());
+            let (links, shape, req) = (links.clone(), shape.clone(), req.clone());
+            Box::pin(async move {
+                let auth = Auth(principal);
+                let info = match super::playback::prepare(&st, &auth, media.item_id, req, Some(shape), false).await {
+                    Ok(info) => info,
+                    Err(e) => return st.casts.fail(&found.device.id, e.0.message),
+                };
+                match source(&st, &links, host, media.user_id, &info).await {
+                    Ok((url, content_type, copied)) => {
+                        media.url = url;
+                        media.content_type = content_type;
+                        media.copied = copied;
+                        media.hls_session = info.session_id;
+                        media.fallback = None;
+                        st.casts.touch();
+                        st.casts.play(st.clone(), found, media);
+                    }
+                    Err(e) => st.casts.fail(&found.device.id, e.0.message),
+                }
+            })
+        }))
     });
     st.casts.touch();
-    st.casts.play(
-        st.clone(),
-        found.clone(),
-        crate::cast::Media {
-            url,
-            content_type,
-            title: detail.item.title.clone(),
-            subtitle: detail.item.context.join(" · "),
-            image,
-            start_s: b.position_ms.max(0) as f64 / 1000.0,
-            item_id: b.item_id,
-            by: auth.name().to_string(),
-            user_id: user,
-            hls_session: info.session_id,
-            duration_ms: info.duration_ms,
-            subtitle_track,
-            hits: links.hits(),
-        },
-    );
+    st.casts.play(st.clone(), found.clone(), crate::cast::Media { fallback, ..media });
     Ok(Json(st.casts.status(&found.device.id).unwrap_or_default()))
 }
 

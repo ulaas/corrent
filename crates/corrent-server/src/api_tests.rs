@@ -2194,11 +2194,21 @@ async fn dlna_browses_and_streams() {
 /// every LOAD's URL (and subtitle) and every control message type to `seen`. A seek past 1000 s
 /// plays the item to its end.
 async fn fake_receiver(seen: tokio::sync::mpsc::UnboundedSender<String>) -> SocketAddr {
-    fake_receiver_with(seen, false).await
+    fake_receiver_with(seen, FakeDevice::Normal).await
 }
 
-/// `refuse_load`: every LOAD fails, without the device fetching anything.
-async fn fake_receiver_with(seen: tokio::sync::mpsc::UnboundedSender<String>, refuse_load: bool) -> SocketAddr {
+#[derive(Clone, Copy, PartialEq)]
+enum FakeDevice {
+    Normal,
+    /// Every LOAD fails, without the device fetching anything.
+    Unreachable,
+    /// Copied streams fail once it has looked at them.
+    FailsOnCopies,
+    /// Won't switch subtitles in place.
+    NoTrackEdits,
+}
+
+async fn fake_receiver_with(seen: tokio::sync::mpsc::UnboundedSender<String>, kind: FakeDevice) -> SocketAddr {
     use crate::cast::wire::CastMessage;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let key = rcgen::generate_simple_self_signed(vec!["chromecast".into()]).unwrap();
@@ -2271,11 +2281,36 @@ async fn fake_receiver_with(seen: tokio::sync::mpsc::UnboundedSender<String>, re
                                 json!({ "type": "RECEIVER_STATUS", "status": { "volume": volume, "applications": [{ "appId": "CC1AD845", "transportId": "t-1", "sessionId": "s-1" }] } }),
                             ))
                         }
-                        "LOAD" if refuse_load => Some(send(
+                        "LOAD" if kind == FakeDevice::Unreachable => Some(send(
                             "urn:x-cast:com.google.cast.media",
                             "t-1",
                             json!({ "type": "LOAD_FAILED", "requestId": v["requestId"] }),
                         )),
+                        "LOAD"
+                            if kind == FakeDevice::FailsOnCopies
+                                && v["media"]["contentId"].as_str().unwrap().contains("/dlna/remux/") =>
+                        {
+                            let url = v["media"]["contentId"].as_str().unwrap();
+                            let _ = seen.send(format!("LOAD {url}"));
+                            assert!(reqwest::get(url).await.unwrap().status().is_success());
+                            Some(send(
+                                "urn:x-cast:com.google.cast.media",
+                                "t-1",
+                                json!({ "type": "LOAD_FAILED", "requestId": v["requestId"] }),
+                            ))
+                        }
+                        "EDIT_TRACKS_INFO" => {
+                            let _ = seen.send(format!("TRACKS {}", v["activeTrackIds"]));
+                            Some(if kind == FakeDevice::NoTrackEdits {
+                                send(
+                                    "urn:x-cast:com.google.cast.media",
+                                    "t-1",
+                                    json!({ "type": "INVALID_REQUEST", "requestId": v["requestId"] }),
+                                )
+                            } else {
+                                media(state, None)
+                            })
+                        }
                         "SEEK" if v["currentTime"].as_f64().unwrap_or(0.0) > 1000.0 => {
                             state = "IDLE";
                             Some(media("IDLE", Some("FINISHED")))
@@ -2287,11 +2322,11 @@ async fn fake_receiver_with(seen: tokio::sync::mpsc::UnboundedSender<String>, re
                         )),
                         "LOAD" => {
                             let _ = seen.send(format!("LOAD {}", v["media"]["contentId"].as_str().unwrap()));
-                            if v["activeTrackIds"] == json!([1]) {
-                                let _ = seen.send(format!(
-                                    "TRACK {}",
-                                    v["media"]["tracks"][0]["trackContentId"].as_str().unwrap()
-                                ));
+                            if let Some(active) = v["activeTrackIds"][0].as_i64() {
+                                let track =
+                                    v["media"]["tracks"].as_array().unwrap().iter().find(|t| t["trackId"] == active);
+                                let _ =
+                                    seen.send(format!("TRACK {}", track.unwrap()["trackContentId"].as_str().unwrap()));
                             }
                             state = "PLAYING";
                             Some(send(
@@ -2503,16 +2538,18 @@ async fn cast_fixture(h: &H, admin: &str, addr: SocketAddr) -> i64 {
     item
 }
 
-/// A text subtitle from a file goes to the device as a track it fetches itself, with CORS.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_subtitle_from_a_file_goes_to_the_device() {
+/// An MKV with H.264 and AAC, a subtitle file next to it, and a fake device. The item and the
+/// subtitle's stream index, or None without libmpv.
+async fn cast_mkv_fixture(
+    h: &H,
+    admin: &str,
+    kind: FakeDevice,
+) -> Option<(i64, i64, tokio::sync::mpsc::UnboundedReceiver<String>)> {
     if !corrent_mpv::Library::available() {
         eprintln!("libmpv not found; skipping");
-        return;
+        return None;
     }
-    let h = harness("cast-subtitle", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
     let app = &h.app;
-    let admin = admin_token(app).await;
     let movies = h.dir.join("dl/Movies/Clip (2024)");
     std::fs::create_dir_all(&movies).unwrap();
     let job = corrent_mpv::encode::EncodeJob {
@@ -2532,18 +2569,18 @@ async fn a_subtitle_from_a_file_goes_to_the_device() {
         app,
         Method::POST,
         "/api/v1/libraries",
-        &admin,
+        admin,
         json!({ "name": "Movies", "kind": "movies", "folders": [h.dir.join("dl/Movies")] }),
     )
     .await;
     let lib = v["id"].as_i64().unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let (item, index) = loop {
-        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), admin).await;
         if let Some(id) = v["items"][0]["id"].as_i64()
             && h.st.hls_encoder.lock().unwrap().is_some()
         {
-            let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), &admin).await;
+            let (_, d, _) = get(app, &format!("/api/v1/items/{id}"), admin).await;
             let sub = d["files"][0]["streams"]
                 .as_array()
                 .into_iter()
@@ -2557,20 +2594,47 @@ async fn a_subtitle_from_a_file_goes_to_the_device() {
         assert!(std::time::Instant::now() < deadline, "scan finished: {v}");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     };
-    let (tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
-    let addr = fake_receiver(tx).await;
+    let (tx, seen) = tokio::sync::mpsc::unbounded_channel();
+    let addr = fake_receiver_with(tx, kind).await;
     h.st.casts.inject(crate::cast::Found {
         device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), model: String::new() },
         addr,
     });
+    Some((item, index, seen))
+}
+
+async fn next_seen(seen: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> String {
+    tokio::time::timeout(std::time::Duration::from_secs(20), seen.recv()).await.unwrap().unwrap()
+}
+
+/// H.264 and AAC in an MKV: copied, not converted. The subtitle file goes along as a track the
+/// device fetches itself, and switching it loads nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_mkv_is_copied_and_its_subtitle_goes_to_the_device() {
+    let h = harness("cast-subtitle", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
+    let admin = admin_token(&h.app).await;
+    let Some((item, index, mut seen)) = cast_mkv_fixture(&h, &admin, FakeDevice::Normal).await else { return };
+    let app = &h.app;
     let (s, v, _) =
         send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item, "subtitle": index })).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let next = async |seen: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
-        tokio::time::timeout(std::time::Duration::from_secs(10), seen.recv()).await.unwrap().unwrap()
-    };
-    assert!(next(&mut seen).await.starts_with("LOAD "));
-    let track = next(&mut seen).await;
+    assert!(h.st.hls.sessions().is_empty(), "no transcode");
+    let load = next_seen(&mut seen).await;
+    let list = load.strip_prefix("LOAD ").unwrap();
+    assert!(list.contains("/dlna/remux/"), "{list}");
+    let res = reqwest::get(list).await.unwrap();
+    assert_eq!(res.headers()["access-control-allow-origin"], "*");
+    let body = res.text().await.unwrap();
+    assert!(body.contains("init.mp4") && body.contains("0.m4s"), "{body}");
+    for (name, magic) in [("init.mp4", b"ftyp"), ("0.m4s", b"moof")] {
+        let res = reqwest::get(list.replace("index.m3u8", name)).await.unwrap();
+        assert_eq!(res.headers()["access-control-allow-origin"], "*", "{name}");
+        assert_eq!(&res.bytes().await.unwrap()[4..8], magic, "{name}");
+    }
+    let forged = list.replace(&format!("/{item}/"), "/99/").replace("/1/", "/2/");
+    assert_eq!(reqwest::get(&forged).await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
+    // The subtitle.
+    let track = next_seen(&mut seen).await;
     let url = track.strip_prefix("TRACK ").unwrap();
     let res = reqwest::get(url).await.unwrap();
     assert_eq!(res.headers()["access-control-allow-origin"], "*");
@@ -2579,7 +2643,76 @@ async fn a_subtitle_from_a_file_goes_to_the_device() {
     assert!(body.starts_with("WEBVTT") && body.contains("Hello"), "{body}");
     let forged = url.replace(&format!("/{index}/"), &format!("/{}/", index + 1));
     assert_eq!(reqwest::get(&forged).await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
+    // Turned off and on again: in place, nothing loads.
+    wait_cast(app, &admin, |v| v["state"] == "playing").await;
+    send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
+    assert_eq!(next_seen(&mut seen).await, "TRACKS []");
+    send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item, "subtitle": index })).await;
+    assert_eq!(next_seen(&mut seen).await, format!("TRACKS [{index}]"));
     h.stop().await;
+}
+
+/// A device that fails on copied streams gets a transcode, without anyone asking.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_failing_on_copied_streams_gets_a_transcode() {
+    let h = harness("cast-fallback", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
+    let admin = admin_token(&h.app).await;
+    let Some((item, _, mut seen)) = cast_mkv_fixture(&h, &admin, FakeDevice::FailsOnCopies).await else { return };
+    let (s, v, _) = send(&h.app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(next_seen(&mut seen).await.contains("/dlna/remux/"));
+    let again = next_seen(&mut seen).await;
+    assert!(again.contains("/dlna/hls/"), "{again}");
+    let v = wait_cast(&h.app, &admin, |v| v["state"] == "playing").await;
+    assert_eq!(v.get("error"), None, "{v}");
+    h.stop().await;
+}
+
+/// A device that won't switch subtitles in place loads the same thing again, with the new one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_refusing_a_subtitle_switch_loads_it_again() {
+    let h = harness("cast-no-edit", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
+    let admin = admin_token(&h.app).await;
+    let Some((item, index, mut seen)) = cast_mkv_fixture(&h, &admin, FakeDevice::NoTrackEdits).await else { return };
+    let app = &h.app;
+    send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
+    let first = next_seen(&mut seen).await;
+    wait_cast(app, &admin, |v| v["state"] == "playing").await;
+    send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item, "subtitle": index })).await;
+    assert_eq!(next_seen(&mut seen).await, format!("TRACKS [{index}]"));
+    assert_eq!(next_seen(&mut seen).await, first);
+    assert!(next_seen(&mut seen).await.starts_with("TRACK "));
+    h.stop().await;
+}
+
+/// `[cast] copy_streams = false`: converted as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn copying_streams_can_be_turned_off() {
+    let cfg = ServerConfig {
+        tls: false,
+        dlna_port: 0,
+        cast: corrent_proto::library::CastConfig { copy_streams: false, ..Default::default() },
+        ..Default::default()
+    };
+    let h = harness("cast-no-copy", cfg).await;
+    let admin = admin_token(&h.app).await;
+    let Some((item, _, mut seen)) = cast_mkv_fixture(&h, &admin, FakeDevice::Normal).await else { return };
+    send(&h.app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
+    let load = next_seen(&mut seen).await;
+    assert!(load.contains("/dlna/hls/"), "{load}");
+    h.stop().await;
+}
+
+/// A device whose level can't be changed says so.
+#[test]
+fn a_fixed_volume_is_reported() {
+    let v = json!({ "status": { "volume": { "controlType": "fixed", "level": 1.0, "muted": false } } });
+    let mut s = corrent_proto::library::CastStatus::default();
+    crate::cast::apply_receiver_status(&mut s, &v);
+    assert!(s.volume_fixed);
+    let v = json!({ "status": { "volume": { "controlType": "attenuation", "level": 0.4 } } });
+    crate::cast::apply_receiver_status(&mut s, &v);
+    assert!(!s.volume_fixed);
 }
 
 /// The desktop app's server: its API on this computer only, and still able to cast.
@@ -2623,10 +2756,17 @@ async fn the_server_in_the_app_casts_with_its_api_on_loopback() {
         .await;
     wait_cast(app, &admin, |v| v["state"] == "idle" && v["finished"] == true).await;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while crate::remote::close_cast_listener(&h.st, std::time::Duration::ZERO).await {
+    while h.st.casts.in_use(std::time::Duration::ZERO) {
         assert!(std::time::Instant::now() < deadline);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+    // A device still fetching keeps it open, though our connection to it is gone.
+    let idle = std::time::Duration::from_millis(300);
+    tokio::time::sleep(idle).await;
+    assert!(reqwest::get(url).await.is_ok());
+    assert!(crate::remote::close_cast_listener(&h.st, idle).await);
+    tokio::time::sleep(idle).await;
+    assert!(!crate::remote::close_cast_listener(&h.st, idle).await);
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert!(reqwest::get(url).await.is_err(), "still serving {url}");
     h.stop().await;
@@ -2653,7 +2793,7 @@ async fn a_load_failing_before_any_fetch_says_the_device_cant_reach_us() {
     let h = harness("cast-reach", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
     let admin = admin_token(&h.app).await;
     let (tx, _seen) = tokio::sync::mpsc::unbounded_channel();
-    let addr = fake_receiver_with(tx, true).await;
+    let addr = fake_receiver_with(tx, FakeDevice::Unreachable).await;
     let item = cast_fixture(&h, &admin, addr).await;
     let (s, v, _) = send(&h.app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
     assert_eq!(s, StatusCode::OK, "{v}");

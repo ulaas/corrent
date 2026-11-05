@@ -99,6 +99,8 @@ export class Cast {
   }
 
   setVolume(level: number) {
+    // Its level isn't ours to change: the slider would only jump back.
+    if (this.status?.volume_fixed) return;
     level = Math.max(0, Math.min(1, level));
     this.volumeSet = level;
     if (this.volumeClear) clearTimeout(this.volumeClear);

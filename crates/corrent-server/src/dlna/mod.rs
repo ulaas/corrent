@@ -67,6 +67,12 @@ impl Running {
         self._http.addr
     }
 
+    /// Whether anyone fetched anything within `idle`: a device can go on playing after our
+    /// connection to it is gone, and closing would change the key its link was signed with.
+    pub fn served_within(&self, idle: std::time::Duration) -> bool {
+        self.d.last_hit.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t.elapsed() < idle)
+    }
+
     /// Links for other devices on the network (casting).
     pub fn links(&self) -> Links {
         Links { d: self.d.clone(), port: self.port }
@@ -96,6 +102,12 @@ impl Links {
     pub fn subtitle(&self, host: std::net::IpAddr, user: i64, file: i64, index: i64) -> String {
         let sig = sign(&self.d, &format!("sub:{user}:{file}:{index}"));
         format!("http://{}/dlna/sub/{user}/{file}/{index}/{sig}.vtt", host_port(host, self.port))
+    }
+
+    /// Streams of a library file copied into HLS.
+    pub fn remux(&self, host: std::net::IpAddr, user: i64, file: i64, audio: i64) -> String {
+        let sig = sign(&self.d, &format!("remux:{user}:{file}:{audio}"));
+        format!("http://{}/dlna/remux/{user}/{file}/{audio}/{sig}/index.m3u8", host_port(host, self.port))
     }
 
     /// Counts what the listener served: whether a device ever reached it.
@@ -132,6 +144,7 @@ struct Dlna {
     update_id: u32,
     /// Requests from allowed addresses so far.
     hits: Arc<AtomicU64>,
+    last_hit: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 /// Where the listener goes on `port`: the server's address, or every interface when the app hosts
@@ -181,6 +194,7 @@ async fn prepare(st: Arc<AppState>, announce: bool) -> anyhow::Result<Arc<Dlna>>
             .unwrap_or(1)
             & 0x7fff_ffff) as u32,
         hits: Arc::default(),
+        last_hit: Arc::default(),
         st: st.clone(),
     });
     Ok(d)
@@ -210,10 +224,12 @@ fn udn(server_id: &str) -> String {
 fn router(d: Arc<Dlna>) -> Router {
     let st = d.st.clone();
     let hits = d.hits.clone();
+    let last_hit = d.last_hit.clone();
     let mut r = Router::new()
         .route("/dlna/media/{user}/{file}/{sig}", get(media))
         .route("/dlna/hls/{session}/{sig}/{name}", get(hls))
         .route("/dlna/sub/{user}/{file}/{index}/{sig}", get(subtitle))
+        .route("/dlna/remux/{user}/{file}/{audio}/{sig}/{name}", get(remux))
         .route("/dlna/art/{sha}/{sig}", get(art));
     if d.user.is_some() {
         r = r
@@ -240,6 +256,7 @@ fn router(d: Arc<Dlna>) -> Router {
                     && crate::net::host_allowed(&crate::v1::request_host(&req), &st.nets.load().hostnames);
                 if ok {
                     hits.fetch_add(1, Ordering::Relaxed);
+                    *last_hit.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
                 }
                 async move { if ok { next.run(req).await } else { StatusCode::FORBIDDEN.into_response() } }
             },
@@ -606,6 +623,28 @@ async fn hls(
     };
     res.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     res
+}
+
+/// Copied streams for casting (the receiver fetches them with CORS).
+async fn remux(
+    State(d): State<Arc<Dlna>>,
+    Path((user, file, audio, sig, name)): Path<(i64, i64, i64, String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if !signed(&d, &format!("remux:{user}:{file}:{audio}"), &sig) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    // Still checked: the account may have lost access since the link was made.
+    let Ok(path) = d.st.library.file_path(user, file).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match crate::v1::playback::remux_response(&d.st, path.into(), audio, &name, &headers).await {
+        Ok(mut r) => {
+            r.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+            r
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// A text subtitle for casting (the receiver fetches it with CORS).

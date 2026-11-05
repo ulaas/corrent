@@ -258,7 +258,8 @@ Nest Hub, Cast-enabled TVs) on the *server's* network, found by mDNS. The server
 device itself (Cast v2 over TLS, the Default Media Receiver) and gives it a signed link on the
 media listener (`dlna_port`, plain HTTP, local addresses only — started on demand even when DLNA
 is off): the file when the device plays it (MP4/WebM, H.264/VP8/VP9, AAC/MP3/Opus/FLAC up to
-1080p), otherwise an HLS transcode (needs the transcode permission). Unfinished downloads always
+1080p), copied streams when only the container is in the way, otherwise an HLS transcode (needs the
+transcode permission). Unfinished downloads always
 go through a transcode. The players then drive the device (play, pause, seek, stop) and show its
 position. API: `GET /api/v1/cast/devices[?refresh=true]`, `POST /cast/{device}/play`
 `{item_id, position_ms}`, `GET /cast/{device}`, `POST /cast/{device}/command`
@@ -267,8 +268,9 @@ isn't supported.
 
 The players' volume and mute drive the device while casting. Next and previous play on the device,
 and an item played to its end moves on to the next. The chosen audio track goes along; a subtitle
-from a text file (SRT, ASS, VTT) goes to the device as a track, any other is burned in (a transcode).
-Changing either reloads the item at the same position. A player opened on an item that is casting
+from a text file (SRT, ASS, VTT) goes to the device as a track and switches in place, any other is
+burned in (a transcode). Changing the audio or a burned-in subtitle reloads the item at the same
+position. A player opened on an item that is casting
 follows that cast. Settings → Casting (web) or Settings → Playback (app) lists what is casting, with
 Stop.
 
@@ -281,6 +283,7 @@ Stop.
 | `max_height` | `1080` | Taller videos are transcoded. 0: no limit. |
 | `max_bitrate_kbps` | `0` | Files above this are transcoded. 0: no limit. |
 | `hevc` | `false` | The devices play H.265, so such files needn't be transcoded. |
+| `copy_streams` | `true` | Streams the device plays, in a container it doesn't (MKV), are copied into HLS/fMP4 rather than transcoded. A device that fetches them and fails gets a transcode. |
 | `port` | `0` | The port devices fetch from. 0: `dlna_port`, or any free port if that's taken. A running DLNA listener is used instead of this. |
 
 **In the desktop app** the server's API stays on `127.0.0.1`. Only while something is casting, the

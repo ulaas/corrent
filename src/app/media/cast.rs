@@ -218,6 +218,10 @@ impl CastCtl {
 
     /// Sets the device's volume. `done`: the last of a drag, which always goes out.
     pub fn set_volume(&self, casting: &mut Casting, level: f64, done: bool) {
+        // Its level isn't ours to change: the slider would only jump back.
+        if self.status().is_some_and(|s| s.volume_fixed) {
+            return;
+        }
         let level = level.clamp(0.0, 1.0);
         casting.volume_set = Some((level, Instant::now()));
         if done || casting.volume_sent.is_none_or(|t| t.elapsed() >= VOLUME_EVERY) {

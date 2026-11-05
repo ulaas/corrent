@@ -762,6 +762,8 @@ export interface CastStatus {
   /** The device's volume, 0 to 1. */
   volume?: number;
   muted?: boolean;
+  /** The device's level can't be changed. */
+  volume_fixed: boolean;
   /** Played to its end (not stopped, replaced or failed). */
   finished: boolean;
 }
@@ -773,6 +775,7 @@ export interface CastConfig {
   max_bitrate_kbps: number;
   hevc: boolean;
   port: number;
+  copy_streams: boolean;
 }
 
 export interface Lyrics {

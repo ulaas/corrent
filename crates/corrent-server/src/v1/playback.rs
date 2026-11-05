@@ -345,15 +345,27 @@ async fn remux_file(
     Path((file, audio, name)): Path<(i64, i64, String)>,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, ApiErr> {
+    // The user must be allowed to see the file.
+    let path = PathBuf::from(st.library.file_path(auth.0.user.id, file).await.map_err(lib_err)?);
+    remux_response(&st, path, audio, &name, &headers).await
+}
+
+/// The playlist, init segment or a segment of a file's copied streams. Whoever calls this has
+/// checked that the file may be seen.
+pub(crate) async fn remux_response(
+    st: &Arc<AppState>,
+    path: PathBuf,
+    audio: i64,
+    name: &str,
+    headers: &axum::http::HeaderMap,
+) -> Result<Response, ApiErr> {
     enum Want {
         Playlist,
         Init,
         Segment(usize),
     }
-    // The user must be allowed to see the file.
-    let path = PathBuf::from(st.library.file_path(auth.0.user.id, file).await.map_err(lib_err)?);
     let audio = (audio > 0).then_some(audio);
-    let want = match name.as_str() {
+    let want = match name {
         "index.m3u8" => Want::Playlist,
         "init.mp4" => Want::Init,
         n => Want::Segment(

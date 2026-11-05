@@ -9,7 +9,8 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 - Casting to Chromecasts from the desktop app without a separate server. The app opens a port on the local network only while something is casting (signed links, plain HTTP), closed a minute or two later.
 - Device volume and mute in the players, next and previous on the device, moving on when an item ends, subtitles and the chosen audio track on the device, and a player opened on an item that is casting follows it.
-- Casting settings: on or off, devices typed by address for networks where the search finds nothing, largest picture, highest bitrate, H.265, port. Those settings list what is casting, with Stop. API: `GET /cast/active`, `GET/PUT /cast/config`.
+- MKV files a Chromecast can play are copied rather than converted, which is much lighter on the computer; a device that fails on the copy gets a converted stream. Subtitles from files switch in place on the device.
+- Casting settings: on or off, devices typed by address for networks where the search finds nothing, largest picture, highest bitrate, H.265, copying streams, port. Those settings list what is casting, with Stop. API: `GET /cast/active`, `GET/PUT /cast/config`.
 
 ### Fixed
 

@@ -1040,6 +1040,17 @@ impl Player {
                             }
                         });
                     }
+                    // Already on a device: then this one waits, from the first moment.
+                    let active = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        client.get::<Vec<corrent_proto::library::CastStatus>>("/api/v1/cast/active"),
+                    )
+                    .await;
+                    if let Ok(Ok(list)) = active
+                        && list.iter().any(|c| c.item_id == Some(e.item_id))
+                    {
+                        let _ = mpv.command(&["set", "pause", "yes"]);
+                    }
                     let url = client.url(&info.url);
                     let start = format!("start={}", e.resume_ms as f64 / 1000.0);
                     let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
@@ -2610,7 +2621,8 @@ impl Player {
             }
             ui.add_space(4.0);
             let (volume, muted) = self.cast.volume(&c);
-            if let (Some(v), false) = (volume, failed) {
+            let fixed = status.as_ref().is_some_and(|s| s.volume_fixed);
+            if let Some(v) = volume.filter(|_| !failed && !fixed) {
                 let mut level = v as f32;
                 let text = format!("{:.0} %", level * 100.0);
                 let r = glass::slider(ui, tone, t!("Volume"), &mut level, 0.0..=1.0, 0.01, 0.5, text);
@@ -2620,6 +2632,8 @@ impl Player {
                 } else if r.drag_stopped() {
                     self.cast.set_volume(&mut c, v, true);
                 }
+            }
+            if volume.is_some() && !failed {
                 let mut mute = muted;
                 if glass::switch(ui, tone, &mut mute, t!("Mute")).clicked() {
                     self.cast.command(&c, CastCommand::Mute { muted: mute });

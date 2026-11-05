@@ -147,6 +147,13 @@ impl CorrentApp {
                 t!("Chromecast with Google TV and most Cast-enabled TVs do; such files then needn’t be converted."),
                 &mut d.hevc,
             );
+            toggle(
+                ui,
+                p,
+                t!("Copy streams when only the file type is in the way"),
+                t!("MKV files the device can play aren’t converted, which is much lighter on this computer. If a device fails on the copy, it gets a converted stream instead."),
+                &mut d.copy_streams,
+            );
             row(ui, p, t!("Port for the devices"), t!("0 picks one. Set one to open it in a firewall."), |ui| {
                 ui.add(egui::DragValue::new(&mut d.port).range(0..=65535));
             });

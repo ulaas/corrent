@@ -7,7 +7,9 @@
 pub mod wire;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -66,15 +68,44 @@ pub struct Media {
     /// The HLS session to stop when the cast ends.
     pub hls_session: Option<String>,
     pub duration_ms: Option<i64>,
-    /// A subtitle the device shows itself.
-    pub subtitle_track: Option<SideTrack>,
+    /// The subtitles the device can show itself.
+    pub tracks: Vec<SideTrack>,
+    /// The one of `tracks` to show.
+    pub active: Option<i64>,
+    /// `url` is HLS with fMP4 segments: streams copied from the file.
+    pub copied: bool,
+    /// What to do when the device reached us and can't play this.
+    pub fallback: Option<Fallback>,
+    /// What changing only the subtitle mustn't change.
+    pub loaded: Loaded,
     /// What the media listener served so far (see [`CANT_REACH`]).
     pub hits: Arc<AtomicU64>,
+}
+
+/// The choices that are in the media itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Loaded {
+    pub item_id: i64,
+    pub audio_track: Option<i64>,
+    pub file_id: Option<i64>,
+    pub burned: bool,
+}
+
+/// Plays the item another way (see [`Media::fallback`]).
+#[derive(Clone)]
+pub struct Fallback(pub Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>);
+
+impl std::fmt::Debug for Fallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Fallback")
+    }
 }
 
 /// A WebVTT subtitle for the receiver.
 #[derive(Clone, Debug)]
 pub struct SideTrack {
+    /// The file's stream index.
+    pub id: i64,
     pub url: String,
     pub name: String,
     pub lang: Option<String>,
@@ -83,6 +114,8 @@ pub struct SideTrack {
 enum Cmd {
     Load(Box<Media>),
     Control(CastCommand),
+    /// Another of the media's own subtitles (or none).
+    Tracks(Option<i64>),
 }
 
 struct Session {
@@ -90,6 +123,8 @@ struct Session {
     status: Arc<Mutex<CastStatus>>,
     /// Told to stop: it won't read anything more, though its channel is still open.
     stopping: bool,
+    /// What was last asked of it.
+    loaded: Loaded,
 }
 
 #[derive(Default)]
@@ -269,6 +304,9 @@ impl Casts {
             && s.tx.try_send(Cmd::Load(Box::new(media.clone()))).is_ok()
         {
             mark_loading(&s.status, &media);
+            if let Some(s) = sessions.get_mut(&id) {
+                s.loaded = media.loaded.clone();
+            }
             return;
         }
         let status = Arc::new(Mutex::new(CastStatus {
@@ -277,6 +315,7 @@ impl Casts {
             ..Default::default()
         }));
         mark_loading(&status, &media);
+        let loaded = media.loaded.clone();
         let (tx, rx) = mpsc::channel(16);
         let _ = tx.try_send(Cmd::Load(Box::new(media)));
         let s2 = status.clone();
@@ -291,7 +330,28 @@ impl Casts {
                 s.state = "idle".into();
             }
         });
-        sessions.insert(id, Session { tx, status, stopping: false });
+        sessions.insert(id, Session { tx, status, stopping: false, loaded });
+    }
+
+    /// Shows another of the subtitles the device already has, if `loaded` is what it is playing:
+    /// nothing has to load again.
+    pub fn switch_subtitle(&self, id: &str, loaded: &Loaded, active: Option<i64>) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(s) = sessions.get(id).filter(|s| !s.stopping && s.loaded == *loaded && !loaded.burned) else {
+            return false;
+        };
+        let state = s.status.lock().unwrap_or_else(|e| e.into_inner()).state.clone();
+        matches!(state.as_str(), "playing" | "paused" | "buffering") && s.tx.try_send(Cmd::Tracks(active)).is_ok()
+    }
+
+    /// The other way of playing an item failed too.
+    pub fn fail(&self, id: &str, why: String) {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = sessions.get(id) {
+            let mut st = s.status.lock().unwrap_or_else(|e| e.into_inner());
+            st.state = "error".into();
+            st.error = Some(why);
+        }
     }
 
     pub fn command(&self, id: &str, c: CastCommand) -> bool {
@@ -397,12 +457,15 @@ fn about_replaced(v: &Value, replaced: Option<i64>, state: &str) -> bool {
 }
 
 /// The volume fields of a receiver status.
-fn apply_receiver_status(s: &mut CastStatus, v: &Value) {
+pub(crate) fn apply_receiver_status(s: &mut CastStatus, v: &Value) {
     if let Some(level) = v.pointer("/status/volume/level").and_then(Value::as_f64) {
         s.volume = Some(level);
     }
     if let Some(muted) = v.pointer("/status/volume/muted").and_then(Value::as_bool) {
         s.muted = Some(muted);
+    }
+    if let Some(control) = v.pointer("/status/volume/controlType").and_then(Value::as_str) {
+        s.volume_fixed = control == "fixed";
     }
 }
 
@@ -421,15 +484,27 @@ fn load_message(media: &Media, request: i64) -> Value {
     let mut load = json!({
         "type": "LOAD", "requestId": request, "media": info, "autoplay": true, "currentTime": media.start_s,
     });
-    if let Some(t) = &media.subtitle_track {
-        let mut track = json!({
-            "trackId": 1, "type": "TEXT", "subtype": "SUBTITLES", "trackContentId": t.url,
-            "trackContentType": "text/vtt", "name": t.name,
-        });
-        // Required for subtitles, also when the file doesn't say: "undetermined".
-        track["language"] = json!(t.lang.as_deref().unwrap_or("und"));
-        load["media"]["tracks"] = json!([track]);
-        load["activeTrackIds"] = json!([1]);
+    if media.copied {
+        load["media"]["hlsSegmentFormat"] = json!("fmp4");
+        load["media"]["hlsVideoSegmentFormat"] = json!("fmp4");
+    }
+    if !media.tracks.is_empty() {
+        let tracks: Vec<Value> = media
+            .tracks
+            .iter()
+            .map(|t| {
+                json!({
+                    "trackId": t.id, "type": "TEXT", "subtype": "SUBTITLES", "trackContentId": t.url,
+                    "trackContentType": "text/vtt", "name": t.name,
+                    // Required for subtitles, also when the file doesn't say: "undetermined".
+                    "language": t.lang.as_deref().unwrap_or("und"),
+                })
+            })
+            .collect();
+        load["media"]["tracks"] = json!(tracks);
+    }
+    if let Some(a) = media.active {
+        load["activeTrackIds"] = json!([a]);
     }
     load
 }
@@ -493,6 +568,8 @@ async fn connection(
     let mut replaced: Option<i64> = None;
     // Nothing on the device since then.
     let mut idle_since: Option<Instant> = None;
+    // The request that changed the subtitle, in case the device refuses that.
+    let mut tracks_req: Option<i64> = None;
     let (frames_tx, mut frames) = mpsc::channel::<anyhow::Result<CastMessage>>(32);
     // Reading runs on its own so a half-read frame is never dropped by `select!`.
     let reader = tokio::spawn(async move {
@@ -531,6 +608,14 @@ async fn connection(
         Some((now, then)) if now.load(Ordering::Relaxed) == *then => CANT_REACH,
         _ => CANT_PLAY,
     };
+    // A device that came and can't play this may play it another way: under way, if so.
+    let fall_back = |m: &Option<Box<Media>>, why: &str| {
+        let f = m.as_ref().and_then(|m| m.fallback.clone()).filter(|_| why == CANT_PLAY);
+        if let Some(f) = &f {
+            tokio::spawn((f.0)());
+        }
+        f.is_some()
+    };
 
     let result: anyhow::Result<()> = async {
         loop {
@@ -549,13 +634,15 @@ async fn connection(
                     }
                     if loading_since.is_some_and(|t: Instant| t.elapsed() > LOAD_DEADLINE) {
                         loading_since = None;
-                        let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
-                        s.state = "error".into();
-                        s.error = Some(failure(&hits_at_load).into());
-                        drop(s);
+                        let why = failure(&hits_at_load);
+                        if !fall_back(&current, why) {
+                            let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
+                            s.state = "error".into();
+                            s.error = Some(why.into());
+                            idle_since = Some(Instant::now());
+                        }
                         stop_hls(&current);
                         current = None;
-                        idle_since = Some(Instant::now());
                     }
                     if idle_since.is_some_and(|t: Instant| t.elapsed() > IDLE_EXIT) && pending.is_none() {
                         if let Some(sid) = &session_id {
@@ -593,6 +680,18 @@ async fn connection(
                                     launched = Some(Instant::now());
                                 }
                             }
+                        }
+                        Cmd::Tracks(active) => {
+                            let (Some(t), Some(ms), Some(c)) = (transport.clone(), media_session, current.as_mut()) else {
+                                continue;
+                            };
+                            c.active = active;
+                            req += 1;
+                            tracks_req = Some(req);
+                            let ids: Vec<i64> = active.into_iter().collect();
+                            w.write_all(&msg(&t, NS_MEDIA, json!({
+                                "type": "EDIT_TRACKS_INFO", "mediaSessionId": ms, "requestId": req, "activeTrackIds": ids,
+                            }))).await?;
                         }
                         // The device's, whatever it is playing.
                         Cmd::Control(CastCommand::Volume { level }) => {
@@ -677,7 +776,16 @@ async fn connection(
                                     s.state = "idle".into();
                                 }
                                 if s.state == "error" && s.error.as_deref() == Some(CANT_PLAY) {
-                                    s.error = Some(failure(&hits_at_load).into());
+                                    let why = failure(&hits_at_load);
+                                    if fall_back(&current, why) {
+                                        s.state = "loading".into();
+                                        s.error = None;
+                                        current = None;
+                                        replaced = media_session;
+                                        loading_since = None;
+                                    } else {
+                                        s.error = Some(why.into());
+                                    }
                                 }
                                 (s.state.clone(), s.position_ms, s.duration_ms, s.finished)
                             };
@@ -705,15 +813,28 @@ async fn connection(
                                 idle_since = Some(Instant::now());
                             }
                         }
+                        // It won't switch subtitles in place: load the same thing again, from here,
+                        // with the new one.
+                        (NS_MEDIA, "INVALID_REQUEST") if tracks_req.is_some() && v.get("requestId").and_then(Value::as_i64) == tracks_req => {
+                            tracks_req = None;
+                            if let Some(mut c) = current.take() {
+                                c.start_s = played_at as f64 / 1000.0;
+                                status.lock().unwrap_or_else(|e| e.into_inner()).state = "loading".into();
+                                replaced = media_session.take();
+                                pending = Some(c);
+                            }
+                        }
                         (NS_MEDIA, "LOAD_FAILED" | "LOAD_CANCELLED" | "INVALID_REQUEST") => {
-                            let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
-                            s.state = "error".into();
-                            s.error = Some(failure(&hits_at_load).into());
-                            drop(s);
+                            let why = failure(&hits_at_load);
+                            if !fall_back(&current, why) {
+                                let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
+                                s.state = "error".into();
+                                s.error = Some(why.into());
+                                idle_since = Some(Instant::now());
+                            }
                             stop_hls(&current);
                             current = None;
                             loading_since = None;
-                            idle_since = Some(Instant::now());
                         }
                         (NS_CONNECTION, "CLOSE") if Some(&m.source) == transport.as_ref() => return Ok(()),
                         _ => {}
@@ -738,6 +859,7 @@ async fn connection(
         report_progress(&st, m, played_at, m.duration_ms, false);
     }
     stop_hls(&current);
+    stop_hls(&pending);
     result
 }
 
@@ -836,26 +958,39 @@ mod tests {
             user_id: 1,
             hls_session: None,
             duration_ms: Some(60_000),
-            subtitle_track: None,
+            tracks: Vec::new(),
+            active: None,
+            copied: false,
+            fallback: None,
+            loaded: Loaded::default(),
             hits: Arc::default(),
         };
         let v = load_message(&m, 7);
         assert_eq!(v["currentTime"], 5.0);
         assert!(v.get("activeTrackIds").is_none() && v["media"].get("tracks").is_none());
-        m.subtitle_track =
-            Some(SideTrack { url: "http://h/s.vtt".into(), name: "English".into(), lang: Some("en".into()) });
+        let track = |id, lang: Option<&str>| SideTrack {
+            id,
+            url: format!("http://h/{id}.vtt"),
+            name: "Sub".into(),
+            lang: lang.map(str::to_string),
+        };
+        // All of them go along, so that switching needs no new load; one is showing, or none.
+        m.tracks = vec![track(1001, Some("en")), track(1002, None)];
         let v = load_message(&m, 8);
-        assert_eq!(v["activeTrackIds"], json!([1]));
-        m.subtitle_track = Some(SideTrack { url: "http://h/s.vtt".into(), name: "1".into(), lang: None });
-        assert_eq!(load_message(&m, 9)["media"]["tracks"][0]["language"], "und");
-        m.subtitle_track =
-            Some(SideTrack { url: "http://h/s.vtt".into(), name: "English".into(), lang: Some("en".into()) });
-        let v = load_message(&m, 8);
-        let t = &v["media"]["tracks"][0];
+        assert!(v.get("activeTrackIds").is_none());
+        m.active = Some(1002);
+        let v = load_message(&m, 9);
+        assert_eq!(v["activeTrackIds"], json!([1002]));
+        let t = &v["media"]["tracks"];
+        assert_eq!((&t[0]["language"], &t[1]["language"]), (&json!("en"), &json!("und")));
         assert_eq!(
-            (&t["trackContentId"], &t["trackContentType"], &t["language"]),
-            (&json!("http://h/s.vtt"), &json!("text/vtt"), &json!("en"))
+            (&t[1]["trackContentId"], &t[1]["trackContentType"]),
+            (&json!("http://h/1002.vtt"), &json!("text/vtt"))
         );
+        // Copied streams are fMP4, which the device has to be told.
+        assert!(v["media"].get("hlsVideoSegmentFormat").is_none());
+        m.copied = true;
+        assert_eq!(load_message(&m, 10)["media"]["hlsVideoSegmentFormat"], "fmp4");
     }
 
     #[test]

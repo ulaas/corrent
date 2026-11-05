@@ -388,10 +388,8 @@ pub async fn lan_links(st: &Arc<AppState>) -> anyhow::Result<crate::dlna::Links>
 /// open: there's something to look at again later.
 pub(crate) async fn close_cast_listener(st: &AppState, idle: Duration) -> bool {
     let mut run = st.remote.lock().await;
-    if run.dlna.as_ref().is_none_or(|d| d.announcing()) {
-        return false;
-    }
-    if st.casts.in_use(idle) && !*st.stopping.borrow() {
+    let Some(listener) = run.dlna.as_ref().filter(|d| !d.announcing()) else { return false };
+    if (st.casts.in_use(idle) || listener.served_within(idle)) && !*st.stopping.borrow() {
         return true;
     }
     run.dlna = None;

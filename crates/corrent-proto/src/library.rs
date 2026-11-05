@@ -909,6 +909,8 @@ pub struct CastStatus {
     pub volume: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub muted: Option<bool>,
+    /// The device's level can't be changed (its volume is set on an amplifier or the like).
+    pub volume_fixed: bool,
     /// The item played to its end (not stopped, replaced or failed).
     pub finished: bool,
 }
@@ -929,11 +931,22 @@ pub struct CastConfig {
     pub hevc: bool,
     /// The port devices fetch media from (0: automatic). A running DLNA listener is used instead.
     pub port: u16,
+    /// Copy streams the device plays into HLS when only the file's container is in the way (MKV),
+    /// instead of converting them. A device that fails on the copy gets a transcode.
+    pub copy_streams: bool,
 }
 
 impl Default for CastConfig {
     fn default() -> Self {
-        CastConfig { enabled: true, devices: Vec::new(), max_height: 1080, max_bitrate_kbps: 0, hevc: false, port: 0 }
+        CastConfig {
+            enabled: true,
+            devices: Vec::new(),
+            max_height: 1080,
+            max_bitrate_kbps: 0,
+            hevc: false,
+            port: 0,
+            copy_streams: true,
+        }
     }
 }
 

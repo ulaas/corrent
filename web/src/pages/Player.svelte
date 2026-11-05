@@ -1017,7 +1017,7 @@
         <button class="btn ghost icon" aria-label={shownMuted ? t('Unmute') : t('Mute')} title={shownMuted ? t('Unmute') : t('Mute')} onclick={toggleMute}>
           <Icon name={shownMuted || shownVolume === 0 ? 'speaker-x' : shownVolume < 0.5 ? 'speaker-low' : 'speaker-high'} size={20} />
         </button>
-        <input class="range" type="range" min="0" max="1" step="0.01" value={shownMuted ? 0 : shownVolume} style:--fill="{(shownMuted ? 0 : shownVolume) * 100}%" aria-label={t('Volume')} oninput={(e) => setVolume(+e.currentTarget.value)} />
+        {#if !cast?.status?.volume_fixed}<input class="range" type="range" min="0" max="1" step="0.01" value={shownMuted ? 0 : shownVolume} style:--fill="{(shownMuted ? 0 : shownVolume) * 100}%" aria-label={t('Volume')} oninput={(e) => setVolume(+e.currentTarget.value)} />{/if}
       </div>
       <span class="time num">{clock(time * 1000)} <span class="muted">/ {clock(duration * 1000)}</span></span>
       <span class="spacer"></span>

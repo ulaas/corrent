@@ -113,6 +113,9 @@
     <div class="srow toggle-row">
       <Toggle bind:checked={draft.hevc} label={t('The devices play H.265')} hint={t('Chromecast with Google TV and most Cast-enabled TVs do; such files then needn’t be converted.')} />
     </div>
+    <div class="srow toggle-row">
+      <Toggle bind:checked={draft.copy_streams} label={t('Copy streams when only the file type is in the way')} hint={t('MKV files the device can play aren’t converted, which is much lighter on this computer. If a device fails on the copy, it gets a converted stream instead.')} />
+    </div>
     <div class="srow">
       <div class="stext"><span class="slabel">{t('Port for the devices')}</span><span class="shint">{t('0 picks one. Set one to open it in a firewall.')}</span></div>
       <div class="sctl"><input class="input num-input" type="number" min="0" max="65535" bind:value={draft.port} aria-label={t('Port for the devices')} /></div>
