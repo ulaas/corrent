@@ -76,7 +76,7 @@ never exit); an `ffprobe.exe` from a Python package may be on `PATH` and isn't t
 
 ## Recent work worth knowing
 
-- **Quality round, 2026-11-05 (after v0.3.8; see `CHANGELOG.md`, Unreleased):** reviewed, planned and
+- **Quality round, 2026-11-05 (v0.4.0; see `CHANGELOG.md`):** reviewed, planned and
   re-reviewed with Fable. Sound processing lives in `crates/corrent-core/src/audio_fx.rs` (pure chain
   and diff), `src/app/media/sound.rs` (probe, meters, sheet) and `web/src/lib/{audiofx,audiodsp,fxhost}`.
   Facts measured on the pinned libmpv: `af-metadata/<label>` carries the meters; `af-command` needs

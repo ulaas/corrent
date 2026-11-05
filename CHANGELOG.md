@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-05
+
 ### Added
 
 - **Real-time sound processing in the player** (desktop and web): a 10-band equalizer with its
@@ -31,6 +33,8 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ### Changed
 
+- Command-line options must now come before the first file or link: `corrent --portable file.torrent`.
+  In `corrent file.torrent --portable` the option counts as an item and the normal profile is used.
 - "Even out loudness" uses a live leveller instead of `loudnorm`, so it sounds different, delays
   sound less and no longer changes the output's sample rate. Your setting carries over.
 - Equalizer presets keep headroom, so a boost no longer clips on loud masters.
