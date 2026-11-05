@@ -2,6 +2,7 @@
 //! rendering as fallback), with egui controls on top. Music plays without video in a mini
 //! player that keeps going while browsing.
 
+use super::glass::{self, Backdrop, Tone};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -147,16 +148,137 @@ struct Stats {
     ffmpeg_version: String,
 }
 
+/// How many times the picture is halved on the way down.
+const BLUR_LEVELS: usize = 5;
+/// The level it is brought back up to, and what panels show: an eighth of the window.
+const BLUR_OUT: usize = 2;
+
+/// Where the picture sits in the player's window, in pixels: the blur covers the window, so the
+/// black bars are in it too and the picture fades into them instead of smearing across.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct BlurTarget {
+    window: [i32; 2],
+    at: [i32; 4],
+}
+
+/// One step of the blur.
+struct BlurLevel {
+    fbo: glow::Framebuffer,
+    tex: glow::Texture,
+    size: [i32; 2],
+}
+
+fn whole(size: [i32; 2]) -> [i32; 4] {
+    [0, 0, size[0], size[1]]
+}
+
+/// A blur made of framebuffer blits alone: halving with a linear filter down the levels and doubling
+/// back up gives a soft result with no shader of our own. A few small blits per video frame, only
+/// while something over the picture shows it.
+struct Blur {
+    levels: Vec<BlurLevel>,
+    window: [i32; 2],
+    output: glow::Texture,
+}
+
+impl Blur {
+    fn new(gl: &glow::Context) -> Result<Self, String> {
+        let mut levels = Vec::with_capacity(BLUR_LEVELS);
+        for _ in 0..BLUR_LEVELS {
+            let (fbo, tex) = create_target(gl)?;
+            levels.push(BlurLevel { fbo, tex, size: [16, 16] });
+        }
+        let output = levels.get(BLUR_OUT).ok_or("no blur level")?.tex;
+        Ok(Self { levels, window: [0, 0], output })
+    }
+
+    /// # Safety
+    /// Inside egui_glow's paint callback, with eframe's GL context current. The caller restores the
+    /// framebuffer binding.
+    unsafe fn run(&mut self, gl: &glow::Context, src: glow::Framebuffer, size: [i32; 2], target: BlurTarget) {
+        // SAFETY: as this function asks of its caller.
+        unsafe {
+            if target.window != self.window {
+                self.window = target.window;
+                for (i, l) in self.levels.iter_mut().enumerate() {
+                    l.size = [(target.window[0] >> (i + 1)).max(1), (target.window[1] >> (i + 1)).max(1)];
+                    gl.bind_texture(glow::TEXTURE_2D, Some(l.tex));
+                    gl.tex_image_2d(
+                        glow::TEXTURE_2D,
+                        0,
+                        glow::RGBA8 as i32,
+                        l.size[0],
+                        l.size[1],
+                        0,
+                        glow::RGBA,
+                        glow::UNSIGNED_BYTE,
+                        glow::PixelUnpackData::Slice(None),
+                    );
+                }
+            }
+            let blit = |from: glow::Framebuffer, f: [i32; 4], to: glow::Framebuffer, t: [i32; 4]| {
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(from));
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(to));
+                gl.blit_framebuffer(
+                    f[0],
+                    f[1],
+                    f[2],
+                    f[3],
+                    t[0],
+                    t[1],
+                    t[2],
+                    t[3],
+                    glow::COLOR_BUFFER_BIT,
+                    glow::LINEAR,
+                );
+            };
+            let Some(first) = self.levels.first() else { return };
+            // The picture in its place on black, then down, then back up.
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(first.fbo));
+            gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            let ([fw, fh], [ww, wh]) = (first.size, target.window);
+            let (sx, sy) = (|v: i32| v * fw / ww.max(1), |v: i32| v * fh / wh.max(1));
+            let [x, y, w, h] = target.at;
+            blit(src, whole(size), first.fbo, [sx(x), sy(y), sx(x + w), sy(y + h)]);
+            for pair in self.levels.windows(2) {
+                if let [a, b] = pair {
+                    blit(a.fbo, whole(a.size), b.fbo, whole(b.size));
+                }
+            }
+            for pair in self.levels.get(BLUR_OUT..).unwrap_or_default().windows(2).rev() {
+                if let [a, b] = pair {
+                    blit(b.fbo, whole(b.size), a.fbo, whole(a.size));
+                }
+            }
+        }
+    }
+
+    fn delete(&self, gl: &glow::Context) {
+        // SAFETY: as for `GlVideo`'s drop, which calls this.
+        unsafe {
+            for l in &self.levels {
+                gl.delete_framebuffer(l.fbo);
+                gl.delete_texture(l.tex);
+            }
+        }
+    }
+}
+
 struct GlVideo {
     rc: RenderContext,
     gl: Arc<glow::Context>,
     fbo: glow::Framebuffer,
     tex: glow::Texture,
     size: [i32; 2],
+    /// None without framebuffer blits (before OpenGL 3): panels get a plain tint.
+    blur: Option<Blur>,
+    /// The blur holds this frame.
+    blur_ready: bool,
 }
 
 impl GlVideo {
-    fn paint(&mut self, want: [i32; 2]) {
+    fn paint(&mut self, want: [i32; 2], blur: Option<BlurTarget>) {
         let gl = self.gl.clone();
         let resized = want != self.size;
         // SAFETY: called inside egui_glow's paint callback, with eframe's GL context current.
@@ -176,18 +298,30 @@ impl GlVideo {
                 );
                 self.size = want;
             }
-            if !self.rc.update() && !resized {
+            let fresh = self.rc.update() || resized;
+            if blur.is_none() {
+                self.blur_ready = false;
+            }
+            // A paused picture has no new frames, and a panel opened over it still wants the blur.
+            let redo_blur = blur.filter(|_| self.blur.is_some() && (fresh || !self.blur_ready));
+            if !fresh && redo_blur.is_none() {
                 return;
             }
             // egui_glow restores its state after a callback, but not the framebuffer binding.
             let prev = gl.get_parameter_i32(glow::FRAMEBUFFER_BINDING);
             gl.disable(glow::SCISSOR_TEST);
             gl.disable(glow::BLEND);
-            if let Err(e) = self.rc.render_gl(self.fbo.0.get() as i32, want[0], want[1], false) {
-                tracing::debug!("video render: {e}");
+            if fresh {
+                if let Err(e) = self.rc.render_gl(self.fbo.0.get() as i32, want[0], want[1], false) {
+                    tracing::debug!("video render: {e}");
+                }
+                // Feeds mpv's timing statistics (display fps, jitter on the A/V page).
+                self.rc.report_swap();
             }
-            // Feeds mpv's timing statistics (display fps, jitter on the A/V page).
-            self.rc.report_swap();
+            if let (Some(target), Some(b)) = (redo_blur, &mut self.blur) {
+                b.run(&gl, self.fbo, want, target);
+                self.blur_ready = true;
+            }
             gl.bind_framebuffer(glow::FRAMEBUFFER, std::num::NonZeroU32::new(prev as u32).map(glow::NativeFramebuffer));
         }
     }
@@ -200,13 +334,60 @@ impl Drop for GlVideo {
             self.gl.delete_framebuffer(self.fbo);
             self.gl.delete_texture(self.tex);
         }
+        if let Some(b) = &self.blur {
+            b.delete(&self.gl);
+        }
     }
 }
 
+/// What sits over the picture, one at a time.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Panel {
+    Settings,
+    Sound,
+    Tracks,
+    Cast,
+    Room,
+}
+
+impl Panel {
+    /// CORRENT_DEV_SOUND or CORRENT_DEV_PANEL: up from the start, to look at.
+    fn from_dev_hook() -> Option<Self> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        if std::env::var_os("CORRENT_DEV_SOUND").is_some() {
+            return Some(Self::Sound);
+        }
+        match std::env::var("CORRENT_DEV_PANEL").ok()?.as_str() {
+            "settings" => Some(Self::Settings),
+            "sound" => Some(Self::Sound),
+            "tracks" => Some(Self::Tracks),
+            "cast" => Some(Self::Cast),
+            "room" => Some(Self::Room),
+            _ => None,
+        }
+    }
+}
+
+/// The panels' bottom edge above the window's: over the buttons, clear of the seek bar and the time.
+const PANEL_ABOVE: f32 = 96.0;
+const PANEL_WIDTH: f32 = 320.0;
+/// The row of buttons at the bottom, where a click doesn't count as clicking away from a panel.
+const BUTTON_ROW: f32 = 56.0;
+
 enum Video {
     None,
-    Gl(Arc<Mutex<GlVideo>>, Option<egui::TextureId>),
-    Sw { rc: RenderContext, buf: Vec<u8>, tex: Option<egui::TextureHandle>, size: [usize; 2] },
+    /// The picture's texture and its blur's, once registered.
+    Gl(Arc<Mutex<GlVideo>>, Option<egui::TextureId>, Option<egui::TextureId>),
+    Sw {
+        rc: RenderContext,
+        buf: Vec<u8>,
+        tex: Option<egui::TextureHandle>,
+        size: [usize; 2],
+        blur: Option<egui::TextureHandle>,
+        blur_at: Instant,
+    },
 }
 
 /// GL access for the player (from eframe's creation context).
@@ -231,6 +412,8 @@ pub struct Player {
     stop_events: Arc<AtomicBool>,
     /// The texture created this frame, to register with eframe.
     pub needs_registration: Option<glow::Texture>,
+    /// And the blur's, when there is one.
+    needs_blur_registration: Option<glow::Texture>,
     seek_drag: Option<f32>,
     /// Seek-bar thumbnails of the current item (empty until loaded, or when there are none).
     trick: Arc<Mutex<Vec<Cue>>>,
@@ -246,8 +429,10 @@ pub struct Player {
     /// nobody asks anything of doesn't get them at all.
     observing_meters: bool,
     observing_stats: bool,
-    /// The sound sheet is up.
-    sound_open: bool,
+    /// The panel that is up.
+    panel: Option<Panel>,
+    /// The Picture row's choice: an index into `PICTURES`.
+    picture: usize,
     /// CORRENT_DEV_WINDOW=<w>x<h> or `pip`: the layout to check, once.
     #[cfg(debug_assertions)]
     dev_window: Option<String>,
@@ -379,6 +564,10 @@ enum Sheet {
 const NARROW: f32 = 760.0;
 /// Below this width they also drop previous/next, watch together and cast.
 const TINY: f32 = 560.0;
+/// Below this width the picture-in-picture button goes too.
+const PIP_BUTTON_MIN: f32 = 440.0;
+/// The Picture row: `video-aspect-override` and `panscan` for each choice.
+const PICTURES: [(&str, &str); 5] = [("-1", "0"), ("16:9", "0"), ("4:3", "0"), ("2.35:1", "0"), ("-1", "1")];
 
 pub fn fmt_time(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
@@ -443,8 +632,18 @@ impl Player {
                     match RenderContext::new_gl(mpv.clone(), move |n| proc(n), false) {
                         Ok(rc) => {
                             let (fbo, tex) = create_target(&g.gl)?;
+                            let blur = (g.gl.version().major >= 3).then(|| Blur::new(&g.gl).ok()).flatten();
                             Video::Gl(
-                                Arc::new(Mutex::new(GlVideo { rc, gl: g.gl.clone(), fbo, tex, size: [16, 16] })),
+                                Arc::new(Mutex::new(GlVideo {
+                                    rc,
+                                    gl: g.gl.clone(),
+                                    fbo,
+                                    tex,
+                                    size: [16, 16],
+                                    blur,
+                                    blur_ready: false,
+                                })),
+                                None,
                                 None,
                             )
                         }
@@ -455,6 +654,8 @@ impl Player {
                                 buf: Vec::new(),
                                 tex: None,
                                 size: [0, 0],
+                                blur: None,
+                                blur_at: Instant::now(),
                             }
                         }
                     }
@@ -464,6 +665,8 @@ impl Player {
                     buf: Vec::new(),
                     tex: None,
                     size: [0, 0],
+                    blur: None,
+                    blur_at: Instant::now(),
                 },
             }
         };
@@ -472,18 +675,20 @@ impl Player {
             move || ctx.request_repaint()
         };
         let mut needs_registration = None;
+        let mut needs_blur_registration = None;
         let video = match video {
-            Video::Gl(v, id) => {
+            Video::Gl(v, id, blur) => {
                 {
                     let mut g = v.lock().unwrap_or_else(|e| e.into_inner());
                     g.rc.set_update_callback(repaint);
                     needs_registration = Some(g.tex);
+                    needs_blur_registration = g.blur.as_ref().map(|b| b.output);
                 }
-                Video::Gl(v, id)
+                Video::Gl(v, id, blur)
             }
-            Video::Sw { mut rc, buf, tex, size } => {
+            Video::Sw { mut rc, buf, tex, size, blur, blur_at } => {
                 rc.set_update_callback(repaint);
-                Video::Sw { rc, buf, tex, size }
+                Video::Sw { rc, buf, tex, size, blur, blur_at }
             }
             Video::None => Video::None,
         };
@@ -685,6 +890,7 @@ impl Player {
             controls_until: Instant::now() + Duration::from_secs(3),
             stop_events: stop,
             needs_registration,
+            needs_blur_registration,
             seek_drag: None,
             trick: Arc::default(),
             sheets: Default::default(),
@@ -695,8 +901,8 @@ impl Player {
             meter_page: audio.fx.meters || (cfg!(debug_assertions) && std::env::var_os("CORRENT_DEV_METERS").is_some()),
             observing_meters: false,
             observing_stats: false,
-            // CORRENT_DEV_SOUND: with the sheet up.
-            sound_open: cfg!(debug_assertions) && std::env::var_os("CORRENT_DEV_SOUND").is_some(),
+            panel: Panel::from_dev_hook(),
+            picture: 0,
             #[cfg(debug_assertions)]
             dev_window: std::env::var("CORRENT_DEV_WINDOW").ok(),
             pip: None,
@@ -1138,44 +1344,81 @@ impl Player {
         }
     }
 
-    /// The sound sheet over the picture, above the controls at the right; too tall for the window,
-    /// it scrolls. It stays while the picture plays, to hear what the knobs do.
-    fn sound_area(&mut self, ui: &mut Ui, p: &Palette, rect: Rect) {
-        let width = (rect.width() - 24.0).min(320.0);
-        let max_height = (rect.height() - 170.0).max(120.0);
-        let at = pos2(rect.right() - 12.0, rect.bottom() - 110.0);
+    /// The panel over the picture, above the buttons at the right; too tall for the window, it
+    /// scrolls. Sound stays while the picture plays, to hear what the knobs do; the others close on a
+    /// click away.
+    fn panels(&mut self, ui: &mut Ui, p: &Palette, rect: Rect, pos: f64, paused: bool) -> PlayerAction {
+        let Some(panel) = self.panel else { return PlayerAction::None };
+        let tone = Tone::glass(p);
+        let backdrop = self.backdrop(rect);
+        let width = (rect.width() - 24.0).min(PANEL_WIDTH);
+        let anchor = pos2(rect.right() - 12.0, rect.bottom() - PANEL_ABOVE);
+        let max_height = (rect.height() - PANEL_ABOVE - 76.0).max(120.0);
+        let title = match panel {
+            Panel::Settings => t!("Playback settings"),
+            Panel::Sound => t!("Sound"),
+            Panel::Tracks => t!("Audio and subtitles"),
+            Panel::Cast => t!("Cast to"),
+            Panel::Room => t!("Watch together"),
+        };
+        let ctx = ui.ctx().clone();
         let mut close = false;
-        egui::Area::new(ui.id().with("sound-sheet"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(at)
-            .pivot(egui::Align2::RIGHT_BOTTOM)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_width(width);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(t!("Sound")).strong());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            close = ui
-                                .add(egui::Button::new(egui_phosphor::regular::X).frame(false))
-                                .on_hover_text(t!("Close"))
-                                .clicked();
-                        });
+        let mut pick = false;
+        let (area, ()) =
+            glass::panel(&ctx, ui.id().with(("panel-area", panel as u8)), anchor, width, &backdrop, &tone, |ui| {
+                close = glass::header(ui, &tone, title);
+                ui.add_space(4.0);
+                // The minimum too: an area anchored by its bottom only offers the height it had last frame.
+                egui::ScrollArea::vertical()
+                    .max_height(max_height)
+                    .min_scrolled_height(max_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| match panel {
+                        Panel::Settings => self.settings_panel(ui, &tone),
+                        Panel::Sound => self.sound_sheet(ui, &tone),
+                        Panel::Tracks => pick = self.tracks_panel(ui, &tone),
+                        Panel::Cast => self.cast_panel(ui, &tone, pos),
+                        Panel::Room => self.room_panel(ui, &tone, paused, pos),
                     });
-                    egui::ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).show(ui, |ui| {
-                        self.sound_sheet(ui, p);
-                    });
-                });
             });
-        if close {
-            self.sound_open = false;
+        let click = ctx.input(|i| i.pointer.any_click().then(|| i.pointer.interact_pos()).flatten());
+        let buttons = Rect::from_min_max(pos2(rect.left(), rect.bottom() - BUTTON_ROW), rect.max);
+        if close || glass::clicked_away(click, area, buttons, panel == Panel::Sound) {
+            self.panel = None;
+        }
+        if pick { PlayerAction::PickSubtitle } else { PlayerAction::None }
+    }
+
+    /// Whether anything on screen shows the blur this frame.
+    fn wants_backdrop(&self) -> bool {
+        let (pos, dur, _) = self.position();
+        self.panel.is_some() || self.stats || self.meter_page || self.counting_down(pos, dur)
+    }
+
+    /// What goes behind a panel or overlay now. The first frame after one comes up has only the
+    /// tint: the blur is made while painting, after this frame's layout.
+    fn backdrop(&self, rect: Rect) -> Backdrop {
+        let tex = match &self.video {
+            Video::Gl(v, _, blur) => blur.filter(|_| crate::util::with_lock(v, |g| g.blur_ready)),
+            Video::Sw { blur, .. } => blur.as_ref().map(egui::TextureHandle::id),
+            Video::None => None,
+        };
+        Backdrop::new(tex, rect)
+    }
+
+    /// A blur is on its way and nothing else may ask for the frame that shows it (a paused picture).
+    fn blur_pending(&self) -> bool {
+        match &self.video {
+            Video::Gl(v, _, blur) => blur.is_some() && crate::util::with_lock(v, |g| g.blur.is_some() && !g.blur_ready),
+            _ => false,
         }
     }
 
     /// The sound sheet's contents, for the player.
-    fn sound_sheet(&mut self, ui: &mut Ui, p: &Palette) {
+    fn sound_sheet(&mut self, ui: &mut Ui, tone: &Tone) {
         let mut pb = crate::util::with_lock(&self.audio, |a| a.clone());
         let before = pb.clone();
-        if super::sound::sheet(ui, p, &mut pb) {
+        if super::sound::sheet(ui, tone, &mut pb) {
             // A profile may have changed the output: the one thing that re-creates it.
             for (k, v) in pb.changed_options(&before) {
                 self.cmd(&["set", k, &v]);
@@ -1331,20 +1574,30 @@ impl Player {
         let ppp = ctx.pixels_per_point();
         let px = [(vr.width() * ppp).round().max(1.0) as i32, (vr.height() * ppp).round().max(1.0) as i32];
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        if self.pip.is_some() {
+            self.panel = None;
+        }
+        let wants_backdrop = self.wants_backdrop();
+        let window_px = [(rect.width() * ppp).round().max(1.0) as i32, (rect.height() * ppp).round().max(1.0) as i32];
+        let video_at =
+            [((vr.left() - rect.left()) * ppp).round() as i32, ((vr.top() - rect.top()) * ppp).round() as i32];
         match &mut self.video {
-            Video::Gl(state, id) => {
+            Video::Gl(state, id, _) => {
                 if let Some(id) = *id {
                     let st = state.clone();
+                    let target = wants_backdrop
+                        .then_some(BlurTarget { window: window_px, at: [video_at[0], video_at[1], px[0], px[1]] });
                     let cb = eframe::egui_glow::CallbackFn::new(move |_info, _painter| {
-                        st.lock().unwrap_or_else(|e| e.into_inner()).paint(px)
+                        st.lock().unwrap_or_else(|e| e.into_inner()).paint(px, target)
                     });
                     ui.painter().add(egui::PaintCallback { rect: vr, callback: Arc::new(cb) });
                     ui.painter().image(id, vr, uv, Color32::WHITE);
                 }
             }
-            Video::Sw { rc, buf, tex, size } => {
+            Video::Sw { rc, buf, tex, size, blur, blur_at } => {
                 let want = [px[0] as usize, px[1] as usize];
-                if rc.update() || want != *size {
+                let fresh = rc.update() || want != *size;
+                if fresh {
                     buf.resize(want[0] * want[1] * 4, 0);
                     if rc.render_sw(px[0], px[1], buf).is_ok() {
                         let img = egui::ColorImage::from_rgba_unmultiplied(want, buf);
@@ -1358,8 +1611,25 @@ impl Player {
                 if let Some(t) = tex {
                     ui.painter().image(t.id(), vr, uv, Color32::WHITE);
                 }
+                if !wants_backdrop {
+                    *blur = None;
+                } else if *size != [0, 0] && (blur.is_none() || fresh && blur_at.elapsed() > Duration::from_millis(66))
+                {
+                    let window = window_px.map(|v| v as usize);
+                    let at = [video_at[0] as usize, video_at[1] as usize, px[0] as usize, px[1] as usize];
+                    let img = glass::soft_backdrop(buf, *size, window, at);
+                    match blur {
+                        Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+                        None => *blur = Some(ctx.load_texture("video-blur", img, egui::TextureOptions::LINEAR)),
+                    }
+                    *blur_at = Instant::now();
+                }
             }
             Video::None => {}
+        }
+
+        if wants_backdrop && self.blur_pending() {
+            ctx.request_repaint();
         }
 
         // Controls appear on mouse movement and hide after 3 s of stillness (not while paused).
@@ -1385,9 +1655,8 @@ impl Player {
         }
         let (pos, dur, paused) = self.position();
         self.thumb_tick();
-        // An open popup or the sound sheet keep them up: hiding the controls would close a popup
-        // under someone reading it.
-        let show = paused || Instant::now() < self.controls_until || popup_open || self.sound_open;
+        // An open panel keeps them up: its button is how it closes.
+        let show = paused || Instant::now() < self.controls_until || popup_open || self.panel.is_some();
         crate::util::with_lock(&self.status, |s| s.controls_visible = show);
         let k = crate::ui::motion::toggle(&ctx, ui.id().with("controls"), show, crate::ui::motion::PANEL);
         if !show {
@@ -1416,9 +1685,7 @@ impl Player {
         }
         action = self.skip_button(ui, p, rect, pos, dur, k).or(action);
         self.countdown(ui, p, rect, pos, dur);
-        if self.sound_open && self.pip.is_none() {
-            self.sound_area(ui, p, rect);
-        }
+        action = self.panels(ui, p, rect, pos, paused).or(action);
         let mut below = rect.top() + if self.pip.is_some() { 40.0 } else { 90.0 };
         if self.stats {
             below = self.stats_overlay(ui, rect, below) + 8.0;
@@ -1570,9 +1837,9 @@ impl Player {
         if f {
             *action = PlayerAction::ToggleFullscreen;
         }
-        // Escape closes what is on top: a popup, the sound sheet, then fullscreen, then the player.
-        if esc && self.sound_open && !popup_open {
-            self.sound_open = false;
+        // Escape closes what is on top: a popup, a panel, then fullscreen, then the player.
+        if esc && self.panel.is_some() && !popup_open {
+            self.panel = None;
         } else if esc && !popup_open {
             *action = if self.fullscreen { PlayerAction::ToggleFullscreen } else { PlayerAction::Close };
         }
@@ -1811,32 +2078,33 @@ impl Player {
         if r.clicked() {
             action = PlayerAction::ToggleFullscreen;
         }
-        let tracks_btn = Rect::from_center_size(slot(), vec2(30.0, 30.0));
-        let r = ui.interact(tracks_btn, ui.id().with("tracks"), Sense::click());
-        ui.painter().text(
-            tracks_btn.center(),
-            egui::Align2::CENTER_CENTER,
-            pr::SUBTITLES,
-            egui::FontId::proportional(22.0),
-            white,
-        );
+        self.panel_button(ui, slot(), white, pr::SUBTITLES, t!("Audio and subtitles"), Panel::Tracks);
+        self.panel_button(ui, slot(), white, pr::SLIDERS, t!("Sound"), Panel::Sound);
+        self.panel_button(ui, slot(), white, pr::GEAR_SIX, t!("Playback settings"), Panel::Settings);
         if !tiny {
-            self.room_button(ui, slot(), white, paused, pos);
-            self.cast_button(ui, slot(), white, pos);
+            let icon = if self.room.is_some() { pr::USERS_THREE } else { pr::USERS };
+            self.panel_button(ui, slot(), white, icon, t!("Watch together"), Panel::Room);
+            let c = if self.casting.is_some() { Color32::from_rgb(120, 190, 255) } else { white };
+            let cast = self.panel_button(ui, slot(), c, pr::SCREENCAST, t!("Cast to a device"), Panel::Cast);
+            if cast.clicked() && self.casting.is_none() {
+                self.cast.find(ui.ctx(), false);
+            }
         }
-        self.settings_button(ui, slot(), white);
-        let pip = Rect::from_center_size(slot(), vec2(30.0, 30.0));
-        let pip_r = ui.interact(pip, ui.id().with("pip"), Sense::click()).on_hover_text(t!("Picture in picture"));
-        ui.painter().text(
-            pip.center(),
-            egui::Align2::CENTER_CENTER,
-            pr::PICTURE_IN_PICTURE,
-            egui::FontId::proportional(22.0),
-            white,
-        );
-        if pip_r.clicked() {
-            let ctx = ui.ctx().clone();
-            self.toggle_pip(&ctx);
+        // Below this the left side needs the room.
+        if rect.width() >= PIP_BUTTON_MIN {
+            let pip = Rect::from_center_size(slot(), vec2(30.0, 30.0));
+            let pip_r = ui.interact(pip, ui.id().with("pip"), Sense::click()).on_hover_text(t!("Picture in picture"));
+            ui.painter().text(
+                pip.center(),
+                egui::Align2::CENTER_CENTER,
+                pr::PICTURE_IN_PICTURE,
+                egui::FontId::proportional(22.0),
+                white,
+            );
+            if pip_r.clicked() {
+                let ctx = ui.ctx().clone();
+                self.toggle_pip(&ctx);
+            }
         }
         if let Some(c) = &self.casting {
             let line = match self.cast.status() {
@@ -1864,40 +2132,6 @@ impl Player {
                     Color32::from_white_alpha(200),
                 );
             }
-        }
-        let tracks = crate::util::with_lock(&self.status, |s| s.tracks.clone());
-        let mpv = self.mpv.clone();
-        let mut pick = false;
-        let mut chosen = None;
-        crate::ui::widgets::popup(egui::Popup::from_toggle_button_response(&r), |ui| {
-            ui.set_min_width(260.0);
-            for (kind, label, prop) in [("audio", t!("Audio"), "aid"), ("sub", t!("Subtitles"), "sid")] {
-                ui.label(egui::RichText::new(label).strong());
-                if kind == "sub"
-                    && ui.selectable_label(!tracks.iter().any(|t| t.kind == "sub" && t.selected), t!("Off")).clicked()
-                {
-                    let _ = mpv.command_async(0, &["set", "sid", "no"]);
-                    chosen = Some((kind, None));
-                }
-                for tr in tracks.iter().filter(|t| t.kind == kind) {
-                    if ui.selectable_label(tr.selected, &tr.title).clicked() {
-                        let _ = mpv.command_async(0, &["set", prop, &tr.id.to_string()]);
-                        chosen = Some((kind, Some(tr)));
-                    }
-                }
-                if kind == "sub"
-                    && ui.selectable_label(false, format!("{}  {}", pr::FOLDER_OPEN, t!("Load from file…"))).clicked()
-                {
-                    pick = true;
-                }
-                ui.separator();
-            }
-        });
-        if let Some((kind, tr)) = chosen {
-            self.remember_track(kind, tr);
-        }
-        if pick {
-            action = PlayerAction::PickSubtitle;
         }
         action
     }
@@ -1981,125 +2215,124 @@ impl Player {
         action
     }
 
-    /// Speed, delays, subtitle size, picture shape, screenshot, stats and sound.
-    fn settings_button(&mut self, ui: &mut Ui, at: egui::Pos2, white: Color32) {
-        let r = Rect::from_center_size(at, vec2(30.0, 30.0));
-        let resp = ui.interact(r, ui.id().with("psettings"), Sense::click()).on_hover_text(t!("Playback settings"));
-        ui.painter().text(
-            r.center(),
-            egui::Align2::CENTER_CENTER,
-            egui_phosphor::regular::GEAR_SIX,
-            egui::FontId::proportional(22.0),
-            white,
-        );
+    /// A button in the row that opens `panel`, or closes it when it's the one up.
+    fn panel_button(
+        &mut self,
+        ui: &mut Ui,
+        at: egui::Pos2,
+        color: Color32,
+        icon: &str,
+        hint: &str,
+        panel: Panel,
+    ) -> egui::Response {
+        let r = Rect::from_center_size(at, vec2(34.0, 34.0));
+        let resp = ui.interact(r, ui.id().with(("panel", panel as u8)), Sense::click()).on_hover_text(hint);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, hint));
+        let open = self.panel == Some(panel);
+        if open || resp.hovered() {
+            let a = color.a() as f32 / 255.0;
+            let shade = if open { 46.0 } else { 26.0 };
+            ui.painter().rect_filled(r, CornerRadius::same(8), Color32::from_white_alpha((shade * a) as u8));
+        }
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(22.0), color);
+        if resp.clicked() {
+            self.panel = if open { None } else { Some(panel) };
+        }
+        resp
+    }
+
+    /// Speed, delays, subtitle size, picture shape, stats and a screenshot.
+    fn settings_panel(&mut self, ui: &mut Ui, tone: &Tone) {
         let s = crate::util::with_lock(&self.status, |s| (s.speed, s.sub_delay, s.audio_delay, s.sub_scale));
-        let mut cmds: Vec<Vec<String>> = Vec::new();
-        let mut shot = false;
-        crate::ui::widgets::popup(
-            egui::Popup::from_toggle_button_response(&resp)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
-            |ui| {
-                ui.set_min_width(300.0);
-                let row = |ui: &mut Ui,
-                           label: &str,
-                           value: String,
-                           minus: [&str; 3],
-                           plus: [&str; 3],
-                           cmds: &mut Vec<Vec<String>>| {
-                    ui.horizontal(|ui| {
-                        ui.label(label);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("+").clicked() {
-                                cmds.push(plus.iter().map(|s| s.to_string()).collect());
-                            }
-                            ui.label(egui::RichText::new(value).monospace());
-                            if ui.small_button("−").clicked() {
-                                cmds.push(minus.iter().map(|s| s.to_string()).collect());
-                            }
-                        });
-                    });
-                };
-                row(
-                    ui,
-                    t!("Speed"),
-                    format!("{:.2}×", s.0),
-                    ["multiply", "speed", "0.9"],
-                    ["multiply", "speed", "1.1"],
-                    &mut cmds,
-                );
-                row(
-                    ui,
-                    t!("Subtitle delay"),
-                    format!("{:+.1} s", s.1),
-                    ["add", "sub-delay", "-0.1"],
-                    ["add", "sub-delay", "0.1"],
-                    &mut cmds,
-                );
-                row(
-                    ui,
-                    t!("Audio delay"),
-                    format!("{:+.2} s", s.2),
-                    ["add", "audio-delay", "-0.05"],
-                    ["add", "audio-delay", "0.05"],
-                    &mut cmds,
-                );
-                row(
-                    ui,
-                    t!("Subtitle size"),
-                    format!("{:.0}%", s.3 * 100.0),
-                    ["add", "sub-scale", "-0.1"],
-                    ["add", "sub-scale", "0.1"],
-                    &mut cmds,
-                );
-                ui.separator();
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(t!("Picture"));
-                    for (label, aspect) in
-                        [(t!("Original"), "-1"), ("16:9", "16:9"), ("4:3", "4:3"), ("2.35:1", "2.35:1")]
-                    {
-                        if ui.small_button(label).clicked() {
-                            cmds.push(vec!["set".into(), "video-aspect-override".into(), aspect.into()]);
-                        }
-                    }
-                    if ui.small_button(t!("Fill")).clicked() {
-                        cmds.push(vec!["cycle-values".into(), "panscan".into(), "1.0".into(), "0.0".into()]);
-                    }
-                });
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button(t!("Reset")).clicked() {
-                        for (k, v) in [
-                            ("speed", "1"),
-                            ("sub-delay", "0"),
-                            ("audio-delay", "0"),
-                            ("sub-scale", "1"),
-                            ("video-aspect-override", "-1"),
-                            ("panscan", "0"),
-                        ] {
-                            cmds.push(vec!["set".into(), k.into(), v.into()]);
-                        }
-                    }
-                    if ui.button(t!("Screenshot")).clicked() {
-                        shot = true;
-                    }
-                    ui.checkbox(&mut self.stats, t!("Stats"));
-                });
-                ui.separator();
-                if ui
-                    .selectable_label(self.sound_open, format!("{}  {}", egui_phosphor::regular::SLIDERS, t!("Sound")))
-                    .clicked()
-                {
-                    self.sound_open = !self.sound_open;
+        let rows: [(&str, String, [&str; 3], [&str; 3]); 4] = [
+            (t!("Speed"), format!("{:.2}×", s.0), ["multiply", "speed", "0.9"], ["multiply", "speed", "1.1"]),
+            (t!("Subtitle delay"), format!("{:+.1} s", s.1), ["add", "sub-delay", "-0.1"], ["add", "sub-delay", "0.1"]),
+            (
+                t!("Audio delay"),
+                format!("{:+.2} s", s.2),
+                ["add", "audio-delay", "-0.05"],
+                ["add", "audio-delay", "0.05"],
+            ),
+            (
+                t!("Subtitle size"),
+                format!("{:.0}%", s.3 * 100.0),
+                ["add", "sub-scale", "-0.1"],
+                ["add", "sub-scale", "0.1"],
+            ),
+        ];
+        for (label, value, minus, plus) in &rows {
+            match glass::stepper(ui, tone, label, value) {
+                -1 => self.cmd(minus),
+                1 => self.cmd(plus),
+                _ => {}
+            }
+        }
+        glass::separator(ui, tone);
+        glass::section(ui, tone, t!("Picture"));
+        ui.add_space(2.0);
+        let labels = [t!("Original"), "16:9", "4:3", "2.35:1", t!("Fill")];
+        let items: Vec<(&str, bool)> = labels.iter().enumerate().map(|(i, l)| (*l, i == self.picture)).collect();
+        if let Some((i, (aspect, panscan))) = glass::chips(ui, tone, &items).and_then(|i| Some((i, *PICTURES.get(i)?)))
+        {
+            self.picture = i;
+            self.cmd(&["set", "video-aspect-override", aspect]);
+            self.cmd(&["set", "panscan", panscan]);
+        }
+        ui.add_space(2.0);
+        glass::separator(ui, tone);
+        glass::switch(ui, tone, &mut self.stats, t!("Stats"));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if glass::button(ui, tone, t!("Screenshot")).clicked() {
+                self.screenshot();
+            }
+            if glass::button(ui, tone, t!("Reset")).clicked() {
+                self.picture = 0;
+                for (k, v) in [
+                    ("speed", "1"),
+                    ("sub-delay", "0"),
+                    ("audio-delay", "0"),
+                    ("sub-scale", "1"),
+                    ("video-aspect-override", "-1"),
+                    ("panscan", "0"),
+                ] {
+                    self.cmd(&["set", k, v]);
                 }
-            },
-        );
-        for c in cmds {
-            let args: Vec<&str> = c.iter().map(String::as_str).collect();
-            self.cmd(&args);
+            }
+        });
+    }
+
+    /// The audio and subtitle tracks. True when "Load from file…" was chosen.
+    fn tracks_panel(&mut self, ui: &mut Ui, tone: &Tone) -> bool {
+        let tracks = crate::util::with_lock(&self.status, |s| s.tracks.clone());
+        let mut pick = false;
+        let mut chosen = None;
+        for (kind, label, prop) in [("audio", t!("Audio"), "aid"), ("sub", t!("Subtitles"), "sid")] {
+            glass::section(ui, tone, label);
+            if kind == "sub"
+                && glass::item(ui, tone, None, t!("Off"), !tracks.iter().any(|t| t.kind == "sub" && t.selected))
+                    .clicked()
+            {
+                let _ = self.mpv.command_async(0, &["set", "sid", "no"]);
+                chosen = Some((kind, None));
+            }
+            for tr in tracks.iter().filter(|t| t.kind == kind) {
+                if glass::item(ui, tone, None, &tr.title, tr.selected).clicked() {
+                    let _ = self.mpv.command_async(0, &["set", prop, &tr.id.to_string()]);
+                    chosen = Some((kind, Some(tr)));
+                }
+            }
+            if kind == "sub"
+                && glass::item(ui, tone, Some(egui_phosphor::regular::FOLDER_OPEN), t!("Load from file…"), false)
+                    .clicked()
+            {
+                pick = true;
+            }
         }
-        if shot {
-            self.screenshot();
+        if let Some((kind, tr)) = chosen {
+            self.remember_track(kind, tr);
         }
+        pick
     }
 
     /// "Stats for nerds": what is playing and how. Returns the bottom of the box. In picture in
@@ -2108,7 +2341,7 @@ impl Player {
         let lines = {
             let s = crate::util::lock(&self.status);
             let render = match &self.video {
-                Video::Gl(v, _) => {
+                Video::Gl(v, ..) => {
                     let size = crate::util::with_lock(v, |g| g.size);
                     format!("OpenGL {}×{}", size[0], size[1])
                 }
@@ -2121,7 +2354,7 @@ impl Player {
         let pos = pos2(rect.left() + 20.0, top);
         let galley = ui.painter().layout_no_wrap(lines.join("\n"), egui::FontId::monospace(12.0), Color32::WHITE);
         let bg = Rect::from_min_size(pos - vec2(8.0, 6.0), galley.size() + vec2(16.0, 12.0));
-        ui.painter().rect_filled(bg, CornerRadius::same(6), Color32::from_black_alpha(170));
+        ui.painter().extend(self.backdrop(rect).shapes(bg));
         ui.painter().galley(pos, galley, Color32::WHITE);
         bg.bottom()
     }
@@ -2138,11 +2371,14 @@ impl Player {
             rect.top() + if self.pip.is_some() { 40.0 } else { 90.0 }
         };
         let left = if self.stats && rect.width() < 900.0 { rect.left() + 12.0 } else { rect.right() - width - 12.0 };
+        // Next to an open panel when there is room: the point is to watch them while changing things.
+        let beside = self.panel.is_some() && left > rect.left() + PANEL_WIDTH + 24.0 && rect.width() >= 900.0;
+        let left = if beside { left - PANEL_WIDTH - 12.0 } else { left };
         let area = Rect::from_min_max(pos2(left, top), pos2(left + width, rect.bottom() - 8.0));
-        self.paint_meters_into(ui.painter(), area, compact);
+        self.paint_meters_into(ui.painter(), area, compact, &self.backdrop(rect));
     }
 
-    fn paint_meters_into(&self, painter: &egui::Painter, area: Rect, compact: bool) {
+    fn paint_meters_into(&self, painter: &egui::Painter, area: Rect, compact: bool, backdrop: &Backdrop) {
         let (passthrough, makeup) = crate::util::with_lock(&self.audio, |a| {
             (a.passthrough, a.fx.night.as_ref().filter(|_| a.fx.enabled).map(|n| n.makeup_db))
         });
@@ -2157,38 +2393,43 @@ impl Player {
             passthrough,
             makeup,
         };
-        super::sound::paint_meters(painter, area, &s.meters, &info, compact);
+        super::sound::paint_meters(painter, area, &s.meters, &info, compact, backdrop);
+    }
+
+    /// The "Up next" card is up.
+    fn counting_down(&self, pos: f64, dur: f64) -> bool {
+        let Some(cur) = self.current().map(|e| e.item_id) else { return false };
+        self.queue.get(self.index + 1).is_some()
+            && !self.audio_only
+            && dur > 0.0
+            && dur - pos <= 10.0
+            && self.no_countdown != Some(cur)
+            && self.casting.is_none()
     }
 
     /// The last seconds of an episode: what comes next, with "Play now" and "Cancel".
     fn countdown(&mut self, ui: &mut Ui, p: &Palette, rect: Rect, pos: f64, dur: f64) {
-        let Some(cur) = self.current().map(|e| e.item_id) else { return };
-        let Some(next) = self.queue.get(self.index + 1).cloned() else { return };
-        if self.audio_only || dur <= 0.0 || dur - pos > 10.0 || self.no_countdown == Some(cur) || self.casting.is_some()
-        {
+        if !self.counting_down(pos, dur) {
             return;
         }
+        let Some(cur) = self.current().map(|e| e.item_id) else { return };
+        let Some(next) = self.queue.get(self.index + 1).cloned() else { return };
         let left = (dur - pos).ceil().max(0.0) as i64;
         let area = Rect::from_min_size(pos2(rect.right() - 380.0, rect.bottom() - 220.0), vec2(350.0, 90.0));
+        let tone = Tone::glass(p);
+        let backdrop = self.backdrop(rect);
         let mut play = false;
         let mut cancel = false;
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-            egui::Frame::new()
-                .fill(Color32::from_black_alpha(200))
-                .corner_radius(CornerRadius::same(10))
-                .inner_margin(12)
-                .show(ui, |ui| {
-                    ui.label(egui::RichText::new(t!("Up next in {n} s", n = left)).color(p.text_dim));
-                    ui.label(egui::RichText::new(&next.title).strong().color(Color32::WHITE));
-                    ui.horizontal(|ui| {
-                        if ui.button(t!("Play now")).clicked() {
-                            play = true;
-                        }
-                        if ui.button(t!("Cancel")).clicked() {
-                            cancel = true;
-                        }
-                    });
+            glass::card(ui, &backdrop, &tone, area.width(), |ui| {
+                ui.label(egui::RichText::new(t!("Up next in {n} s", n = left)).color(tone.dim));
+                ui.label(egui::RichText::new(&next.title).strong().color(tone.text));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    play = glass::button(ui, &tone, t!("Play now")).clicked();
+                    cancel = glass::button(ui, &tone, t!("Cancel")).clicked();
                 });
+            });
         });
         if play {
             self.next();
@@ -2199,144 +2440,122 @@ impl Player {
     }
 
     /// "Cast to a device": the devices the server found; casting pauses the local player.
-    fn cast_button(&mut self, ui: &mut Ui, at: egui::Pos2, white: Color32, pos: f64) {
-        let r = Rect::from_center_size(at, vec2(30.0, 30.0));
-        let resp = ui.interact(r, ui.id().with("cast"), Sense::click()).on_hover_text(t!("Cast to a device"));
-        let c = if self.casting.is_some() { Color32::from_rgb(120, 190, 255) } else { white };
-        ui.painter().text(
-            r.center(),
-            egui::Align2::CENTER_CENTER,
-            egui_phosphor::regular::SCREENCAST,
-            egui::FontId::proportional(22.0),
-            c,
-        );
-        if resp.clicked() && self.casting.is_none() {
-            self.cast.find(ui.ctx(), false);
-        }
+    fn cast_panel(&mut self, ui: &mut Ui, tone: &Tone, pos: f64) {
         let item = self.current().map(|e| e.item_id);
-        crate::ui::widgets::popup(egui::Popup::from_toggle_button_response(&resp), |ui| {
-            ui.set_min_width(260.0);
-            ui.label(egui::RichText::new(t!("Cast to")).strong());
-            if let Some(c) = &self.casting {
-                ui.label(t!("Playing on {name}", name = c.device.name));
-                if ui.button(t!("Stop casting")).clicked() {
-                    self.cast.command(c, CastCommand::Stop);
-                    let at = self.cast.status().map(|s| s.position_ms as f64 / 1000.0).unwrap_or(pos);
-                    self.casting = None;
-                    self.cmd(&["seek", &format!("{at}"), "absolute"]);
-                }
-                return;
+        if let Some(c) = &self.casting {
+            ui.label(t!("Playing on {name}", name = c.device.name));
+            ui.add_space(4.0);
+            if glass::button(ui, tone, t!("Stop casting")).clicked() {
+                self.cast.command(c, CastCommand::Stop);
+                let at = self.cast.status().map(|s| s.position_ms as f64 / 1000.0).unwrap_or(pos);
+                self.casting = None;
+                self.cmd(&["seek", &format!("{at}"), "absolute"]);
             }
-            match self.cast.devices() {
-                None => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(t!("Looking for devices…"));
-                    });
-                }
-                Some(Err(e)) => {
-                    ui.colored_label(Color32::LIGHT_RED, e);
-                }
-                Some(Ok(list)) if list.is_empty() => {
-                    ui.label(t!("No Chromecasts found on the server’s network."));
-                }
-                Some(Ok(list)) => {
-                    for d in list {
-                        let label =
-                            if d.model.is_empty() { d.name.clone() } else { format!("{}  ·  {}", d.name, d.model) };
-                        if let Some(item) = item
-                            && ui.selectable_label(false, label).clicked()
-                        {
-                            self.cmd(&["set", "pause", "yes"]);
-                            self.casting = Some(self.cast.start(d, item, pos));
-                        }
+            return;
+        }
+        match self.cast.devices() {
+            None => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(t!("Looking for devices…"));
+                });
+            }
+            Some(Err(e)) => {
+                ui.colored_label(Color32::LIGHT_RED, e);
+            }
+            Some(Ok(list)) if list.is_empty() => {
+                ui.label(t!("No Chromecasts found on the server’s network."));
+            }
+            Some(Ok(list)) => {
+                for d in list {
+                    let label =
+                        if d.model.is_empty() { d.name.clone() } else { format!("{}  ·  {}", d.name, d.model) };
+                    if let Some(item) = item
+                        && glass::item(ui, tone, Some(egui_phosphor::regular::TELEVISION), &label, false).clicked()
+                    {
+                        self.cmd(&["set", "pause", "yes"]);
+                        self.casting = Some(self.cast.start(d, item, pos));
                     }
                 }
             }
-            if ui.button(t!("Look again")).clicked() {
-                self.cast.find(ui.ctx(), true);
-            }
-        });
+        }
+        ui.add_space(4.0);
+        if glass::button(ui, tone, t!("Look again")).clicked() {
+            self.cast.find(ui.ctx(), true);
+        }
     }
 
     /// "Watch together": start a room, join one by its code, copy its link, leave.
-    fn room_button(&mut self, ui: &mut Ui, at: egui::Pos2, white: Color32, paused: bool, pos: f64) {
-        let r = Rect::from_center_size(at, vec2(30.0, 30.0));
-        let resp = ui.interact(r, ui.id().with("room"), Sense::click()).on_hover_text(t!("Watch together"));
-        let icon =
-            if self.room.is_some() { egui_phosphor::regular::USERS_THREE } else { egui_phosphor::regular::USERS };
-        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(22.0), white);
+    fn room_panel(&mut self, ui: &mut Ui, tone: &Tone, paused: bool, pos: f64) {
         let item = self.current().map(|e| e.item_id);
-        crate::ui::widgets::popup(
-            egui::Popup::from_toggle_button_response(&resp)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
-            |ui| {
-                ui.set_min_width(280.0);
-                ui.label(egui::RichText::new(t!("Watch together")).strong());
-                if let Some(room) = &self.room {
-                    match room.state() {
-                        Some(s) => {
-                            ui.label(t!("Room {code}", code = s.id));
-                            let n = s.members.len();
-                            ui.label(if n == 1 { t!("Only you so far").to_string() } else { t!("{n} people", n = n) });
-                            if Some(s.item_id) != item {
-                                ui.label(t!("The room is watching something else."));
-                            }
-                            if ui.button(t!("Copy link")).clicked()
-                                && let Some(l) = room.link()
-                            {
-                                ui.ctx().copy_text(l);
-                            }
-                        }
-                        None => match room.error() {
-                            Some(e) => {
-                                ui.colored_label(Color32::LIGHT_RED, e);
-                            }
-                            None => {
-                                ui.spinner();
-                            }
-                        },
+        if let Some(room) = &self.room {
+            match room.state() {
+                Some(s) => {
+                    ui.label(t!("Room {code}", code = s.id));
+                    let n = s.members.len();
+                    ui.label(if n == 1 { t!("Only you so far").to_string() } else { t!("{n} people", n = n) });
+                    if Some(s.item_id) != item {
+                        ui.label(t!("The room is watching something else."));
                     }
-                    if ui.button(t!("Leave the room")).clicked() {
-                        self.room = None;
-                    }
-                } else {
-                    ui.label(t!("Play, pause and seek together with others, wherever they watch."));
-                    if let Some(item) = item
-                        && ui.button(t!("Start a room")).clicked()
-                    {
-                        self.room = Some(super::syncplay::Room::create(
-                            self.client.clone(),
-                            self.rt.clone(),
-                            ui.ctx().clone(),
-                            item,
-                            pos,
-                            paused,
-                        ));
-                    }
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.room_code)
-                                .hint_text(t!("Room code"))
-                                .desired_width(120.0),
-                        );
-                        if ui.add_enabled(!self.room_code.trim().is_empty(), egui::Button::new(t!("Join"))).clicked() {
-                            self.room = Some(super::syncplay::Room::join(
-                                self.client.clone(),
-                                self.rt.clone(),
-                                ui.ctx().clone(),
-                                &self.room_code,
-                            ));
-                            self.room_code.clear();
-                        }
-                    });
                 }
-            },
+                None => match room.error() {
+                    Some(e) => {
+                        ui.colored_label(Color32::LIGHT_RED, e);
+                    }
+                    None => {
+                        ui.spinner();
+                    }
+                },
+            }
+            ui.add_space(4.0);
+            let mut leave = false;
+            ui.horizontal(|ui| {
+                if room.state().is_some()
+                    && glass::button(ui, tone, t!("Copy link")).clicked()
+                    && let Some(l) = room.link()
+                {
+                    ui.ctx().copy_text(l);
+                }
+                leave = glass::button(ui, tone, t!("Leave the room")).clicked();
+            });
+            if leave {
+                self.room = None;
+            }
+            return;
+        }
+        ui.label(
+            egui::RichText::new(t!("Play, pause and seek together with others, wherever they watch.")).color(tone.dim),
         );
+        ui.add_space(4.0);
+        if let Some(item) = item
+            && glass::button(ui, tone, t!("Start a room")).clicked()
+        {
+            self.room = Some(super::syncplay::Room::create(
+                self.client.clone(),
+                self.rt.clone(),
+                ui.ctx().clone(),
+                item,
+                pos,
+                paused,
+            ));
+        }
+        glass::separator(ui, tone);
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.room_code).hint_text(t!("Room code")).desired_width(120.0));
+            ui.add_enabled_ui(!self.room_code.trim().is_empty(), |ui| {
+                if glass::button(ui, tone, t!("Join")).clicked() {
+                    self.room = Some(super::syncplay::Room::join(
+                        self.client.clone(),
+                        self.rt.clone(),
+                        ui.ctx().clone(),
+                        &self.room_code,
+                    ));
+                    self.room_code.clear();
+                }
+            });
+        });
     }
 
-    /// The bottom bar while music plays and the UI is browsing.
     pub fn mini(&mut self, ui: &mut Ui, p: &Palette) -> PlayerAction {
         let mut action = PlayerAction::None;
         let (pos, dur, paused) = self.position();
@@ -2391,7 +2610,7 @@ impl Player {
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
                 |ui| {
                     ui.set_width(300.0);
-                    self.sound_sheet(ui, p);
+                    self.sound_sheet(ui, &Tone::theme(p));
                 },
             );
             let lr = ui
@@ -2417,7 +2636,7 @@ impl Player {
             );
             let layer = egui::LayerId::new(egui::Order::Foreground, ui.id().with("meters"));
             let painter = ui.ctx().layer_painter(layer);
-            self.paint_meters_into(&painter, area, area.width() < 300.0 || area.height() < 200.0);
+            self.paint_meters_into(&painter, area, area.width() < 300.0 || area.height() < 200.0, &Backdrop::plain());
         }
         action
     }
@@ -2543,8 +2762,11 @@ impl Player {
 
     /// Registers the native texture (needs eframe's `Frame`).
     pub fn register(&mut self, frame: &mut eframe::Frame) {
-        if let (Some(tex), Video::Gl(_, id)) = (self.needs_registration.take(), &mut self.video) {
+        if let (Some(tex), Video::Gl(_, id, _)) = (self.needs_registration.take(), &mut self.video) {
             *id = Some(frame.register_native_glow_texture(tex));
+        }
+        if let (Some(tex), Video::Gl(_, _, blur)) = (self.needs_blur_registration.take(), &mut self.video) {
+            *blur = Some(frame.register_native_glow_texture(tex));
         }
     }
 }

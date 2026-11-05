@@ -15,6 +15,9 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 - **Meters and stats over the picture**: `Shift+I` shows LUFS M/S/I, LRA, true peak per channel,
   RMS, stereo correlation and compressor gain reduction, plus the live chain and the audio format
   in and out. `I` shows a fuller A/V page. The web adds a spectrum.
+- **Player panels on a blurred picture**: Sound has its own button, and settings, tracks, cast and
+  Watch together open as one kind of panel over a blurred copy of the video, as do the stats and meters.
+  The equalizer is one graph you drag directly. The web player gets the same blur and Sound button.
 - Desktop: command palette (`Ctrl+K`), Trackers in the sidebar, saved views, an Error column, Fit
   columns, a Keyboard shortcuts window, Home/End/PageUp/PageDown and `/` for search, bulk Add
   trackers, Invert selection, Select same category/tag/tracker, a double-click setting, and settings

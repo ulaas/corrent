@@ -7,6 +7,7 @@ pub mod agent;
 pub mod cast;
 pub mod client;
 pub mod downloads;
+pub mod glass;
 mod grid;
 mod identify;
 pub mod images;

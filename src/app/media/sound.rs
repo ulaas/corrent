@@ -10,7 +10,7 @@ use corrent_core::config::Playback;
 use corrent_mpv::{Mpv, Node};
 use egui::{Color32, CornerRadius, Rect, Ui, pos2, vec2};
 
-use crate::ui::theme::Palette;
+use super::glass::{self, Backdrop, Tone};
 
 static PROBED: OnceLock<Caps> = OnceLock::new();
 static PROBING: AtomicBool = AtomicBool::new(false);
@@ -231,9 +231,16 @@ fn level_x(r: Rect, db: f32) -> f32 {
     r.left() + r.width() * f
 }
 
-/// Paints the Audio page into the top of `area` (a dark box only as tall as it needs), dropping
+/// Paints the Audio page into the top of `area` (a box only as tall as it needs), dropping
 /// what doesn't fit `area`'s height. Compact: the numbers without the history and the text lines.
-pub fn paint_meters(painter: &egui::Painter, area: Rect, m: &Meters, info: &MeterInfo<'_>, compact: bool) {
+pub fn paint_meters(
+    painter: &egui::Painter,
+    area: Rect,
+    m: &Meters,
+    info: &MeterInfo<'_>,
+    compact: bool,
+    backdrop: &Backdrop,
+) {
     let white = Color32::WHITE;
     let dim = Color32::from_white_alpha(170);
     let mono = |size: f32| egui::FontId::monospace(size);
@@ -388,7 +395,7 @@ pub fn paint_meters(painter: &egui::Painter, area: Rect, m: &Meters, info: &Mete
         }
     }
     let back = Rect::from_min_max(area.min, pos2(area.right(), (y + pad).min(area.bottom())));
-    painter.rect_filled(back, CornerRadius::same(6), Color32::from_black_alpha(170));
+    painter.extend(backdrop.shapes(back));
     painter.extend(shapes);
     if let Some(r) = history {
         let samples: Vec<f32> = m.history.iter().map(|v| v - FLOOR).collect();
@@ -416,88 +423,137 @@ pub fn band_response_db(band: &Band, hz: f32) -> f32 {
     (10.0 * (power(b0, b1, b2) / power(a0, a1, a2)).log10()) as f32
 }
 
-/// The equalizer's combined response, -12 to +12 dB over 20 Hz to 20 kHz.
-fn eq_curve(ui: &mut Ui, p: &Palette, eq: &[Band]) {
+/// The equalizer in one piece: the combined response, a handle on each band to drag, and only the
+/// values that aren't zero. Double-click a band to flatten it; up and down arrows when focused.
+#[expect(clippy::indexing_slicing, reason = "`xs` and `responses` have one entry per band")]
+fn eq_graph(ui: &mut Ui, tone: &Tone, eq: &mut [Band]) {
+    const LABELS: f32 = 16.0;
+    const TOP: f32 = 18.0;
     let width = ui.available_width().clamp(200.0, 420.0);
-    let (r, _) = ui.allocate_exact_size(vec2(width, 54.0), egui::Sense::hover());
+    let (r, _) = ui.allocate_exact_size(vec2(width, 136.0), egui::Sense::hover());
+    let plot = Rect::from_min_max(pos2(r.left(), r.top() + TOP), pos2(r.right(), r.bottom() - LABELS));
+    let zero = plot.center().y;
+    let half = plot.height() / 2.0;
+    let y_of = |db: f32| zero - (db / 12.0).clamp(-1.0, 1.0) * half;
+    let x_of = |hz: f32| r.left() + r.width() * ((hz.max(1.0) / 20.0).log10() / 3.0).clamp(0.02, 0.98);
+    let xs: Vec<f32> = eq.iter().map(|b| x_of(b.hz as f32)).collect();
+    let mut readout = None;
+    let enabled = ui.is_enabled();
+    let responses: Vec<egui::Response> = eq
+        .iter_mut()
+        .enumerate()
+        .map(|(i, b)| {
+            let left = if i == 0 { r.left() } else { (xs[i - 1] + xs[i]) / 2.0 };
+            let right = xs.get(i + 1).map_or(r.right(), |next| (xs[i] + next) / 2.0);
+            let hit = Rect::from_min_max(pos2(left, r.top()), pos2(right, r.bottom()));
+            let resp = ui.interact(hit, ui.id().with(("eq-band", i)), egui::Sense::click_and_drag());
+            if let Some(p) = resp.interact_pointer_pos() {
+                b.db = (((zero - p.y) / half * 12.0 * 2.0).round() / 2.0).clamp(-12.0, 12.0);
+            }
+            if resp.double_clicked() {
+                b.db = 0.0;
+            }
+            glass::claim_arrows(ui, &resp, false);
+            if resp.has_focus() {
+                let (up, down) = ui.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown)));
+                b.db = (b.db + 0.5 * (f32::from(u8::from(up)) - f32::from(u8::from(down)))).clamp(-12.0, 12.0);
+            }
+            if resp.hovered() || resp.has_focus() || resp.dragged() {
+                readout = Some(i);
+            }
+            let name = format!("{} Hz", b.hz);
+            resp.widget_info(|| egui::WidgetInfo::slider(enabled, f64::from(b.db), &name));
+            resp
+        })
+        .collect();
+
     let painter = ui.painter_at(r);
-    painter.rect_filled(r, CornerRadius::same(4), p.bg2);
-    let zero = r.center().y;
-    painter.line_segment([pos2(r.left(), zero), pos2(r.right(), zero)], egui::Stroke::new(1.0, p.border));
+    painter.rect_filled(r, CornerRadius::same(6), tone.faint);
+    if let Some(i) = readout {
+        painter.rect_filled(responses[i].rect, CornerRadius::same(6), tone.hover);
+        let text = t!("{hz} Hz  {db} dB", hz = eq[i].hz, db = format!("{:+.1}", eq[i].db));
+        painter.text(
+            pos2(r.center().x, r.top() + 3.0),
+            egui::Align2::CENTER_TOP,
+            text,
+            egui::FontId::monospace(11.0),
+            tone.text,
+        );
+    }
+    painter.hline(r.x_range(), zero, egui::Stroke::new(1.0, tone.rail));
     let steps = 96;
     let points: Vec<egui::Pos2> = (0..=steps)
         .map(|i| {
             let t = i as f32 / steps as f32;
             let hz = 20.0 * 1000f32.powf(t);
             let db: f32 = eq.iter().map(|b| band_response_db(b, hz)).sum();
-            pos2(r.left() + r.width() * t, zero - (db / 12.0).clamp(-1.0, 1.0) * (r.height() / 2.0 - 2.0))
+            pos2(r.left() + r.width() * t, y_of(db))
         })
         .collect();
-    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, p.accent)));
+    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, tone.accent)));
+    for (i, b) in eq.iter().enumerate() {
+        let at = pos2(xs[i], y_of(b.db));
+        painter.circle_filled(at, if readout == Some(i) { 5.0 } else { 3.5 }, tone.text);
+        painter.text(
+            pos2(xs[i], r.bottom() - 3.0),
+            egui::Align2::CENTER_BOTTOM,
+            band_label(b.hz),
+            egui::FontId::proportional(10.0),
+            tone.dim,
+        );
+        if b.db != 0.0 {
+            let (y, align) = if b.db > 0.0 {
+                (at.y - 6.0, egui::Align2::CENTER_BOTTOM)
+            } else {
+                (at.y + 6.0, egui::Align2::CENTER_TOP)
+            };
+            painter.text(pos2(xs[i], y), align, format!("{:+.1}", b.db), egui::FontId::monospace(9.0), tone.text);
+        }
+    }
 }
 
 fn band_label(hz: u32) -> String {
     if hz >= 1000 { format!("{}k", hz / 1000) } else { hz.to_string() }
 }
 
-/// The sound sheet: output profiles, presets, equalizer, night mode, dialogue, crossfeed, loudness
-/// and meters, each offered only when this libmpv has its filters. Used over the picture and in
-/// Settings → Playback. Returns whether something changed.
-pub fn sheet(ui: &mut Ui, p: &Palette, pb: &mut Playback) -> bool {
+/// The sound sheet: on/off, presets, equalizer, the effects, then saved sounds and output profiles,
+/// each offered only when this libmpv has its filters. Used over the picture, in the mini player
+/// and in Settings → Playback. Returns whether something changed.
+pub fn sheet(ui: &mut Ui, tone: &Tone, pb: &mut Playback) -> bool {
     let before = pb.clone();
-    profile_switch(ui, pb);
+    profile_switch(ui, tone, pb);
     let passthrough = pb.passthrough;
-    effects_sheet(ui, p, pb, passthrough);
-    named_section(
-        ui,
-        p,
-        "sound-presets",
-        t!("Saved sounds"),
-        t!("Save these effects"),
-        pb.user_presets.iter().map(|u| u.name.clone()).collect(),
-        |name, action| match action {
-            Named::Save => pb.save_preset(name),
-            Named::Rename(to) => pb.rename_preset(name, to),
-            Named::Delete => pb.delete_preset(name),
-        },
-    );
-    named_section(
-        ui,
-        p,
-        "sound-profiles",
-        t!("Output profiles"),
-        t!("Save this output and its effects"),
-        pb.profiles.iter().map(|u| u.name.clone()).collect(),
-        |name, action| match action {
+    effects_sheet(ui, tone, pb, passthrough);
+    glass::separator(ui, tone);
+    let presets: Vec<String> = pb.user_presets.iter().map(|u| u.name.clone()).collect();
+    named_section(ui, tone, t!("Saved sounds"), t!("Save these effects"), presets, |name, action| match action {
+        Named::Save => pb.save_preset(name),
+        Named::Rename(to) => pb.rename_preset(name, to),
+        Named::Delete => pb.delete_preset(name),
+    });
+    let profiles: Vec<String> = pb.profiles.iter().map(|u| u.name.clone()).collect();
+    named_section(ui, tone, t!("Output profiles"), t!("Save this output and its effects"), profiles, |name, action| {
+        match action {
             Named::Save => pb.save_profile(name),
             Named::Rename(to) => pb.rename_profile(name, to),
             Named::Delete => pb.delete_profile(name),
-        },
-    );
+        }
+    });
     *pb != before
 }
 
 /// Quick switch between output profiles, when there are any.
-fn profile_switch(ui: &mut Ui, pb: &mut Playback) {
+fn profile_switch(ui: &mut Ui, tone: &Tone, pb: &mut Playback) {
     if pb.profiles.is_empty() {
         return;
     }
-    let names: Vec<String> = pb.profiles.iter().map(|u| u.name.clone()).collect();
-    let mut chosen = None;
-    ui.horizontal(|ui| {
-        ui.label(t!("Output"));
-        let shown = pb.active_profile.clone().unwrap_or_else(|| t!("Choose…").to_string());
-        egui::ComboBox::from_id_salt("sound-profile").selected_text(shown).show_ui(ui, |ui| {
-            for name in &names {
-                if ui.selectable_label(pb.active_profile.as_ref() == Some(name), name).clicked() {
-                    chosen = Some(name.clone());
-                }
-            }
-        });
-    });
-    if let Some(name) = chosen {
-        pb.use_profile(&name);
+    glass::section(ui, tone, t!("Output"));
+    let items: Vec<(String, bool)> =
+        pb.profiles.iter().map(|u| (u.name.clone(), pb.active_profile.as_ref() == Some(&u.name))).collect();
+    if let Some((name, _)) = glass::chips(ui, tone, &items).and_then(|i| items.get(i)) {
+        pb.use_profile(name);
     }
+    ui.add_space(4.0);
 }
 
 enum Named<'a> {
@@ -507,45 +563,46 @@ enum Named<'a> {
 }
 
 /// A list of saved things, by name: a box for a name with Save, and on each row the same name for a
-/// rename, and delete. Collapsed until asked for.
-#[allow(clippy::too_many_arguments)]
+/// rename, and delete. Closed until asked for.
 fn named_section(
     ui: &mut Ui,
-    p: &Palette,
-    salt: &str,
+    tone: &Tone,
     title: &str,
     save_hint: &str,
     names: Vec<String>,
     mut act: impl FnMut(&str, Named<'_>),
 ) {
     use egui_phosphor::regular as icons;
-    egui::CollapsingHeader::new(title).id_salt(salt).show(ui, |ui| {
-        let id = ui.id().with("name");
+    glass::disclosure(ui, tone, title, |ui| {
+        let id = ui.id().with((title, "name"));
         let mut text: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
         let typed = text.trim().to_string();
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut text).hint_text(t!("Name")).desired_width(150.0));
-            if ui.add_enabled(!typed.is_empty(), egui::Button::new(t!("Save"))).on_hover_text(save_hint).clicked() {
-                act(&typed, Named::Save);
-                text.clear();
-            }
+            ui.add_enabled_ui(!typed.is_empty(), |ui| {
+                if glass::button(ui, tone, t!("Save")).on_hover_text(save_hint).clicked() {
+                    act(&typed, Named::Save);
+                    text.clear();
+                }
+            });
         });
         for name in &names {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(name).color(p.text));
+                ui.label(egui::RichText::new(name).color(tone.text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(egui::Button::new(icons::TRASH).frame(false)).on_hover_text(t!("Delete")).clicked() {
+                    if glass::icon_button(ui, tone, icons::TRASH, t!("Delete")).on_hover_text(t!("Delete")).clicked() {
                         act(name, Named::Delete);
                     }
                     let can_rename = !typed.is_empty() && typed != *name;
-                    let rename = ui
-                        .add_enabled(can_rename, egui::Button::new(icons::PENCIL_SIMPLE).frame(false))
-                        .on_hover_text(t!("Rename to the name above"))
-                        .on_disabled_hover_text(t!("Type the new name above"));
-                    if rename.clicked() {
-                        act(name, Named::Rename(&typed));
-                        text.clear();
-                    }
+                    ui.add_enabled_ui(can_rename, |ui| {
+                        let rename = glass::icon_button(ui, tone, icons::PENCIL_SIMPLE, t!("Rename to the name above"))
+                            .on_hover_text(t!("Rename to the name above"))
+                            .on_disabled_hover_text(t!("Type the new name above"));
+                        if rename.clicked() {
+                            act(name, Named::Rename(&typed));
+                            text.clear();
+                        }
+                    });
                 });
             });
         }
@@ -554,7 +611,7 @@ fn named_section(
 }
 
 /// The effects part of the sheet.
-fn effects_sheet(ui: &mut Ui, p: &Palette, pb: &mut Playback, passthrough: bool) {
+fn effects_sheet(ui: &mut Ui, tone: &Tone, pb: &mut Playback, passthrough: bool) {
     let saved: Vec<String> = pb.user_presets.iter().map(|u| u.name.clone()).collect();
     let mut use_saved = None;
     let fx = &mut pb.fx;
@@ -562,115 +619,93 @@ fn effects_sheet(ui: &mut Ui, p: &Palette, pb: &mut Playback, passthrough: bool)
     let before = fx.clone();
     let mut picked = false;
     if passthrough {
-        ui.label(
-            egui::RichText::new(t!("Processing is off while Dolby and DTS pass through to the receiver."))
-                .color(p.warn),
-        );
+        let text = egui::RichText::new(t!("Processing is off while Dolby and DTS pass through to the receiver."));
+        ui.label(text.color(tone.warn));
     }
     ui.add_enabled_ui(!passthrough, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            if ui.selectable_label(!fx.has_effects() && fx.preset.is_none(), t!("Flat")).clicked() {
-                fx.flatten();
-                picked = true;
+        glass::switch(ui, tone, &mut fx.enabled, t!("On (off to compare)"));
+        ui.add_space(2.0);
+        let mut presets: Vec<(String, bool, Option<&str>)> =
+            vec![(t!("Flat").to_string(), !fx.has_effects() && fx.preset.is_none(), None)];
+        for (name, label, there) in [
+            ("night", t!("Night"), caps.night()),
+            ("dialogue", t!("Dialogue"), caps.eq()),
+            ("crossfeed", t!("Crossfeed"), caps.crossfeed()),
+        ] {
+            if there {
+                presets.push((label.to_string(), fx.preset.as_deref() == Some(name), Some(name)));
             }
-            for (name, label, there) in [
-                ("night", t!("Night"), caps.night()),
-                ("dialogue", t!("Dialogue"), caps.eq()),
-                ("crossfeed", t!("Crossfeed"), caps.crossfeed()),
-            ] {
-                if there && ui.selectable_label(fx.preset.as_deref() == Some(name), label).clicked() {
-                    fx.apply_preset(name);
-                    picked = true;
-                }
-            }
-            for name in &saved {
-                if ui.selectable_label(fx.preset.as_deref() == Some(name), name).clicked() {
-                    use_saved = Some(name.clone());
-                    picked = true;
-                }
-            }
-        });
-        if caps.eq() {
-            ui.add_space(4.0);
-            eq_curve(ui, p, &fx.eq);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                ui.spacing_mut().slider_width = 84.0;
-                for b in &mut fx.eq {
-                    ui.allocate_ui(vec2(26.0, 124.0), |ui| {
-                        ui.vertical_centered(|ui| {
-                            let slider = ui
-                                .add(
-                                    egui::Slider::new(&mut b.db, -12.0..=12.0)
-                                        .vertical()
-                                        .step_by(0.5)
-                                        .show_value(false),
-                                )
-                                .on_hover_text(t!("{hz} Hz  {db} dB", hz = b.hz, db = format!("{:+.1}", b.db)));
-                            if slider.double_clicked() {
-                                b.db = 0.0;
-                            }
-                            ui.label(egui::RichText::new(band_label(b.hz)).small().color(p.text_dim));
-                            // A blank at 0 keeps the row, so the sliders don't move.
-                            let value = if b.db == 0.0 { " ".to_string() } else { format!("{:+.1}", b.db) };
-                            ui.label(egui::RichText::new(value).small().color(p.text));
-                        })
-                    });
-                }
-            });
         }
-        egui::CollapsingHeader::new(t!("Effects")).id_salt("sound-effects").show(ui, |ui| {
-            ui.checkbox(&mut fx.enabled, t!("On (off to compare)"));
-            if caps.night() {
-                let mut on = fx.night.is_some();
-                if ui
-                    .checkbox(&mut on, t!("Night mode"))
-                    .on_hover_text(t!("Quiet parts come up, loud ones go down."))
-                    .changed()
-                {
-                    fx.night = on.then(Default::default);
-                }
-                if let Some(n) = &mut fx.night {
-                    ui.indent("night", |ui| {
-                        ui.add(egui::Slider::new(&mut n.threshold_db, -60.0..=0.0).suffix(" dB").text(t!("Threshold")));
-                        ui.add(egui::Slider::new(&mut n.ratio, 1.0..=20.0).text(t!("Ratio")));
-                        ui.add(egui::Slider::new(&mut n.makeup_db, 0.0..=24.0).suffix(" dB").text(t!("Makeup")));
-                    });
-                }
+        let builtin = presets.len();
+        for name in &saved {
+            presets.push((name.clone(), fx.preset.as_deref() == Some(name), None));
+        }
+        let items: Vec<(&str, bool)> = presets.iter().map(|(l, on, _)| (l.as_str(), *on)).collect();
+        if let Some(i) = glass::chips(ui, tone, &items) {
+            picked = true;
+            if i == 0 {
+                fx.flatten();
+            } else if let Some(name) = presets.get(i).and_then(|p| p.2) {
+                fx.apply_preset(name);
+            } else {
+                use_saved = saved.get(i - builtin).cloned();
             }
-            if caps.eq() {
-                ui.checkbox(&mut fx.dialogue, t!("Clearer dialogue"))
-                    .on_hover_text(t!("Lifts voices; on 5.1 also the centre channel."));
+        }
+        if caps.eq() {
+            ui.add_space(6.0);
+            eq_graph(ui, tone, &mut fx.eq);
+            ui.add_space(4.0);
+        }
+        if caps.night() {
+            let mut on = fx.night.is_some();
+            if glass::switch(ui, tone, &mut on, t!("Night mode"))
+                .on_hover_text(t!("Quiet parts come up, loud ones go down."))
+                .changed()
+            {
+                fx.night = on.then(Default::default);
             }
-            if caps.crossfeed() {
-                let mut on = fx.crossfeed.is_some();
-                if ui
-                    .checkbox(&mut on, t!("Headphone crossfeed"))
-                    .on_hover_text(t!("Mixes a little of each side into the other. Stereo sources only."))
-                    .changed()
-                {
-                    fx.crossfeed = on.then(Default::default);
-                }
-                if let Some(c) = &mut fx.crossfeed {
-                    ui.indent("crossfeed", |ui| {
-                        ui.add(egui::Slider::new(&mut c.strength, 0.0..=1.0).text(t!("Strength")));
-                        ui.add(egui::Slider::new(&mut c.range, 0.0..=1.0).text(t!("Range")));
-                    });
-                }
+            if let Some(n) = &mut fx.night {
+                let d = corrent_core::audio_fx::Night::default();
+                let text = format!("{:.0} dB", n.threshold_db);
+                glass::slider(ui, tone, t!("Threshold"), &mut n.threshold_db, -60.0..=0.0, 1.0, d.threshold_db, text);
+                let text = format!("{:.1}:1", n.ratio);
+                glass::slider(ui, tone, t!("Ratio"), &mut n.ratio, 1.0..=20.0, 0.5, d.ratio, text);
+                let text = format!("{:.1} dB", n.makeup_db);
+                glass::slider(ui, tone, t!("Makeup"), &mut n.makeup_db, 0.0..=24.0, 0.5, d.makeup_db, text);
             }
-        });
+        }
+        if caps.eq() {
+            glass::switch(ui, tone, &mut fx.dialogue, t!("Clearer dialogue"))
+                .on_hover_text(t!("Lifts voices; on 5.1 also the centre channel."));
+        }
+        if caps.crossfeed() {
+            let mut on = fx.crossfeed.is_some();
+            if glass::switch(ui, tone, &mut on, t!("Headphone crossfeed"))
+                .on_hover_text(t!("Mixes a little of each side into the other. Stereo sources only."))
+                .changed()
+            {
+                fx.crossfeed = on.then(Default::default);
+            }
+            if let Some(c) = &mut fx.crossfeed {
+                let d = corrent_core::audio_fx::Crossfeed::default();
+                let text = format!("{:.2}", c.strength);
+                glass::slider(ui, tone, t!("Strength"), &mut c.strength, 0.0..=1.0, 0.05, d.strength, text);
+                let text = format!("{:.2}", c.range);
+                glass::slider(ui, tone, t!("Range"), &mut c.range, 0.0..=1.0, 0.05, d.range, text);
+            }
+        }
         if caps.loudness() {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(t!("Even out loudness")).on_hover_text(t!(
-                    "A slow leveller: quiet and loud parts come closer. Holds about a second of sound."
-                ));
-                ui.selectable_value(&mut fx.loudness, Loudness::Off, t!("Off"));
-                ui.selectable_value(&mut fx.loudness, Loudness::Live, t!("Live"));
-            });
+            let mut on = fx.loudness == Loudness::Live;
+            if glass::switch(ui, tone, &mut on, t!("Even out loudness"))
+                .on_hover_text(t!("A slow leveller: quiet and loud parts come closer. Holds about a second of sound."))
+                .changed()
+            {
+                fx.loudness = if on { Loudness::Live } else { Loudness::Off };
+            }
         }
     });
     if caps.meters() {
-        ui.checkbox(&mut fx.meters, t!("Show meters"))
+        glass::switch(ui, tone, &mut fx.meters, t!("Show meters"))
             .on_hover_text(t!("Loudness, peaks and more over the picture (Shift+I). They run only while shown."));
     }
     if *fx != before && !picked {
@@ -683,6 +718,80 @@ fn effects_sheet(ui: &mut Ui, p: &Palette, pb: &mut Playback, passthrough: bool)
     }
     if let Some(name) = use_saved {
         pb.use_preset(&name);
+    }
+}
+
+#[cfg(test)]
+mod sheet_tests {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    use super::*;
+
+    fn harness(pb: Playback) -> Harness<'static, Playback> {
+        let p = crate::ui::theme::Palette::dark(Color32::BLUE);
+        Harness::builder().with_size(vec2(360.0, 720.0)).build_ui_state(
+            move |ui, pb: &mut Playback| {
+                sheet(ui, &Tone::theme(&p), pb);
+            },
+            pb,
+        )
+    }
+
+    #[test]
+    fn switches_turn_effects_on_and_a_change_by_hand_leaves_the_preset() {
+        let mut pb = Playback::default();
+        pb.fx.apply_preset("dialogue");
+        let mut h = harness(pb);
+        h.run();
+        h.get_by_label("Night mode").click();
+        h.run();
+        assert!(h.state().fx.night.is_some());
+        assert_eq!(h.state().fx.preset, None);
+        assert!(h.state().fx.enabled);
+        h.get_by_label("Even out loudness").click();
+        h.run();
+        assert_eq!(h.state().fx.loudness, Loudness::Live);
+    }
+
+    #[test]
+    fn the_on_switch_compares_without_losing_the_effects() {
+        let mut pb = Playback::default();
+        pb.fx.apply_preset("night");
+        let mut h = harness(pb);
+        h.run();
+        h.get_by_label("On (off to compare)").click();
+        h.run();
+        assert!(!h.state().fx.enabled);
+        assert_eq!(h.state().fx.preset.as_deref(), Some("night"));
+        assert!(h.state().fx.night.is_some());
+    }
+
+    #[test]
+    fn a_preset_chip_applies_it_and_flat_clears_it() {
+        let mut h = harness(Playback::default());
+        h.run();
+        h.get_by_label("Night").click();
+        h.run();
+        assert_eq!(h.state().fx.preset.as_deref(), Some("night"));
+        h.get_by_label("Flat").click();
+        h.run();
+        assert!(!h.state().fx.has_effects());
+    }
+
+    #[test]
+    fn dragging_a_band_of_the_graph_sets_it_on_half_decibels() {
+        let mut h = harness(Playback::default());
+        h.run();
+        let node = h.get_by_label("1000 Hz");
+        let rect = node.rect();
+        let centre = rect.center();
+        h.drag_at(centre + vec2(0.0, -30.0));
+        h.run();
+        let db = h.state().fx.eq.iter().find(|b| b.hz == 1000).unwrap().db;
+        assert!(db > 0.0 && (db * 2.0).fract() == 0.0, "{db}");
+        h.drop_at(centre + vec2(0.0, -30.0));
+        h.run();
     }
 }
 
