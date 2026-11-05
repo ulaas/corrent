@@ -91,7 +91,7 @@ strip = true
 debug = "line-tables-only"
 
 [target."cfg(windows)".dependencies]
-windows-registry = "0.6"
+windows-registry = "0.100"
 # Lets Windows builds succeed without NASM installed (prebuilt objects are used instead).
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 raw-window-handle = "0.6"
