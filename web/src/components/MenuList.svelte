@@ -151,6 +151,7 @@
 <div
   bind:this={el}
   class="cm"
+  class:glass={above}
   role="menu"
   tabindex="-1"
   aria-label={label || undefined}
@@ -232,6 +233,17 @@
     box-shadow: var(--shadow-3);
     transform-origin: top left;
     outline: none;
+  }
+  /* Over the picture: the player's look whatever the theme. */
+  .glass {
+    --text: #fff;
+    --text-dim: rgba(255, 255, 255, 0.75);
+    --hover: rgba(255, 255, 255, 0.12);
+    --border: rgba(255, 255, 255, 0.14);
+    color: #fff;
+    background: rgba(14, 16, 22, 0.58);
+    backdrop-filter: blur(24px) saturate(1.4);
+    border-color: rgba(255, 255, 255, 0.14);
   }
   .loading {
     display: flex;

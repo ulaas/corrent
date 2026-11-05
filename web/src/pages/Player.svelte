@@ -953,7 +953,17 @@
       </div>
 
       <div class="pop">
-        <button class="btn ghost icon" aria-haspopup="menu" aria-expanded={menu === 'settings'} aria-label={t('Playback settings')} title={t('Playback settings')} onclick={clickPop('settings')}><Icon name="sliders-horizontal" size={20} /></button>
+        <button class="btn ghost icon" aria-haspopup="dialog" aria-expanded={menu === 'sound'} aria-label={t('Sound')} title={t('Sound')} onclick={clickPop('sound')}><Icon name="sliders-horizontal" size={20} /></button>
+        {#if menu === 'sound'}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div class="menu sound" role="dialog" aria-label={t('Sound')} tabindex="-1" transition:fly={{ y: 8, duration: ms(140) }} onkeydown={(e) => e.key === 'Escape' && (e.stopPropagation(), closePop(true))} {@attach (el) => el.querySelector<HTMLElement>('input')?.focus({ preventScroll: true })}>
+            <SoundPanel />
+          </div>
+        {/if}
+      </div>
+
+      <div class="pop">
+        <button class="btn ghost icon" aria-haspopup="menu" aria-expanded={menu === 'settings'} aria-label={t('Playback settings')} title={t('Playback settings')} onclick={clickPop('settings')}><Icon name="gear-six" size={20} /></button>
         {#if menu === 'settings'}
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <div class="menu settings" role="menu" tabindex="-1" transition:fly={{ y: 8, duration: ms(140) }} onkeydown={settingsKey} {@attach (el) => el.querySelector<HTMLElement>('button:not(:disabled)')?.focus({ preventScroll: true })}>
@@ -981,14 +991,7 @@
               <button class="mi" role="menuitem" onclick={() => ((menu = ''), void setThumbnail())}><span>{t('Use this frame as the thumbnail (T)')}</span><Icon name="image" size={14} /></button>
             {/if}
             <button class="mi" role="menuitemcheckbox" aria-checked={stats} onclick={() => (stats = !stats)}>{t('Stats')}{#if stats}<Icon name="check" size={14} />{/if}</button>
-            <button class="mi" role="menuitem" onclick={() => (menu = 'sound')}><span>{t('Sound…')}</span><Icon name="caret-right" size={14} /></button>
             <button class="mi" role="menuitem" onclick={resetSettings}>{t('Reset')}</button>
-          </div>
-        {/if}
-        {#if menu === 'sound'}
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <div class="menu sound" role="dialog" aria-label={t('Sound')} tabindex="-1" transition:fly={{ y: 8, duration: ms(140) }} onkeydown={(e) => e.key === 'Escape' && (e.stopPropagation(), closePop(true))} {@attach (el) => el.querySelector<HTMLElement>('input')?.focus({ preventScroll: true })}>
-            <SoundPanel />
           </div>
         {/if}
       </div>
@@ -1282,13 +1285,18 @@
     bottom: calc(100% + 10px);
     right: 0;
     min-width: 200px;
-    max-height: 50vh;
+    max-height: calc(100dvh - 120px);
     overflow: auto;
     padding: 6px;
     border-radius: var(--r-lg);
-    background: rgba(20, 22, 28, 0.94);
-    backdrop-filter: blur(14px);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    /* Over the picture: the player's look whatever the theme. */
+    --text: #fff;
+    --text-dim: rgba(255, 255, 255, 0.75);
+    --border-hi: rgba(255, 255, 255, 0.22);
+    color: #fff;
+    background: rgba(14, 16, 22, 0.58);
+    backdrop-filter: blur(24px) saturate(1.4);
+    border: 1px solid rgba(255, 255, 255, 0.14);
     box-shadow: var(--shadow-4);
   }
   .mh {

@@ -190,7 +190,8 @@
     flex-direction: column;
     gap: 10px;
     border-radius: var(--r-md);
-    background: rgba(0, 0, 0, 0.72);
+    background: rgba(14, 16, 22, 0.58);
+    backdrop-filter: blur(24px) saturate(1.4);
     color: #fff;
     font-size: 12px;
     line-height: 1.5;
