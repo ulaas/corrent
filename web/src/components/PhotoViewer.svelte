@@ -50,6 +50,9 @@
   /** Screens this sharp show the difference without zooming. */
   const sharp = () => innerWidth * (devicePixelRatio || 1) > 1200;
 
+  /** The original that has arrived: the same photo coming round again (its siblings loaded) keeps it. */
+  let arrived = '';
+
   // The preview first; the original over it when it's wanted.
   $effect(() => {
     const x = cur;
@@ -57,12 +60,14 @@
     const first = preview(x);
     // Not read back from `src`: the effect would depend on what it sets, and start over each time
     // the original arrives.
-    src = zoomed ? original : first;
-    if (zoomed || !sharp() || first === original) return;
+    src = zoomed || arrived === original ? original : first;
+    if (zoomed || arrived === original || !sharp() || first === original) return;
     const full = new Image();
     let live = true;
     full.onload = () => {
-      if (live) src = original;
+      if (!live) return;
+      arrived = original;
+      src = original;
     };
     full.src = original;
     return () => {
