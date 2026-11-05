@@ -461,7 +461,7 @@ fn eq_graph(ui: &mut Ui, tone: &Tone, eq: &mut [Band]) {
             if resp.hovered() || resp.has_focus() || resp.dragged() {
                 readout = Some(i);
             }
-            let name = format!("{} Hz", b.hz);
+            let name = t!("{hz} Hz", hz = b.hz).to_string();
             resp.widget_info(|| egui::WidgetInfo::slider(enabled, f64::from(b.db), &name));
             resp
         })
