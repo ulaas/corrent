@@ -540,20 +540,7 @@ impl CorrentApp {
             pl.tick();
         }
         // Also after the player is gone: it hands over what it had left when closed.
-        if let Some((volume, muted)) = sound::take_volume() {
-            self.settings.playback.volume = volume;
-            self.settings.playback.muted = muted;
-            self.save_settings();
-        }
-        if let Some(sound) = sound::take_sound() {
-            let (volume, muted) = (self.settings.playback.volume, self.settings.playback.muted);
-            self.settings.playback = corrent_core::config::Playback { volume, muted, ..sound };
-            // A settings window open meanwhile must not put the old ones back.
-            if let Some(draft) = &mut self.settings_draft {
-                draft.settings.playback = self.settings.playback.clone();
-            }
-            self.save_settings();
-        }
+        self.take_player_sound();
         // Lists go stale as scans and metadata land: refresh every 30 s while visible.
         if self.main_view == super::feeds::MainView::Media
             && self.media.refreshed.is_none_or(|t| t.elapsed().as_secs() > 30)
@@ -610,6 +597,24 @@ impl CorrentApp {
         self.media.page = Some(page);
     }
 
+    /// What the player has handed over to be saved: volume and mute, the effects.
+    fn take_player_sound(&mut self) {
+        if let Some((volume, muted)) = sound::take_volume() {
+            self.settings.playback.volume = volume;
+            self.settings.playback.muted = muted;
+            self.save_settings();
+        }
+        if let Some(sound) = sound::take_sound() {
+            let (volume, muted) = (self.settings.playback.volume, self.settings.playback.muted);
+            self.settings.playback = corrent_core::config::Playback { volume, muted, ..sound };
+            // A settings window open meanwhile must not put the old ones back.
+            if let Some(draft) = &mut self.settings_draft {
+                draft.settings.playback = self.settings.playback.clone();
+            }
+            self.save_settings();
+        }
+    }
+
     fn play_queue(&mut self, mut queue: Vec<QueueEntry>, audio_only: bool) {
         let Some(client) = self.media.client.clone() else { return };
         if queue.is_empty() {
@@ -625,6 +630,9 @@ impl CorrentApp {
             }
         }
         self.media.player = None;
+        // Now, not on the next tick: volume just lowered in the old player (saved 2 s after it
+        // rests) must not start the new one at the louder level it had before.
+        self.take_player_sound();
         match Player::new(
             client.clone(),
             self.rt.clone(),

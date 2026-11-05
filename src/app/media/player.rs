@@ -1240,6 +1240,10 @@ impl Player {
             let args = mpv.loadfile_mode_args(&url, "append", &title);
             let _ = mpv.command_async(0, &args.iter().map(String::as_str).collect::<Vec<_>>());
             appended.store(next as i64, Ordering::Relaxed);
+            // The playlist was replaced just now: this entry isn't in the new one.
+            if generation.load(Ordering::Relaxed) != at {
+                appended.store(-1, Ordering::Relaxed);
+            }
         });
     }
 

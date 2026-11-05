@@ -179,13 +179,14 @@ impl AudioFx {
     }
 
     /// The gain taken off in front of the effects so that their boosts can't clip at the output:
-    /// the largest positive band, and dialogue's boosts on top. Never positive.
-    pub fn headroom_db(&self, channels: Option<i64>) -> f32 {
+    /// the largest positive band, and dialogue's boosts on top (`centre_lift`: with the lift of a
+    /// 5.1 source's centre channel, when that runs). Never positive.
+    pub fn headroom_db(&self, centre_lift: bool) -> f32 {
         let band = self.eq.iter().map(|b| clamp(b.db, -24.0, 24.0, 0.0)).fold(0.0, f32::max);
-        let dialogue = match (self.dialogue, channels) {
+        let dialogue = match (self.dialogue, centre_lift) {
             (false, _) => 0.0,
-            (true, Some(6)) => DIALOGUE_BOOST_DB + DIALOGUE_CENTRE_DB,
-            (true, _) => DIALOGUE_BOOST_DB,
+            (true, true) => DIALOGUE_BOOST_DB + DIALOGUE_CENTRE_DB,
+            (true, false) => DIALOGUE_BOOST_DB,
         };
         -(band + dialogue)
     }
@@ -401,16 +402,15 @@ pub struct Source {
 /// downmix anything else), so they wait until the source is known to be stereo.
 pub fn chain(fx: &AudioFx, caps: &Caps, source: &Source) -> Vec<Stage> {
     let channels = source.channels;
+    let lifted_layout = source.layout.as_deref().filter(|l| {
+        fx.dialogue && channels == Some(6) && caps.eq() && caps.has("pan") && matches!(*l, "5.1" | "5.1(side)")
+    });
     let mut effects = Vec::new();
     if fx.enabled {
         // eq: the centre lift, then all bands, so moving a slider off 0 needs no new filter.
         let mut eq = Vec::new();
         if caps.eq() {
-            if fx.dialogue
-                && channels == Some(6)
-                && caps.has("pan")
-                && let Some(layout) = source.layout.as_deref().filter(|l| matches!(*l, "5.1" | "5.1(side)"))
-            {
+            if let Some(layout) = lifted_layout {
                 eq.push(centre_pan(layout));
             }
             if fx.eq.iter().any(|b| b.db != 0.0) || fx.dialogue {
@@ -492,17 +492,15 @@ pub fn chain(fx: &AudioFx, caps: &Caps, source: &Source) -> Vec<Stage> {
     }
     let mut out = Vec::new();
     if !effects.is_empty() && caps.has("volume") {
+        // For the boosts that run: without an equalizer there are none, and it would only be quieter.
+        let headroom = if caps.eq() { fx.headroom_db(lifted_layout.is_some()) } else { 0.0 };
         out.push(Stage {
             label: "gain",
             filters: vec![Filter {
                 name: "volume",
                 instance: None,
                 fixed: Vec::new(),
-                values: vec![Value {
-                    option: "volume",
-                    value: format!("{}dB", num(fx.headroom_db(channels))),
-                    neutral: Some("0dB"),
-                }],
+                values: vec![Value { option: "volume", value: format!("{}dB", num(headroom)), neutral: Some("0dB") }],
             }],
         });
     }
@@ -702,16 +700,39 @@ mod tests {
     #[test]
     fn headroom_is_the_largest_boost() {
         let mut fx = on();
-        assert_eq!(fx.headroom_db(Some(2)), 0.0);
+        assert_eq!(fx.headroom_db(false), 0.0);
         fx.eq[2].db = -8.0;
-        assert_eq!(fx.headroom_db(Some(2)), 0.0, "cuts need none");
+        assert_eq!(fx.headroom_db(false), 0.0, "cuts need none");
         fx.eq[2].db = 5.5;
         fx.eq[7].db = 2.0;
-        assert_eq!(fx.headroom_db(Some(2)), -5.5);
+        assert_eq!(fx.headroom_db(false), -5.5);
         assert!(af(&fx, &STEREO()).starts_with("@gain:lavfi=[volume=volume=-5.5dB]"));
         fx.dialogue = true;
-        assert_eq!(fx.headroom_db(Some(2)), -8.5);
-        assert_eq!(fx.headroom_db(Some(6)), -12.5);
+        assert_eq!(fx.headroom_db(false), -8.5);
+        assert_eq!(fx.headroom_db(true), -12.5);
+    }
+
+    /// Only what runs is made room for: a quiet gain stage with no boost behind it just turns it down.
+    #[test]
+    fn headroom_counts_the_boosts_that_run() {
+        let mut fx = on();
+        fx.dialogue = true;
+        // Six channels in a layout without a known centre: no lift, so no room for one.
+        let odd = Source { channels: Some(6), layout: Some("hexagonal".into()) };
+        let gain = |fx: &AudioFx, caps: &Caps, s: &Source| af_string(&chain(fx, caps, s));
+        assert!(gain(&fx, &Caps::assumed(), &odd).starts_with("@gain:lavfi=[volume=volume=-3dB]"));
+        let five = Source { channels: Some(6), layout: Some("5.1".into()) };
+        assert!(gain(&fx, &Caps::assumed(), &five).starts_with("@gain:lavfi=[volume=volume=-7dB]"));
+        // A libmpv without the equalizer, with something else on so that a chain is built.
+        fx.eq[2].db = 12.0;
+        fx.night = Some(Night::default());
+        let caps =
+            Caps { filters: Caps::assumed().filters.into_iter().filter(|f| f != "equalizer").collect(), target: true };
+        assert!(
+            gain(&fx, &caps, &STEREO()).starts_with("@gain:lavfi=[volume=volume=0dB]"),
+            "{}",
+            gain(&fx, &caps, &STEREO())
+        );
     }
 
     #[test]
