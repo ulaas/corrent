@@ -890,7 +890,13 @@ impl Actor {
             }
             EngineCommand::ReloadIpFilter => {
                 if !self.busy.is_empty() {
-                    self.toast(ToastKind::Info, t!("Try again once running operations finish."));
+                    if self.deferred_since.is_some() {
+                        // A deferred reload, and something took the session since: it waits on,
+                        // or new adds would be held for a restart that nothing is due to run.
+                        self.deferred_reload = true;
+                    } else {
+                        self.toast(ToastKind::Info, t!("Try again once running operations finish."));
+                    }
                 } else if self.adds_running() {
                     self.toast(ToastKind::Info, t!("Network settings will apply once running operations finish."));
                     self.deferred_reload = true;
@@ -1984,6 +1990,16 @@ impl Actor {
             }
             Internal::AddFinished { pending, req, result } => {
                 // Stopped for a session restart: nothing happened, it starts again after it.
+                if self.stopping && result.as_ref().is_err_and(|e| e == ADD_CANCELLED) {
+                    // Quitting, not restarting: starting it again would write the engine's list
+                    // behind the session's stop. A watch-folder file stays and is found next time.
+                    self.pending.remove(&pending);
+                    self.rss_adds.remove(&pending);
+                    if let Some((path, _)) = self.watch_adds.remove(&pending) {
+                        self.watch.release(&path);
+                    }
+                    return;
+                }
                 if result.as_ref().is_err_and(|e| e == ADD_CANCELLED)
                     && let Some(p) = self.pending.get_mut(&pending)
                 {
@@ -3684,6 +3700,48 @@ mod more_tests {
     fn five_thousand_rate_rings_stay_small() {
         // It was a VecDeque of up to 600 u64 pairs per torrent: about 80 MiB at 5k.
         assert!(std::mem::size_of::<RateRing>() * 5000 < 2 << 20);
+    }
+
+    /// An add stopped by the quit is dropped, not held and started again on the stopping session.
+    #[tokio::test]
+    async fn an_add_stopped_by_quitting_does_not_start_again() {
+        let dir = std::env::temp_dir().join(format!("corrent-quit-add-{}", std::process::id()));
+        let paths = Paths { data_dir: dir.clone(), portable: true };
+        let (events, rx) = std::sync::mpsc::channel();
+        let (tx, _cmds) = mpsc::channel(8);
+        let snapshot = Arc::new(ArcSwap::from_pointee(Snapshot::default()));
+        let mut actor = Actor::new(paths, Settings::default(), Wake::noop(), events, snapshot, tx);
+        actor.stopping = true;
+        actor.pending.insert(
+            1,
+            PendingAdd {
+                name: String::new(),
+                hash: pending_hash(1),
+                started: 0,
+                save_path: PathBuf::new(),
+                added_by: None,
+                cancel: Default::default(),
+                held: None,
+            },
+        );
+        let req = Box::new(AddRequest {
+            source: AddSource::Magnet(String::new()),
+            torrent_bytes: None,
+            save_path: PathBuf::new(),
+            create_subfolder: false,
+            category: None,
+            tags: Vec::new(),
+            paused: false,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        });
+        actor.handle_internal(Internal::AddFinished { pending: 1, req, result: Err(ADD_CANCELLED.into()) });
+        assert!(actor.pending.is_empty());
+        // Not held for a restart either: that path would say the engine isn't running.
+        assert!(rx.try_recv().is_err(), "nothing to tell the user");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

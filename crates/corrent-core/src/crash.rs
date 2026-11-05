@@ -104,7 +104,16 @@ fn other_boot(before: Option<&str>, now: Option<&str>) -> bool {
 
 /// Call once at startup: inspects the previous run and marks this one as running.
 pub fn start(log_dir: &Path) -> PreviousRun {
-    start_at(log_dir, boot_token())
+    let previous = start_at(log_dir, boot_token());
+    PREVIOUS_UNCLEAN.store(previous.unclean, std::sync::atomic::Ordering::Relaxed);
+    previous
+}
+
+static PREVIOUS_UNCLEAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What [`start`] found, for what runs later and decides how careful to be.
+pub fn previous_run_unclean() -> bool {
+    PREVIOUS_UNCLEAN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 fn start_at(log_dir: &Path, boot: Option<String>) -> PreviousRun {

@@ -233,6 +233,10 @@ impl SessionFile {
     async fn flush(&self) -> anyhow::Result<()> {
         // we don't need the write lock technically, but we need to stop concurrent modifications
         let db_content = self.db_content.write().await;
+        // A late add or delete fails rather than writing behind the session's stop.
+        if self.stopped.load(Ordering::SeqCst) {
+            anyhow::bail!("the session has stopped");
+        }
         self.dirty.store(false, Ordering::SeqCst);
         let written = self.write(&db_content).await;
         if written.is_err() {
