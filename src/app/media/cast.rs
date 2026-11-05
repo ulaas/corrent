@@ -110,7 +110,7 @@ impl CastCtl {
         let (c, s, ctx) = (self.client.clone(), self.shared.clone(), ctx.clone());
         crate::util::lock(&s).active = None;
         self.rt.spawn(async move {
-            if let Ok(list) = c.get::<Vec<CastStatus>>("/api/v1/cast/active").await {
+            if let Ok(list) = c.get::<Vec<CastStatus>>("/api/v1/cast/active?mine=true").await {
                 crate::util::lock(&s).active = Some(list);
                 ctx.request_repaint();
             }

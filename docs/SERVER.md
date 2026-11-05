@@ -263,7 +263,7 @@ transcode permission). Unfinished downloads always
 go through a transcode. The players then drive the device (play, pause, seek, stop) and show its
 position. API: `GET /api/v1/cast/devices[?refresh=true]`, `POST /cast/{device}/play`
 `{item_id, position_ms}`, `GET /cast/{device}`, `POST /cast/{device}/command`
-`{action: play|pause|seek|volume|mute|stop}`, `GET /cast/active`, `GET/PUT /cast/config`. AirPlay
+`{action: play|pause|seek|volume|mute|stop}`, `GET /cast/active[?mine=true]`, `GET/PUT /cast/config`. AirPlay
 isn't supported.
 
 The players' volume and mute drive the device while casting. Next and previous play on the device,

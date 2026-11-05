@@ -16,9 +16,9 @@ export function castDevices(refresh = false): Promise<CastDevice[]> {
   return api.get<CastDevice[]>(`/cast/devices${refresh ? '?refresh=true' : ''}`);
 }
 
-/** What is casting that the signed-in user could control. */
-export function castsActive(): Promise<CastStatus[]> {
-  return api.get<CastStatus[]>('/cast/active');
+/** What is casting that the signed-in user could control; `mine`: only what they started. */
+export function castsActive(mine = false): Promise<CastStatus[]> {
+  return api.get<CastStatus[]>(`/cast/active${mine ? '?mine=true' : ''}`);
 }
 
 export const castConfig = () => api.get<CastConfig>('/cast/config');

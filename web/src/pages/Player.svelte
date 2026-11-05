@@ -462,7 +462,7 @@
   async function followCast(itemId: number) {
     if (cast) return;
     try {
-      const s = (await castsActive()).find((a) => a.item_id === itemId);
+      const s = (await castsActive(true)).find((a) => a.item_id === itemId);
       if (!s || cast || itemId !== id) return;
       video?.pause();
       const c = new Cast(s.device);

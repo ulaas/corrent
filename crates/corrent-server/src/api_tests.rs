@@ -2462,6 +2462,9 @@ async fn casts_to_a_receiver() {
     assert_eq!((v.as_array().unwrap().len(), v[0]["item_id"].as_i64()), (1, Some(item)), "{v}");
     let (_, v, _) = get(app, "/api/v1/cast/active", &other).await;
     assert_eq!(v, json!([]));
+    // An administrator following only their own, as a player opening an item does.
+    let (_, v, _) = get(app, "/api/v1/cast/active?mine=true", &admin).await;
+    assert_eq!(v.as_array().unwrap().len(), 1, "{v}");
     // The device's volume: read at the start, changed from here.
     let (_, v, _) = get(app, "/api/v1/cast/tv", &admin).await;
     assert_eq!((v["volume"].as_f64(), v["muted"].as_bool()), (Some(0.5), Some(false)), "{v}");
@@ -2682,6 +2685,16 @@ async fn a_device_refusing_a_subtitle_switch_loads_it_again() {
     assert_eq!(next_seen(&mut seen).await, format!("TRACKS [{index}]"));
     assert_eq!(next_seen(&mut seen).await, first);
     assert!(next_seen(&mut seen).await.starts_with("TRACK "));
+    // A refused switch is no failure of what is playing: still copied, no transcode, no error.
+    let v = wait_cast(app, &admin, |v| v["state"] == "playing").await;
+    assert_eq!(v.get("error"), None, "{v}");
+    assert!(h.st.hls.sessions().is_empty());
+    // However many are on their way.
+    send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
+    send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item, "subtitle": index })).await;
+    let v = wait_cast(app, &admin, |v| v["state"] == "playing").await;
+    assert_eq!(v.get("error"), None, "{v}");
+    assert!(h.st.hls.sessions().is_empty());
     h.stop().await;
 }
 

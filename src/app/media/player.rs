@@ -1042,8 +1042,8 @@ impl Player {
                     }
                     // Already on a device: then this one waits, from the first moment.
                     let active = tokio::time::timeout(
-                        Duration::from_secs(2),
-                        client.get::<Vec<corrent_proto::library::CastStatus>>("/api/v1/cast/active"),
+                        Duration::from_secs(1),
+                        client.get::<Vec<corrent_proto::library::CastStatus>>("/api/v1/cast/active?mine=true"),
                     )
                     .await;
                     if let Ok(Ok(list)) = active

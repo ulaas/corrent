@@ -78,6 +78,8 @@ pub struct Media {
     pub fallback: Option<Fallback>,
     /// What changing only the subtitle mustn't change.
     pub loaded: Loaded,
+    /// Which request this is for ([`Casts::next_serial`]): a fallback is for this one alone.
+    pub serial: u64,
     /// What the media listener served so far (see [`CANT_REACH`]).
     pub hits: Arc<AtomicU64>,
 }
@@ -91,9 +93,11 @@ pub struct Loaded {
     pub burned: bool,
 }
 
-/// Plays the item another way (see [`Media::fallback`]).
+type FallbackRun = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// Plays the item another way (see [`Media::fallback`]), from the given position in seconds.
 #[derive(Clone)]
-pub struct Fallback(pub Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>);
+pub struct Fallback(pub Arc<dyn Fn(f64) -> FallbackRun + Send + Sync>);
 
 impl std::fmt::Debug for Fallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -116,6 +120,8 @@ enum Cmd {
     Control(CastCommand),
     /// Another of the media's own subtitles (or none).
     Tracks(Option<i64>),
+    /// The fallback under way couldn't be started.
+    Failed(String),
 }
 
 struct Session {
@@ -125,6 +131,7 @@ struct Session {
     stopping: bool,
     /// What was last asked of it.
     loaded: Loaded,
+    serial: u64,
 }
 
 #[derive(Default)]
@@ -133,6 +140,7 @@ pub struct Casts {
     sessions: Mutex<HashMap<String, Session>>,
     /// When links on the media listener were last asked for.
     last_use: Mutex<Option<Instant>>,
+    serial: AtomicU64,
 }
 
 /// A device typed into the settings: `address`, `address:port` or `name=address[:port]`. Local
@@ -306,6 +314,7 @@ impl Casts {
             mark_loading(&s.status, &media);
             if let Some(s) = sessions.get_mut(&id) {
                 s.loaded = media.loaded.clone();
+                s.serial = media.serial;
             }
             return;
         }
@@ -315,7 +324,7 @@ impl Casts {
             ..Default::default()
         }));
         mark_loading(&status, &media);
-        let loaded = media.loaded.clone();
+        let (loaded, serial) = (media.loaded.clone(), media.serial);
         let (tx, rx) = mpsc::channel(16);
         let _ = tx.try_send(Cmd::Load(Box::new(media)));
         let s2 = status.clone();
@@ -330,7 +339,7 @@ impl Casts {
                 s.state = "idle".into();
             }
         });
-        sessions.insert(id, Session { tx, status, stopping: false, loaded });
+        sessions.insert(id, Session { tx, status, stopping: false, loaded, serial });
     }
 
     /// Shows another of the subtitles the device already has, if `loaded` is what it is playing:
@@ -344,13 +353,37 @@ impl Casts {
         matches!(state.as_str(), "playing" | "paused" | "buffering") && s.tx.try_send(Cmd::Tracks(active)).is_ok()
     }
 
-    /// The other way of playing an item failed too.
-    pub fn fail(&self, id: &str, why: String) {
+    /// A number for the next play request.
+    pub fn next_serial(&self) -> u64 {
+        self.serial.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Whether the device is still on the request `serial`: not stopped, and nothing newer asked.
+    pub fn is_current(&self, id: &str, serial: u64) -> bool {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(s) = sessions.get(id) {
-            let mut st = s.status.lock().unwrap_or_else(|e| e.into_inner());
-            st.state = "error".into();
-            st.error = Some(why);
+        sessions.get(id).is_some_and(|s| !s.stopping && s.serial == serial)
+    }
+
+    /// Plays `media` instead of what the request `serial` started, if the device is still on it.
+    /// Never opens a connection: someone who stopped the cast meanwhile meant it.
+    pub fn replace(&self, id: &str, serial: u64, media: Media) -> bool {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(s) = sessions.get_mut(id).filter(|s| !s.stopping && s.serial == serial) else { return false };
+        let loaded = media.loaded.clone();
+        let boxed = Box::new(media);
+        mark_loading(&s.status, &boxed);
+        if s.tx.try_send(Cmd::Load(boxed)).is_err() {
+            return false;
+        }
+        s.loaded = loaded;
+        true
+    }
+
+    /// The other way of playing what `serial` asked for couldn't be started.
+    pub fn fail(&self, id: &str, serial: u64, why: String) {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = sessions.get(id).filter(|s| s.serial == serial) {
+            let _ = s.tx.try_send(Cmd::Failed(why));
         }
     }
 
@@ -447,13 +480,14 @@ pub fn apply_media_status(s: &mut CastStatus, v: &Value) -> Option<i64> {
     session
 }
 
-/// A status of the media session being replaced, while its replacement loads: even a failure there
-/// says nothing about the new item. Only then: a device reusing the number would otherwise go
-/// unheard.
+/// The media session being replaced saying it ended, while its replacement loads: even a failure
+/// there says nothing about the new item. Only that: a device reusing the number for the new item
+/// is heard as soon as it plays.
 fn about_replaced(v: &Value, replaced: Option<i64>, state: &str) -> bool {
     state == "loading"
         && replaced.is_some()
         && v.pointer("/status/0/mediaSessionId").and_then(Value::as_i64) == replaced
+        && v.pointer("/status/0/playerState").and_then(Value::as_str) == Some("IDLE")
 }
 
 /// The volume fields of a receiver status.
@@ -569,7 +603,11 @@ async fn connection(
     // Nothing on the device since then.
     let mut idle_since: Option<Instant> = None;
     // The request that changed the subtitle, in case the device refuses that.
-    let mut tracks_req: Option<i64> = None;
+    let mut tracks_reqs: Vec<i64> = Vec::new();
+    // The request that loaded what's on the device: only its failure is about that.
+    let mut load_req: Option<i64> = None;
+    // Another way of playing it is being prepared: what the device says of this one no longer counts.
+    let mut falling_back = false;
     let (frames_tx, mut frames) = mpsc::channel::<anyhow::Result<CastMessage>>(32);
     // Reading runs on its own so a half-read frame is never dropped by `select!`.
     let reader = tokio::spawn(async move {
@@ -609,10 +647,10 @@ async fn connection(
         _ => CANT_PLAY,
     };
     // A device that came and can't play this may play it another way: under way, if so.
-    let fall_back = |m: &Option<Box<Media>>, why: &str| {
+    let fall_back = |m: &Option<Box<Media>>, why: &str, played_ms: i64| {
         let f = m.as_ref().and_then(|m| m.fallback.clone()).filter(|_| why == CANT_PLAY);
         if let Some(f) = &f {
-            tokio::spawn((f.0)());
+            tokio::spawn((f.0)(played_ms as f64 / 1000.0));
         }
         f.is_some()
     };
@@ -635,7 +673,10 @@ async fn connection(
                     if loading_since.is_some_and(|t: Instant| t.elapsed() > LOAD_DEADLINE) {
                         loading_since = None;
                         let why = failure(&hits_at_load);
-                        if !fall_back(&current, why) {
+                        falling_back = fall_back(&current, why, played_at);
+                        if falling_back {
+                            loading_since = Some(Instant::now());
+                        } else {
                             let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
                             s.state = "error".into();
                             s.error = Some(why.into());
@@ -669,6 +710,8 @@ async fn connection(
                             current = None;
                             replaced = media_session.take();
                             idle_since = None;
+                            falling_back = false;
+                            tracks_reqs.clear();
                             // 4: one still waiting for the player is never going to be played.
                             stop_hls(&pending);
                             match &transport {
@@ -681,13 +724,22 @@ async fn connection(
                                 }
                             }
                         }
+                        Cmd::Failed(why) => {
+                            falling_back = false;
+                            loading_since = None;
+                            let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
+                            s.state = "error".into();
+                            s.error = Some(why);
+                            drop(s);
+                            idle_since = Some(Instant::now());
+                        }
                         Cmd::Tracks(active) => {
                             let (Some(t), Some(ms), Some(c)) = (transport.clone(), media_session, current.as_mut()) else {
                                 continue;
                             };
                             c.active = active;
                             req += 1;
-                            tracks_req = Some(req);
+                            tracks_reqs.push(req);
                             let ids: Vec<i64> = active.into_iter().collect();
                             w.write_all(&msg(&t, NS_MEDIA, json!({
                                 "type": "EDIT_TRACKS_INFO", "mediaSessionId": ms, "requestId": req, "activeTrackIds": ids,
@@ -735,6 +787,7 @@ async fn connection(
                     last_seen = Instant::now();
                     let v: Value = serde_json::from_str(&m.payload).unwrap_or(Value::Null);
                     let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
+                    let request = v.get("requestId").and_then(Value::as_i64);
                     match (m.namespace.as_str(), ty) {
                         (NS_HEARTBEAT, "PING") => {
                             w.write_all(&CastMessage { source: SENDER.into(), destination: m.source.clone(), namespace: NS_HEARTBEAT.into(), payload: r#"{"type":"PONG"}"#.into() }.encode()).await?;
@@ -763,7 +816,7 @@ async fn connection(
                         (NS_MEDIA, "MEDIA_STATUS") => {
                             let (state, pos, dur, finished) = {
                                 let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
-                                let stale = about_replaced(&v, replaced, &s.state);
+                                let stale = falling_back || about_replaced(&v, replaced, &s.state);
                                 let v = if stale { Value::Null } else { v };
                                 if let Some(ms) = apply_media_status(&mut s, &v) {
                                     media_session = Some(ms);
@@ -777,12 +830,13 @@ async fn connection(
                                 }
                                 if s.state == "error" && s.error.as_deref() == Some(CANT_PLAY) {
                                     let why = failure(&hits_at_load);
-                                    if fall_back(&current, why) {
+                                    if fall_back(&current, why, played_at) {
                                         s.state = "loading".into();
                                         s.error = None;
                                         current = None;
                                         replaced = media_session;
-                                        loading_since = None;
+                                        falling_back = true;
+                                        loading_since = Some(Instant::now());
                                     } else {
                                         s.error = Some(why.into());
                                     }
@@ -815,8 +869,8 @@ async fn connection(
                         }
                         // It won't switch subtitles in place: load the same thing again, from here,
                         // with the new one.
-                        (NS_MEDIA, "INVALID_REQUEST") if tracks_req.is_some() && v.get("requestId").and_then(Value::as_i64) == tracks_req => {
-                            tracks_req = None;
+                        (NS_MEDIA, "INVALID_REQUEST") if request.is_some_and(|r| tracks_reqs.contains(&r)) => {
+                            tracks_reqs.clear();
                             if let Some(mut c) = current.take() {
                                 c.start_s = played_at as f64 / 1000.0;
                                 status.lock().unwrap_or_else(|e| e.into_inner()).state = "loading".into();
@@ -824,9 +878,17 @@ async fn connection(
                                 pending = Some(c);
                             }
                         }
-                        (NS_MEDIA, "LOAD_FAILED" | "LOAD_CANCELLED" | "INVALID_REQUEST") => {
+                        // About the load on the device: not a refused pause or seek, nor a load since
+                        // replaced. Some failures don't say which request they answer.
+                        (NS_MEDIA, "LOAD_FAILED" | "LOAD_CANCELLED" | "INVALID_REQUEST")
+                            if request == load_req || (ty != "INVALID_REQUEST" && request.unwrap_or(0) == 0) =>
+                        {
                             let why = failure(&hits_at_load);
-                            if !fall_back(&current, why) {
+                            falling_back = fall_back(&current, why, played_at);
+                            if falling_back {
+                                loading_since = Some(Instant::now());
+                            } else {
+                                loading_since = None;
                                 let mut s = status.lock().unwrap_or_else(|e| e.into_inner());
                                 s.state = "error".into();
                                 s.error = Some(why.into());
@@ -834,7 +896,6 @@ async fn connection(
                             }
                             stop_hls(&current);
                             current = None;
-                            loading_since = None;
                         }
                         (NS_CONNECTION, "CLOSE") if Some(&m.source) == transport.as_ref() => return Ok(()),
                         _ => {}
@@ -847,6 +908,7 @@ async fn connection(
             {
                 req += 1;
                 w.write_all(&msg(&t, NS_MEDIA, load_message(&media, req))).await?;
+                load_req = Some(req);
                 loading_since = Some(Instant::now());
                 hits_at_load = Some((media.hits.clone(), media.hits.load(Ordering::Relaxed)));
                 played_at = (media.start_s * 1000.0) as i64;
@@ -922,6 +984,62 @@ mod tests {
         assert!(!about_replaced(&late, Some(4), "loading"), "another session's is news");
         assert!(!about_replaced(&late, Some(3), "playing"), "once under way the number may come back");
         assert!(!about_replaced(&late, None, "loading"));
+        let reused = json!({ "status": [{ "mediaSessionId": 3, "playerState": "PLAYING" }] });
+        assert!(!about_replaced(&reused, Some(3), "loading"), "the number used again, for the new item");
+    }
+
+    fn media(serial: u64) -> Media {
+        Media {
+            url: String::new(),
+            content_type: String::new(),
+            title: String::new(),
+            subtitle: String::new(),
+            image: None,
+            start_s: 0.0,
+            item_id: 1,
+            by: String::new(),
+            user_id: 1,
+            hls_session: None,
+            duration_ms: None,
+            tracks: Vec::new(),
+            active: None,
+            copied: false,
+            fallback: None,
+            loaded: Loaded::default(),
+            serial,
+            hits: Arc::default(),
+        }
+    }
+
+    /// What a fallback may do depends on what happened while it was being prepared.
+    #[test]
+    fn a_fallback_only_replaces_the_request_it_was_for() {
+        let casts = Casts::default();
+        // No session: nothing to replace, and no connection opened.
+        assert!(!casts.replace("tv", 1, media(1)));
+        let (tx, mut rx) = mpsc::channel(4);
+        let status = Arc::new(Mutex::new(CastStatus::default()));
+        let session = Session { tx, status: status.clone(), stopping: false, loaded: Loaded::default(), serial: 5 };
+        casts.sessions.lock().unwrap().insert("tv".into(), session);
+        // Something newer was asked for.
+        assert!(!casts.is_current("tv", 4));
+        assert!(!casts.replace("tv", 4, media(4)));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(status.lock().unwrap().item_id, None);
+        // Still what the device is on.
+        assert!(casts.is_current("tv", 5));
+        assert!(casts.replace("tv", 5, media(5)));
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Load(_))));
+        // Stopped meanwhile.
+        assert!(casts.command("tv", CastCommand::Stop));
+        assert!(!casts.is_current("tv", 5));
+        assert!(!casts.replace("tv", 5, media(5)));
+        // A failure is reported only for its own request.
+        let _ = rx.try_recv();
+        casts.fail("tv", 4, "no".into());
+        assert!(rx.try_recv().is_err());
+        casts.fail("tv", 5, "no".into());
+        assert!(matches!(rx.try_recv(), Ok(Cmd::Failed(_))));
     }
 
     #[test]
@@ -963,6 +1081,7 @@ mod tests {
             copied: false,
             fallback: None,
             loaded: Loaded::default(),
+            serial: 0,
             hits: Arc::default(),
         };
         let v = load_message(&m, 7);

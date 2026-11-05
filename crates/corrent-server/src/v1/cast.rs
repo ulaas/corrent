@@ -62,10 +62,22 @@ fn profile(c: &CastConfig) -> ClientProfile {
 }
 
 /// The casts the caller could control: the ones to attach to.
-async fn active(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<Vec<CastStatus>> {
+async fn active(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Query(q): Query<ActiveQuery>,
+) -> ApiResult<Vec<CastStatus>> {
     let mut list = st.casts.active();
-    list.retain(|s| s.by == auth.name() || auth.0.can(Perms::USERS_MANAGE));
+    let everyone = !q.mine && auth.0.can(Perms::USERS_MANAGE);
+    list.retain(|s| everyone || s.by == auth.name());
     Ok(Json(list))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ActiveQuery {
+    /// Only the caller's, also for an administrator: what a player opening an item may follow.
+    mine: bool,
 }
 
 async fn get_config(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<CastConfig> {
@@ -220,6 +232,7 @@ async fn play(
         .find(|i| matches!(i.kind.as_str(), "backdrop" | "poster" | "primary"))
         .or(detail.item.images.first())
         .map(|i| links.art(host, &i.sha));
+    let serial = st.casts.next_serial();
     let tracks = streams()
         .filter(is_text)
         .map(|s| crate::cast::SideTrack {
@@ -246,6 +259,7 @@ async fn play(
         copied,
         fallback: None,
         loaded,
+        serial,
         hits: links.hits(),
     };
     // Copied streams the device fails on: a transcode, as for a browser.
@@ -254,15 +268,21 @@ async fn play(
         let (links, shape) = (links.clone(), shape.clone());
         req.force_transcode = true;
         let req = req.clone();
-        crate::cast::Fallback(Arc::new(move || {
+        crate::cast::Fallback(Arc::new(move |from: f64| {
             let (st, principal, found, mut media) = (st.clone(), principal.clone(), found.clone(), media.clone());
             let (links, shape, req) = (links.clone(), shape.clone(), req.clone());
             Box::pin(async move {
+                let id = found.device.id;
+                // Stopped or replaced while it failed: leave it be.
+                if !st.casts.is_current(&id, media.serial) {
+                    return;
+                }
                 let auth = Auth(principal);
                 let info = match super::playback::prepare(&st, &auth, media.item_id, req, Some(shape), false).await {
                     Ok(info) => info,
-                    Err(e) => return st.casts.fail(&found.device.id, e.0.message),
+                    Err(e) => return st.casts.fail(&id, media.serial, e.0.message),
                 };
+                let session = info.session_id.clone();
                 match source(&st, &links, host, media.user_id, &info).await {
                     Ok((url, content_type, copied)) => {
                         media.url = url;
@@ -270,10 +290,17 @@ async fn play(
                         media.copied = copied;
                         media.hls_session = info.session_id;
                         media.fallback = None;
+                        media.start_s = from;
                         st.casts.touch();
-                        st.casts.play(st.clone(), found, media);
+                        let serial = media.serial;
+                        // Stopped or replaced while that was being prepared: it isn't wanted now.
+                        if !st.casts.replace(&id, serial, media)
+                            && let Some(session) = session
+                        {
+                            st.hls.stop(&session).await;
+                        }
                     }
-                    Err(e) => st.casts.fail(&found.device.id, e.0.message),
+                    Err(e) => st.casts.fail(&id, media.serial, e.0.message),
                 }
             })
         }))
