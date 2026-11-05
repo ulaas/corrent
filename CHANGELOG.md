@@ -7,6 +7,7 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ### Added
 
+- A new logo that says media rather than torrents: a C with a play button, on a warm tile for the app and a dark one for `correntd`, which now has an icon of its own on Windows.
 - Casting to Chromecasts from the desktop app without a separate server. The app opens a port on the local network only while something is casting (signed links, plain HTTP), closed a minute or two later.
 - Device volume and mute in the players, next and previous on the device, moving on when an item ends, subtitles and the chosen audio track on the device, and a player opened on an item that is casting follows it.
 - MKV files a Chromecast can play are copied rather than converted, which is much lighter on the computer; a device that fails on the copy gets a converted stream. Subtitles from files switch in place on the device.
