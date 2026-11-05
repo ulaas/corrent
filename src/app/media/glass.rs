@@ -384,7 +384,10 @@ pub fn slider(
     claim_arrows(ui, &resp, true);
     if resp.has_focus() {
         let (l, r) = ui.input(|i| (i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight)));
-        next = snap(next + step * (f32::from(u8::from(r)) - f32::from(u8::from(l))));
+        // Only on a key: a stored value off the steps stays as it is until someone changes it.
+        if l || r {
+            next = snap(next + step * (f32::from(u8::from(r)) - f32::from(u8::from(l))));
+        }
     }
     *value = next;
     let enabled = ui.is_enabled();

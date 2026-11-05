@@ -275,6 +275,8 @@ struct GlVideo {
     blur: Option<Blur>,
     /// The blur holds this frame.
     blur_ready: bool,
+    /// Where it placed the picture: a window reshaped around a paused picture needs it again.
+    blur_target: Option<BlurTarget>,
 }
 
 impl GlVideo {
@@ -301,9 +303,11 @@ impl GlVideo {
             let fresh = self.rc.update() || resized;
             if blur.is_none() {
                 self.blur_ready = false;
+                self.blur_target = None;
             }
             // A paused picture has no new frames, and a panel opened over it still wants the blur.
-            let redo_blur = blur.filter(|_| self.blur.is_some() && (fresh || !self.blur_ready));
+            let moved = blur != self.blur_target;
+            let redo_blur = blur.filter(|_| self.blur.is_some() && (fresh || moved || !self.blur_ready));
             if !fresh && redo_blur.is_none() {
                 return;
             }
@@ -321,6 +325,7 @@ impl GlVideo {
             if let (Some(target), Some(b)) = (redo_blur, &mut self.blur) {
                 b.run(&gl, self.fbo, want, target);
                 self.blur_ready = true;
+                self.blur_target = Some(target);
             }
             gl.bind_framebuffer(glow::FRAMEBUFFER, std::num::NonZeroU32::new(prev as u32).map(glow::NativeFramebuffer));
         }
@@ -387,6 +392,8 @@ enum Video {
         size: [usize; 2],
         blur: Option<egui::TextureHandle>,
         blur_at: Instant,
+        /// Where the blur placed the picture.
+        blur_of: ([usize; 2], [usize; 4]),
     },
 }
 
@@ -642,6 +649,7 @@ impl Player {
                                     size: [16, 16],
                                     blur,
                                     blur_ready: false,
+                                    blur_target: None,
                                 })),
                                 None,
                                 None,
@@ -656,6 +664,7 @@ impl Player {
                                 size: [0, 0],
                                 blur: None,
                                 blur_at: Instant::now(),
+                                blur_of: ([0, 0], [0; 4]),
                             }
                         }
                     }
@@ -667,6 +676,7 @@ impl Player {
                     size: [0, 0],
                     blur: None,
                     blur_at: Instant::now(),
+                    blur_of: ([0, 0], [0; 4]),
                 },
             }
         };
@@ -686,9 +696,9 @@ impl Player {
                 }
                 Video::Gl(v, id, blur)
             }
-            Video::Sw { mut rc, buf, tex, size, blur, blur_at } => {
+            Video::Sw { mut rc, buf, tex, size, blur, blur_at, blur_of } => {
                 rc.set_update_callback(repaint);
-                Video::Sw { rc, buf, tex, size, blur, blur_at }
+                Video::Sw { rc, buf, tex, size, blur, blur_at, blur_of }
             }
             Video::None => Video::None,
         };
@@ -1594,7 +1604,7 @@ impl Player {
                     ui.painter().image(id, vr, uv, Color32::WHITE);
                 }
             }
-            Video::Sw { rc, buf, tex, size, blur, blur_at } => {
+            Video::Sw { rc, buf, tex, size, blur, blur_at, blur_of } => {
                 let want = [px[0] as usize, px[1] as usize];
                 let fresh = rc.update() || want != *size;
                 if fresh {
@@ -1613,16 +1623,19 @@ impl Player {
                 }
                 if !wants_backdrop {
                     *blur = None;
-                } else if *size != [0, 0] && (blur.is_none() || fresh && blur_at.elapsed() > Duration::from_millis(66))
-                {
+                } else {
                     let window = window_px.map(|v| v as usize);
                     let at = [video_at[0] as usize, video_at[1] as usize, px[0] as usize, px[1] as usize];
-                    let img = glass::soft_backdrop(buf, *size, window, at);
-                    match blur {
-                        Some(t) => t.set(img, egui::TextureOptions::LINEAR),
-                        None => *blur = Some(ctx.load_texture("video-blur", img, egui::TextureOptions::LINEAR)),
+                    let due = fresh && blur_at.elapsed() > Duration::from_millis(66);
+                    if *size != [0, 0] && (blur.is_none() || due || *blur_of != (window, at)) {
+                        let img = glass::soft_backdrop(buf, *size, window, at);
+                        match blur {
+                            Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+                            None => *blur = Some(ctx.load_texture("video-blur", img, egui::TextureOptions::LINEAR)),
+                        }
+                        *blur_at = Instant::now();
+                        *blur_of = (window, at);
                     }
-                    *blur_at = Instant::now();
                 }
             }
             Video::None => {}

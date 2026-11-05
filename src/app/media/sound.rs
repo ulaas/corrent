@@ -456,7 +456,9 @@ fn eq_graph(ui: &mut Ui, tone: &Tone, eq: &mut [Band]) {
             glass::claim_arrows(ui, &resp, false);
             if resp.has_focus() {
                 let (up, down) = ui.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown)));
-                b.db = (b.db + 0.5 * (f32::from(u8::from(up)) - f32::from(u8::from(down)))).clamp(-12.0, 12.0);
+                if up || down {
+                    b.db = (b.db + 0.5 * (f32::from(u8::from(up)) - f32::from(u8::from(down)))).clamp(-12.0, 12.0);
+                }
             }
             if resp.hovered() || resp.has_focus() || resp.dragged() {
                 readout = Some(i);
@@ -765,6 +767,20 @@ mod sheet_tests {
         assert!(!h.state().fx.enabled);
         assert_eq!(h.state().fx.preset.as_deref(), Some("night"));
         assert!(h.state().fx.night.is_some());
+    }
+
+    #[test]
+    fn focusing_a_slider_leaves_a_value_off_its_steps_and_the_preset_alone() {
+        let mut pb = Playback::default();
+        pb.fx.apply_preset("night");
+        pb.fx.night.as_mut().unwrap().threshold_db = -23.7;
+        pb.fx.enabled = true;
+        let mut h = harness(pb);
+        h.run();
+        h.get_by_label("Threshold").focus();
+        h.run();
+        assert_eq!(h.state().fx.night.as_ref().unwrap().threshold_db, -23.7);
+        assert_eq!(h.state().fx.preset.as_deref(), Some("night"));
     }
 
     #[test]
