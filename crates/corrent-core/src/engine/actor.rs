@@ -221,6 +221,9 @@ pub struct Actor {
     watch: super::automation::WatchState,
     slow_since: HashMap<InfoHash, Instant>,
     resumed_at: HashMap<InfoHash, Instant>,
+    /// Resumed while their files were being checked. A check started by a paused add ends paused
+    /// whatever happened meanwhile, so these get their resume again when it ends.
+    resume_after_check: HashSet<InfoHash>,
     /// Bumped on every resume; spawned pause tasks stop when it changes, so a pause queued just
     /// before a Resume can't undo it.
     resume_epoch: Arc<std::sync::atomic::AtomicU64>,
@@ -353,6 +356,7 @@ impl Actor {
             watch: Default::default(),
             slow_since: HashMap::new(),
             resumed_at: HashMap::new(),
+            resume_after_check: HashSet::new(),
             resume_epoch: Default::default(),
             deferred_settings: None,
             deferred_reload: false,
@@ -1167,7 +1171,34 @@ impl Actor {
     /// Hand a librqbit call to the engine-call worker: it never blocks the actor, calls run in the
     /// order they were made, and each has a deadline.
     fn engine_call(&mut self, sess: Arc<Session>, h: Arc<ManagedTorrent>, kind: CallKind) {
+        if matches!(kind, CallKind::Resume(_)) && matches!(h.stats().state, TorrentStatsState::Initializing { .. }) {
+            self.resume_after_check.insert(InfoHash(h.info_hash().0));
+        }
         self.send_job(Job::Call(EngineCall { sess, h, kind }));
+    }
+
+    /// Repeat the resumes made during a check, once it has ended. Anything that paused the
+    /// torrent since (the user, the queue, a limit) set a reason, and that one stands.
+    fn finish_resumes(&mut self, handles: &[(usize, Arc<ManagedTorrent>)]) {
+        if self.resume_after_check.is_empty() {
+            return;
+        }
+        let Some(sess) = self.session.clone() else { return };
+        let waiting = std::mem::take(&mut self.resume_after_check);
+        for hash in waiting {
+            let Some((_, h)) = handles.iter().find(|(_, h)| h.info_hash().0 == hash.0) else { continue };
+            match h.stats().state {
+                TorrentStatsState::Initializing { .. } => {
+                    self.resume_after_check.insert(hash);
+                }
+                TorrentStatsState::Paused => {
+                    let Some(m) = self.store.get(&hash).filter(|m| m.pause_reason.is_none()) else { continue };
+                    let limits = session::limits(m.down_limit_kib, m.up_limit_kib);
+                    self.engine_call(sess.clone(), h.clone(), CallKind::Resume(limits));
+                }
+                TorrentStatsState::Live | TorrentStatsState::Error => {}
+            }
+        }
     }
 
     fn send_job(&mut self, job: Job) {
@@ -2229,6 +2260,7 @@ impl Actor {
             ("seed_carry_ms", self.seed_carry_ms.len()),
             ("slow_since", self.slow_since.len()),
             ("resumed_at", self.resumed_at.len()),
+            ("resume_after_check", self.resume_after_check.len()),
             ("failed", self.failed.len()),
             ("undo_pending", self.undo_pending.len()),
             ("undo", self.undo.len()),
@@ -2457,6 +2489,7 @@ impl Actor {
 
         if self.tick_count.is_multiple_of(2) {
             self.enforce_pauses(&views, &handles);
+            self.finish_resumes(&handles);
             self.apply_torrent_limits(&handles);
         }
         if self.settings.queue.enabled && self.tick_count.is_multiple_of(4) {
@@ -3810,12 +3843,15 @@ async fn run_engine_calls(
             // initialization even if the torrent then goes live anyway. A torrent that stopped
             // on an error (a full disk) starts like a paused one: librqbit opens its files again
             // and checks what is there (nothing is downloaded twice).
-            let paused = matches!(h.stats().state, TorrentStatsState::Paused | TorrentStatsState::Error);
+            let state = h.stats().state;
+            let paused = matches!(state, TorrentStatsState::Paused | TorrentStatsState::Error);
             match &kind {
                 CallKind::Pause if !paused => sess.pause(&h).await,
                 CallKind::Pause => Ok(()),
                 CallKind::Resume(limits) => {
-                    if paused {
+                    // During a check too: this clears a pause requested during it, which would
+                    // otherwise stop the check and leave the torrent there.
+                    if paused || matches!(state, TorrentStatsState::Initializing { paused: true }) {
                         sess.unpause(&h).await?;
                     }
                     h.set_ratelimits(*limits);

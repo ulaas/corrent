@@ -2189,10 +2189,27 @@ async fn rate_history_is_kept_for_active_rows_and_the_detail_target() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Past the first check of every torrent: a resume made during it does nothing.
+/// Past the first check of every torrent, so the pauses and resumes a test counts are its own.
 async fn first_checks_done(l: &Leecher) {
     wait_for(l, "the first checks", 120, |sn| sn.torrents.iter().all(|t| t.state == TorrentState::Paused)).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
+}
+
+/// A torrent added paused checks its files first; a Resume made meanwhile must not be lost when
+/// the check ends in its add-time "stay paused".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_during_the_first_check_is_kept() {
+    let dir = temp_dir("resume-during-check");
+    let l = start(&dir);
+    // Enough that many are still waiting for their check when the Resume comes.
+    add_tiny_torrents(&l, &dir, 250).await;
+    l.engine.send(EngineCommand::ResumeAll);
+    wait_for(&l, "every resume to take", 60, |sn| {
+        sn.torrents.iter().all(|t| !matches!(t.state, TorrentState::Paused | TorrentState::Checking))
+    })
+    .await;
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn session_writes(paths: &Paths) -> u64 {
