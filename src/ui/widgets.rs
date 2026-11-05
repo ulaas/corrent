@@ -40,7 +40,7 @@ pub fn paint_progress(
     let r = (rect.height() / 2.0).min(255.0) as u8;
     painter.rect_filled(rect, CornerRadius::same(r), track);
     let frac = frac.clamp(0.0, 1.0);
-    let t = if animate { super::motion::value(ui.ctx(), id.with("p"), frac, super::motion::SLOW) } else { frac };
+    let t = if animate { eased_progress(ui.ctx(), id.with("p"), frac, rect.width()) } else { frac };
     if t <= 0.0005 {
         return;
     }
@@ -86,6 +86,19 @@ pub fn paint_progress(
     }
 }
 
+/// Progress eases only when you could see it: a change of a pixel or more, in the focused window.
+/// Otherwise every engine tick of every downloading torrent would mean a third of a second of
+/// full-rate repainting, also with the window in the background.
+fn eased_progress(ctx: &egui::Context, id: Id, target: f32, width: f32) -> f32 {
+    let shown_id = id.with("shown");
+    let shown = ctx.data(|d| d.get_temp::<f32>(shown_id));
+    let visible = shown.is_some_and(|s| (target - s).abs() * width >= 1.0);
+    let secs = if visible && ctx.input(|i| i.focused) { super::motion::SLOW } else { 0.0 };
+    let now = super::motion::value(ctx, id, target, secs);
+    ctx.data_mut(|d| d.insert_temp(shown_id, now));
+    now
+}
+
 /// Area sparkline with a vertical gradient fill. `samples` newest last.
 pub fn sparkline(ui: &mut Ui, samples: &[f32], color: Color32, size: Vec2) -> Response {
     let (resp, painter) = ui.allocate_painter(size, Sense::hover());
@@ -96,14 +109,27 @@ pub fn sparkline(ui: &mut Ui, samples: &[f32], color: Color32, size: Vec2) -> Re
 
 /// Draw one series into `r`, scaled to `max` (or its own max).
 pub fn paint_series(painter: &egui::Painter, r: Rect, samples: &[f32], color: Color32, max: Option<f32>, fill: bool) {
+    let max = max.unwrap_or_else(|| samples.iter().copied().fold(0.0f32, f32::max));
+    paint_samples(painter, r, samples.iter().copied(), color, max, fill);
+}
+
+/// [`paint_series`] from an iterator, for samples that aren't in a slice of their own (table rows
+/// draw this for every visible torrent, every frame).
+pub fn paint_samples(
+    painter: &egui::Painter,
+    r: Rect,
+    samples: impl ExactSizeIterator<Item = f32>,
+    color: Color32,
+    max: f32,
+    fill: bool,
+) {
     if samples.len() < 2 {
         painter.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, color.gamma_multiply(0.4)));
         return;
     }
-    let max = max.unwrap_or_else(|| samples.iter().copied().fold(0.0f32, f32::max)).max(1.0);
+    let max = max.max(1.0);
     let n = (samples.len() - 1) as f32;
     let pts: Vec<Pos2> = samples
-        .iter()
         .enumerate()
         .map(|(i, v)| pos2(r.left() + r.width() * i as f32 / n, r.bottom() - r.height() * (v / max).clamp(0.0, 1.0)))
         .collect();
@@ -369,6 +395,30 @@ pub fn context_menu(response: &Response, add: impl FnOnce(&mut Ui)) -> Option<eg
 /// `popup.show`, scrolling when long.
 pub fn popup<R>(popup: egui::Popup<'_>, add: impl FnOnce(&mut Ui) -> R) -> Option<egui::InnerResponse<R>> {
     popup.show(|ui| scroll_body(ui, add))
+}
+
+// ---------------------------------------------------------------- dialogs
+//
+// A modal keeps to the window: narrower when the window (or a large zoom) leaves less room, and
+// its body scrolls when it doesn't fit in height.
+
+/// The width for a modal that would like `want` points (its frame and a margin come on top).
+pub fn modal_width(ctx: &egui::Context, want: f32) -> f32 {
+    want.min(ctx.content_rect().width() - 92.0).max(240.0)
+}
+
+/// A modal's contents, scrolling when taller than the window.
+pub fn modal_body<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let screen = ui.ctx().content_rect().size();
+    let max = (screen.y - 92.0).max(160.0);
+    // An area offers its size of the frame before; a scroll area in it would never grow.
+    ui.set_max_size(vec2(screen.x, max));
+    egui::ScrollArea::vertical().id_salt("modal_body").max_height(max).show(ui, add).inner
+}
+
+/// A dialog's row of buttons, on the right (also inside `modal_body`, which has no height limit).
+pub fn dialog_footer<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.horizontal(|ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add).inner).inner
 }
 
 #[cfg(test)]

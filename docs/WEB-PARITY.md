@@ -106,6 +106,16 @@ users who may manage only their own torrents see entries the server then refuses
 and desktop, dark and light), next to desktop shots from the `CORRENT_DEV_*` hooks
 (`CORRENT_DEV_DEMO=1` for torrents). No real mouse/keyboard automation.
 
+## Stream D (quality round, 2026-11): desktop features to port
+
+Desktop only so far, to port or to decide against in a later web round: the command palette
+(Ctrl+K), saved views in the sidebar (`UiPrefs.views`; `/me/prefs` would hold them on the web), the
+Error column and Fit columns, list keys (Home/End, PgUp/PgDn, Ctrl+arrows focus only, Ctrl+Space,
+`/`), Select → Invert/Same category/tag/tracker, Copy → Tracker hosts, the Trackers sidebar section
+with its context menu, and the F1 Keyboard shortcuts window. The tracker filter needs each torrent's
+trackers in the list response. The double-click setting has no meaning on the web (touch, no local
+files).
+
 ## Intentional differences
 
 No file-system actions (Open, Open folder), no offline downloads, no TV

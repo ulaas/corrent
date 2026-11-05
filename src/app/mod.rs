@@ -21,6 +21,7 @@ pub mod log;
 pub mod media;
 mod notify;
 mod onboarding;
+mod palette;
 mod pickers;
 mod remote;
 mod search_view;
@@ -159,10 +160,11 @@ pub enum Col {
     SeedTime,
     LastActivity,
     Activity,
+    Error,
 }
 
 impl Col {
-    pub const ALL: [Col; 21] = [
+    pub const ALL: [Col; 22] = [
         Col::Queue,
         Col::Name,
         Col::Size,
@@ -184,6 +186,7 @@ impl Col {
         Col::SeedTime,
         Col::LastActivity,
         Col::Activity,
+        Col::Error,
     ];
 
     pub fn title(self) -> &'static str {
@@ -209,6 +212,7 @@ impl Col {
             Col::SeedTime => t!("Seeding time"),
             Col::LastActivity => t!("Last activity"),
             Col::Activity => t!("Activity"),
+            Col::Error => t!("Error"),
         }
     }
 
@@ -223,6 +227,7 @@ impl Col {
             Col::Tags | Col::Category => 110.0,
             Col::Added | Col::Completed | Col::LastActivity => 130.0,
             Col::Activity => 100.0,
+            Col::Error => 200.0,
             _ => 86.0,
         }
     }
@@ -257,8 +262,34 @@ pub struct UiPrefs {
     pub category_filter: GroupFilter,
     pub tag_filter: GroupFilter,
     pub tracker_filter: GroupFilter,
-    /// Collapsed sidebar sections ("status", "categories", "tags").
+    /// Collapsed sidebar sections ("status", "categories", "tags", "trackers").
     pub collapsed: Vec<String>,
+    // What the views were showing (copied from them when saved, see `sync_prefs`).
+    pub speed_scope_torrent: bool,
+    pub show_all_peers: bool,
+    pub file_filter: String,
+    pub feeds_selected: Option<String>,
+    pub search_sort: search_view::SortBy,
+    pub search_asc: bool,
+    /// Named filter and sort combinations in the sidebar.
+    pub views: Vec<SavedView>,
+    /// Column widths from "Fit columns".
+    pub column_widths: Vec<(Col, f32)>,
+    /// Counts "Fit columns": a new table state, so the widths above apply.
+    pub columns_fitted: u32,
+}
+
+/// A saved view: what the list is filtered and sorted by.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedView {
+    pub name: String,
+    pub status: StatusFilter,
+    pub category: GroupFilter,
+    pub tag: GroupFilter,
+    pub tracker: GroupFilter,
+    pub search: String,
+    pub sort: Col,
+    pub sort_asc: bool,
 }
 
 impl Default for UiPrefs {
@@ -285,6 +316,15 @@ impl Default for UiPrefs {
             tag_filter: GroupFilter::All,
             tracker_filter: GroupFilter::All,
             collapsed: Vec::new(),
+            speed_scope_torrent: true,
+            show_all_peers: false,
+            file_filter: String::new(),
+            feeds_selected: None,
+            search_sort: search_view::SortBy::Seeders,
+            search_asc: false,
+            views: Vec::new(),
+            column_widths: Vec::new(),
+            columns_fitted: 0,
         }
     }
 }
@@ -321,8 +361,17 @@ pub struct CorrentApp {
     pub focus: Option<InfoHash>,
     rows: Vec<usize>,
     rows_key: Option<u64>,
+    sort_memo: table::SortMemo,
     pub scroll_to_focus: bool,
+    /// The focus was last moved with the keyboard: the focused row is marked.
+    focus_visible: bool,
+    /// How many rows fit in the list (Page Up/Down).
+    page_rows: usize,
     pub column_menu: Option<egui::Pos2>,
+    /// "Fit columns" was asked for: measured on the next frame.
+    fit_columns: bool,
+    /// A widget had the keyboard focus at the end of the last frame.
+    had_focus: bool,
 
     // launch / add
     pub launch_queue: VecDeque<AddSource>,
@@ -331,7 +380,11 @@ pub struct CorrentApp {
     dropped_rx: std::sync::mpsc::Receiver<(Vec<AddSource>, usize)>,
     /// The clipboard read for the magnet dialog, and when it was asked.
     clipboard: Option<(std::sync::mpsc::Receiver<String>, std::time::Instant)>,
+    /// Ctrl+K, while open.
+    palette: Option<palette::CommandPalette>,
     pub modal: Option<dialogs::Modal>,
+    /// The open modal's text field has been given the focus.
+    modal_focused: bool,
     pub add_dialogs: VecDeque<dialogs::AddDialog>,
     pub next_req: u64,
     pub settings_draft: Option<settings_window::SettingsDraft>,
@@ -354,6 +407,10 @@ pub struct CorrentApp {
     counts: sidebar::Counts,
     sent_detail_target: Option<InfoHash>,
     pub file_filter: String,
+    /// The Files tab's tree.
+    file_tree: crate::ui::file_tree::TreeState,
+    /// Playable files of the torrent in the details data: (hash, files, files selected), list.
+    media_files_cache: Option<actions::MediaFilesCache>,
     pub show_all_peers: bool,
     pub speed_scope_torrent: bool,
     tray: Option<tray::Tray>,
@@ -494,8 +551,7 @@ impl CorrentApp {
     ) -> Self {
         theme::install_fonts(ctx);
         egui_extras::install_image_loaders(ctx);
-        let mut prefs = prefs.unwrap_or_default();
-        prefs.tracker_filter = GroupFilter::All;
+        let prefs = prefs.unwrap_or_default();
         let (tx, rx) = std::sync::mpsc::channel();
         let ui_events_tx = tx.clone();
         // Read once at startup (a small file); later changes are kept in memory and saved off
@@ -517,6 +573,9 @@ impl CorrentApp {
         }
         let remote = remote::RemoteCtl::new(&settings);
         let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
+        let feeds = feeds::FeedsUi { selected: prefs.feeds_selected.clone(), ..Default::default() };
+        let mut torznab = search_view::SearchUi::default();
+        (torznab.sort, torznab.asc) = (prefs.search_sort, prefs.search_asc);
         CorrentApp {
             paths,
             settings,
@@ -525,7 +584,6 @@ impl CorrentApp {
             events: rx,
             ui_events_tx,
             snap: Arc::new(Snapshot::default()),
-            prefs,
             toasts: Toasts::default(),
             search: String::new(),
             selected: HashSet::new(),
@@ -533,13 +591,20 @@ impl CorrentApp {
             focus: None,
             rows: Vec::new(),
             rows_key: None,
+            sort_memo: Default::default(),
             scroll_to_focus: false,
+            focus_visible: false,
+            page_rows: 10,
             column_menu: None,
+            fit_columns: false,
+            had_focus: false,
             launch_queue: launch.into(),
             dropped_tx,
             dropped_rx,
             clipboard: None,
+            palette: None,
             modal: None,
+            modal_focused: false,
             add_dialogs: VecDeque::new(),
             next_req: 0,
             settings_draft: None,
@@ -554,9 +619,11 @@ impl CorrentApp {
             frame_seen: false,
             counts: sidebar::Counts::default(),
             sent_detail_target: None,
-            file_filter: String::new(),
-            show_all_peers: false,
-            speed_scope_torrent: true,
+            file_filter: prefs.file_filter.clone(),
+            file_tree: Default::default(),
+            media_files_cache: None,
+            show_all_peers: prefs.show_all_peers,
+            speed_scope_torrent: prefs.speed_scope_torrent,
             tray: None,
             tray_failed: false,
             ctx: ctx.clone(),
@@ -577,8 +644,8 @@ impl CorrentApp {
             refused_seen: 0,
             mica: false,
             main_view: Default::default(),
-            feeds: Default::default(),
-            torznab: Default::default(),
+            feeds,
+            torznab,
             remote,
             row_first_seen: Default::default(),
             rows_seen_once: false,
@@ -618,7 +685,51 @@ impl CorrentApp {
             #[cfg(debug_assertions)]
             media_dev_paused: false,
             local_stopping: None,
+            prefs,
         }
+    }
+
+    /// The list as it is now, under this name (replacing a view of that name).
+    pub(super) fn save_view(&mut self, name: &str) {
+        let view = self.current_view(name.trim());
+        match self.prefs.views.iter_mut().find(|v| v.name == view.name) {
+            Some(v) => *v = view,
+            None => self.prefs.views.push(view),
+        }
+    }
+
+    pub(super) fn current_view(&self, name: &str) -> SavedView {
+        SavedView {
+            name: name.to_string(),
+            status: self.prefs.status_filter,
+            category: self.prefs.category_filter.clone(),
+            tag: self.prefs.tag_filter.clone(),
+            tracker: self.prefs.tracker_filter.clone(),
+            search: self.search.clone(),
+            sort: self.prefs.sort,
+            sort_asc: self.prefs.sort_asc,
+        }
+    }
+
+    pub(super) fn apply_view(&mut self, view: &SavedView) {
+        self.prefs.status_filter = view.status;
+        self.prefs.category_filter = view.category.clone();
+        self.prefs.tag_filter = view.tag.clone();
+        self.prefs.tracker_filter = view.tracker.clone();
+        self.search.clone_from(&view.search);
+        self.prefs.sort = view.sort;
+        self.prefs.sort_asc = view.sort_asc;
+        self.main_view = feeds::MainView::Torrents;
+    }
+
+    /// What the views show now, into the preferences that get saved.
+    fn sync_prefs(&mut self) {
+        self.prefs.speed_scope_torrent = self.speed_scope_torrent;
+        self.prefs.show_all_peers = self.show_all_peers;
+        self.prefs.file_filter.clone_from(&self.file_filter);
+        self.prefs.feeds_selected.clone_from(&self.feeds.selected);
+        self.prefs.search_sort = self.torznab.sort;
+        self.prefs.search_asc = self.torznab.asc;
     }
 
     pub fn with_data_notes(mut self, notes: Vec<String>) -> Self {
@@ -919,7 +1030,9 @@ impl CorrentApp {
         self.prefs.tracker_filter.hash(&mut h);
         let key = h.finish();
         if self.rows_key != Some(key) {
-            self.rows = table::compute_rows(&self.snap, &self.prefs, &self.search);
+            self.counts.update(&self.snap);
+            self.rows =
+                table::compute_rows(&self.snap, &self.prefs, &self.search, &mut self.counts.hosts, &mut self.sort_memo);
             self.rows_key = Some(key);
             // Never act on torrents the user can't see.
             let visible: HashSet<InfoHash> =
@@ -945,6 +1058,7 @@ impl CorrentApp {
 
     fn drain_events(&mut self, ctx: &Context) {
         let mut removed: Vec<(InfoHash, String)> = Vec::new();
+        let mut added: Vec<String> = Vec::new();
         while let Ok(ev) = self.events.try_recv() {
             // The in-process media server acts on engine events too (imports, wanted list).
             if let Some(local) = self.media.local() {
@@ -959,14 +1073,8 @@ impl CorrentApp {
             match ev {
                 EngineEvent::Toast(kind, text) => self.toasts.push(kind, text),
                 EngineEvent::Added { name, hash } => {
-                    self.toasts.push_with(
-                        ToastKind::Success,
-                        t!("Added “{name}”", name = name),
-                        vec![(t!("Show").into(), toasts::ToastAction::Show(hash))],
-                    );
-                    if self.settings.behavior.notify_on_add && self.window_hidden {
-                        self.notify(t!("Torrent added"), &name);
-                    }
+                    self.toasts.push_added(hash, &name);
+                    added.push(name);
                 }
                 EngineEvent::Completed { name, size, content_path, save_path, .. } => {
                     let actions = if self.server.is_none() {
@@ -1024,6 +1132,13 @@ impl CorrentApp {
                 EngineEvent::PreviewReady { req, result } => self.on_preview_ready(req, result),
             }
         }
+        if self.settings.behavior.notify_on_add && self.window_hidden {
+            match added.as_slice() {
+                [] => {}
+                [name] => self.notify(t!("Torrent added"), name),
+                many => self.notify(t!("Torrent added"), &t!("Added {n} torrents", n = many.len())),
+            }
+        }
         #[cfg(debug_assertions)]
         if !removed.is_empty() && std::env::var("CORRENT_DEV_OPEN").as_deref() == Ok("remove-undo") {
             self.engine.send(crate::engine::EngineCommand::UndoRemove(removed.iter().map(|(h, _)| *h).collect()));
@@ -1058,30 +1173,33 @@ impl CorrentApp {
                     self.settings.updates.skip_version = v;
                     self.save_settings();
                 }
-                toasts::ToastAction::Show(h) => {
-                    self.show_window(ctx);
-                    self.prefs.status_filter = StatusFilter::All;
-                    self.prefs.category_filter = GroupFilter::All;
-                    self.prefs.tag_filter = GroupFilter::All;
-                    self.search.clear();
-                    self.selected.clear();
-                    self.selected.insert(h);
-                    self.focus = Some(h);
-                    self.anchor = Some(h);
-                    self.scroll_to_focus = true;
-                }
+                toasts::ToastAction::Show(h) => self.show_torrents(ctx, vec![h]),
+                toasts::ToastAction::ShowAll(hashes) => self.show_torrents(ctx, hashes),
             }
         }
+    }
+
+    /// Brings the list up with these torrents visible and selected.
+    pub(super) fn show_torrents(&mut self, ctx: &Context, hashes: Vec<InfoHash>) {
+        self.show_window(ctx);
+        self.main_view = feeds::MainView::Torrents;
+        self.clear_filters();
+        self.search.clear();
+        let first = hashes.first().copied();
+        self.selected = hashes.into_iter().collect();
+        self.focus = first;
+        self.anchor = first;
+        self.scroll_to_focus = true;
     }
 
     fn apply_appearance_if_changed(&mut self, ctx: &Context) {
         let a = self.appearance_preview.as_ref().unwrap_or(&self.settings.appearance);
         // Also re-apply when the OS high-contrast mode is switched.
-        let key = (a.clone(), a.follow_os_high_contrast && theme::os_high_contrast());
-        if self.applied_appearance.as_ref() != Some(&key) {
+        let high_contrast = a.follow_os_high_contrast && theme::os_high_contrast();
+        if self.applied_appearance.as_ref().is_none_or(|(applied, hc)| applied != a || *hc != high_contrast) {
             crate::i18n::set_language(&a.language);
             theme::apply(ctx, a);
-            self.applied_appearance = Some(key);
+            self.applied_appearance = Some((a.clone(), high_contrast));
         }
     }
 
@@ -1192,6 +1310,7 @@ impl eframe::App for CorrentApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.sync_prefs();
         eframe::set_value(storage, "ui_prefs", &self.prefs);
     }
 
@@ -1247,12 +1366,23 @@ impl CorrentApp {
         }
         if let Ok(w) = std::env::var("CORRENT_DEV_OPEN") {
             match w.as_str() {
-                "settings" => self.open_settings(),
+                "settings" => {
+                    self.open_settings();
+                    if let (Some(d), Ok(q)) = (&mut self.settings_draft, std::env::var("CORRENT_DEV_SETTINGS_SEARCH")) {
+                        d.search = q;
+                    }
+                }
                 "remote" => self.open_settings_at(settings_window::Page::Remote),
                 "appearance" => self.open_settings_at(settings_window::Page::Appearance),
                 "playback" => self.open_settings_at(settings_window::Page::Playback),
                 "magnet" => self.open_magnet_dialog(),
                 "about" => self.extras.about = true,
+                "shortcuts" => self.extras.shortcuts = true,
+                "palette" => self.toggle_palette(),
+                "columns" => {
+                    self.column_menu = Some(egui::pos2(500.0, 90.0));
+                    egui::Popup::open_id(ctx, egui::Id::new(table::COLUMN_CHOOSER));
+                }
                 "creator" => self.open_creator(),
                 "connect" => self.open_connect(),
                 "import" => self.open_import(),
@@ -1332,6 +1462,7 @@ impl CorrentApp {
         if self.tv.on {
             egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg0)).show(ui, |ui| self.tv_view(ui, &p));
             self.dialogs(&ctx, &p);
+            self.toasts.bottom_inset = 16.0;
             let actions = self.toasts.show(&ctx, &p);
             self.run_toast_actions(&ctx, actions);
             return;
@@ -1346,10 +1477,13 @@ impl CorrentApp {
             // No title bar while a video plays, but the edges still resize the window.
             self.window_frame(&ctx, &p);
             self.dialogs(&ctx, &p);
+            self.toasts.bottom_inset = 16.0;
             let actions = self.toasts.show(&ctx, &p);
             self.run_toast_actions(&ctx, actions);
             return;
         }
+
+        self.shortcuts(&ctx);
 
         egui::Panel::top("toolbar")
             .exact_size(titlebar::TITLEBAR_HEIGHT)
@@ -1357,14 +1491,16 @@ impl CorrentApp {
             .show_separator_line(true)
             .show(ui, |ui| self.toolbar(ui, &p));
 
-        egui::Panel::bottom("statusbar")
+        let status = egui::Panel::bottom("statusbar")
             .frame(egui::Frame::new().fill(p.bg1).inner_margin(egui::Margin::symmetric(12, 4)))
             .show(ui, |ui| self.status_bar(ui, &p));
+        self.toasts.bottom_inset = status.response.rect.height() + 8.0;
 
         if self.media.player.as_ref().is_some_and(|pl| pl.audio_only) {
-            egui::Panel::bottom("mini-player")
+            let mini = egui::Panel::bottom("mini-player")
                 .frame(egui::Frame::new().fill(p.bg2).inner_margin(egui::Margin::symmetric(14, 8)))
                 .show(ui, |ui| self.media_mini_player(ui, &p));
+            self.toasts.bottom_inset += mini.response.rect.height();
         }
 
         let mut show_sidebar = self.prefs.show_sidebar;
@@ -1422,7 +1558,8 @@ impl CorrentApp {
         self.batch_dialog(&ctx, &p);
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);
-        self.shortcuts(&ctx);
+        self.palette_window(&ctx, &p);
+        self.had_focus = ctx.memory(|m| m.focused().is_some());
         let actions = self.toasts.show(&ctx, &p);
         self.run_toast_actions(&ctx, actions);
     }

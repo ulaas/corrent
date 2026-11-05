@@ -87,6 +87,746 @@ fn harness_sized(app: CorrentApp, size: egui::Vec2) -> Harness<'static, CorrentA
     h
 }
 
+/// Replaces the app's engine with one that writes down the commands it gets.
+fn record_commands(app: &mut CorrentApp) -> Arc<std::sync::Mutex<Vec<String>>> {
+    let log: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let backend_log = log.clone();
+    let backend: crate::engine::Backend = Arc::new(move |mut io: crate::engine::BackendIo| {
+        let log = backend_log.clone();
+        Box::pin(async move {
+            while let Some(c) = io.commands.recv().await {
+                log.lock().unwrap().push(format!("{c:?}"));
+            }
+        })
+    });
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let rt = app.rt.clone();
+    app.engine =
+        crate::engine::EngineHandle::with_backend(&rt, app.paths.clone(), crate::engine::Wake::noop(), tx, backend);
+    log
+}
+
+/// Every command sent so far (the queue is in order, so all are in once a marker sent last is).
+fn commands_sent(app: &CorrentApp, log: &std::sync::Mutex<Vec<String>>) -> Vec<String> {
+    app.engine.send(crate::engine::EngineCommand::CheckHealth);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        {
+            let mut l = log.lock().unwrap();
+            if l.last().is_some_and(|c| c == "CheckHealth") {
+                l.pop();
+                // (Following the selection, not something the user asked for.)
+                l.retain(|c| !c.starts_with("SetDetailTarget"));
+                return std::mem::take(&mut *l);
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "the engine never got the marker");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+fn press_secondary(h: &mut Harness<'static, CorrentApp>, at: egui::Pos2) {
+    h.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+}
+
+#[test]
+fn space_on_a_focused_button_sends_one_command() {
+    let (_f, mut app) = app("focus-space", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let log = record_commands(&mut app);
+    app.selected.insert(InfoHash([1; 20]));
+    let mut h = harness(app);
+    h.run_steps(3);
+    // Nothing focused: the list's shortcut.
+    h.key_press(egui::Key::Space);
+    h.run_steps(2);
+    let sent = commands_sent(h.state(), &log);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].starts_with("Pause"), "{sent:?}");
+    // The button has the focus: its click only.
+    h.get_by_label("Pause").focus();
+    h.run_steps(2);
+    assert!(h.state().ctx.memory(|m| m.focused()).is_some(), "the button has the focus");
+    h.key_press(egui::Key::Space);
+    h.run_steps(2);
+    let sent = commands_sent(h.state(), &log);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].starts_with("Pause"), "{sent:?}");
+}
+
+#[test]
+fn escape_keeps_the_selection_for_menus_and_dialogs() {
+    let (_f, app) = app("escape", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    let at = h.get_by_label("Alpha").rect().center();
+    h.get_by_label("Alpha").click();
+    h.run_steps(3);
+    // A menu closes; the selection it was for stays.
+    press_secondary(&mut h, at);
+    assert!(h.query_by_label_contains("Force start").is_some(), "the menu is open");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Force start").is_none(), "the menu closed");
+    assert!(h.state().selected.contains(&InfoHash([1; 20])), "a menu's Escape keeps the selection");
+    // So does a dialog.
+    h.state_mut().open_speed_limits(vec![InfoHash([1; 20])]);
+    h.run_steps(3);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.state().modal.is_none(), "the dialog closed");
+    assert!(h.state().selected.contains(&InfoHash([1; 20])), "a dialog's Escape keeps the selection");
+    // And leaving the search box, which also empties it.
+    h.state_mut().search = "alp".into();
+    h.state().ctx.memory_mut(|m| m.request_focus(egui::Id::new("search_box")));
+    h.run_steps(3);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.state().search.is_empty(), "Escape leaves the search");
+    assert!(h.state().selected.contains(&InfoHash([1; 20])), "and keeps the selection");
+    // With nothing else to close it clears the selection.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.state().selected.is_empty());
+}
+
+#[test]
+fn list_shortcuts_stay_on_the_list() {
+    let (_f, mut app) = app("list-keys", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let log = record_commands(&mut app);
+    app.selected.insert(InfoHash([1; 20]));
+    app.main_view = super::feeds::MainView::Feeds;
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.key_press(egui::Key::Space);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(commands_sent(h.state(), &log).is_empty());
+    assert!(h.state().selected.contains(&InfoHash([1; 20])));
+}
+
+#[test]
+fn enter_never_deletes_files() {
+    let (_f, mut app) = app("delete-enter", vec![torrent(1, "Gamma", TorrentState::Seeding)]);
+    let log = record_commands(&mut app);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().request_delete(vec![InfoHash([1; 20])], true);
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().modal.is_some(), "still asking");
+    assert!(commands_sent(h.state(), &log).is_empty(), "nothing deleted");
+    // Keeping the files is fine with Enter.
+    h.get_by_label("Remove from list, keep downloaded files").click();
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().modal.is_none());
+    let sent = commands_sent(h.state(), &log);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("with_data: false"), "{sent:?}");
+}
+
+#[test]
+fn a_dialogs_field_takes_the_focus_once() {
+    let (_f, app) = app("focus-once", vec![torrent(1, "Gamma", TorrentState::Seeding)]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().open_rename_dialog(InfoHash([1; 20]), "Gamma".into());
+    h.run_steps(3);
+    let field = h.state().ctx.memory(|m| m.focused());
+    assert!(field.is_some(), "the name field is ready for typing");
+    h.key_press(egui::Key::Tab);
+    h.run_steps(3);
+    let after = h.state().ctx.memory(|m| m.focused());
+    assert!(after.is_some() && after != field, "Tab leaves the field: {field:?} → {after:?}");
+    // A new dialog gets its turn.
+    h.state_mut().modal = None;
+    h.run_steps(2);
+    h.state_mut().open_new_tag(None);
+    h.run_steps(3);
+    let tag = h.state().ctx.memory(|m| m.focused());
+    assert!(tag.is_some() && tag != after, "{tag:?}");
+}
+
+#[test]
+fn the_column_chooser_closes_on_a_click_outside_and_stays_for_clicks_inside() {
+    let (_f, app) = app("chooser", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    let header = h.get_by_label("Ratio").rect().center();
+    press_secondary(&mut h, header);
+    assert!(h.state().column_menu.is_some(), "open");
+    h.get_by_label("Reset to defaults");
+    h.get_by_label("#").click();
+    h.run_steps(3);
+    assert!(h.state().prefs.columns.contains(&super::Col::Queue), "a click inside toggles");
+    assert!(h.state().column_menu.is_some(), "and leaves it open");
+    let outside = egui::pos2(100.0, 500.0);
+    h.event(egui::Event::PointerMoved(outside));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: outside,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    assert!(h.state().column_menu.is_none(), "a click outside closes it");
+}
+
+#[test]
+fn dialogs_keep_to_a_small_window() {
+    use crate::engine::types::AddSource;
+    // 760 × 480 (the smallest window) at zoom 1.5.
+    let (w, height) = (507.0, 320.0);
+    let (_f, app) = app("small", vec![torrent(1, "Gamma", TorrentState::Seeding)]);
+    let mut h = harness_sized(app, egui::vec2(w, height));
+    h.run_steps(2);
+    let inside = |h: &Harness<'static, CorrentApp>, label: &str| {
+        let r = h.get_by_label(label).rect();
+        assert!(r.max.x <= w && r.min.x >= 0.0, "{label} at {r:?} in a {w} wide window");
+    };
+    h.state_mut().request_delete(vec![InfoHash([1; 20])], false);
+    h.run_steps(3);
+    inside(&h, "Cancel");
+    h.state_mut().modal = None;
+    h.state_mut().begin_add(AddSource::parse(&format!("magnet:?xt=urn:btih:{}", "01".repeat(20))).unwrap());
+    h.run_steps(3);
+    let files = vec![crate::engine::PreviewFile { components: vec!["a.mkv".into()], len: 10 }];
+    let req = h.state().add_dialogs[0].req;
+    let preview = crate::engine::Preview {
+        info_hash: InfoHash([9; 20]),
+        name: "Pack".into(),
+        files,
+        total_size: 10,
+        piece_count: 1,
+        piece_length: 16384,
+        torrent_bytes: Vec::new(),
+        already_added: false,
+        comment: None,
+    };
+    h.state_mut().on_preview_ready(req, Ok(Box::new(preview)));
+    h.run_steps(4);
+    inside(&h, "a.mkv");
+    inside(&h, "Cancel");
+}
+
+#[test]
+fn show_all_selects_the_added_torrents_and_clears_the_filters() {
+    let (_f, mut app) =
+        app("show-all", vec![torrent(1, "Alpha", TorrentState::Seeding), torrent(2, "Beta", TorrentState::Seeding)]);
+    app.prefs.status_filter = StatusFilter::Paused;
+    app.search = "nothing".into();
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().toasts.push_added(InfoHash([1; 20]), "Alpha");
+    h.state_mut().toasts.push_added(InfoHash([2; 20]), "Beta");
+    h.run_steps(2);
+    h.get_by_label("Added 2 torrents");
+    h.get_by_label("Show all").click();
+    h.run_steps(3);
+    assert_eq!(h.state().selected.len(), 2);
+    assert_eq!(h.state().prefs.status_filter, StatusFilter::All);
+    assert!(h.state().search.is_empty());
+}
+
+#[test]
+fn toasts_stay_above_the_status_bar() {
+    let (_f, app) = app("toast-place", vec![torrent(1, "Alpha", TorrentState::Seeding)]);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().toasts.push(crate::engine::ToastKind::Info, "Something happened");
+    h.run_steps(3);
+    let toast = h.get_by_label("Something happened").rect();
+    let peers = h.get_by_label_contains("peers").rect();
+    assert!(toast.bottom() < peers.top(), "{toast:?} over the status bar at {peers:?}");
+}
+
+#[test]
+fn the_limit_menu_shows_a_custom_limit() {
+    let (_f, mut app) = app("limit", vec![torrent(1, "Alpha", TorrentState::Seeding)]);
+    app.settings.speed.download_limit = 3000;
+    let mut h = harness(app);
+    h.run_steps(3);
+    let speed = crate::util::fmt_speed(0, h.state().settings.appearance.speed_units);
+    let readouts: Vec<_> = h.query_all_by_label(&speed).map(|n| n.rect().center()).collect();
+    // The status bar's readouts are the lowest ones; the second from the right is the download.
+    let at = readouts.into_iter().max_by(|a, b| (a.y, -a.x).partial_cmp(&(b.y, -b.x)).unwrap()).unwrap();
+    h.event(egui::Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    h.get_by_label_contains("Current:");
+}
+
+#[test]
+fn filtering_by_tracker_shows_only_its_torrents() {
+    let tracked = |n: u8, name: &str, url: &str| TorrentView {
+        trackers: [url.to_string()].into_iter().collect(),
+        ..torrent(n, name, TorrentState::Seeding)
+    };
+    let (_f, mut app) = app(
+        "tracker",
+        vec![
+            tracked(1, "Alpha", "udp://one.example:80/announce"),
+            tracked(2, "Beta", "udp://two.example:80/announce"),
+            torrent(3, "Gamma", TorrentState::Seeding),
+        ],
+    );
+    let log = record_commands(&mut app);
+    let mut h = harness(app);
+    h.run_steps(3);
+    // A tall list: the section is below the fold, reached as a screen reader would.
+    h.get_by_label("one.example").click_accesskit();
+    h.run_steps(3);
+    assert_eq!(h.state().prefs.tracker_filter, super::GroupFilter::Named("one.example".into()),);
+    assert!(h.query_by_label("Alpha").is_some());
+    assert!(h.query_by_label("Beta").is_none());
+    assert!(h.query_by_label("Gamma").is_none());
+    h.get_by_label("No trackers").click_accesskit();
+    h.run_steps(3);
+    assert!(h.query_by_label("Gamma").is_some());
+    assert!(h.query_by_label("Alpha").is_none());
+    // The empty state names what is filtering.
+    h.state_mut().prefs.tag_filter = super::GroupFilter::Named("x".into());
+    h.run_steps(3);
+    h.get_by_label("Nothing in “x · No trackers”");
+    h.get_by_label("Show all torrents").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Alpha").is_some());
+    assert!(commands_sent(h.state(), &log).is_empty());
+}
+
+/// A downloading torrent's tick repaints once, unless the bar visibly moves.
+#[test]
+fn small_progress_changes_dont_keep_repainting() {
+    let (_f, app) = app("idle", vec![torrent(1, "Alpha", TorrentState::Downloading)]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    let tick = |h: &mut Harness<'static, CorrentApp>, progress: f32, generation: u64| -> u64 {
+        let t = TorrentView { progress, ..torrent(1, "Alpha", TorrentState::Downloading) };
+        h.state_mut().snap = Arc::new(Snapshot { torrents: vec![t], generation, ..Default::default() });
+        h.run()
+    };
+    tick(&mut h, 0.5, 2);
+    // A hundredth of a percent: not even a pixel on a bar this size.
+    let frames: u64 = (0..20).map(|i| tick(&mut h, 0.5 + 0.0001 * i as f32, 3 + i)).sum();
+    assert!(frames <= 20 * 2, "{frames} frames for 20 ticks");
+    // A big step does ease.
+    assert!(tick(&mut h, 0.9, 100) >= 1);
+}
+
+/// A torrent with 10,000 files in the Files tab.
+fn many_files_app(name: &str) -> (Fixture, CorrentApp) {
+    let (f, mut app) = app(name, vec![torrent(1, "Season pack", TorrentState::Downloading)]);
+    let files = (0..10_000usize)
+        .map(|i| crate::engine::types::FileView {
+            index: i,
+            components: vec![format!("dir{}", i / 100), format!("file{i:05}.mkv")],
+            len: 1000,
+            done: 500,
+            included: i % 2 == 0,
+            priority: 0,
+        })
+        .collect();
+    let detail = crate::engine::types::TorrentDetail { hash: InfoHash([1; 20]), files, ..Default::default() };
+    app.snap = Arc::new(Snapshot { detail: Some(detail), ..(*app.snap).clone() });
+    app.selected.insert(InfoHash([1; 20]));
+    app.prefs.details_tab = super::DetailsTab::Files;
+    (f, app)
+}
+
+#[test]
+fn the_files_tab_only_draws_the_rows_in_view() {
+    let (_f, mut app) = many_files_app("files");
+    let log = record_commands(&mut app);
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label("dir0");
+    h.get_by_label("file00000.mkv");
+    assert!(h.state().file_tree.drawn > 0);
+    assert!(h.state().file_tree.drawn < 60, "{} rows laid out for 10,100", h.state().file_tree.drawn);
+    // A folder's tri-state checkbox reaches all of its files.
+    let boxes: Vec<_> = h.query_all_by_role(egui::accesskit::Role::CheckBox).map(|n| n.rect().center()).collect();
+    assert!(!boxes.is_empty());
+    let dir_box = h.get_by_label("dir0").rect().left_center() - egui::vec2(30.0, 0.0);
+    let nearest = boxes.iter().min_by(|a, b| a.distance(dir_box).partial_cmp(&b.distance(dir_box)).unwrap()).unwrap();
+    h.event(egui::Event::PointerMoved(*nearest));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: *nearest,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    let sent = commands_sent(h.state(), &log);
+    let set_files = sent.iter().find(|c| c.starts_with("SetFiles")).unwrap_or_else(|| panic!("{sent:?}"));
+    assert!(set_files.contains(" 1,"), "a half-checked folder gets all its files: {set_files:.200}");
+}
+
+/// Scale check: run with `cargo test perf_files_tab -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn perf_files_tab_10k_files() {
+    let (_f, app) = many_files_app("perf-files");
+    let mut h = harness(app);
+    h.run_steps(3);
+    let t = std::time::Instant::now();
+    for _ in 0..30 {
+        h.step();
+    }
+    println!("frame with 10,000 files: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 30.0);
+}
+
+fn three_rows() -> (Fixture, CorrentApp) {
+    app(
+        "keys",
+        vec![
+            torrent(1, "One", TorrentState::Seeding),
+            torrent(2, "Two", TorrentState::Seeding),
+            torrent(3, "Three", TorrentState::Seeding),
+        ],
+    )
+}
+
+fn press(h: &mut Harness<'static, CorrentApp>, mods: egui::Modifiers, key: egui::Key) {
+    h.key_press_modifiers(mods, key);
+    h.run_steps(2);
+}
+
+#[test]
+fn moving_through_the_list_with_the_keyboard() {
+    use egui::{Key, Modifiers as M};
+    let (_f, app) = three_rows();
+    let mut h = harness(app);
+    h.run_steps(3);
+    let (one, two, three) = (InfoHash([1; 20]), InfoHash([2; 20]), InfoHash([3; 20]));
+    let sel = |h: &Harness<'static, CorrentApp>| {
+        let mut v: Vec<u8> = h.state().selected.iter().map(|x| x.0[0]).collect();
+        v.sort_unstable();
+        v
+    };
+    press(&mut h, M::NONE, Key::End);
+    assert_eq!(h.state().focus, Some(three));
+    assert_eq!(sel(&h), [3]);
+    press(&mut h, M::NONE, Key::Home);
+    assert_eq!(sel(&h), [1]);
+    press(&mut h, M::NONE, Key::PageDown);
+    assert_eq!(h.state().focus, Some(three), "a page down, stopping at the end");
+    press(&mut h, M::NONE, Key::PageUp);
+    assert_eq!(h.state().focus, Some(one));
+    // Shift selects a range from the anchor, also on the way back.
+    press(&mut h, M::SHIFT, Key::ArrowDown);
+    press(&mut h, M::SHIFT, Key::ArrowDown);
+    assert_eq!(sel(&h), [1, 2, 3]);
+    press(&mut h, M::SHIFT, Key::ArrowUp);
+    assert_eq!(sel(&h), [1, 2]);
+    assert_eq!(h.state().anchor, Some(one), "the anchor stays");
+    // Ctrl moves only the focus; Ctrl+Space toggles the row it is on.
+    press(&mut h, M::COMMAND, Key::ArrowDown);
+    assert_eq!(h.state().focus, Some(three));
+    assert_eq!(sel(&h), [1, 2]);
+    press(&mut h, M::COMMAND, Key::Space);
+    assert_eq!(sel(&h), [1, 2, 3]);
+    press(&mut h, M::COMMAND, Key::Space);
+    assert_eq!(sel(&h), [1, 2]);
+    let _ = two;
+    // / goes to the search box.
+    press(&mut h, M::NONE, Key::Slash);
+    assert_eq!(h.state().ctx.memory(|m| m.focused()), Some(egui::Id::new("search_box")));
+}
+
+#[test]
+fn selecting_by_what_torrents_share() {
+    use super::actions::SameAs;
+    let tracked = |n: u8, name: &str, url: &str, cat: &str, tag: &str| TorrentView {
+        trackers: [url.to_string()].into_iter().collect(),
+        category: Some(cat.into()),
+        tags: vec![tag.into()],
+        ..torrent(n, name, TorrentState::Seeding)
+    };
+    let (_f, mut app) = app(
+        "same",
+        vec![
+            tracked(1, "A", "udp://t.example:1/a", "Movies", "x"),
+            tracked(2, "B", "http://t.example/b", "Music", "y"),
+            tracked(3, "C", "udp://o.example:1/a", "Movies", "z"),
+            tracked(4, "D", "udp://o.example:1/a", "Other", "x"),
+        ],
+    );
+    app.selected.insert(InfoHash([1; 20]));
+    let mut h = harness(app);
+    h.run_steps(3);
+    let sel = |h: &Harness<'static, CorrentApp>| {
+        let mut v: Vec<u8> = h.state().selected.iter().map(|x| x.0[0]).collect();
+        v.sort_unstable();
+        v
+    };
+    h.state_mut().select_same(SameAs::Category);
+    assert_eq!(sel(&h), [1, 3]);
+    h.state_mut().selected = [InfoHash([1; 20])].into_iter().collect();
+    h.state_mut().select_same(SameAs::Tag);
+    assert_eq!(sel(&h), [1, 4]);
+    h.state_mut().selected = [InfoHash([1; 20])].into_iter().collect();
+    h.state_mut().select_same(SameAs::Tracker);
+    assert_eq!(sel(&h), [1, 2], "by host, not by URL");
+    h.state_mut().invert_selection();
+    assert_eq!(sel(&h), [3, 4]);
+}
+
+#[test]
+fn add_trackers_goes_to_the_whole_selection() {
+    let (_f, mut app) = three_rows();
+    let log = record_commands(&mut app);
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().open_trackers_dialog(vec![InfoHash([1; 20]), InfoHash([2; 20])]);
+    if let Some(super::dialogs::Modal::Trackers { text, .. }) = &mut h.state_mut().modal {
+        *text = "udp://t.example:1/announce".into();
+    }
+    h.run_steps(3);
+    h.get_by_label("Add").click();
+    h.run_steps(3);
+    let sent = commands_sent(h.state(), &log);
+    assert_eq!(sent.iter().filter(|c| c.starts_with("AddTrackers")).count(), 2, "{sent:?}");
+}
+
+#[test]
+fn view_state_comes_back_after_a_restart() {
+    let mut prefs = super::UiPrefs::default();
+    {
+        let (_f, mut app) = three_rows();
+        app.speed_scope_torrent = false;
+        app.show_all_peers = true;
+        app.file_filter = "mkv".into();
+        app.feeds.selected = Some("https://x.example/rss".into());
+        app.torznab.sort = super::search_view::SortBy::Size;
+        app.torznab.asc = true;
+        app.sync_prefs();
+        prefs.clone_from(&app.prefs);
+    }
+    // Through what is stored.
+    let stored = serde_json::to_string(&prefs).unwrap();
+    let prefs: super::UiPrefs = serde_json::from_str(&stored).unwrap();
+    assert!(!prefs.speed_scope_torrent && prefs.show_all_peers);
+    let dir = std::env::temp_dir().join(format!("corrent-ui-prefs-{}", std::process::id()));
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let ctx = egui::Context::default();
+    let (_tx, ipc) = std::sync::mpsc::channel();
+    let paths = Paths { data_dir: dir.join("data"), portable: true };
+    let app = CorrentApp::build(
+        &ctx,
+        Some(prefs),
+        rt.handle().clone(),
+        paths,
+        settings(&dir),
+        false,
+        Vec::new(),
+        ipc,
+        false,
+        false,
+    );
+    assert!(!app.speed_scope_torrent && app.show_all_peers);
+    assert_eq!(app.file_filter, "mkv");
+    assert_eq!(app.feeds.selected.as_deref(), Some("https://x.example/rss"));
+    assert_eq!(app.torznab.sort, super::search_view::SortBy::Size);
+    assert!(app.torznab.asc);
+    drop(app);
+    drop(Fixture { rt: Some(rt), dir });
+}
+
+#[test]
+fn the_shortcuts_window_opens_with_f1_and_status_bar_chips_open_settings() {
+    let (_f, mut app) = three_rows();
+    app.snap = Arc::new(Snapshot {
+        session: crate::engine::types::SessionView { listen_port: Some(4242), ..Default::default() },
+        ..(*app.snap).clone()
+    });
+    let mut h = harness(app);
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::F1);
+    h.get_by_label_contains("Keyboard shortcuts");
+    h.get_by_label("Ctrl+Space");
+    press(&mut h, egui::Modifiers::NONE, egui::Key::F1);
+    assert!(!h.state().extras.shortcuts);
+    h.get_by_label_contains("Port 4242").click();
+    h.run_steps(3);
+    assert!(h.state().settings_draft.as_ref().is_some_and(|d| d.page == super::settings_window::Page::Connection));
+}
+
+#[test]
+fn the_palette_runs_what_you_type() {
+    let (_f, mut app) = three_rows();
+    let log = record_commands(&mut app);
+    app.selected.insert(InfoHash([2; 20]));
+    let mut h = harness(app);
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    assert!(h.state().palette.is_some(), "open");
+    h.event(egui::Event::Text("pause".into()));
+    h.run_steps(3);
+    assert_eq!(h.state().palette.as_ref().unwrap().query, "pause");
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Enter);
+    assert!(h.state().palette.is_none(), "closed");
+    let sent = commands_sent(h.state(), &log);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].starts_with("Pause("), "{sent:?}");
+    // Keyboard moves and a torrent by name.
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    h.event(egui::Event::Text("three".into()));
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::ArrowDown);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::ArrowUp);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Enter);
+    assert!(h.state().selected.contains(&InfoHash([3; 20])));
+    assert_eq!(h.state().selected.len(), 1);
+    // Escape closes and changes nothing; while open the list's keys are off.
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Space);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Escape);
+    assert!(h.state().palette.is_none());
+    assert_eq!(h.state().selected.len(), 1);
+    assert!(commands_sent(h.state(), &log).iter().all(|c| !c.starts_with("Pause")), "Space typed into the palette");
+    // Not on top of a dialog.
+    h.state_mut().open_speed_limits(vec![InfoHash([1; 20])]);
+    h.run_steps(2);
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    assert!(h.state().palette.is_none());
+}
+
+#[test]
+fn the_palette_finds_settings_and_filters() {
+    let (_f, app) = three_rows();
+    let mut h = harness(app);
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    h.event(egui::Event::Text("connection".into()));
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Enter);
+    assert!(h.state().settings_draft.as_ref().is_some_and(|d| d.page == super::settings_window::Page::Connection));
+    h.state_mut().settings_draft = None;
+    h.run_steps(2);
+    press(&mut h, egui::Modifiers::COMMAND, egui::Key::K);
+    h.event(egui::Event::Text("uncategorized".into()));
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Enter);
+    assert_eq!(h.state().prefs.category_filter, super::GroupFilter::None);
+}
+
+#[test]
+fn saved_views_save_apply_and_delete() {
+    let (_f, mut app) = three_rows();
+    app.prefs.status_filter = StatusFilter::Seeding;
+    app.search = "two".into();
+    app.prefs.sort = super::Col::Size;
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.state_mut().modal = Some(super::dialogs::Modal::SaveView { name: "Big ones".into() });
+    h.run_steps(3);
+    press(&mut h, egui::Modifiers::NONE, egui::Key::Enter);
+    assert_eq!(h.state().prefs.views.len(), 1);
+    // Elsewhere, then back to it.
+    h.state_mut().clear_filters();
+    h.state_mut().search.clear();
+    h.state_mut().prefs.sort = super::Col::Name;
+    h.run_steps(3);
+    h.get_by_label("Big ones").click();
+    h.run_steps(3);
+    assert_eq!(h.state().prefs.status_filter, StatusFilter::Seeding);
+    assert_eq!(h.state().search, "two");
+    assert_eq!(h.state().prefs.sort, super::Col::Size);
+    // Replacing by name, and the context menu.
+    h.state_mut().save_view("Big ones");
+    assert_eq!(h.state().prefs.views.len(), 1);
+    let at = h.get_by_label("Big ones").rect().center();
+    press_secondary(&mut h, at);
+    h.get_by_label_contains("Delete view").click();
+    h.run_steps(3);
+    assert!(h.state().prefs.views.is_empty());
+}
+
+#[test]
+fn the_error_column_shows_the_first_line() {
+    let (_f, mut app) = app(
+        "error-col",
+        vec![
+            TorrentView {
+                error: Some("Disk is full\nand more detail".into()),
+                ..torrent(1, "Alpha", TorrentState::Error)
+            },
+            torrent(2, "Beta", TorrentState::Seeding),
+        ],
+    );
+    app.prefs.columns.push(super::Col::Error);
+    let mut h = harness(app);
+    h.run_steps(3);
+    assert_eq!(h.query_all_by_label("Disk is full").count(), 2, "under the name and in its column");
+    assert!(h.query_by_label_contains("and more detail").is_none());
+}
+
+#[test]
+fn fit_columns_measures_and_applies() {
+    let (_f, app) = three_rows();
+    let mut h = harness(app);
+    h.run_steps(3);
+    let header = h.get_by_label("Ratio").rect().center();
+    let before = h.get_by_label("Ratio").rect().width();
+    assert!(before > 0.0);
+    press_secondary(&mut h, header);
+    h.get_by_label("Fit columns").click();
+    h.run_steps(3);
+    let widths = &h.state().prefs.column_widths;
+    assert!(!widths.is_empty());
+    assert!(widths.iter().all(|(_, w)| (32.0..=420.0).contains(w)), "{widths:?}");
+    assert_eq!(h.state().prefs.columns_fitted, 1);
+    h.get_by_label("Reset to defaults").click();
+    h.run_steps(3);
+    assert!(h.state().prefs.column_widths.is_empty());
+}
+
+#[test]
+fn double_click_does_what_the_setting_says() {
+    use crate::config::DoubleClick;
+    let (_f, mut app) =
+        app("double", vec![torrent(1, "Alpha", TorrentState::Downloading), torrent(2, "Beta", TorrentState::Paused)]);
+    let log = record_commands(&mut app);
+    app.prefs.show_details = false;
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().settings.behavior.double_click = DoubleClick::PauseResume;
+    h.state_mut().double_click_row(InfoHash([1; 20]));
+    h.state_mut().double_click_row(InfoHash([2; 20]));
+    let sent = commands_sent(h.state(), &log);
+    assert!(sent[0].starts_with("Pause(") && sent[1].starts_with("Resume("), "{sent:?}");
+    h.state_mut().settings.behavior.double_click = DoubleClick::Details;
+    h.state_mut().double_click_row(InfoHash([1; 20]));
+    assert!(h.state().prefs.show_details);
+    assert!(commands_sent(h.state(), &log).is_empty());
+}
+
 #[test]
 fn empty_list_offers_add_actions() {
     let (_f, app) = app("empty", vec![]);
@@ -422,6 +1162,32 @@ fn perf_5000_torrents() {
         h.step();
     }
     println!("frame, unchanged snapshot: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / frames as f64);
+}
+
+/// Scale check: the context menu with 5,000 selected. Run with
+/// `cargo test perf_context_menu -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn perf_context_menu_5k_selected() {
+    let views: Vec<TorrentView> = (0..5000u32)
+        .map(|i| {
+            let mut h = [0u8; 20];
+            h[..4].copy_from_slice(&i.to_le_bytes());
+            TorrentView { hash: InfoHash(h), queue_pos: i, name: format!("Torrent {i}"), ..Default::default() }
+        })
+        .collect();
+    let (_f, mut app) = app("perf-menu", views);
+    app.selected = app.snap.torrents.iter().map(|t| t.hash).collect();
+    let mut h = harness(app);
+    h.run_steps(3);
+    let at = h.get_by_label("Torrent 1").rect().center();
+    press_secondary(&mut h, at);
+    assert!(h.query_by_label_contains("Force start").is_some());
+    let t = std::time::Instant::now();
+    for _ in 0..30 {
+        h.step();
+    }
+    println!("frame with the menu open: {:.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 30.0);
 }
 
 #[test]

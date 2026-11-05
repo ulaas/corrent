@@ -1,6 +1,6 @@
 //! Modal dialogs.
 
-use crate::ui::widgets::Labeled;
+use crate::ui::widgets::{self, Labeled};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -29,6 +29,8 @@ pub enum Modal {
     Move {
         hashes: Vec<InfoHash>,
         path: String,
+        /// What the selection takes up (asked of the list once, when the dialog opens).
+        need: u64,
     },
     Rename {
         hash: InfoHash,
@@ -60,10 +62,14 @@ pub enum Modal {
         up: u32,
     },
     Trackers {
-        hash: InfoHash,
+        hashes: Vec<InfoHash>,
         text: String,
     },
     ConfirmExit,
+    /// Saving the list's filters and sort under a name.
+    SaveView {
+        name: String,
+    },
     /// "Add to library…": a finished download into a movie, show or video library.
     AddToLibrary(Box<AddToLibrary>),
 }
@@ -98,6 +104,7 @@ pub struct AddDialog {
     pub filter: String,
     pub started: Instant,
     pub tag_input: String,
+    pub tree: file_tree::TreeState,
 }
 
 fn modal_frame(p: &Palette) -> egui::Frame {
@@ -138,6 +145,14 @@ fn path_field(ui: &mut Ui, p: &Palette, path: &mut String, width: f32, busy: boo
 }
 
 impl CorrentApp {
+    /// The text field a dialog opens with takes the focus once; after that Tab can leave it.
+    fn focus_once(&mut self, field: &egui::Response) {
+        if !self.modal_focused {
+            self.modal_focused = true;
+            field.request_focus();
+        }
+    }
+
     pub fn modal_open(&self) -> bool {
         self.modal.is_some()
             || !self.add_dialogs.is_empty()
@@ -148,6 +163,7 @@ impl CorrentApp {
             || self.feeds.rules.is_some()
             || self.import.is_some()
             || self.when_done.countdown.is_some()
+            || self.palette.is_some()
     }
 
     /// Free space for a path typed in a dialog, refreshed at most every two seconds.
@@ -193,7 +209,8 @@ impl CorrentApp {
     }
 
     pub fn request_delete(&mut self, hashes: Vec<InfoHash>, with_data: bool) {
-        let sel: Vec<_> = self.snap.torrents.iter().filter(|t| hashes.contains(&t.hash)).collect();
+        let wanted: std::collections::HashSet<InfoHash> = hashes.iter().copied().collect();
+        let sel: Vec<_> = self.snap.torrents.iter().filter(|t| wanted.contains(&t.hash)).collect();
         if sel.is_empty() {
             return;
         }
@@ -214,14 +231,16 @@ impl CorrentApp {
             .find(|t| hashes.first() == Some(&t.hash))
             .map(|t| t.save_path.display().to_string())
             .unwrap_or_default();
-        self.modal = Some(Modal::Move { hashes, path });
+        let wanted: std::collections::HashSet<InfoHash> = hashes.iter().copied().collect();
+        let need = self.snap.torrents.iter().filter(|t| wanted.contains(&t.hash)).map(|t| t.done).sum();
+        self.modal = Some(Modal::Move { hashes, path, need });
     }
 
     /// The "Add to library" dialog. True when it is done (or cancelled).
     fn add_to_library_body(&mut self, ui: &mut Ui, p: &Palette, d: &mut AddToLibrary) -> bool {
-        use super::media::client::{fetch, ready};
+        use super::media::client::{fetch, ready, ready_arc};
         use corrent_proto::library::{ImportAction, LibraryKind, TorrentImport};
-        ui.set_width(560.0);
+        ui.set_width(widgets::modal_width(ui.ctx(), 560.0));
         title(ui, p, icons::FILM_SLATE, t!("Add to library"));
         // A download that finishes while the dialog is open gets every way in.
         let finished = self.snap.torrents.iter().find(|t| t.hash == d.hash).is_some_and(|t| t.progress >= 1.0);
@@ -229,10 +248,9 @@ impl CorrentApp {
             d.finished = finished;
             d.preview = None;
         }
-        let libs: Vec<_> = self
-            .media
-            .libraries()
-            .into_iter()
+        let libs = self.media.libraries();
+        let libs: Vec<_> = libs
+            .iter()
             .filter(|l| matches!(l.kind, LibraryKind::Movies | LibraryKind::Shows | LibraryKind::Videos))
             .collect();
         let Some(client) = self.media.client.clone() else {
@@ -297,7 +315,7 @@ impl CorrentApp {
         }
         ui.add_space(8.0);
         ui.label(RichText::new(t!("Where the files go")).strong().color(p.text));
-        let preview = d.preview.as_ref().and_then(|(_, _, s)| ready(s));
+        let preview = d.preview.as_ref().and_then(|(_, _, s)| ready_arc(s));
         let plan_ok = matches!(preview, Some(Ok(_)));
         egui::ScrollArea::vertical().id_salt("add-to-lib-plan").max_height(160.0).show(ui, |ui| match &preview {
             None => {
@@ -342,7 +360,7 @@ impl CorrentApp {
             }
         }
         ui.add_space(12.0);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        widgets::dialog_footer(ui, |ui| {
             let busy = d.running.is_some();
             if busy {
                 ui.spinner();
@@ -430,8 +448,8 @@ impl CorrentApp {
         self.modal = Some(Modal::SpeedLimits { hashes, down, up });
     }
 
-    pub fn open_trackers_dialog(&mut self, hash: InfoHash) {
-        self.modal = Some(Modal::Trackers { hash, text: String::new() });
+    pub fn open_trackers_dialog(&mut self, hashes: Vec<InfoHash>) {
+        self.modal = Some(Modal::Trackers { hashes, text: String::new() });
     }
 
     /// Queue a source for adding: opens the add dialog (with preview) unless disabled.
@@ -463,6 +481,7 @@ impl CorrentApp {
             filter: String::new(),
             started: Instant::now(),
             tag_input: String::new(),
+            tree: Default::default(),
         });
     }
 
@@ -480,14 +499,17 @@ impl CorrentApp {
 
     pub(super) fn dialogs(&mut self, ctx: &Context, p: &Palette) {
         self.add_dialog(ctx, p);
-        let Some(modal) = self.modal.take() else { return };
+        let Some(modal) = self.modal.take() else {
+            self.modal_focused = false;
+            return;
+        };
         let mut keep = true;
         let mut next: Option<Modal> = None;
         let resp = egui::Modal::new(Id::new("modal")).frame(modal_frame(p)).show(ctx, |ui| {
             let mut modal = modal;
-            match &mut modal {
+            widgets::modal_body(ui, |ui| match &mut modal {
                 Modal::Magnet { text } => {
-                    ui.set_width(560.0);
+                    ui.set_width(widgets::modal_width(ui.ctx(), 560.0));
                     title(ui, p, icons::MAGNET, t!("Add magnet links or URLs"));
                     ui.label(
                         RichText::new(t!(
@@ -503,9 +525,7 @@ impl CorrentApp {
                             .hint_text(t!("magnet:?xt=urn:btih:…"))
                             .font(egui::TextStyle::Monospace),
                     );
-                    if !r.has_focus() && text.is_empty() {
-                        r.request_focus();
-                    }
+                    self.focus_once(&r);
                     let sources: Vec<AddSource> = text.lines().filter_map(AddSource::parse).collect();
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
@@ -515,7 +535,8 @@ impl CorrentApp {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             let add = ui
                                 .add_enabled_ui(!sources.is_empty(), |ui| primary_button(ui, p, t!("Continue")))
-                                .inner;
+                                .inner
+                                .on_hover_text(t!("Ctrl+Enter"));
                             if add.clicked()
                                 || (ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
                                     && !sources.is_empty())
@@ -532,7 +553,7 @@ impl CorrentApp {
                     });
                 }
                 Modal::Delete { hashes, with_data, names, total } => {
-                    ui.set_width(480.0);
+                    ui.set_width(widgets::modal_width(ui.ctx(), 480.0));
                     let n = names.len();
                     title(
                         ui,
@@ -567,13 +588,18 @@ impl CorrentApp {
                         );
                     }
                     ui.add_space(14.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    widgets::dialog_footer(ui, |ui| {
                         let go = if *with_data {
                             danger_button(ui, p, t!("Delete files"))
                         } else {
                             primary_button(ui, p, t!("Remove"))
                         };
-                        if go.clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        // Enter only for the harmless choice, and not for a focused radio
+                        // button or Cancel; deleting files takes a click (or focusing the button).
+                        let enter = !*with_data
+                            && ui.memory(|m| m.focused().is_none())
+                            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                        if go.clicked() || enter {
                             self.engine.send(EngineCommand::Delete { hashes: hashes.clone(), with_data: *with_data });
                             for h in hashes.iter() {
                                 self.selected.remove(h);
@@ -585,15 +611,15 @@ impl CorrentApp {
                         }
                     });
                 }
-                Modal::Move { hashes, path } => {
-                    ui.set_width(520.0);
+                Modal::Move { hashes, path, need } => {
+                    let need = *need;
+                    ui.set_width(widgets::modal_width(ui.ctx(), 520.0));
                     title(ui, p, icons::FOLDER_SIMPLE_DASHED, t!("Move data to another folder"));
-                    if path_field(ui, p, path, 476.0, self.picker_busy()) {
+                    let w = ui.available_width();
+                    if path_field(ui, p, path, w, self.picker_busy()) {
                         self.pick(PickTarget::MoveFolder, PickKind::Folder, Some(PathBuf::from(path.as_str())));
                     }
                     ui.add_space(4.0);
-                    let need: u64 =
-                        self.snap.torrents.iter().filter(|t| hashes.contains(&t.hash)).map(|t| t.done).sum();
                     let free = self.cached_free_space(path);
                     let short = free.is_some_and(|f| need > f);
                     if let Some(free) = free {
@@ -617,7 +643,7 @@ impl CorrentApp {
                         .color(p.text_dim),
                     );
                     ui.add_space(14.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    widgets::dialog_footer(ui, |ui| {
                         if ui
                             .add_enabled_ui(!path.trim().is_empty() && !short, |ui| primary_button(ui, p, t!("Move")))
                             .inner
@@ -640,20 +666,18 @@ impl CorrentApp {
                     }
                 }
                 Modal::Rename { hash, name } => {
-                    ui.set_width(460.0);
+                    ui.set_width(widgets::modal_width(ui.ctx(), 460.0));
                     title(ui, p, icons::PENCIL_SIMPLE, t!("Rename torrent"));
                     let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
-                    r.request_focus();
+                    self.focus_once(&r);
                     ui.label(
                         RichText::new(t!("Changes the name shown in Corrent; files on disk keep their names."))
                             .small()
                             .color(p.text_dim),
                     );
                     ui.add_space(14.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if primary_button(ui, p, t!("Rename")).clicked()
-                            || ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        {
+                    widgets::dialog_footer(ui, |ui| {
+                        if primary_button(ui, p, t!("Rename")).clicked() || enter_in(ui, &r) {
                             self.engine
                                 .send(EngineCommand::Rename { hash: *hash, name: Some(name.trim().to_string()) });
                             keep = false;
@@ -668,24 +692,25 @@ impl CorrentApp {
                     });
                 }
                 Modal::Category { name, path, apply_to, editing, down, up } => {
-                    ui.set_width(480.0);
+                    ui.set_width(widgets::modal_width(ui.ctx(), 480.0));
                     title(
                         ui,
                         p,
                         icons::FOLDER_SIMPLE_PLUS,
                         if editing.is_some() { t!("Edit category") } else { t!("New category") },
                     );
+                    let field = (ui.available_width() - 120.0).clamp(160.0, 340.0);
                     egui::Grid::new("cat").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
                         ui.label(t!("Name"));
                         ui.add_enabled(
                             editing.is_none(),
                             egui::TextEdit::singleline(name)
-                                .desired_width(340.0)
+                                .desired_width(field)
                                 .hint_text(t!("e.g. Movies or Movies/HD")),
                         );
                         ui.end_row();
                         ui.label(t!("Save path"));
-                        if path_field(ui, p, path, 340.0, self.picker_busy()) {
+                        if path_field(ui, p, path, field, self.picker_busy()) {
                             self.pick(PickTarget::CategoryFolder, PickKind::Folder, Some(PathBuf::from(path.as_str())));
                         }
                         ui.end_row();
@@ -708,7 +733,7 @@ impl CorrentApp {
                         .color(p.text_dim),
                     );
                     ui.add_space(14.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    widgets::dialog_footer(ui, |ui| {
                         let ok = !name.trim().is_empty();
                         if ui.add_enabled_ui(ok, |ui| primary_button(ui, p, t!("Save"))).inner.clicked() {
                             let mut cats = self.snap.categories.clone();
@@ -736,16 +761,16 @@ impl CorrentApp {
                     });
                 }
                 Modal::Tag { name, apply_to } => {
-                    ui.set_width(400.0);
+                    ui.set_width(widgets::modal_width(ui.ctx(), 400.0));
                     title(ui, p, icons::TAG, t!("New tag"));
                     let r =
                         ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).hint_text(t!("Tag name")));
-                    r.request_focus();
+                    self.focus_once(&r);
                     ui.add_space(14.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    widgets::dialog_footer(ui, |ui| {
                         let ok = !name.trim().is_empty() && !name.contains(',');
                         if ui.add_enabled_ui(ok, |ui| primary_button(ui, p, t!("Create"))).inner.clicked()
-                            || (ok && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                            || (ok && enter_in(ui, &r))
                         {
                             let tag = name.trim().to_string();
                             let mut tags = self.snap.tags.clone();
@@ -765,7 +790,7 @@ impl CorrentApp {
                     });
                 }
                 Modal::SeedLimits { hashes, ratio_on, ratio, time_on, minutes } => {
-                    ui.set_width(440.0);
+                    ui.set_width(widgets::modal_width(ui.ctx(), 440.0));
                     title(ui, p, icons::SCALES, t!("Seeding limits"));
                     ui.label(
                         RichText::new(t!("Overrides the global seeding limits for the selected torrents."))
@@ -784,7 +809,7 @@ impl CorrentApp {
                         ui.add_enabled(*time_on, egui::DragValue::new(minutes).range(1..=525600).suffix(" min"));
                     });
                     ui.add_space(14.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    widgets::dialog_footer(ui, |ui| {
                         if primary_button(ui, p, t!("Apply")).clicked() {
                             self.engine.send(EngineCommand::SetSeedLimits {
                                 hashes: hashes.clone(),
@@ -807,7 +832,7 @@ impl CorrentApp {
                     });
                 }
                 Modal::SpeedLimits { hashes, down, up } => {
-                    ui.set_width(420.0);
+                    ui.set_width(widgets::modal_width(ui.ctx(), 420.0));
                     title(ui, p, icons::GAUGE, t!("Speed limits"));
                     let n = hashes.len();
                     ui.label(
@@ -842,7 +867,7 @@ impl CorrentApp {
                         }
                     });
                     ui.add_space(14.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    widgets::dialog_footer(ui, |ui| {
                         if primary_button(ui, p, t!("Apply")).clicked() {
                             self.engine.send(EngineCommand::SetTorrentLimits {
                                 hashes: hashes.clone(),
@@ -864,8 +889,8 @@ impl CorrentApp {
                         }
                     });
                 }
-                Modal::Trackers { hash, text } => {
-                    ui.set_width(520.0);
+                Modal::Trackers { hashes, text } => {
+                    ui.set_width(widgets::modal_width(ui.ctx(), 520.0));
                     title(ui, p, icons::BROADCAST, t!("Add trackers"));
                     ui.label(RichText::new(t!("One tracker URL per line.")).color(p.text_dim));
                     ui.add(
@@ -884,11 +909,36 @@ impl CorrentApp {
                         .color(p.text_dim),
                     );
                     ui.add_space(14.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    widgets::dialog_footer(ui, |ui| {
                         let list: Vec<String> =
                             text.lines().map(|l| l.trim().to_string()).filter(|l| url::Url::parse(l).is_ok()).collect();
                         if ui.add_enabled_ui(!list.is_empty(), |ui| primary_button(ui, p, t!("Add"))).inner.clicked() {
-                            self.engine.send(EngineCommand::AddTrackers { hash: *hash, trackers: list });
+                            for hash in hashes.iter() {
+                                self.engine.send(EngineCommand::AddTrackers { hash: *hash, trackers: list.clone() });
+                            }
+                            keep = false;
+                        }
+                        if secondary_button(ui, t!("Cancel")).clicked() {
+                            keep = false;
+                        }
+                    });
+                }
+                Modal::SaveView { name } => {
+                    ui.set_width(widgets::modal_width(ui.ctx(), 400.0));
+                    title(ui, p, icons::BOOKMARK_SIMPLE, t!("Save view"));
+                    ui.label(
+                        RichText::new(t!("Keeps the current filters, search and sort in the sidebar.")).color(p.text_dim),
+                    );
+                    ui.add_space(6.0);
+                    let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).hint_text(t!("Name")));
+                    self.focus_once(&r);
+                    ui.add_space(14.0);
+                    widgets::dialog_footer(ui, |ui| {
+                        let ok = !name.trim().is_empty();
+                        if ui.add_enabled_ui(ok, |ui| primary_button(ui, p, t!("Save"))).inner.clicked()
+                            || (ok && enter_in(ui, &r))
+                        {
+                            self.save_view(name);
                             keep = false;
                         }
                         if secondary_button(ui, t!("Cancel")).clicked() {
@@ -897,7 +947,7 @@ impl CorrentApp {
                     });
                 }
                 Modal::ConfirmExit => {
-                    ui.set_width(420.0);
+                    ui.set_width(widgets::modal_width(ui.ctx(), 420.0));
                     title(ui, p, icons::SIGN_OUT, t!("Quit Corrent?"));
                     let active = self.snap.torrents.iter().filter(|t| t.state.is_active()).count();
                     ui.label(
@@ -912,7 +962,7 @@ impl CorrentApp {
                         .color(p.text_dim),
                     );
                     ui.add_space(14.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    widgets::dialog_footer(ui, |ui| {
                         if primary_button(ui, p, t!("Quit")).clicked() {
                             self.quitting = true;
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -923,7 +973,7 @@ impl CorrentApp {
                         }
                     });
                 }
-            }
+            });
             if keep {
                 next = Some(modal);
             }
@@ -947,259 +997,261 @@ impl CorrentApp {
         let mut browse_req = false;
 
         let resp = egui::Modal::new(Id::new("add_dialog")).frame(modal_frame(p)).show(ctx, |ui| {
-            ui.set_width(820.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(icons::DOWNLOAD_SIMPLE).size(20.0).color(p.accent));
-                ui.label(RichText::new(t!("Add torrent")).font(theme::title()).color(p.text));
-                if queued > 0 {
-                    crate::ui::widgets::badge(ui, &t!("+{queued} more", queued = queued), p.accent);
-                }
-            });
-            let name = d.preview.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| d.source.describe());
-            ui.add(egui::Label::new(RichText::new(&name).color(p.text_dim)).truncate());
-            ui.add_space(12.0);
-
-            ui.horizontal_top(|ui| {
-                // ---- left: options
-                ui.vertical(|ui| {
-                    ui.set_width(300.0);
-                    ui.label(RichText::new(t!("Save to")).small().strong().color(p.text_dim));
-                    if path_field(ui, p, &mut d.save_path, 300.0, picker_busy) {
-                        browse_req = true;
+            widgets::modal_body(ui, |ui| {
+                ui.set_width(widgets::modal_width(ui.ctx(), 820.0));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(icons::DOWNLOAD_SIMPLE).size(20.0).color(p.accent));
+                    ui.label(RichText::new(t!("Add torrent")).font(theme::title()).color(p.text));
+                    if queued > 0 {
+                        crate::ui::widgets::badge(ui, &t!("+{queued} more", queued = queued), p.accent);
                     }
-                    if !recent.is_empty() {
-                        egui::ComboBox::from_id_salt("recent_paths")
-                            .selected_text(RichText::new(t!("Recent folders")).small())
-                            .width(300.0)
+                });
+                let name = d.preview.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| d.source.describe());
+                ui.add(egui::Label::new(RichText::new(&name).color(p.text_dim)).truncate());
+                ui.add_space(12.0);
+
+                // Side by side when there's room, else the options above the files.
+                let narrow = ui.available_width() < 640.0;
+                let left_w = ui.available_width().min(300.0);
+                let tree_h = (ctx.content_rect().height() - 340.0).clamp(140.0, 340.0);
+                let columns = if narrow { Layout::top_down(Align::Min) } else { Layout::left_to_right(Align::Min) };
+                ui.with_layout(columns, |ui| {
+                    // ---- left: options
+                    ui.vertical(|ui| {
+                        ui.set_width(left_w);
+                        ui.label(RichText::new(t!("Save to")).small().strong().color(p.text_dim));
+                        if path_field(ui, p, &mut d.save_path, left_w, picker_busy) {
+                            browse_req = true;
+                        }
+                        if !recent.is_empty() {
+                            egui::ComboBox::from_id_salt("recent_paths")
+                                .selected_text(RichText::new(t!("Recent folders")).small())
+                                .width(left_w)
+                                .show_ui(ui, |ui| {
+                                    for r in &recent {
+                                        let s = r.display().to_string();
+                                        if ui.selectable_label(d.save_path == s, &s).clicked() {
+                                            d.save_path = s;
+                                        }
+                                    }
+                                });
+                        }
+                        if let Some(free) = self.cached_free_space(&d.save_path) {
+                            let need: u64 = d.preview.as_ref().map(|pv| selected_size(pv, &d.checked)).unwrap_or(0);
+                            let color = if need > free { p.error } else { p.text_dim };
+                            ui.label(RichText::new(t!("{free} free", free = fmt_bytes(free))).small().color(color));
+                        }
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(t!("Category")).small().strong().color(p.text_dim));
+                        egui::ComboBox::from_id_salt("add_cat")
+                            .selected_text(d.category.clone().unwrap_or_else(|| t!("None").into()))
+                            .width(left_w)
                             .show_ui(ui, |ui| {
-                                for r in &recent {
-                                    let s = r.display().to_string();
-                                    if ui.selectable_label(d.save_path == s, &s).clicked() {
-                                        d.save_path = s;
+                                if ui.selectable_label(d.category.is_none(), t!("None")).clicked() {
+                                    d.category = None;
+                                }
+                                for (c, info) in &categories {
+                                    if ui.selectable_label(d.category.as_ref() == Some(c), c).clicked() {
+                                        d.category = Some(c.clone());
+                                        if let Some(path) = &info.save_path {
+                                            d.save_path = path.display().to_string();
+                                        }
                                     }
                                 }
                             });
-                    }
-                    if let Some(free) = self.cached_free_space(&d.save_path) {
-                        let need: u64 = d.preview.as_ref().map(|pv| selected_size(pv, &d.checked)).unwrap_or(0);
-                        let color = if need > free { p.error } else { p.text_dim };
-                        ui.label(RichText::new(t!("{free} free", free = fmt_bytes(free))).small().color(color));
-                    }
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(t!("Category")).small().strong().color(p.text_dim));
-                    egui::ComboBox::from_id_salt("add_cat")
-                        .selected_text(d.category.clone().unwrap_or_else(|| t!("None").into()))
-                        .width(300.0)
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_label(d.category.is_none(), t!("None")).clicked() {
-                                d.category = None;
-                            }
-                            for (c, info) in &categories {
-                                if ui.selectable_label(d.category.as_ref() == Some(c), c).clicked() {
-                                    d.category = Some(c.clone());
-                                    if let Some(path) = &info.save_path {
-                                        d.save_path = path.display().to_string();
-                                    }
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(t!("Tags")).small().strong().color(p.text_dim));
+                        ui.horizontal_wrapped(|ui| {
+                            let mut remove = None;
+                            for (i, t) in d.tags.iter().enumerate() {
+                                if ui.small_button(format!("{t}  {}", icons::X)).clicked() {
+                                    remove = Some(i);
                                 }
                             }
-                        });
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(t!("Tags")).small().strong().color(p.text_dim));
-                    ui.horizontal_wrapped(|ui| {
-                        let mut remove = None;
-                        for (i, t) in d.tags.iter().enumerate() {
-                            if ui.small_button(format!("{t}  {}", icons::X)).clicked() {
-                                remove = Some(i);
+                            if let Some(i) = remove {
+                                d.tags.remove(i);
                             }
-                        }
-                        if let Some(i) = remove {
-                            d.tags.remove(i);
-                        }
-                        egui::ComboBox::from_id_salt("add_tags").selected_text(icons::PLUS).width(40.0).show_ui(
-                            ui,
-                            |ui| {
-                                for t in &all_tags {
-                                    if !d.tags.contains(t) && ui.selectable_label(false, t).clicked() {
-                                        d.tags.push(t.clone());
+                            egui::ComboBox::from_id_salt("add_tags").selected_text(icons::PLUS).width(40.0).show_ui(
+                                ui,
+                                |ui| {
+                                    for t in &all_tags {
+                                        if !d.tags.contains(t) && ui.selectable_label(false, t).clicked() {
+                                            d.tags.push(t.clone());
+                                        }
                                     }
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut d.tag_input)
+                                                .hint_text(t!("New tag"))
+                                                .desired_width(110.0),
+                                        );
+                                        if ui.button(t!("Add")).clicked() && !d.tag_input.trim().is_empty() {
+                                            let t = d.tag_input.trim().to_string();
+                                            if !d.tags.contains(&t) {
+                                                d.tags.push(t);
+                                            }
+                                            d.tag_input.clear();
+                                        }
+                                    });
+                                },
+                            );
+                        });
+                        ui.add_space(8.0);
+                        ui.checkbox(&mut d.start_paused, t!("Add paused"));
+                        ui.checkbox(&mut d.create_subfolder, t!("Create subfolder for multi-file torrents"));
+                        ui.checkbox(&mut d.add_to_top, t!("Add to top of queue"));
+
+                        if let Some(pv) = &d.preview {
+                            ui.add_space(10.0);
+                            crate::ui::widgets::card(p).show(ui, |ui| {
+                                ui.set_width(left_w - 28.0);
+                                kv(ui, p, t!("Size"), &fmt_bytes(pv.total_size));
+                                kv(ui, p, t!("Files"), &pv.files.len().to_string());
+                                kv(
+                                    ui,
+                                    p,
+                                    t!("Pieces"),
+                                    &format!("{} × {}", pv.piece_count, fmt_bytes(pv.piece_length as u64)),
+                                );
+                                kv(ui, p, t!("Hash"), &pv.info_hash.to_hex()[..16]);
+                                if let Some(c) = &pv.comment {
+                                    ui.add(egui::Label::new(RichText::new(c).small().color(p.text_dim)).wrap());
+                                }
+                            });
+                        }
+                    });
+                    ui.add_space(12.0);
+                    // ---- right: files
+                    ui.vertical(|ui| {
+                        ui.set_min_height(tree_h + 20.0);
+                        match (&d.preview, &d.error) {
+                            (Some(pv), _) => {
+                                if pv.already_added {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{}  {}",
+                                            icons::WARNING,
+                                            t!("This torrent is already in your list.")
+                                        ))
+                                        .color(p.warn),
+                                    );
                                 }
                                 ui.horizontal(|ui| {
+                                    if ui.small_button(t!("Select all")).clicked() {
+                                        d.checked.iter_mut().for_each(|c| *c = true);
+                                    }
+                                    if ui.small_button(t!("None")).clicked() {
+                                        d.checked.iter_mut().for_each(|c| *c = false);
+                                    }
+                                    if ui.small_button(t!("Invert")).clicked() {
+                                        d.checked.iter_mut().for_each(|c| *c = !*c);
+                                    }
                                     ui.add(
-                                        egui::TextEdit::singleline(&mut d.tag_input)
-                                            .hint_text(t!("New tag"))
-                                            .desired_width(110.0),
+                                        egui::TextEdit::singleline(&mut d.filter)
+                                            .hint_text(format!("{} {}", icons::FUNNEL, t!("Filter files")))
+                                            .desired_width(180.0),
                                     );
-                                    if ui.button(t!("Add")).clicked() && !d.tag_input.trim().is_empty() {
-                                        let t = d.tag_input.trim().to_string();
-                                        if !d.tags.contains(&t) {
-                                            d.tags.push(t);
+                                });
+                                ui.add_space(4.0);
+                                let mut change = None;
+                                egui::Frame::new()
+                                    .fill(p.bg0)
+                                    .corner_radius(egui::CornerRadius::same(8))
+                                    .inner_margin(egui::Margin::same(8))
+                                    .show(ui, |ui| {
+                                        let checked = &d.checked;
+                                        let entry = |i: usize| {
+                                            pv.files.get(i).map(|f| file_tree::Entry {
+                                                index: i,
+                                                components: &f.components,
+                                                len: f.len,
+                                                done: None,
+                                                priority: None,
+                                                streaming: false,
+                                                checked: checked.get(i).copied().unwrap_or(true),
+                                            })
+                                        };
+                                        change = file_tree::show(
+                                            ui,
+                                            p,
+                                            &mut d.tree,
+                                            Id::new(("addtree", d.req)),
+                                            pv.files.len(),
+                                            &entry,
+                                            &d.filter,
+                                            true,
+                                            tree_h,
+                                        );
+                                    });
+                                if let Some(ch) = change {
+                                    for (i, on) in ch.set {
+                                        if let Some(c) = d.checked.get_mut(i) {
+                                            *c = on;
                                         }
-                                        d.tag_input.clear();
                                     }
-                                });
-                            },
-                        );
-                    });
-                    ui.add_space(8.0);
-                    ui.checkbox(&mut d.start_paused, t!("Add paused"));
-                    ui.checkbox(&mut d.create_subfolder, t!("Create subfolder for multi-file torrents"));
-                    ui.checkbox(&mut d.add_to_top, t!("Add to top of queue"));
-
-                    if let Some(pv) = &d.preview {
-                        ui.add_space(10.0);
-                        crate::ui::widgets::card(p).show(ui, |ui| {
-                            ui.set_width(272.0);
-                            kv(ui, p, t!("Size"), &fmt_bytes(pv.total_size));
-                            kv(ui, p, t!("Files"), &pv.files.len().to_string());
-                            kv(
-                                ui,
-                                p,
-                                t!("Pieces"),
-                                &format!("{} × {}", pv.piece_count, fmt_bytes(pv.piece_length as u64)),
-                            );
-                            kv(ui, p, t!("Hash"), &pv.info_hash.to_hex()[..16]);
-                            if let Some(c) = &pv.comment {
-                                ui.add(egui::Label::new(RichText::new(c).small().color(p.text_dim)).wrap());
-                            }
-                        });
-                    }
-                });
-                ui.add_space(12.0);
-                // ---- right: files
-                ui.vertical(|ui| {
-                    ui.set_min_height(360.0);
-                    match (&d.preview, &d.error) {
-                        (Some(pv), _) => {
-                            if pv.already_added {
+                                }
+                                let sel = d.checked.iter().filter(|c| **c).count();
                                 ui.label(
-                                    RichText::new(format!(
-                                        "{}  {}",
-                                        icons::WARNING,
-                                        t!("This torrent is already in your list.")
+                                    RichText::new(t!(
+                                        "{sel} of {total} files selected · {size}",
+                                        sel = sel,
+                                        total = pv.files.len(),
+                                        size = fmt_bytes(selected_size(pv, &d.checked))
                                     ))
-                                    .color(p.warn),
+                                    .small()
+                                    .color(p.text_dim),
                                 );
                             }
-                            ui.horizontal(|ui| {
-                                if ui.small_button(t!("Select all")).clicked() {
-                                    d.checked.iter_mut().for_each(|c| *c = true);
-                                }
-                                if ui.small_button(t!("None")).clicked() {
-                                    d.checked.iter_mut().for_each(|c| *c = false);
-                                }
-                                if ui.small_button(t!("Invert")).clicked() {
-                                    d.checked.iter_mut().for_each(|c| *c = !*c);
-                                }
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut d.filter)
-                                        .hint_text(format!("{} {}", icons::FUNNEL, t!("Filter files")))
-                                        .desired_width(180.0),
-                                );
-                            });
-                            ui.add_space(4.0);
-                            egui::Frame::new()
-                                .fill(p.bg0)
-                                .corner_radius(egui::CornerRadius::same(8))
-                                .inner_margin(egui::Margin::same(8))
-                                .show(ui, |ui| {
-                                    egui::ScrollArea::vertical()
-                                        .max_height(340.0)
-                                        .min_scrolled_height(340.0)
-                                        .auto_shrink([false, false])
-                                        .show(ui, |ui| {
-                                            let entries: Vec<file_tree::Entry<'_>> = pv
-                                                .files
-                                                .iter()
-                                                .enumerate()
-                                                .map(|(i, f)| file_tree::Entry {
-                                                    index: i,
-                                                    components: &f.components,
-                                                    len: f.len,
-                                                    done: None,
-                                                    priority: None,
-                                                    streaming: false,
-                                                })
-                                                .collect();
-                                            let checked = d.checked.clone();
-                                            if let Some(ch) = file_tree::show(
-                                                ui,
-                                                p,
-                                                Id::new(("addtree", d.req)),
-                                                &entries,
-                                                &|i| checked.get(i).copied().unwrap_or(true),
-                                                &d.filter,
-                                                true,
-                                            ) {
-                                                for (i, on) in ch.set {
-                                                    if let Some(c) = d.checked.get_mut(i) {
-                                                        *c = on;
-                                                    }
-                                                }
-                                            }
-                                        });
+                            (None, Some(err)) => {
+                                ui.add_space(60.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(RichText::new(icons::WARNING_CIRCLE).size(40.0).color(p.error));
+                                    ui.label(RichText::new(t!("Couldn't read this torrent")).strong().color(p.text));
+                                    ui.add(egui::Label::new(RichText::new(err).color(p.text_dim)).wrap());
                                 });
-                            let sel = d.checked.iter().filter(|c| **c).count();
-                            ui.label(
-                                RichText::new(t!(
-                                    "{sel} of {total} files selected · {size}",
-                                    sel = sel,
-                                    total = pv.files.len(),
-                                    size = fmt_bytes(selected_size(pv, &d.checked))
-                                ))
-                                .small()
-                                .color(p.text_dim),
-                            );
-                        }
-                        (None, Some(err)) => {
-                            ui.add_space(60.0);
-                            ui.vertical_centered(|ui| {
-                                ui.label(RichText::new(icons::WARNING_CIRCLE).size(40.0).color(p.error));
-                                ui.label(RichText::new(t!("Couldn't read this torrent")).strong().color(p.text));
-                                ui.add(egui::Label::new(RichText::new(err).color(p.text_dim)).wrap());
-                            });
-                        }
-                        (None, None) => {
-                            ui.add_space(80.0);
-                            ui.vertical_centered(|ui| {
-                                ui.add(egui::Spinner::new().size(28.0).color(p.accent));
-                                ui.add_space(8.0);
-                                let msg = if matches!(d.source, AddSource::Magnet(_)) {
-                                    t!("Fetching metadata from peers…")
-                                } else {
-                                    t!("Reading torrent…")
-                                };
-                                ui.label(RichText::new(msg).color(p.text));
-                                let secs = d.started.elapsed().as_secs();
-                                if secs >= 4 {
-                                    ui.label(
-                                        RichText::new(t!(
-                                            "{secs}s — this can take a while for rare torrents.",
-                                            secs = secs
-                                        ))
-                                        .small()
-                                        .color(p.text_dim),
-                                    );
-                                }
-                                if matches!(d.source, AddSource::Magnet(_)) {
+                            }
+                            (None, None) => {
+                                ui.add_space(80.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.add(egui::Spinner::new().size(28.0).color(p.accent));
                                     ui.add_space(8.0);
-                                    if ui
-                                        .button(t!("Add without waiting"))
-                                        .on_hover_text(t!("Start the download now; all files will be selected."))
-                                        .clicked()
-                                    {
-                                        add_without_preview = true;
+                                    let msg = if matches!(d.source, AddSource::Magnet(_)) {
+                                        t!("Fetching metadata from peers…")
+                                    } else {
+                                        t!("Reading torrent…")
+                                    };
+                                    ui.label(RichText::new(msg).color(p.text));
+                                    let secs = d.started.elapsed().as_secs();
+                                    if secs >= 4 {
+                                        ui.label(
+                                            RichText::new(t!(
+                                                "{secs}s — this can take a while for rare torrents.",
+                                                secs = secs
+                                            ))
+                                            .small()
+                                            .color(p.text_dim),
+                                        );
                                     }
-                                }
-                            });
-                            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+                                    if matches!(d.source, AddSource::Magnet(_)) {
+                                        ui.add_space(8.0);
+                                        if ui
+                                            .button(t!("Add without waiting"))
+                                            .on_hover_text(t!("Start the download now; all files will be selected."))
+                                            .clicked()
+                                        {
+                                            add_without_preview = true;
+                                        }
+                                    }
+                                });
+                                ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+                            }
                         }
-                    }
+                    });
                 });
-            });
 
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let can_add = d.preview.as_ref().is_some_and(|pv| !pv.already_added && d.checked.iter().any(|c| *c))
                             // A server picks its own default folder for an empty path.
                             && (self.server.is_some() || !d.save_path.trim().is_empty());
@@ -1216,7 +1268,8 @@ impl CorrentApp {
                         close = true;
                     }
                 });
-            });
+                });
+            })
         });
         if resp.should_close() {
             close = true;
@@ -1267,6 +1320,11 @@ impl CorrentApp {
         }
         let _ = ToastKind::Info;
     }
+}
+
+/// Enter in a dialog's text field (or with nothing focused), not on a focused button.
+fn enter_in(ui: &Ui, field: &egui::Response) -> bool {
+    ui.input(|i| i.key_pressed(egui::Key::Enter)) && ui.memory(|m| m.focused().is_none_or(|f| f == field.id))
 }
 
 fn selected_size(pv: &Preview, checked: &[bool]) -> u64 {

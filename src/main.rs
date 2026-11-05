@@ -30,8 +30,32 @@ pub fn version_text() -> String {
     }
 }
 
+/// Splits the command line into options (with their values) and what to add: everything from the
+/// first argument that isn't an option on, or after `--`.
+fn split_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
+    const TAKE_A_VALUE: [&str; 3] = ["--diagnostics", "--symbolize", "--write-icons"];
+    let mut options = Vec::new();
+    let mut rest = args.into_iter();
+    while let Some(a) = rest.next() {
+        if a == "--" {
+            break;
+        }
+        if !a.starts_with('-') || a == "-" {
+            return (options, std::iter::once(a).chain(rest).collect());
+        }
+        let value = TAKE_A_VALUE.contains(&a.as_str());
+        options.push(a);
+        if value {
+            options.extend(rest.next());
+        }
+    }
+    (options, rest.collect())
+}
+
 fn main() -> eframe::Result {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // The handler registration passes links and file names here: nothing after the first of
+    // them is an option, whatever it looks like.
+    let (args, items) = split_args(std::env::args().skip(1).collect());
     let flag = |f: &str| args.iter().any(|a| a == f);
     // An AI agent's MCP client talking to this profile's running app over stdin/stdout.
     if flag("--mcp") {
@@ -107,7 +131,6 @@ fn main() -> eframe::Result {
         std::process::exit(handler_cli(flag("--register"), flag("--unregister")));
     }
 
-    let items: Vec<String> = args.iter().filter(|a| !a.starts_with("--")).cloned().collect();
     let (mut listener, unresponsive) = match integration::single_instance::acquire(&paths, &items) {
         integration::single_instance::Acquire::Forwarded => return Ok(()),
         integration::single_instance::Acquire::Primary(l) => (l, false),
@@ -370,4 +393,34 @@ fn mica_spike() -> bool {
 #[cfg(not(debug_assertions))]
 fn mica_spike() -> bool {
     false
+}
+
+#[cfg(test)]
+mod args_tests {
+    use super::split_args;
+
+    fn split(a: &[&str]) -> (Vec<String>, Vec<String>) {
+        split_args(a.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn nothing_after_the_first_item_is_an_option() {
+        let (o, i) = split(&["--portable", "magnet:?x", "--register", "--tv"]);
+        assert_eq!(o, ["--portable"]);
+        assert_eq!(i, ["magnet:?x", "--register", "--tv"]);
+    }
+
+    #[test]
+    fn options_with_values_keep_them() {
+        let (o, i) = split(&["--portable", "--diagnostics", "out.zip"]);
+        assert_eq!(o, ["--portable", "--diagnostics", "out.zip"]);
+        assert!(i.is_empty());
+    }
+
+    #[test]
+    fn a_double_dash_ends_the_options() {
+        let (o, i) = split(&["--tv", "--", "--register"]);
+        assert_eq!(o, ["--tv"]);
+        assert_eq!(i, ["--register"]);
+    }
 }

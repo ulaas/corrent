@@ -9,7 +9,9 @@ use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
 use super::pickers::{PickKind, PickTarget};
-use crate::config::{Accent, AfterAdd, ListenMode, PalettePreset, SeedAction, Settings, SpeedUnits, ThemeMode};
+use crate::config::{
+    Accent, AfterAdd, DoubleClick, ListenMode, PalettePreset, SeedAction, Settings, SpeedUnits, ThemeMode,
+};
 use crate::engine::{EngineCommand, ToastKind};
 use crate::integration::os_handler::{self, HandlerState};
 use crate::ui::theme::{self, Palette, accent_color};
@@ -34,7 +36,7 @@ pub enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 14] = [
+    pub(super) const ALL: [Page; 14] = [
         Page::Behavior,
         Page::Downloads,
         Page::Connection,
@@ -51,7 +53,7 @@ impl Page {
         Page::Advanced,
     ];
 
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Page::Behavior => t!("General"),
             Page::Downloads => t!("Downloads"),
@@ -70,7 +72,7 @@ impl Page {
         }
     }
 
-    fn icon(self) -> &'static str {
+    pub(super) fn icon(self) -> &'static str {
         match self {
             Page::Behavior => icons::SLIDERS_HORIZONTAL,
             Page::Downloads => icons::DOWNLOAD_SIMPLE,
@@ -114,11 +116,11 @@ impl Page {
     }
 
     /// Searchable keywords for every field on the page.
-    fn keywords(self) -> &'static str {
+    pub(super) fn keywords(self) -> &'static str {
         match self {
             Page::Behavior => {
                 t!(
-                    "confirm exit tray close minimize start minimized notifications notify delete dialog skip run program command complete default handler magnet torrent association register updates version server servers network lan find switch"
+                    "confirm exit tray close minimize start minimized notifications notify delete dialog skip run program command complete default handler magnet torrent association register updates version server servers network lan find switch double click"
                 )
             }
             Page::Downloads => {
@@ -165,18 +167,74 @@ pub struct SettingsDraft {
     pub trackers_text: String,
 }
 
+impl SettingsDraft {
+    /// The parts not edited as such here: the trackers' text, and what the handler card applies
+    /// straight away.
+    fn sync_derived(&mut self, saved: &Settings) {
+        let lines = || self.trackers_text.lines().map(str::trim).filter(|l| !l.is_empty());
+        if !self.settings.bittorrent.default_trackers.iter().map(String::as_str).eq(lines()) {
+            self.settings.bittorrent.default_trackers = lines().map(String::from).collect();
+        }
+        let (b, d) = (&saved.behavior, &mut self.settings.behavior);
+        d.register_magnet_handler = b.register_magnet_handler;
+        d.register_torrent_handler = b.register_torrent_handler;
+        d.keep_handler_registration = b.keep_handler_registration;
+        d.handler_prompt_dismissed = b.handler_prompt_dismissed;
+    }
+}
+
+/// The settings search as the rows see it: the words typed (lower case) and how many rows on the
+/// page matched, this frame and the one before.
+#[derive(Clone, Default)]
+struct RowSearch {
+    words: Vec<String>,
+    hits: usize,
+    last_hits: usize,
+}
+
+fn row_search_id() -> Id {
+    Id::new("settings_row_search")
+}
+
+/// A row matches when every word is in its label or help text.
+fn row_matches(words: &[String], label: &str, help: &str) -> bool {
+    let (label, help) = (label.to_lowercase(), help.to_lowercase());
+    words.iter().all(|w| label.contains(w.as_str()) || help.contains(w.as_str()))
+}
+
+/// While searching, rows that don't match fade: the page may have dozens. When only the page's
+/// keywords matched, not one of its rows, none fade.
+fn row_is_dimmed(ui: &Ui, label: &str, help: &str) -> bool {
+    let id = row_search_id();
+    let mut s: RowSearch = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    if s.words.is_empty() {
+        return false;
+    }
+    let hit = row_matches(&s.words, label, help);
+    s.hits += usize::from(hit);
+    let dim = !hit && s.last_hits > 0;
+    ui.data_mut(|d| d.insert_temp(id, s));
+    dim
+}
+
 fn row(ui: &mut Ui, p: &Palette, label: &str, help: &str, add: impl FnOnce(&mut Ui)) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.set_width((ui.available_width() - 280.0).max(200.0));
-            ui.label(RichText::new(label).color(p.text));
-            if !help.is_empty() {
-                ui.add(egui::Label::new(RichText::new(help).small().color(p.text_dim)).wrap());
-            }
-        });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.set_width(270.0);
-            add(ui);
+    let dim = row_is_dimmed(ui, label, help);
+    ui.scope(|ui| {
+        if dim {
+            ui.multiply_opacity(0.35);
+        }
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width((ui.available_width() - 280.0).max(200.0));
+                ui.label(RichText::new(label).color(p.text));
+                if !help.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(help).small().color(p.text_dim)).wrap());
+                }
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.set_width(270.0);
+                add(ui);
+            });
         });
     });
     ui.add_space(6.0);
@@ -431,20 +489,10 @@ impl CorrentApp {
                             .inner_margin(egui::Margin { left: 22, right: 22, top: 10, bottom: 14 })
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    let mut pending = draft.settings.clone();
-                                    pending.bittorrent.default_trackers = draft
-                                        .trackers_text
-                                        .lines()
-                                        .map(str::trim)
-                                        .filter(|l| !l.is_empty())
-                                        .map(String::from)
-                                        .collect();
-                                    let b = &self.settings.behavior;
-                                    pending.behavior.register_magnet_handler = b.register_magnet_handler;
-                                    pending.behavior.register_torrent_handler = b.register_torrent_handler;
-                                    pending.behavior.keep_handler_registration = b.keep_handler_registration;
-                                    pending.behavior.handler_prompt_dismissed = b.handler_prompt_dismissed;
-                                    if self.settings.requires_restart(&pending) {
+                                    // What Apply would save, kept in the draft itself: no copy of all
+                                    // the settings on every frame.
+                                    draft.sync_derived(&self.settings);
+                                    if self.settings.requires_restart(&draft.settings) {
                                         ui.label(
                                             RichText::new(format!(
                                                 "{}  {}",
@@ -462,7 +510,7 @@ impl CorrentApp {
                                         }
                                         if ui
                                             .add_enabled_ui(
-                                                pending != self.settings || !draft.new_password.is_empty(),
+                                                draft.settings != self.settings || !draft.new_password.is_empty(),
                                                 |ui| secondary_button(ui, t!("Apply")),
                                             )
                                             .inner
@@ -501,6 +549,10 @@ impl CorrentApp {
     }
 
     fn settings_page(&mut self, ui: &mut Ui, p: &Palette, d: &mut SettingsDraft) {
+        let id = row_search_id();
+        let last: RowSearch = ui.data(|m| m.get_temp(id)).unwrap_or_default();
+        let words = d.search.to_lowercase().split_whitespace().map(String::from).collect();
+        ui.data_mut(|m| m.insert_temp(id, RowSearch { words, hits: 0, last_hits: last.hits }));
         let mut browse: Option<(PickTarget, PathBuf)> = None;
         let mut pick_extra: Option<u8> = None;
         self.settings_page_inner(ui, p, d, &mut browse, &mut pick_extra);
@@ -599,6 +651,31 @@ impl CorrentApp {
                     );
                     s.behavior.skip_add_dialog = !show;
                     toggle(ui, p, t!("Confirm before removing torrents"), "", &mut s.behavior.confirm_delete);
+                });
+                ui.add_space(10.0);
+                card(p).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    heading(ui, p, t!("Torrent list"));
+                    row(ui, p, t!("Double-clicking a torrent"), "", |ui| {
+                        let name = |d: DoubleClick| match d {
+                            DoubleClick::Open => t!("Opens it"),
+                            DoubleClick::OpenFolder => t!("Opens its folder"),
+                            DoubleClick::PauseResume => t!("Pauses or resumes it"),
+                            DoubleClick::Details => t!("Shows its details"),
+                        };
+                        egui::ComboBox::from_id_salt("double_click")
+                            .selected_text(name(s.behavior.double_click))
+                            .show_ui(ui, |ui| {
+                                for d in [
+                                    DoubleClick::Open,
+                                    DoubleClick::OpenFolder,
+                                    DoubleClick::PauseResume,
+                                    DoubleClick::Details,
+                                ] {
+                                    ui.selectable_value(&mut s.behavior.double_click, d, name(d));
+                                }
+                            });
+                    });
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
@@ -1798,4 +1875,36 @@ fn audio_devices() -> Result<Vec<(String, String)>, String> {
             Some((name, desc))
         })
         .collect())
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn rows_match_on_label_or_help_with_every_word() {
+        let w = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert!(row_matches(&w("tray"), "Close to tray", ""));
+        assert!(row_matches(&w("keeps running"), "Close to tray", "Closing the window keeps Corrent running."));
+        assert!(!row_matches(&w("tray proxy"), "Close to tray", ""));
+        assert!(row_matches(&[], "Anything", ""));
+    }
+
+    /// With no row matching (only the page's keywords did), nothing fades.
+    #[test]
+    fn only_a_search_with_matches_dims() {
+        let ctx = egui::Context::default();
+        let mut dims = Vec::new();
+        let mut frame = |last_hits: usize| {
+            let mut o = ctx.run_ui(Default::default(), |ui| {
+                let s = RowSearch { words: vec!["tray".into()], hits: 0, last_hits };
+                ui.data_mut(|d| d.insert_temp(row_search_id(), s));
+                dims.push((row_is_dimmed(ui, "Proxy", ""), row_is_dimmed(ui, "Close to tray", "")));
+            });
+            o.textures_delta.clear();
+        };
+        frame(0);
+        frame(1);
+        assert_eq!(dims, vec![(false, false), (true, false)]);
+    }
 }

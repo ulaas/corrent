@@ -6,7 +6,7 @@ use egui::{RichText, Ui};
 use egui_phosphor::regular as icons;
 
 use super::Page;
-use super::client::{MediaClient, fetch, ready};
+use super::client::{MediaClient, fetch, ready, ready_arc};
 use crate::app::CorrentApp;
 use crate::ui::theme::Palette;
 
@@ -100,7 +100,7 @@ impl CorrentApp {
             self.media.list_items =
                 Some(((id, collection), fetch(&self.rt, &self.ctx, async move { c.get::<Vec<Item>>(&path).await })));
         }
-        let Some(r) = self.media.list_items.as_ref().and_then(|(_, s)| ready(s)) else {
+        let Some(r) = self.media.list_items.as_ref().and_then(|(_, s)| ready_arc(s)) else {
             ui.vertical_centered(|ui| ui.spinner());
             return;
         };
@@ -142,7 +142,7 @@ impl CorrentApp {
         if let Some((start, shuffle)) = play
             && !items.is_empty()
         {
-            let mut order: Vec<Item> = items.clone();
+            let mut order: Vec<Item> = items.to_vec();
             if shuffle {
                 // A simple shuffle (the time is random enough for the order of a playlist).
                 let mut seed = std::time::SystemTime::now()

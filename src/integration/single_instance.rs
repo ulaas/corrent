@@ -275,6 +275,11 @@ fn handle_client(conn: &Stream, tx: &std::sync::mpsc::Sender<IpcMessage>) {
     }
 }
 
+/// Whether another program's "open this file" names a torrent file by its extension.
+pub fn has_torrent_extension(p: &std::path::Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("torrent"))
+}
+
 fn parse_line(line: &str) -> Option<IpcMessage> {
     parse_line_with(line, |p| p.is_file())
 }
@@ -289,7 +294,7 @@ fn parse_line_with(line: &str, is_file: impl Fn(&std::path::Path) -> bool) -> Op
     match AddSource::parse_with(item, &is_file)? {
         AddSource::File(p) => {
             // Only accept existing .torrent files from other processes.
-            let ok = is_file(&p) && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("torrent"));
+            let ok = is_file(&p) && has_torrent_extension(&p);
             ok.then_some(IpcMessage::Add(AddSource::File(p)))
         }
         other => Some(IpcMessage::Add(other)),

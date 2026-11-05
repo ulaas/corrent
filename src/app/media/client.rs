@@ -156,10 +156,13 @@ impl MediaClient {
 }
 
 /// A result that arrives later (filled by a task, read by the UI).
-pub type Slot<T> = Arc<Mutex<Option<Result<T, String>>>>;
+///
+/// Held in an `Arc`: the media pages look at their data every frame, and a home screen or a
+/// 500-episode show must not be copied that often. Read with [`ready_arc`].
+pub type Slot<T> = Arc<Mutex<Option<Result<Arc<T>, String>>>>;
 
 /// Runs `fut` on the runtime; the UI repaints when it finishes.
-pub fn fetch<T: Send + 'static>(
+pub fn fetch<T: Send + Sync + 'static>(
     rt: &tokio::runtime::Handle,
     ctx: &egui::Context,
     fut: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
@@ -167,14 +170,51 @@ pub fn fetch<T: Send + 'static>(
     let slot: Slot<T> = Arc::new(Mutex::new(None));
     let (s2, ctx) = (slot.clone(), ctx.clone());
     rt.spawn(async move {
-        let r = fut.await;
+        let r = fut.await.map(Arc::new);
         *s2.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
         ctx.request_repaint();
     });
     slot
 }
 
-/// Reads a slot: `None` while loading.
+/// Reads a slot, copying the value: `None` while loading. For small values and one-off reads;
+/// what is drawn every frame uses [`ready_arc`].
 pub fn ready<T: Clone>(slot: &Slot<T>) -> Option<Result<T, String>> {
+    ready_arc(slot).map(|r| r.map(|v| (*v).clone()))
+}
+
+/// Reads a slot without copying its value: `None` while loading.
+pub fn ready_arc<T>(slot: &Slot<T>) -> Option<Result<Arc<T>, String>> {
     slot.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Has the result arrived?
+pub fn is_ready<T>(slot: &Slot<T>) -> bool {
+    slot.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
+/// Moves the result out of a slot that is done with.
+pub fn take_ready<T: Clone>(slot: &Slot<T>) -> Option<Result<T, String>> {
+    let r = slot.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    Some(r.map(|v| Arc::try_unwrap(v).unwrap_or_else(|v| (*v).clone())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reading_a_slot_shares_the_value() {
+        let slot: Slot<Vec<String>> = Arc::new(Mutex::new(None));
+        assert!(!is_ready(&slot));
+        assert!(ready_arc(&slot).is_none());
+        *slot.lock().unwrap() = Some(Ok(Arc::new(vec!["a".to_string()])));
+        assert!(is_ready(&slot));
+        let (a, b) = (ready_arc(&slot).unwrap().unwrap(), ready_arc(&slot).unwrap().unwrap());
+        assert!(Arc::ptr_eq(&a, &b), "the same value, not a copy");
+        assert_eq!(ready(&slot).unwrap().unwrap(), vec!["a".to_string()]);
+        drop((a, b));
+        assert_eq!(take_ready(&slot).unwrap().unwrap(), vec!["a".to_string()]);
+        assert!(!is_ready(&slot), "taken");
+    }
 }

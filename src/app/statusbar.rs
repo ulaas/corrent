@@ -10,7 +10,8 @@ use crate::util::{fmt_bytes, fmt_speed};
 impl CorrentApp {
     pub(super) fn status_bar(&mut self, ui: &mut Ui, p: &Palette) {
         let units = self.settings.appearance.speed_units;
-        let s = self.snap.session.clone();
+        let snap = self.snap.clone();
+        let s = &snap.session;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             let (dot, text) = match &self.snap.engine_state {
@@ -38,7 +39,26 @@ impl CorrentApp {
             };
             let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), egui::Sense::hover());
             ui.painter().circle_filled(r.center(), 4.0, dot);
-            ui.label(RichText::new(text).small().color(p.text_dim));
+            let local = self.server.is_none();
+            let page = |r: &egui::Response, page, this: &mut Self| {
+                if local && r.clicked() {
+                    this.open_settings_at(page);
+                }
+            };
+            let chip = |text: RichText| {
+                egui::Label::new(text.small().color(p.text_dim)).sense(if local {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                })
+            };
+            let r = ui.add(chip(RichText::new(text)));
+            let r = if local && matches!(self.snap.engine_state, EngineState::Running) {
+                r.on_hover_text(t!("Click for BitTorrent settings"))
+            } else {
+                r
+            };
+            page(&r, super::settings_window::Page::BitTorrent, self);
 
             let wd = self.when_done.action;
             if wd != crate::integration::power::WhenDone::Nothing {
@@ -79,12 +99,10 @@ impl CorrentApp {
                 }
             }
             if let Some(port) = s.listen_port {
-                ui.label(
-                    RichText::new(format!("{} {}", icons::PLUGS, t!("Port {port}", port = port)))
-                        .small()
-                        .color(p.text_dim),
-                )
-                .on_hover_text(t!("Incoming connection port"));
+                let r = ui
+                    .add(chip(RichText::new(format!("{} {}", icons::PLUGS, t!("Port {port}", port = port)))))
+                    .on_hover_text(t!("Incoming connection port. Click for connection settings."));
+                page(&r, super::settings_window::Page::Connection, self);
             }
             ui.label(
                 RichText::new(format!("{} {}", icons::USERS, t!("{n} peers", n = s.peers_live)))
@@ -92,19 +110,20 @@ impl CorrentApp {
                     .color(p.text_dim),
             );
             if let Some(free) = self.snap.free_space {
-                ui.label(
-                    RichText::new(format!("{} {}", icons::HARD_DRIVE, t!("{free} free", free = fmt_bytes(free))))
-                        .small()
-                        .color(p.text_dim),
-                )
-                .on_hover_text(t!("Free space in the default download folder"));
+                let r = ui
+                    .add(chip(RichText::new(format!(
+                        "{} {}",
+                        icons::HARD_DRIVE,
+                        t!("{free} free", free = fmt_bytes(free))
+                    ))))
+                    .on_hover_text(t!("Free space in the default download folder. Click to change the folder."));
+                page(&r, super::settings_window::Page::Downloads, self);
             }
             self.health_chip(ui, p);
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                let ups: Vec<f32> = self.snap.history.iter().rev().take(90).rev().map(|(_, u)| *u as f32).collect();
-                let downs: Vec<f32> = self.snap.history.iter().rev().take(90).rev().map(|(d, _)| *d as f32).collect();
+                let recent: Vec<_> = snap.history.iter().rev().take(90).rev().collect();
                 if s.alt_speed {
                     ui.label(RichText::new(format!("{} {}", icons::GAUGE, t!("Alt speed"))).small().color(p.warn));
                 }
@@ -120,6 +139,7 @@ impl CorrentApp {
                 self.limit_menu(&up_r, false);
                 ui.label(RichText::new(icons::ARROW_UP).color(p.success));
                 if self.settings.appearance.show_sparklines {
+                    let ups: Vec<f32> = recent.iter().map(|(_, u)| *u as f32).collect();
                     sparkline(ui, &ups, p.success, vec2(70.0, 16.0));
                 }
                 ui.add_space(8.0);
@@ -135,6 +155,7 @@ impl CorrentApp {
                 self.limit_menu(&down_r, true);
                 ui.label(RichText::new(icons::ARROW_DOWN).color(p.accent));
                 if self.settings.appearance.show_sparklines {
+                    let downs: Vec<f32> = recent.iter().map(|(d, _)| *d as f32).collect();
                     sparkline(ui, &downs, p.accent, vec2(70.0, 16.0));
                 }
             });
@@ -144,7 +165,8 @@ impl CorrentApp {
     /// O5: shown only while a self-check fails; lists the problems with a way to fix each.
     fn health_chip(&mut self, ui: &mut Ui, p: &Palette) {
         use corrent_core::health::Issue;
-        let issues = self.snap.health.clone();
+        let snap = self.snap.clone();
+        let issues = &snap.health;
         if issues.is_empty() {
             return;
         }
@@ -157,7 +179,7 @@ impl CorrentApp {
             .on_hover_text(t!("Corrent's self-checks found a problem. Click for details."));
         crate::ui::widgets::popup(egui::Popup::menu(&r), |ui| {
             ui.set_max_width(360.0);
-            for issue in &issues {
+            for issue in issues {
                 ui.label(RichText::new(issue.label()).color(p.text));
                 let fix = match issue {
                     Issue::SaveFolder(_) | Issue::LowSpace(_) => t!("Choose another download folder…"),
@@ -187,14 +209,21 @@ impl CorrentApp {
             ui.set_min_width(170.0);
             ui.label(RichText::new(if download { t!("Download limit") } else { t!("Upload limit") }).strong());
             let current = if download { self.settings.speed.download_limit } else { self.settings.speed.upload_limit };
-            for (label, kib) in [
+            let presets = [
                 (t!("Unlimited"), 0u32),
                 (t!("256 KiB/s"), 256),
                 (t!("1 MiB/s"), 1024),
                 (t!("5 MiB/s"), 5120),
                 (t!("10 MiB/s"), 10240),
                 (t!("50 MiB/s"), 51200),
-            ] {
+            ];
+            // A limit set in Settings that isn't one of the presets.
+            if !presets.iter().any(|(_, kib)| *kib == current) {
+                let units = self.settings.appearance.speed_units;
+                let text = t!("Current: {limit}", limit = fmt_speed(u64::from(current) * 1024, units));
+                ui.add_enabled(false, egui::Button::selectable(true, text));
+            }
+            for (label, kib) in presets {
                 if ui.selectable_label(current == kib, label).clicked() {
                     let mut s = self.settings.clone();
                     if download {

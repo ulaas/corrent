@@ -81,6 +81,8 @@ pub const SETTINGS_FIELDS: &[(&str, Rule)] = {
         ("appearance.tv_screensaver_min", Keep),
         ("appearance.zoom", Keep),
         ("behavior.auto_switch_server", Keep),
+        // stream D
+        ("behavior.double_click", Keep),
         ("behavior.close_to_tray", Keep),
         ("behavior.confirm_delete", Keep),
         ("behavior.confirm_exit_while_active", Keep),

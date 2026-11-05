@@ -71,7 +71,7 @@ impl CorrentApp {
         });
         ui.add_space(10.0);
         let mut remove = None;
-        for l in &libs {
+        for l in libs.iter() {
             egui::Frame::new()
                 .fill(p.bg2)
                 .corner_radius(egui::CornerRadius::same(10))
@@ -199,12 +199,8 @@ impl CorrentApp {
             }
         }
         if pick {
-            let start = self
-                .media
-                .library_form
-                .as_ref()
-                .map(|f| std::path::PathBuf::from(&f.folder))
-                .filter(|p| !local || p.is_dir());
+            // (`pick` looks at the folder off the UI thread.)
+            let start = self.media.library_form.as_ref().map(|f| std::path::PathBuf::from(&f.folder));
             self.pick(crate::app::pickers::PickTarget::LibraryFolder, crate::app::pickers::PickKind::Folder, start);
         }
     }

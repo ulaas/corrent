@@ -1,9 +1,9 @@
 //! "Add N torrents" dialog: one dialog for many sources with shared options.
 
-use crate::ui::widgets::Labeled;
+use crate::ui::widgets::{self, Labeled};
 use std::path::PathBuf;
 
-use egui::{Align, Context, Id, Layout, RichText, vec2};
+use egui::{Context, Id, RichText, vec2};
 use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
@@ -55,99 +55,106 @@ impl CorrentApp {
         let categories = self.snap.categories.clone();
         let busy = self.picker_busy();
         let resp = egui::Modal::new(Id::new("batch_dialog")).show(ctx, |ui| {
-            ui.set_width(620.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(icons::STACK_PLUS).size(20.0).color(p.accent));
-                let n = b.items.iter().filter(|(_, on)| *on).count();
-                ui.label(RichText::new(t!("Add {n} torrents", n = n)).font(theme::title()).color(p.text));
-            });
-            ui.add_space(8.0);
-            egui::Frame::new()
-                .fill(p.bg0)
-                .corner_radius(egui::CornerRadius::same(8))
-                .inner_margin(egui::Margin::same(8))
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
-                        for (src, on) in &mut b.items {
-                            ui.horizontal(|ui| {
-                                ui.checkbox(on, "");
-                                let icon = match src {
-                                    AddSource::Magnet(_) => icons::MAGNET,
-                                    AddSource::Url(_) => icons::LINK,
-                                    _ => icons::FILE,
-                                };
-                                ui.label(RichText::new(icon).color(p.text_dim));
-                                ui.add(
-                                    egui::Label::new(RichText::new(src.describe()).color(if *on {
-                                        p.text
-                                    } else {
-                                        p.text_mute
-                                    }))
-                                    .truncate(),
-                                );
-                            });
+            widgets::modal_body(ui, |ui| {
+                let w = widgets::modal_width(ui.ctx(), 620.0);
+                ui.set_width(w);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(icons::STACK_PLUS).size(20.0).color(p.accent));
+                    let n = b.items.iter().filter(|(_, on)| *on).count();
+                    ui.label(RichText::new(t!("Add {n} torrents", n = n)).font(theme::title()).color(p.text));
+                });
+                ui.add_space(8.0);
+                egui::Frame::new()
+                    .fill(p.bg0)
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
+                            for (src, on) in &mut b.items {
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(on, "");
+                                    let icon = match src {
+                                        AddSource::Magnet(_) => icons::MAGNET,
+                                        AddSource::Url(_) => icons::LINK,
+                                        _ => icons::FILE,
+                                    };
+                                    ui.label(RichText::new(icon).color(p.text_dim));
+                                    ui.add(
+                                        egui::Label::new(RichText::new(src.describe()).color(if *on {
+                                            p.text
+                                        } else {
+                                            p.text_mute
+                                        }))
+                                        .truncate(),
+                                    );
+                                });
+                            }
+                        });
+                    });
+                ui.add_space(10.0);
+                egui::Grid::new("batch_opts").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
+                    ui.label(t!("Save to"));
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut b.save_path).desired_width((w - 170.0).max(120.0)));
+                        if busy {
+                            ui.add(egui::Spinner::new());
+                        } else if ui.button(icons::FOLDER_OPEN).labeled(t!("Browse…")).clicked() {
+                            browse = true;
                         }
                     });
-                });
-            ui.add_space(10.0);
-            egui::Grid::new("batch_opts").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
-                ui.label(t!("Save to"));
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut b.save_path).desired_width(420.0));
-                    if busy {
-                        ui.add(egui::Spinner::new());
-                    } else if ui.button(icons::FOLDER_OPEN).labeled(t!("Browse…")).clicked() {
-                        browse = true;
-                    }
-                });
-                ui.end_row();
-                ui.label(t!("Category"));
-                egui::ComboBox::from_id_salt("batch_cat")
-                    .selected_text(b.category.clone().unwrap_or_else(|| t!("None").into()))
-                    .width(200.0)
-                    .show_ui(ui, |ui| {
-                        if ui.selectable_label(b.category.is_none(), t!("None")).clicked() {
-                            b.category = None;
-                        }
-                        for (c, info) in &categories {
-                            if ui.selectable_label(b.category.as_ref() == Some(c), c).clicked() {
-                                b.category = Some(c.clone());
-                                if let Some(path) = &info.save_path {
-                                    b.save_path = path.display().to_string();
+                    ui.end_row();
+                    ui.label(t!("Category"));
+                    egui::ComboBox::from_id_salt("batch_cat")
+                        .selected_text(b.category.clone().unwrap_or_else(|| t!("None").into()))
+                        .width(200.0)
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(b.category.is_none(), t!("None")).clicked() {
+                                b.category = None;
+                            }
+                            for (c, info) in &categories {
+                                if ui.selectable_label(b.category.as_ref() == Some(c), c).clicked() {
+                                    b.category = Some(c.clone());
+                                    if let Some(path) = &info.save_path {
+                                        b.save_path = path.display().to_string();
+                                    }
                                 }
                             }
-                        }
-                    });
-                ui.end_row();
-                ui.label(t!("Tags"));
-                ui.add(egui::TextEdit::singleline(&mut b.tags).hint_text(t!("comma-separated")).desired_width(300.0));
-                ui.end_row();
-            });
-            ui.checkbox(&mut b.start_paused, t!("Add paused"));
-            ui.checkbox(&mut b.create_subfolder, t!("Create subfolder for multi-file torrents"));
-            ui.label(
-                RichText::new(t!(
-                    "All files of each torrent are selected; magnet links are resolved in the background."
-                ))
-                .small()
-                .color(p.text_dim),
-            );
-            ui.add_space(12.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let any = b.items.iter().any(|(_, on)| *on) && !b.save_path.trim().is_empty();
-                if ui
-                    .add_enabled_ui(any, |ui| {
-                        primary_button(ui, p, &format!("{}  {}", icons::DOWNLOAD_SIMPLE, t!("Add all")))
-                    })
-                    .inner
-                    .clicked()
-                {
-                    add = true;
-                }
-                if secondary_button(ui, t!("Cancel")).clicked() {
-                    close = true;
-                }
-            });
+                        });
+                    ui.end_row();
+                    ui.label(t!("Tags"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut b.tags)
+                            .hint_text(t!("comma-separated"))
+                            .desired_width((w - 170.0).clamp(120.0, 300.0)),
+                    );
+                    ui.end_row();
+                });
+                ui.checkbox(&mut b.start_paused, t!("Add paused"));
+                ui.checkbox(&mut b.create_subfolder, t!("Create subfolder for multi-file torrents"));
+                ui.label(
+                    RichText::new(t!(
+                        "All files of each torrent are selected; magnet links are resolved in the background."
+                    ))
+                    .small()
+                    .color(p.text_dim),
+                );
+                ui.add_space(12.0);
+                widgets::dialog_footer(ui, |ui| {
+                    let any = b.items.iter().any(|(_, on)| *on) && !b.save_path.trim().is_empty();
+                    if ui
+                        .add_enabled_ui(any, |ui| {
+                            primary_button(ui, p, &format!("{}  {}", icons::DOWNLOAD_SIMPLE, t!("Add all")))
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        add = true;
+                    }
+                    if secondary_button(ui, t!("Cancel")).clicked() {
+                        close = true;
+                    }
+                });
+            })
         });
         if resp.should_close() {
             close = true;

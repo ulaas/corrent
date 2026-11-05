@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use egui::{Align, Color32, CornerRadius, Layout, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icons;
 
-use super::table::tracker_host;
+use super::table::TrackerHosts;
 use super::{CorrentApp, GroupFilter, StatusFilter};
 use crate::engine::EngineCommand;
 use crate::engine::types::Snapshot;
@@ -20,6 +20,8 @@ pub struct Counts {
     pub untagged: usize,
     pub trackers: BTreeMap<String, usize>,
     pub trackerless: usize,
+    /// Kept from one update to the next.
+    pub hosts: TrackerHosts,
 }
 
 impl Counts {
@@ -27,7 +29,8 @@ impl Counts {
         if self.generation == snap.generation && !self.status.is_empty() {
             return;
         }
-        *self = Counts { generation: snap.generation, ..Default::default() };
+        let hosts = std::mem::take(&mut self.hosts);
+        *self = Counts { generation: snap.generation, hosts, ..Default::default() };
         self.status = StatusFilter::ALL.iter().map(|f| snap.torrents.iter().filter(|t| f.matches(t)).count()).collect();
         for c in snap.categories.keys() {
             self.categories.insert(c.clone(), 0);
@@ -59,11 +62,20 @@ impl Counts {
             if t.trackers.is_empty() {
                 self.trackerless += 1;
             }
-            let mut hosts: Vec<String> = t.trackers.iter().map(|u| tracker_host(u)).collect();
-            hosts.sort();
-            hosts.dedup();
-            for h in hosts {
-                *self.trackers.entry(h).or_default() += 1;
+            // Once per torrent, however many of its trackers are on a host.
+            for (i, u) in t.trackers.iter().enumerate() {
+                self.hosts.get(u);
+                let host = self.hosts.peek(u);
+                let earlier = t.trackers.get(..i).unwrap_or_default();
+                if earlier.iter().any(|e| self.hosts.peek(e) == host) {
+                    continue;
+                }
+                match self.trackers.get_mut(host) {
+                    Some(n) => *n += 1,
+                    None => {
+                        self.trackers.insert(host.to_string(), 1);
+                    }
+                }
             }
         }
     }
@@ -172,6 +184,94 @@ pub(super) fn section(ui: &mut Ui, p: &Palette, title: &str, add: Option<&str>, 
 }
 
 impl CorrentApp {
+    /// Saved views: applying one just sets the filters and the sort.
+    fn views_section(&mut self, ui: &mut Ui, p: &Palette, tv: bool) {
+        let mut c = self.prefs.collapsed.iter().any(|k| k == "views");
+        if section(ui, p, t!("Views"), Some(t!("Save view…")), &mut c) {
+            self.modal = Some(super::dialogs::Modal::SaveView { name: String::new() });
+        }
+        set_collapsed(&mut self.prefs.collapsed, "views", c);
+        if !c {
+            if self.prefs.views.is_empty() {
+                hint(ui, p, t!("Save the current filters, search and sort to come back to them."));
+            }
+            let mut apply = None;
+            let mut delete = None;
+            for (i, view) in self.prefs.views.iter().enumerate() {
+                let on = tv && *view == self.current_view(&view.name);
+                let r = row(ui, p, icons::BOOKMARK_SIMPLE, p.accent, &view.name, None, on);
+                if r.clicked() {
+                    apply = Some(i);
+                }
+                crate::ui::widgets::context_menu(&r, |ui| {
+                    if ui.button(format!("{}  {}", icons::TRASH, t!("Delete view"))).clicked() {
+                        delete = Some(i);
+                    }
+                });
+            }
+            if let Some(v) = apply.and_then(|i| self.prefs.views.get(i).cloned()) {
+                self.apply_view(&v);
+            }
+            if let Some(i) = delete {
+                self.prefs.views.remove(i);
+            }
+        }
+        ui.add_space(10.0);
+    }
+
+    /// Filter by tracker host: the private tracker, the dead one.
+    fn trackers_section(&mut self, ui: &mut Ui, p: &Palette, total: usize, tv: bool) {
+        let mut c = self.prefs.collapsed.iter().any(|k| k == "trackers");
+        section(ui, p, t!("Trackers"), None, &mut c);
+        set_collapsed(&mut self.prefs.collapsed, "trackers", c);
+        if c {
+            return;
+        }
+        let filter = |app: &mut Self, f: GroupFilter| {
+            app.prefs.tracker_filter = f;
+            app.main_view = super::feeds::MainView::Torrents;
+        };
+        let all = tv && self.prefs.tracker_filter == GroupFilter::All;
+        if row(ui, p, icons::BROADCAST, p.text_dim, t!("All"), Some(total), all).clicked() {
+            filter(self, GroupFilter::All);
+        }
+        let none = tv && self.prefs.tracker_filter == GroupFilter::None;
+        if row(ui, p, icons::PROHIBIT, p.text_dim, t!("No trackers"), Some(self.counts.trackerless), none).clicked() {
+            filter(self, GroupFilter::None);
+        }
+        let hosts: Vec<(String, usize)> = self.counts.trackers.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        for (host, n) in hosts {
+            let sel = tv && matches!(&self.prefs.tracker_filter, GroupFilter::Named(h) if *h == host);
+            let r = row(ui, p, icons::GLOBE_SIMPLE, p.text_dim, &host, Some(n), sel);
+            if r.clicked() {
+                filter(self, GroupFilter::Named(host.clone()));
+            }
+            crate::ui::widgets::context_menu(&r, |ui| {
+                if ui.button(format!("{}  {}", icons::COPY, t!("Copy announce URL"))).clicked() {
+                    let mut urls: Vec<String> = (self.snap.torrents.iter().flat_map(|t| t.trackers.iter()))
+                        .filter(|u| self.counts.hosts.peek(u) == host)
+                        .cloned()
+                        .collect();
+                    urls.sort();
+                    urls.dedup();
+                    self.copy(urls.join("\n"));
+                }
+                let on_host = |app: &Self| -> Vec<crate::engine::types::InfoHash> {
+                    (app.snap.torrents.iter())
+                        .filter(|t| !t.pending && t.trackers.iter().any(|u| app.counts.hosts.peek(u) == host))
+                        .map(|t| t.hash)
+                        .collect()
+                };
+                if ui.button(format!("{}  {}", icons::PAUSE, t!("Pause all on this tracker"))).clicked() {
+                    self.engine.send(EngineCommand::Pause(on_host(self)));
+                }
+                if ui.button(format!("{}  {}", icons::PLAY, t!("Resume all on this tracker"))).clicked() {
+                    self.engine.send(EngineCommand::Resume(on_host(self)));
+                }
+            });
+        }
+    }
+
     pub(super) fn sidebar(&mut self, ui: &mut Ui, p: &Palette) {
         self.counts.update(&self.snap);
         let tv = self.main_view == super::feeds::MainView::Torrents;
@@ -180,6 +280,7 @@ impl CorrentApp {
             let total = self.snap.torrents.len();
             ui.add_space(4.0);
             self.media_sidebar(ui, p);
+            self.views_section(ui, p, tv);
             let mut c = self.prefs.collapsed.contains(&"status".to_string());
             section(ui, p, t!("Status"), None, &mut c);
             set_collapsed(&mut self.prefs.collapsed, "status", c);
@@ -338,6 +439,8 @@ impl CorrentApp {
                 }
             }
             ui.add_space(10.0);
+            self.trackers_section(ui, p, total, tv);
+            ui.add_space(10.0);
             let mut c = self.prefs.collapsed.contains(&"feeds".to_string());
             section(ui, p, t!("Discover"), None, &mut c);
             set_collapsed(&mut self.prefs.collapsed, "feeds", c);
@@ -400,5 +503,21 @@ mod tests {
         assert_eq!(c.untagged, 1);
         assert_eq!(c.tags.get("unused"), Some(&0), "known tags are listed even when empty");
         assert_eq!(c.status[0], 2, "All");
+    }
+
+    #[test]
+    fn counts_a_torrent_once_per_tracker_host() {
+        let urls = ["udp://t.example:80/announce", "http://t.example/announce", "udp://o.example:1/a"];
+        let a = TorrentView {
+            hash: InfoHash([1; 20]),
+            trackers: urls.iter().map(|u| u.to_string()).collect(),
+            ..Default::default()
+        };
+        let snap = Snapshot { torrents: vec![a], generation: 1, ..Default::default() };
+        let mut c = Counts::default();
+        c.update(&snap);
+        assert_eq!(c.trackers.get("t.example"), Some(&1));
+        assert_eq!(c.trackers.get("o.example"), Some(&1));
+        assert_eq!(c.trackerless, 0);
     }
 }

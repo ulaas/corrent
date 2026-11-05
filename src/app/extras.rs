@@ -19,8 +19,55 @@ pub struct Extras {
     pub stats: bool,
     pub streams: bool,
     pub log: bool,
+    /// The Keyboard shortcuts window.
+    pub shortcuts: bool,
     pub log_filter: String,
     pub log_level: u8, // 0 = info+, 1 = warn+, 2 = error
+    log_index: LogIndex,
+}
+
+/// Which log lines match the Log window's filter, by line number: lines already looked at aren't
+/// looked at again, and only the visible ones are copied out of the buffer.
+#[derive(Default)]
+struct LogIndex {
+    filter: String,
+    min: Option<Level>,
+    /// The newest line looked at.
+    seen: u64,
+    matches: Vec<u64>,
+}
+
+impl LogIndex {
+    /// `filter` is lower case.
+    fn update(&mut self, lines: &std::collections::VecDeque<super::log::LogLine>, filter: &str, min: Level) {
+        if self.filter != filter || self.min != Some(min) {
+            *self = LogIndex { filter: filter.to_string(), min: Some(min), ..Default::default() };
+        }
+        // Lines that fell out of the buffer (or Clear).
+        let oldest = lines.front().map_or(u64::MAX, |l| l.seq);
+        let gone = self.matches.partition_point(|s| *s < oldest);
+        self.matches.drain(..gone);
+        for l in lines.iter().rev().take_while(|l| l.seq > self.seen).collect::<Vec<_>>().into_iter().rev() {
+            self.seen = l.seq;
+            if l.level <= min
+                && (filter.is_empty() || l.message.to_lowercase().contains(filter) || l.target.contains(filter))
+            {
+                self.matches.push(l.seq);
+            }
+        }
+    }
+
+    /// Copies of the matches in `range`.
+    fn visible(
+        &self,
+        lines: &std::collections::VecDeque<super::log::LogLine>,
+        range: std::ops::Range<usize>,
+    ) -> Vec<super::log::LogLine> {
+        let oldest = lines.front().map_or(0, |l| l.seq);
+        (self.matches.get(range).unwrap_or_default().iter())
+            .filter_map(|s| lines.get(usize::try_from(s.checked_sub(oldest)?).ok()?).cloned())
+            .collect()
+    }
 }
 
 impl CorrentApp {
@@ -122,6 +169,12 @@ impl CorrentApp {
                     self.open_diagnostics();
                 }
                 ui.separator();
+                if ui.button(format!("{}  {}", icons::COMMAND, t!("Command palette  (Ctrl+K)"))).clicked() {
+                    self.toggle_palette();
+                }
+                if ui.button(format!("{}  {}", icons::KEYBOARD, t!("Keyboard shortcuts  (F1)"))).clicked() {
+                    self.extras.shortcuts = true;
+                }
                 if ui.button(format!("{}  {}", icons::INFO, t!("About Corrent"))).clicked() {
                     self.extras.about = true;
                 }
@@ -140,6 +193,7 @@ impl CorrentApp {
         self.stats_window(ctx, p);
         self.streams_window(ctx, p);
         self.log_window(ctx, p);
+        self.shortcuts_window(ctx, p);
         self.diagnostics_window(ctx, p);
         self.get_mpv_window(ctx, p);
     }
@@ -176,6 +230,79 @@ impl CorrentApp {
         });
         if r.should_close() {
             self.extras.about = false;
+        }
+    }
+
+    fn shortcuts_window(&mut self, ctx: &Context, p: &Palette) {
+        if !self.extras.shortcuts {
+            return;
+        }
+        let groups: [(&str, &[(&str, &str)]); 2] = [
+            (
+                t!("Anywhere"),
+                &[
+                    ("Ctrl+K", t!("Command palette: everything, by name")),
+                    ("Ctrl+O", t!("Add torrent files")),
+                    ("Ctrl+Shift+O", t!("Add magnet links or URLs")),
+                    ("Ctrl+N", t!("Create a torrent")),
+                    ("Ctrl+,", t!("Settings")),
+                    ("Ctrl+F", t!("Search torrents")),
+                    ("Ctrl+B", t!("Show or hide the sidebar")),
+                    ("Ctrl+I", t!("Show or hide the details")),
+                    ("Ctrl+Shift+S", t!("Alternative speed limits on or off")),
+                    ("F1", t!("This window")),
+                ],
+            ),
+            (
+                t!("In the torrent list"),
+                &[
+                    ("↑ ↓", t!("Move and select")),
+                    (t!("Home End"), t!("First and last torrent")),
+                    (t!("PgUp PgDn"), t!("A page up or down")),
+                    (t!("Shift+move"), t!("Select from where you started")),
+                    (t!("Ctrl+move"), t!("Move without changing the selection")),
+                    (t!("Ctrl+Space"), t!("Add the row to the selection, or take it out")),
+                    ("Ctrl+A", t!("Select all")),
+                    (t!("Space"), t!("Pause the selection; resume it if all of it is paused")),
+                    (t!("Enter"), t!("Open the selected torrent's files")),
+                    ("F2", t!("Rename")),
+                    (t!("Del"), t!("Remove")),
+                    (t!("Shift+Del"), t!("Remove with files")),
+                    ("/", t!("Search torrents")),
+                    (t!("Esc"), t!("Clear the selection")),
+                    ("Ctrl+V", t!("Add a magnet link from the clipboard")),
+                ],
+            ),
+        ];
+        let mut open = true;
+        egui::Window::new(RichText::new(format!("{}  {}", icons::KEYBOARD, t!("Keyboard shortcuts"))).strong())
+            .id(Id::new("shortcuts_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(460.0)
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                let max = (ctx.content_rect().height() - 120.0).max(160.0);
+                egui::ScrollArea::vertical().max_height(max).show(ui, |ui| {
+                    for (i, (title, keys)) in groups.iter().enumerate() {
+                        if i > 0 {
+                            ui.add_space(10.0);
+                        }
+                        ui.label(RichText::new(*title).strong().color(p.text));
+                        ui.add_space(2.0);
+                        egui::Grid::new(("shortcuts", i)).num_columns(2).spacing(vec2(16.0, 5.0)).show(ui, |ui| {
+                            for (key, what) in keys.iter() {
+                                ui.label(RichText::new(*key).monospace().small().color(p.accent));
+                                ui.label(RichText::new(*what).color(p.text_dim));
+                                ui.end_row();
+                            }
+                        });
+                    }
+                });
+            });
+        if !open {
+            self.extras.shortcuts = false;
         }
     }
 
@@ -276,18 +403,10 @@ impl CorrentApp {
                     1 => Level::WARN,
                     _ => Level::INFO,
                 };
-                let lines: Vec<super::log::LogLine> = crate::util::with_lock(&super::log::LINES, |l| {
-                    l.iter()
-                        .filter(|x| x.level <= min)
-                        .filter(|x| {
-                            filter.is_empty()
-                                || x.message.to_lowercase().contains(&filter)
-                                || x.target.contains(&filter)
-                        })
-                        .cloned()
-                        .collect()
-                });
-                if lines.is_empty() {
+                let index = &mut self.extras.log_index;
+                crate::util::with_lock(&super::log::LINES, |l| index.update(l, &filter, min));
+                let count = index.matches.len();
+                if count == 0 {
                     crate::ui::widgets::empty_compact(
                         ui,
                         p,
@@ -305,9 +424,12 @@ impl CorrentApp {
                         egui::ScrollArea::both().stick_to_bottom(true).auto_shrink([false, false]).show_rows(
                             ui,
                             18.0,
-                            lines.len(),
+                            count,
                             |ui, range| {
-                                for l in lines.get(range).unwrap_or_default() {
+                                // Copied out: drawing may log, and the buffer's lock is not reentrant.
+                                let index = &self.extras.log_index;
+                                let lines = crate::util::with_lock(&super::log::LINES, |l| index.visible(l, range));
+                                for l in &lines {
                                     let color = match l.level {
                                         Level::ERROR => p.error,
                                         Level::WARN => p.warn,
@@ -341,4 +463,38 @@ fn kv(ui: &mut Ui, p: &Palette, k: &str, v: String) {
     ui.label(RichText::new(k).color(p.text_dim));
     ui.label(RichText::new(v).monospace().color(p.text));
     ui.end_row();
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+    use crate::app::log::LogLine;
+
+    fn line(seq: u64, level: Level, message: &str) -> LogLine {
+        LogLine { seq, time: 0, level, target: "t".into(), message: message.into() }
+    }
+
+    #[test]
+    fn the_log_index_follows_the_buffer() {
+        let mut lines: std::collections::VecDeque<LogLine> =
+            [line(5, Level::INFO, "Alpha"), line(6, Level::ERROR, "beta"), line(7, Level::INFO, "ALPHA 2")].into();
+        let mut i = LogIndex::default();
+        i.update(&lines, "alpha", Level::INFO);
+        assert_eq!(i.matches, vec![5, 7]);
+        // New lines are added, old ones go; what was seen isn't counted twice.
+        lines.pop_front();
+        lines.push_back(line(8, Level::INFO, "alpha 3"));
+        i.update(&lines, "alpha", Level::INFO);
+        assert_eq!(i.matches, vec![7, 8]);
+        let shown: Vec<String> = i.visible(&lines, 1..2).into_iter().map(|l| l.message).collect();
+        assert_eq!(shown, vec!["alpha 3"]);
+        // Another filter or level starts over.
+        i.update(&lines, "", Level::ERROR);
+        assert_eq!(i.matches, vec![6]);
+        // Clear.
+        lines.clear();
+        i.update(&lines, "", Level::ERROR);
+        assert!(i.matches.is_empty());
+        assert!(i.visible(&lines, 0..5).is_empty());
+    }
 }

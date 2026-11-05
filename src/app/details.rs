@@ -307,31 +307,22 @@ impl CorrentApp {
             });
         });
         ui.add_space(4.0);
-        let entries: Vec<file_tree::Entry<'_>> = d
-            .files
-            .iter()
-            .map(|f| file_tree::Entry {
+        let entry = |i: usize| {
+            d.files.get(i).map(|f| file_tree::Entry {
                 index: f.index,
                 components: &f.components,
                 len: f.len,
                 done: Some(f.done),
                 priority: Some(f.priority),
                 streaming: streamed.contains(&f.index),
+                checked: f.included,
             })
-            .collect();
-        let included: std::collections::HashSet<usize> =
-            d.files.iter().filter(|f| f.included).map(|f| f.index).collect();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let filter = self.file_filter.clone();
-            if let Some(ch) = file_tree::show(
-                ui,
-                p,
-                egui::Id::new(("files", t.hash)),
-                &entries,
-                &|i| included.contains(&i),
-                &filter,
-                true,
-            ) {
+        };
+        {
+            let id = egui::Id::new(("files", t.hash));
+            let (tree, filter) = (&mut self.file_tree, &self.file_filter);
+            let change = file_tree::show(ui, p, tree, id, d.files.len(), &entry, filter, true, f32::INFINITY);
+            if let Some(ch) = change {
                 let mut by_pri: std::collections::BTreeMap<i8, Vec<usize>> = Default::default();
                 for (i, v) in ch.priority {
                     by_pri.entry(v).or_default().push(i);
@@ -342,7 +333,8 @@ impl CorrentApp {
                 if ch.set.is_empty() {
                     return;
                 }
-                let mut next = included.clone();
+                let mut next: std::collections::HashSet<usize> =
+                    d.files.iter().filter(|f| f.included).map(|f| f.index).collect();
                 for (i, on) in ch.set {
                     if on {
                         next.insert(i);
@@ -354,7 +346,7 @@ impl CorrentApp {
                 v.sort_unstable();
                 self.engine.send(EngineCommand::SetFiles { hash: t.hash, included: v });
             }
-        });
+        }
     }
 
     fn tab_peers(&mut self, ui: &mut Ui, p: &Palette, detail: Option<&TorrentDetail>) {
@@ -522,7 +514,7 @@ impl CorrentApp {
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button(format!("{}  {}", icons::PLUS, t!("Add trackers…"))).clicked() {
-                        self.open_trackers_dialog(t.hash);
+                        self.open_trackers_dialog(vec![t.hash]);
                     }
                     if !t.trackers.is_empty() && ui.button(format!("{}  {}", icons::COPY, t!("Copy all"))).clicked() {
                         self.copy(t.trackers.join("\n"));
