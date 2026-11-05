@@ -20,6 +20,8 @@ use crate::util::now_unix;
 use crate::watchdog::{self, Doing};
 
 const HISTORY_LEN: usize = 600;
+/// Samples behind a row's Activity sparkline: about the last minute.
+const ROW_SAMPLES: usize = 40;
 const STALL_AFTER: Duration = Duration::from_secs(30);
 /// How often the health self-checks run (O5).
 const HEALTH_EVERY: Duration = Duration::from_secs(300);
@@ -42,7 +44,8 @@ enum Internal {
         hash: InfoHash,
         result: Result<(), String>,
     },
-    RestoreReport(Vec<super::restore::FailedRestore>),
+    /// From the session it names: a report about an earlier session is dropped.
+    RestoreReport(Arc<Session>, Vec<super::restore::FailedRestore>),
     /// `Ok(true)` = re-added; `Ok(false)` = the torrent was already back in the list.
     UndoFinished {
         hash: InfoHash,
@@ -84,6 +87,12 @@ struct UndoEntry {
 const UNDO_WINDOW: Duration = Duration::from_secs(120);
 /// Results of background tasks waiting for the actor, at most.
 const INTERNAL_QUEUE: usize = 4096;
+/// At most one snapshot per this outside the ticks: a burst of commands or results (a batch add)
+/// clones the whole list once, not once per message, and the UI repaints once.
+const PUBLISH_GAP: Duration = Duration::from_millis(100);
+/// How long a session restart waits for adds still fetching their metadata. A dead magnet never
+/// resolves, so after this they stop, and start again on the new session.
+const RESTART_WAITS_FOR_ADDS: Duration = Duration::from_secs(15);
 
 struct PendingAdd {
     name: String,
@@ -92,7 +101,10 @@ struct PendingAdd {
     save_path: PathBuf,
     /// The server account that asked for it (it may cancel it).
     added_by: Option<String>,
-    task: Option<JoinHandle<()>>,
+    /// Stops the add while it only waits for its metadata (see `add_torrent`).
+    cancel: tokio_util::sync::CancellationToken,
+    /// Not running: waits for the session restart to finish (see `maybe_apply_deferred`).
+    held: Option<Box<AddRequest>>,
 }
 
 /// Static per-torrent info parsed once from metadata.
@@ -105,6 +117,46 @@ struct StaticInfo {
     comment: Option<String>,
     created_by: Option<String>,
     creation_date: Option<i64>,
+    /// Only changes with a re-add, which drops this cache entry.
+    trackers: Arc<[String]>,
+    /// A single-file torrent's file, relative to its folder.
+    first_file: Option<PathBuf>,
+}
+
+/// A torrent's last `ROW_SAMPLES` rates in KiB/s, without a heap allocation: there is one per
+/// active torrent, pushed to on every tick.
+#[derive(Clone)]
+struct RateRing {
+    samples: [(u32, u32); ROW_SAMPLES],
+    /// Where the next sample goes, which is also the oldest.
+    head: usize,
+}
+
+impl RateRing {
+    fn new() -> Self {
+        RateRing { samples: [(0, 0); ROW_SAMPLES], head: 0 }
+    }
+
+    fn push(&mut self, sample: (u32, u32)) {
+        if let Some(slot) = self.samples.get_mut(self.head) {
+            *slot = sample;
+        }
+        self.head = (self.head + 1) % ROW_SAMPLES;
+    }
+
+    /// Oldest first.
+    fn iter(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        (0..ROW_SAMPLES).filter_map(|i| self.samples.get((self.head + i) % ROW_SAMPLES).copied())
+    }
+
+    fn idle(&self) -> bool {
+        self.samples.iter().all(|s| *s == (0, 0))
+    }
+
+    /// As the bytes per second of a torrent's detail history.
+    fn bytes(&self) -> VecDeque<(u64, u64)> {
+        self.iter().map(|(d, u)| (u64::from(d) * 1024, u64::from(u) * 1024)).collect()
+    }
 }
 
 /// Downloaded/uploaded byte counters per peer address (for rates).
@@ -130,18 +182,24 @@ pub struct Actor {
     last_schedule_state: Option<bool>,
     detail_target: Option<InfoHash>,
     history: VecDeque<(u64, u64)>,
-    torrent_history: HashMap<InfoHash, VecDeque<(u64, u64)>>,
+    /// Only torrents active in the last `ROW_SAMPLES` ticks: an idle library costs nothing.
+    torrent_history: HashMap<InfoHash, RateRing>,
+    /// The longer history of `detail_target` (the Speed tab), from when it was chosen.
+    detail_history: VecDeque<(u64, u64)>,
     row_history: Arc<HashMap<InfoHash, Vec<(u32, u32)>>>,
     prev_peer: HashMap<String, (u64, u64)>,
     /// Peer counters per torrent for on-demand details (remote clients), with the time taken.
     remote_prev: HashMap<InfoHash, (Instant, PeerCounters)>,
     pieces_cache: Option<(Instant, InfoHash, (Vec<u8>, u32))>,
-    static_info: HashMap<InfoHash, StaticInfo>,
+    static_info: HashMap<InfoHash, Arc<StaticInfo>>,
     /// The engine's selected size when its file selection was last copied to the store: a
     /// change means the selection may have changed (D7).
     mirrored_size: HashMap<InfoHash, u64>,
     previews: HashMap<u64, JoinHandle<()>>,
     pending: HashMap<u64, PendingAdd>,
+    /// Adds the user cancelled (no longer in `pending`) until they report back: one past the
+    /// point of stopping may still land, and is then recorded like any other.
+    cancelled_adds: HashSet<u64>,
     next_pending: u64,
     busy: HashMap<InfoHash, String>,
     seen_unfinished: HashSet<InfoHash>,
@@ -150,6 +208,9 @@ pub struct Actor {
     last_down_active: HashMap<InfoHash, Instant>,
     seed_carry_ms: HashMap<InfoHash, u64>,
     generation: u64,
+    last_publish: Instant,
+    /// Something changed since `last_publish`, too soon to publish it at once.
+    publish_owed: bool,
     tick_count: u64,
     last_tick: Instant,
     /// Wake-ups noticed this run (I1).
@@ -164,6 +225,12 @@ pub struct Actor {
     /// before a Resume can't undo it.
     resume_epoch: Arc<std::sync::atomic::AtomicU64>,
     deferred_settings: Option<Box<Settings>>,
+    /// The IP filter's reload (a session restart) waits for adds too.
+    deferred_reload: bool,
+    /// Since when a session restart has been waiting.
+    deferred_since: Option<Instant>,
+    /// The task looking for torrents that failed to load; it adds to its session.
+    restore_task: Option<JoinHandle<()>>,
     failed: HashMap<InfoHash, super::restore::FailedRestore>,
     undo_pending: HashMap<InfoHash, UndoEntry>,
     undo: HashMap<InfoHash, UndoEntry>,
@@ -192,6 +259,8 @@ pub struct Actor {
     /// Durations of the last 60 ticks (ms), for `SessionView::tick_max_ms`.
     tick_ms: std::collections::VecDeque<u32>,
     last_heartbeat: Option<Instant>,
+    /// The last heartbeat's write: one at a time, should the disk hang.
+    heartbeat_task: Option<JoinHandle<()>>,
     low_space_warned: bool,
     /// O5: the save folder's last probe, when the checks last started, whether one runs, and
     /// the problems last logged.
@@ -255,6 +324,7 @@ impl Actor {
             detail_target: None,
             history: VecDeque::with_capacity(HISTORY_LEN),
             torrent_history: HashMap::new(),
+            detail_history: VecDeque::new(),
             row_history: Default::default(),
             prev_peer: HashMap::new(),
             remote_prev: HashMap::new(),
@@ -263,6 +333,7 @@ impl Actor {
             mirrored_size: HashMap::new(),
             previews: HashMap::new(),
             pending: HashMap::new(),
+            cancelled_adds: HashSet::new(),
             next_pending: 1,
             busy: HashMap::new(),
             seen_unfinished: HashSet::new(),
@@ -271,6 +342,8 @@ impl Actor {
             seed_carry_ms: HashMap::new(),
             // Continue after a restart: the UI caches rows per generation (STABILITY.md D12).
             generation,
+            last_publish: Instant::now(),
+            publish_owed: false,
             tick_count: 0,
             wakes: 0,
             last_tick: Instant::now(),
@@ -282,6 +355,9 @@ impl Actor {
             resumed_at: HashMap::new(),
             resume_epoch: Default::default(),
             deferred_settings: None,
+            deferred_reload: false,
+            deferred_since: None,
+            restore_task: None,
             failed: HashMap::new(),
             undo_pending: HashMap::new(),
             undo: HashMap::new(),
@@ -297,6 +373,7 @@ impl Actor {
             stopping: false,
             tick_ms: std::collections::VecDeque::with_capacity(60),
             last_heartbeat: None,
+            heartbeat_task: None,
             low_space_warned: false,
             health_probe: Ok(()),
             health_at: None,
@@ -348,15 +425,26 @@ impl Actor {
                         // What the engine is busy with, for the watchdog and the stall banner (O6).
                         watchdog::doing(Doing::Command(watchdog::command_name(&cmd)));
                         self.handle(cmd).await;
-                        self.publish();
+                        self.publish_soon();
                         watchdog::doing(Doing::Idle);
                     }
                 },
                 Some(msg) = internal_rx.recv() => {
+                    // These change no row; the next tick carries free space and health.
+                    let visible = !matches!(
+                        msg,
+                        Internal::FreeSpace(_)
+                            | Internal::Health { .. }
+                            | Internal::PreviewFinished { .. }
+                            | Internal::WatchFileSettled(_)
+                    );
                     self.handle_internal(msg);
-                    self.publish();
+                    if visible {
+                        self.publish_soon();
+                    }
                     watchdog::actor_beat();
                 }
+                _ = tokio::time::sleep(PUBLISH_GAP), if self.publish_owed => self.publish(),
                 _ = tick.tick() => {
                     watchdog::doing(Doing::Tick);
                     self.tick();
@@ -459,6 +547,10 @@ impl Actor {
         if let Some(st) = &self.stream {
             st.set_session(None);
         }
+        // It holds the session and adds to it, which would rewrite session.json after the stop.
+        if let Some(t) = self.restore_task.take() {
+            t.abort();
+        }
         let mut stopped = true;
         if self.session.is_some() {
             self.drain_engine_calls().await;
@@ -475,10 +567,23 @@ impl Actor {
         stopped
     }
 
+    /// Only with no add running on the session (they would write to session.json after the new
+    /// session has started): see `adds_running`. Held adds start again on the new session.
+    async fn restart_session(&mut self) {
+        self.deferred_reload = false;
+        self.deferred_since = None;
+        self.stop_session().await;
+        self.start_session().await;
+        self.start_held_adds();
+    }
+
     async fn shutdown(&mut self, internal: &mut mpsc::Receiver<Internal>) {
         tracing::info!("engine shutting down");
         watchdog::doing(Doing::Shutdown);
         self.stopping = true;
+        for p in self.pending.values() {
+            p.cancel.cancel();
+        }
         // Let moves/rechecks finish (bounded): a torrent is out of the session while it is
         // re-added. Anything still running is recovered from its backup at the next start.
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -621,14 +726,13 @@ impl Actor {
             EngineCommand::CancelAdd(hash) => {
                 let ids: Vec<u64> = self.pending.iter().filter(|(_, p)| p.hash == hash).map(|(id, _)| *id).collect();
                 for id in ids {
-                    if let Some(p) = self.pending.remove(&id)
-                        && let Some(t) = p.task
-                    {
-                        t.abort();
-                    }
-                    // Cancelled by the user: keep the file, renamed so it isn't added again.
-                    if let Some((path, after)) = self.watch_adds.remove(&id) {
-                        self.settle_watch_file(path, after, false);
+                    let Some(p) = self.pending.remove(&id) else { continue };
+                    self.rss_adds.remove(&id);
+                    if p.held.is_none() {
+                        p.cancel.cancel();
+                        self.cancelled_adds.insert(id);
+                    } else {
+                        self.settle_cancelled_watch_file(id);
                     }
                 }
             }
@@ -781,14 +885,17 @@ impl Actor {
                 }
             }
             EngineCommand::ReloadIpFilter => {
-                if self.busy.is_empty() {
-                    self.stop_session().await;
-                    self.start_session().await;
+                if !self.busy.is_empty() {
+                    self.toast(ToastKind::Info, t!("Try again once running operations finish."));
+                } else if self.adds_running() {
+                    self.toast(ToastKind::Info, t!("Network settings will apply once running operations finish."));
+                    self.deferred_reload = true;
+                    self.deferred_since.get_or_insert_with(Instant::now);
+                } else {
+                    self.restart_session().await;
                     if self.engine_state == EngineState::Running {
                         self.toast(ToastKind::Success, t!("IP filter reloaded."));
                     }
-                } else {
-                    self.toast(ToastKind::Info, t!("Try again once running operations finish."));
                 }
             }
             EngineCommand::QueueMove { hashes, mv } => {
@@ -844,6 +951,8 @@ impl Actor {
             EngineCommand::SetDetailTarget(t) => {
                 if self.detail_target != t {
                     self.detail_target = t;
+                    self.detail_history =
+                        t.and_then(|h| self.torrent_history.get(&h)).map(RateRing::bytes).unwrap_or_default();
                     self.prev_peer.clear();
                     self.pieces_cache = None;
                 }
@@ -867,11 +976,18 @@ impl Actor {
                     }
                 }
                 let restart = self.settings.requires_restart(&new);
-                if restart && !self.busy.is_empty() {
+                if restart && (!self.busy.is_empty() || self.adds_running()) {
                     // Tasks hold the current session; restarting under them could corrupt its state.
                     self.toast(ToastKind::Info, t!("Network settings will apply once running operations finish."));
                     self.deferred_settings = Some(new);
+                    self.deferred_since.get_or_insert_with(Instant::now);
                     return;
+                }
+                // These settings are newer than any that wait.
+                self.deferred_settings = None;
+                if !restart && !self.deferred_reload {
+                    self.deferred_since = None;
+                    self.start_held_adds();
                 }
                 if self.settings.queue.enabled && !new.queue.enabled {
                     let queued: Vec<InfoHash> = self
@@ -889,8 +1005,7 @@ impl Actor {
                 self.settings = *new;
                 if restart {
                     tracing::info!("settings changed; restarting session");
-                    self.stop_session().await;
-                    self.start_session().await;
+                    self.restart_session().await;
                     if self.engine_state == EngineState::Running {
                         self.toast(ToastKind::Success, t!("Settings applied — reconnected."));
                     }
@@ -1201,19 +1316,71 @@ impl Actor {
                 started: now_unix(),
                 save_path: req.save_path.clone(),
                 added_by: req.added_by.clone(),
-                task: None,
+                cancel: Default::default(),
+                held: None,
             },
         );
+        if self.holding_adds() {
+            if let Some(p) = self.pending.get_mut(&pending) {
+                p.held = Some(req);
+            }
+        } else {
+            self.spawn_add(pending, req, sess);
+        }
+        Some(pending)
+    }
+
+    fn spawn_add(&mut self, pending: u64, req: Box<AddRequest>, sess: Arc<Session>) {
         let tx = self.internal_tx.clone();
         let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
-        let task = tokio::spawn(async move {
-            let result = add_torrent(&sess, &req, peer_limit).await.map_err(|e| format!("{e:#}"));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let token = cancel.clone();
+        tokio::spawn(async move {
+            let result = add_torrent(&sess, &req, peer_limit, &token).await.map_err(|e| format!("{e:#}"));
             let _ = tx.send(Internal::AddFinished { pending, req, result }).await;
         });
         if let Some(p) = self.pending.get_mut(&pending) {
-            p.task = Some(task);
+            p.cancel = cancel;
         }
-        Some(pending)
+    }
+
+    /// An add is at work on the current session.
+    fn adds_running(&self) -> bool {
+        !self.cancelled_adds.is_empty() || self.pending.values().any(|p| p.held.is_none())
+    }
+
+    /// A session restart has waited long enough: new adds wait for the new session.
+    fn holding_adds(&self) -> bool {
+        self.deferred_since.is_some_and(|t| t.elapsed() >= RESTART_WAITS_FOR_ADDS)
+    }
+
+    /// Cancelled by the user: keep the watch-folder file, renamed so it isn't added again.
+    fn settle_cancelled_watch_file(&mut self, id: u64) {
+        if let Some((path, after)) = self.watch_adds.remove(&id) {
+            self.settle_watch_file(path, after, false);
+        }
+    }
+
+    /// Adds that stopped for a session restart start again (on the new session).
+    fn start_held_adds(&mut self) {
+        let ids: Vec<u64> = self.pending.iter().filter(|(_, p)| p.held.is_some()).map(|(id, _)| *id).collect();
+        for id in ids {
+            let Some(req) = self.pending.get_mut(&id).and_then(|p| p.held.take()) else { continue };
+            if let Some(sess) = self.session.clone() {
+                self.spawn_add(id, req, sess);
+                continue;
+            }
+            // The new session didn't start.
+            self.pending.remove(&id);
+            self.toast(ToastKind::Error, t!("The engine is not running; cannot add torrents."));
+            if let Some((path, _)) = self.watch_adds.remove(&id) {
+                self.watch.release(&path);
+            }
+            if let Some(d) = self.rss_adds.remove(&id) {
+                let rss = self.settings.rss.clone();
+                self.rss.forget(&d, &rss);
+            }
+        }
     }
 
     fn start_readd(
@@ -1536,7 +1703,7 @@ impl Actor {
         let tx = self.internal_tx.clone();
         let skip: HashSet<InfoHash> = self.store.data.purge.iter().copied().collect();
         let peer_limit = Some(self.settings.connection.max_peers_per_torrent).filter(|n| *n > 0);
-        tokio::spawn(async move {
+        self.restore_task = Some(tokio::spawn(async move {
             let mut failed = Vec::new();
             for mut f in super::restore::persisted_entries(&dir) {
                 if skip.contains(&f.hash) || sess.get(TorrentIdOrHash::Hash(Id20::new(f.hash.0))).is_some() {
@@ -1552,8 +1719,8 @@ impl Actor {
                     }
                 }
             }
-            let _ = tx.send(Internal::RestoreReport(failed)).await;
-        });
+            let _ = tx.send(Internal::RestoreReport(sess, failed)).await;
+        }));
     }
 
     fn retry_failed(&mut self, hash: InfoHash) {
@@ -1720,6 +1887,9 @@ impl Actor {
         self.static_info.remove(hash);
         self.mirrored_size.remove(hash);
         self.torrent_history.remove(hash);
+        if self.detail_target == Some(*hash) {
+            self.detail_history.clear();
+        }
         self.seen_unfinished.remove(hash);
         self.last_down_active.remove(hash);
         self.seed_carry_ms.remove(hash);
@@ -1727,15 +1897,31 @@ impl Actor {
         self.resumed_at.remove(hash);
     }
 
+    /// A session restart that waits: run it once nothing holds the session. Adds get a bounded
+    /// wait, then those fetching metadata stop and are held for the new session; one that is
+    /// past that (writing to the engine's list) always gets to finish.
     fn maybe_apply_deferred(&mut self) {
-        if self.busy.is_empty()
-            && let Some(s) = self.deferred_settings.take()
-            && let Err(mpsc::error::TrySendError::Full(EngineCommand::ApplySettings(s))) =
+        if (self.deferred_settings.is_none() && !self.deferred_reload) || !self.busy.is_empty() {
+            return;
+        }
+        if self.adds_running() {
+            if self.holding_adds() {
+                for p in self.pending.values() {
+                    p.cancel.cancel();
+                }
+            }
+            return;
+        }
+        // If the actor's own queue is full: try again on the next tick (waiting here would
+        // deadlock, the actor is the one that empties it).
+        if let Some(s) = self.deferred_settings.take() {
+            if let Err(mpsc::error::TrySendError::Full(EngineCommand::ApplySettings(s))) =
                 self.self_tx.try_send(EngineCommand::ApplySettings(s))
-        {
-            // The actor's own queue is full: try again on the next tick (waiting here would
-            // deadlock, the actor is the one that empties it).
-            self.deferred_settings = Some(s);
+            {
+                self.deferred_settings = Some(s);
+            }
+        } else if self.self_tx.try_send(EngineCommand::ReloadIpFilter).is_ok() {
+            self.deferred_reload = false;
         }
     }
 
@@ -1766,7 +1952,24 @@ impl Actor {
                 self.previews.remove(&req);
             }
             Internal::AddFinished { pending, req, result } => {
+                // Stopped for a session restart: nothing happened, it starts again after it.
+                if result.as_ref().is_err_and(|e| e == ADD_CANCELLED)
+                    && let Some(p) = self.pending.get_mut(&pending)
+                {
+                    p.held = Some(req);
+                    if self.deferred_since.is_none() {
+                        self.start_held_adds();
+                    }
+                    self.maybe_apply_deferred();
+                    return;
+                }
                 self.pending.remove(&pending);
+                let cancelled = self.cancelled_adds.remove(&pending);
+                self.maybe_apply_deferred();
+                if cancelled && result.is_err() {
+                    self.settle_cancelled_watch_file(pending);
+                    return;
+                }
                 if let Some(d) = self.rss_adds.remove(&pending)
                     && let Err(e) = &result
                     && !is_duplicate_error(e)
@@ -1779,7 +1982,8 @@ impl Actor {
                 }
                 match result {
                     Ok((hash, name)) => {
-                        self.unrecorded.remove(&hash);
+                        // A record of its own, or only the default one a tick gave it meanwhile?
+                        let fresh = self.unrecorded.remove(&hash) || self.store.get(&hash).is_none();
                         let top = req.add_to_top;
                         // A watch-folder file follows its folder's after-add setting instead of the
                         // general "delete the .torrent" one below.
@@ -1795,10 +1999,20 @@ impl Actor {
                         let m = self.store.meta_mut(hash);
                         m.metainfo_missing = false;
                         m.name = name.clone();
-                        m.category = req.category.clone();
-                        m.tags = req.tags.clone();
-                        m.added_by = req.added_by.clone();
-                        m.added_at = now_unix();
+                        // Added again with its record still there (a failed load kept it, as its
+                        // row promised): what the request doesn't set stays.
+                        if fresh || req.category.is_some() {
+                            m.category = req.category.clone();
+                        }
+                        if fresh || !req.tags.is_empty() {
+                            m.tags = req.tags.clone();
+                        }
+                        if fresh || req.added_by.is_some() {
+                            m.added_by = req.added_by.clone();
+                        }
+                        if fresh {
+                            m.added_at = now_unix();
+                        }
                         m.pause_reason = req.paused.then_some(PauseReason::User);
                         if let AddSource::Magnet(s) = &req.source {
                             m.source_magnet = Some(s.clone());
@@ -1887,7 +2101,10 @@ impl Actor {
                     }
                 }
             }
-            Internal::RestoreReport(list) => {
+            Internal::RestoreReport(sess, list) => {
+                if !self.session.as_ref().is_some_and(|s| Arc::ptr_eq(s, &sess)) {
+                    return;
+                }
                 if !list.is_empty() {
                     let n = list.len();
                     self.toast(
@@ -2004,6 +2221,7 @@ impl Actor {
             ("mirrored_size", self.mirrored_size.len()),
             ("previews", self.previews.len()),
             ("pending", self.pending.len()),
+            ("cancelled_adds", self.cancelled_adds.len()),
             ("busy", self.busy.len()),
             ("seen_unfinished", self.seen_unfinished.len()),
             ("unrecorded", self.unrecorded.len()),
@@ -2026,6 +2244,7 @@ impl Actor {
     }
 
     fn tick_inner(&mut self) {
+        self.maybe_apply_deferred();
         let raw = self.last_tick.elapsed() + crate::faults::take_tick_jump(&self.paths.data_dir);
         self.last_tick = Instant::now();
         self.tick_count += 1;
@@ -2280,19 +2499,10 @@ impl Actor {
             allowed_ranges: sess.allowlist.as_ref().map(|a| a.len()),
         };
 
-        // Activity sparklines: the last minute or so, refreshed every other tick.
+        // Activity sparklines: the last minute or so, refreshed every other tick. A torrent
+        // without a row here was idle all that time (the table draws a flat line).
         if self.tick_count.is_multiple_of(2) {
-            const ROW_SAMPLES: usize = 40;
-            let kib = |b: u64| (b / 1024).min(u32::MAX as u64) as u32;
-            self.row_history = Arc::new(
-                self.torrent_history
-                    .iter()
-                    .map(|(h, v)| {
-                        let skip = v.len().saturating_sub(ROW_SAMPLES);
-                        (*h, v.iter().skip(skip).map(|(d, u)| (kib(*d), kib(*u))).collect())
-                    })
-                    .collect(),
-            );
+            self.row_history = Arc::new(self.torrent_history.iter().map(|(h, r)| (*h, r.iter().collect())).collect());
         }
 
         self.generation += 1;
@@ -2335,6 +2545,7 @@ impl Actor {
                 .collect(),
         };
         self.snapshot.store(Arc::new(snap));
+        self.publish_owed = false;
         self.store.maybe_save();
         if let Some(e) = self.store.take_save_error() {
             self.emit(EngineEvent::DataWarning(t!(
@@ -2344,8 +2555,12 @@ impl Actor {
         }
         self.check_free_space();
         if self.last_heartbeat.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
-            // For D14: when this run was last alive, should the computer lose power.
-            crate::crash::heartbeat(&self.paths.log_dir());
+            // For D14: when this run was last alive, should the computer lose power. Off the
+            // engine's thread: a sleeping disk must not stall it.
+            if self.heartbeat_task.as_ref().is_none_or(|t| t.is_finished()) {
+                let log_dir = self.paths.log_dir();
+                self.heartbeat_task = Some(tokio::task::spawn_blocking(move || crate::crash::heartbeat(&log_dir)));
+            }
             self.last_heartbeat = Some(Instant::now());
         }
         self.wake.wake();
@@ -2365,7 +2580,7 @@ impl Actor {
         let stats = h.stats();
         let has_metadata = h.with_metadata(|_| ()).is_ok();
         if has_metadata && !self.static_info.contains_key(&hash) {
-            self.static_info.insert(hash, static_info(h));
+            self.static_info.insert(hash, Arc::new(static_info(h)));
         }
         let si = self.static_info.get(&hash).cloned().unwrap_or_default();
 
@@ -2395,7 +2610,7 @@ impl Actor {
             && self.last_down_active.get(&hash).map(|t| t.elapsed() > STALL_AFTER).unwrap_or(false);
 
         let name_engine = h.name();
-        if self.pending.is_empty() {
+        if self.pending.is_empty() && self.cancelled_adds.is_empty() {
             self.unrecorded.clear();
         } else if self.store.get(&hash).is_none() {
             self.unrecorded.insert(hash);
@@ -2516,8 +2731,8 @@ impl Actor {
         let (save_path, content_path) = if si.multi_file {
             (output.parent().map(Path::to_path_buf).unwrap_or_else(|| output.clone()), output.clone())
         } else {
-            let first = h.with_metadata(|md| md.file_infos.first().map(|f| f.relative_filename.clone())).ok().flatten();
-            (output.clone(), first.map(|f| output.join(f)).unwrap_or_else(|| output.clone()))
+            let content = si.first_file.as_ref().map(|f| output.join(f)).unwrap_or_else(|| output.clone());
+            (output.clone(), content)
         };
 
         let name = m
@@ -2554,7 +2769,12 @@ impl Actor {
             completed_at: m.completed_at,
             queue_pos: m.queue_pos,
             added_by: m.added_by.clone(),
-            trackers: h.shared().trackers.iter().map(|u| u.to_string()).collect(),
+            // (Known without metadata too: a magnet being looked for.)
+            trackers: if has_metadata {
+                si.trackers.clone()
+            } else {
+                h.shared().trackers.iter().map(|u| u.to_string()).collect()
+            },
             has_metadata,
             file_count: si.file_count,
             piece_count: si.piece_count,
@@ -2571,11 +2791,14 @@ impl Actor {
             restore_failed: false,
         };
 
-        let hist = self.torrent_history.entry(hash).or_default();
-        if hist.len() >= HISTORY_LEN {
-            hist.pop_front();
+        let kib = |b: u64| (b / 1024).min(u32::MAX as u64) as u32;
+        push_rate(&mut self.torrent_history, hash, (kib(down_bps), kib(up_bps)));
+        if self.detail_target == Some(hash) {
+            if self.detail_history.len() >= HISTORY_LEN {
+                self.detail_history.pop_front();
+            }
+            self.detail_history.push_back((down_bps, up_bps));
         }
-        hist.push_back((down_bps, up_bps));
 
         if completed_event {
             let b = &self.settings.behavior;
@@ -2666,7 +2889,7 @@ impl Actor {
             files,
             peers,
             pieces,
-            history: self.torrent_history.get(&hash).cloned().unwrap_or_default(),
+            history: self.torrent_history.get(&hash).map(RateRing::bytes).unwrap_or_default(),
         })
     }
 
@@ -2688,13 +2911,7 @@ impl Actor {
         }
         let pieces = self.pieces_cache.as_ref().filter(|(_, ph, _)| *ph == hash).map(|(_, _, p)| p.clone());
 
-        TorrentDetail {
-            hash,
-            files,
-            peers,
-            pieces,
-            history: self.torrent_history.get(&hash).cloned().unwrap_or_default(),
-        }
+        TorrentDetail { hash, files, peers, pieces, history: self.detail_history.clone() }
     }
 
     /// Stream sessions with torrent names, smoothed rates and file availability.
@@ -2776,7 +2993,18 @@ impl Actor {
         out
     }
 
+    /// `publish`, unless one just went out: then within `PUBLISH_GAP` (or with the next tick).
+    fn publish_soon(&mut self) {
+        if self.last_publish.elapsed() >= PUBLISH_GAP {
+            self.publish();
+        } else {
+            self.publish_owed = true;
+        }
+    }
+
     fn publish(&mut self) {
+        self.last_publish = Instant::now();
+        self.publish_owed = false;
         // Re-publish the last snapshot with fresh engine state / categories after a command.
         let old = self.snapshot.load_full();
         let mut snap = (*old).clone();
@@ -2924,6 +3152,18 @@ impl Actor {
     }
 }
 
+/// One more sample of a torrent's rates; a torrent idle for all its samples loses its ring.
+fn push_rate(history: &mut HashMap<InfoHash, RateRing>, hash: InfoHash, sample: (u32, u32)) {
+    if sample != (0, 0) {
+        history.entry(hash).or_insert_with(RateRing::new).push(sample);
+    } else if let Some(ring) = history.get_mut(&hash) {
+        ring.push(sample);
+        if ring.idle() {
+            history.remove(&hash);
+        }
+    }
+}
+
 fn pending_hash(n: u64) -> InfoHash {
     let mut h = [0xffu8; 20];
     h[12..20].copy_from_slice(&n.to_be_bytes());
@@ -2957,7 +3197,7 @@ fn pending_view(p: &PendingAdd) -> TorrentView {
         completed_at: None,
         queue_pos: u32::MAX,
         added_by: p.added_by.clone(),
-        trackers: Vec::new(),
+        trackers: Default::default(),
         has_metadata: false,
         file_count: 0,
         piece_count: 0,
@@ -2985,7 +3225,8 @@ fn failed_view(f: &super::restore::FailedRestore, m: Option<&crate::store::Torre
         started: m.map(|m| m.added_at).unwrap_or(0),
         save_path: f.output_folder.clone(),
         added_by: None,
-        task: None,
+        cancel: Default::default(),
+        held: None,
     });
     v.state = TorrentState::Error;
     v.error = Some(f.error.clone());
@@ -3023,6 +3264,8 @@ fn static_info(h: &ManagedTorrent) -> StaticInfo {
             comment: parsed.as_ref().and_then(|p| text(&p.comment)),
             created_by: parsed.as_ref().and_then(|p| text(&p.created_by)),
             creation_date: parsed.as_ref().and_then(|p| p.creation_date.map(|d| d as i64)),
+            trackers: h.shared().trackers.iter().map(|u| u.to_string()).collect(),
+            first_file: m.file_infos.first().map(|f| f.relative_filename.clone()),
         }
     })
     .unwrap_or_default()
@@ -3138,16 +3381,47 @@ pub fn sanitize_name(name: &str) -> String {
 /// The end of the error an add returns for a torrent that is already in the list.
 const DUPLICATE: &str = "is already in your list";
 
+/// The error of an add stopped through its `PendingAdd::cancel`.
+const ADD_CANCELLED: &str = "add cancelled";
+
 /// True for the error of an add that found its torrent already in the list.
 fn is_duplicate_error(e: &str) -> bool {
     e.ends_with(DUPLICATE)
 }
 
+/// Stopping (`cancel`) works up to the moment the engine is asked to add: that part only looks
+/// for the metadata and can take forever. What follows isn't stopped: it lands, or fails by
+/// itself, and either way reports back, so a torrent can't be left half-added.
 async fn add_torrent(
     sess: &Arc<Session>,
     req: &AddRequest,
     peer_limit: Option<usize>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<(InfoHash, String)> {
+    let prepared = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!(ADD_CANCELLED),
+        prepared = prepare_add(sess, req, peer_limit) => prepared?,
+    };
+    let (hash, name, bytes, opts) = prepared;
+    // Tests: a slow disk — past the point of stopping, not in the engine's list yet.
+    if let Some(d) = crate::faults::call_delay(hash.0) {
+        tokio::time::sleep(d).await;
+    }
+    match sess.add_torrent(AddTorrent::from_bytes(bytes), Some(opts)).await? {
+        AddTorrentResponse::Added(_, _) => Ok((hash, name)),
+        AddTorrentResponse::AlreadyManaged(_, _) => anyhow::bail!("“{name}” {DUPLICATE}"),
+        AddTorrentResponse::ListOnly(_) => anyhow::bail!("unexpected response from engine"),
+    }
+}
+
+/// Everything before the engine is asked to add: the metainfo (a magnet's metadata, a URL), the
+/// checks, the folder.
+async fn prepare_add(
+    sess: &Arc<Session>,
+    req: &AddRequest,
+    peer_limit: Option<usize>,
+) -> anyhow::Result<(InfoHash, String, Vec<u8>, AddTorrentOptions)> {
     let bytes = match &req.torrent_bytes {
         Some(b) => b.clone(),
         None => fetch_torrent_bytes(sess, &req.source).await?,
@@ -3177,11 +3451,7 @@ async fn add_torrent(
         initial_peers: req.initial_peers.clone(),
         ..Default::default()
     };
-    match sess.add_torrent(AddTorrent::from_bytes(bytes), Some(opts)).await? {
-        AddTorrentResponse::Added(_, _) => Ok((hash, name)),
-        AddTorrentResponse::AlreadyManaged(_, _) => anyhow::bail!("“{name}” {DUPLICATE}"),
-        AddTorrentResponse::ListOnly(_) => anyhow::bail!("unexpected response from engine"),
-    }
+    Ok((hash, name, bytes, opts))
 }
 
 /// Forget a torrent and add it back with changed options. librqbit has no runtime API for
@@ -3344,6 +3614,96 @@ mod tests {
 #[cfg(test)]
 mod more_tests {
     use super::*;
+
+    #[test]
+    fn a_rate_ring_keeps_the_last_samples_in_order() {
+        let mut ring = RateRing::new();
+        ring.push((1, 2));
+        ring.push((3, 4));
+        let got: Vec<_> = ring.iter().collect();
+        assert_eq!(got.len(), ROW_SAMPLES);
+        assert_eq!(got[ROW_SAMPLES - 2..], [(1, 2), (3, 4)], "newest last, zeros before");
+        for i in 0..ROW_SAMPLES as u32 + 5 {
+            ring.push((i, 0));
+        }
+        let got: Vec<_> = ring.iter().map(|(d, _)| d).collect();
+        let want: Vec<u32> = (5..ROW_SAMPLES as u32 + 5).collect();
+        assert_eq!(got, want, "wraps around");
+        let bytes = ring.bytes();
+        assert_eq!(bytes.back(), Some(&((ROW_SAMPLES as u64 + 4) * 1024, 0)));
+    }
+
+    #[test]
+    fn an_idle_torrent_has_no_rate_ring() {
+        let mut history = HashMap::new();
+        let h = InfoHash([1; 20]);
+        push_rate(&mut history, h, (0, 0));
+        assert!(history.is_empty(), "never active");
+        push_rate(&mut history, h, (5, 0));
+        for i in 0..ROW_SAMPLES {
+            assert!(history.contains_key(&h), "still has a rate in view at {i}");
+            push_rate(&mut history, h, (0, 0));
+        }
+        assert!(history.is_empty(), "idle for the whole window");
+    }
+
+    #[test]
+    fn five_thousand_rate_rings_stay_small() {
+        // It was a VecDeque of up to 600 u64 pairs per torrent: about 80 MiB at 5k.
+        assert!(std::mem::size_of::<RateRing>() * 5000 < 2 << 20);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_feed_add_forgets_its_article() {
+        let dir = std::env::temp_dir().join(format!("corrent-cancel-rss-{}", std::process::id()));
+        let paths = Paths { data_dir: dir.clone(), portable: true };
+        let (events, _rx) = std::sync::mpsc::channel();
+        let (tx, _cmds) = mpsc::channel(8);
+        let snapshot = Arc::new(ArcSwap::from_pointee(Snapshot::default()));
+        let mut actor = Actor::new(paths, Settings::default(), Wake::noop(), events, snapshot, tx);
+        let hash = pending_hash(1);
+        actor.pending.insert(
+            1,
+            PendingAdd {
+                name: String::new(),
+                hash,
+                started: 0,
+                save_path: PathBuf::new(),
+                added_by: None,
+                cancel: Default::default(),
+                held: None,
+            },
+        );
+        actor.rss_adds.insert(
+            1,
+            crate::rss::Download {
+                link: String::new(),
+                title: String::new(),
+                rule: Default::default(),
+                key: String::new(),
+                episode: None,
+            },
+        );
+        actor.handle(EngineCommand::CancelAdd(hash)).await;
+        assert!(actor.pending.is_empty() && actor.rss_adds.is_empty());
+        assert!(actor.cancelled_adds.contains(&1), "until it reports back");
+        let req = Box::new(AddRequest {
+            source: AddSource::Magnet(String::new()),
+            torrent_bytes: None,
+            save_path: PathBuf::new(),
+            create_subfolder: false,
+            category: None,
+            tags: Vec::new(),
+            paused: false,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        });
+        actor.handle_internal(Internal::AddFinished { pending: 1, req, result: Err(ADD_CANCELLED.into()) });
+        assert!(actor.cancelled_adds.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn pending_hashes_are_unique_and_marked() {

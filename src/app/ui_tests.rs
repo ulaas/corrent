@@ -366,7 +366,7 @@ fn perf_5000_torrents() {
                 up_bps: (i as u64 % 7) * 1000,
                 category: (i % 3 == 0).then(|| format!("cat{}", i % 10)),
                 tags: if i % 4 == 0 { vec!["a".into(), "b".into()] } else { vec![] },
-                trackers: vec![format!("udp://tracker{}.example.org:1337/announce", i % 20)],
+                trackers: vec![format!("udp://tracker{}.example.org:1337/announce", i % 20)].into(),
                 save_path: PathBuf::from("C:/Downloads/Corrent"),
                 content_path: PathBuf::from(format!("C:/Downloads/Corrent/file{i}")),
                 added_at: i as i64,

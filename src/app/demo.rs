@@ -221,7 +221,7 @@ pub fn snapshot(selected: Option<InfoHash>) -> Snapshot {
             added_at: NOW - 3600 * (i as i64 * 7 + 2),
             completed_at: (r.progress >= 1.0).then_some(NOW - 3600 * (i as i64 * 5 + 1)),
             queue_pos: i as u32,
-            trackers: vec![r.tracker.into()],
+            trackers: vec![r.tracker.into()].into(),
             has_metadata: r.state != TorrentState::Metadata,
             file_count: r.files,
             piece_count: (r.size / (4 * MIB)).max(1) as u32,

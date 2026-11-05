@@ -96,11 +96,25 @@ fn torrent_from_bytes(bytes: Bytes) -> anyhow::Result<ParsedTorrentFile> {
 #[derive(Default)]
 pub struct SessionDatabase {
     torrents: HashMap<TorrentId, ManagedTorrentHandle>,
+    // CORRENT PATCH: finding a torrent by hash scanned the list, which made a command over many
+    // torrents quadratic. Kept in step by add_torrent and remove_torrent.
+    by_hash: HashMap<Id20, TorrentId>,
 }
 
 impl SessionDatabase {
     fn add_torrent(&mut self, torrent: ManagedTorrentHandle, id: TorrentId) {
+        self.by_hash.insert(torrent.info_hash(), id);
         self.torrents.insert(id, torrent);
+    }
+
+    fn remove_torrent(&mut self, id: TorrentId) -> Option<ManagedTorrentHandle> {
+        let removed = self.torrents.remove(&id)?;
+        self.by_hash.remove(&removed.info_hash());
+        Some(removed)
+    }
+
+    fn get_by_hash(&self, hash: Id20) -> Option<&ManagedTorrentHandle> {
+        self.torrents.get(self.by_hash.get(&hash)?)
     }
 }
 
@@ -965,10 +979,8 @@ impl Session {
         let (id, torrent) = self
             .db
             .read()
-            .torrents
-            .iter()
-            .find(|(_, t)| t.info_hash() == h.info_hash)
-            .map(|(id, t)| (*id, t.clone()))
+            .get_by_hash(h.info_hash)
+            .map(|t| (t.id(), t.clone()))
             .with_context(|| format!("didn't find a matching torrent {:?}", h.info_hash))?;
 
         let live = torrent
@@ -1090,6 +1102,13 @@ impl Session {
             if let Err(e) = torrent.pause() {
                 debug!("error pausing torrent: {e:#}");
             }
+        }
+        // CORRENT PATCH (F16): what the coalescing store still owes. The pauses above aren't in
+        // it: a stopped session must come back with its torrents running as before.
+        if let Some(p) = self.persistence.as_ref()
+            && let Err(e) = p.stop().await
+        {
+            warn!(storage=?p, error=?e, "error saving the session at stop")
         }
         self.cancellation_token.cancel();
         // this sucks, but hopefully will be enough
@@ -1352,14 +1371,8 @@ impl Session {
 
         let (managed_torrent, metadata) = {
             let mut g = self.db.write();
-            if let Some((id, handle)) = g.torrents.iter().find_map(|(eid, t)| {
-                if t.info_hash() == info_hash || *eid == id {
-                    Some((*eid, t.clone()))
-                } else {
-                    None
-                }
-            }) {
-                return Ok(AddTorrentResponse::AlreadyManaged(id, handle));
+            if let Some(handle) = g.get_by_hash(info_hash).or_else(|| g.torrents.get(&id)) {
+                return Ok(AddTorrentResponse::AlreadyManaged(handle.id(), handle.clone()));
             }
 
             let span = debug_span!(parent: self.rs(), "torrent", id);
@@ -1417,7 +1430,7 @@ impl Session {
         if let Some(p) = self.persistence.as_ref()
             && let Err(e) = p.store(id, &managed_torrent).await
         {
-            self.db.write().torrents.remove(&id);
+            self.db.write().remove_torrent(id);
             return Err(e);
         }
 
@@ -1437,13 +1450,7 @@ impl Session {
     pub fn get(&self, id: TorrentIdOrHash) -> Option<ManagedTorrentHandle> {
         match id {
             TorrentIdOrHash::Id(id) => self.db.read().torrents.get(&id).cloned(),
-            TorrentIdOrHash::Hash(id) => self.db.read().torrents.iter().find_map(|(_, v)| {
-                if v.info_hash() == id {
-                    Some(v.clone())
-                } else {
-                    None
-                }
-            }),
+            TorrentIdOrHash::Hash(id) => self.db.read().get_by_hash(id).cloned(),
         }
     }
 
@@ -1453,22 +1460,14 @@ impl Session {
             TorrentIdOrHash::Hash(h) => self
                 .db
                 .read()
-                .torrents
-                .values()
-                .find_map(|v| {
-                    if v.info_hash() == h {
-                        Some(v.id())
-                    } else {
-                        None
-                    }
-                })
+                .get_by_hash(h)
+                .map(|v| v.id())
                 .context("no such torrent in db")?,
         };
         let removed = self
             .db
             .write()
-            .torrents
-            .remove(&id)
+            .remove_torrent(id)
             .with_context(|| format!("torrent with id {id} did not exist"))?;
 
         if let Err(e) = removed.pause() {

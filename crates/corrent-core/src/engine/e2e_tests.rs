@@ -852,14 +852,7 @@ pub(super) async fn add_tiny_torrents_pub(l: &Leecher, dir: &Path, n: u8) -> Vec
 /// Add `n` tiny paused torrents (made-up piece hashes; nothing to download) and wait for them.
 async fn add_tiny_torrents(l: &Leecher, dir: &Path, n: u8) -> Vec<InfoHash> {
     for i in 0..n {
-        let name = format!("tiny-{i:03}.bin");
-        let mut info =
-            format!("d6:lengthi16384e4:name{}:{name}12:piece lengthi16384e6:pieces20:", name.len()).into_bytes();
-        info.extend_from_slice(&[i.wrapping_add(100); 20]);
-        info.push(b'e');
-        let mut bytes = b"d4:info".to_vec();
-        bytes.extend_from_slice(&info);
-        bytes.push(b'e');
+        let bytes = tiny_torrent(&format!("tiny-{i:03}.bin"), i.wrapping_add(100));
         l.engine.send(EngineCommand::Add(Box::new(AddRequest {
             source: AddSource::Bytes { name: format!("{i}.torrent"), bytes },
             torrent_bytes: None,
@@ -1028,14 +1021,18 @@ async fn perf_session_flush_cost() {
     let n = 250;
     let t = Instant::now();
     add_tiny_torrents(&l, &dir, n).await;
-    println!("add {n}: {:?}", t.elapsed());
-    // A Flush queued behind the command is answered once the actor has worked through it.
-    for (what, cmd) in [("resume all", EngineCommand::ResumeAll), ("pause all", EngineCommand::PauseAll)] {
-        let t = Instant::now();
+    println!("add {n}: {:?}, {} writes", t.elapsed(), session_writes(&l.paths));
+    first_checks_done(&l).await;
+    // Until every torrent has changed, which takes its engine call, plus the write it owes.
+    for (what, cmd, paused) in
+        [("resume all", EngineCommand::ResumeAll, false), ("pause all", EngineCommand::PauseAll, true)]
+    {
+        let (t, before) = (Instant::now(), session_writes(&l.paths));
         l.engine.send(cmd);
-        let engine = l.engine.clone();
-        assert!(tokio::task::spawn_blocking(move || engine.flush_blocking(Duration::from_secs(300))).await.unwrap());
-        println!("{what} {n}: {:?}", t.elapsed());
+        wait_for(&l, what, 120, |sn| sn.torrents.iter().all(|r| (r.state == TorrentState::Paused) == paused)).await;
+        let changed = t.elapsed();
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        println!("{what} {n}: {changed:?}, {} writes", session_writes(&l.paths) - before);
     }
     stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
@@ -1799,5 +1796,514 @@ async fn a_rebuild_without_readable_records_touches_nothing() {
     assert!(db.ends_with(b"garbage"), "the list is left as it is");
     assert_eq!(bitv.exists(), had_bitv, "piece state kept");
     assert_eq!(std::fs::read(paths.store_file()).unwrap(), br#"{"schema_version":99,"torrents":5}"#);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The torrents the engine's list on disk holds.
+fn session_list(paths: &Paths) -> Vec<String> {
+    let db: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(paths.session_dir().join("session.json")).unwrap()).unwrap();
+    db["torrents"].as_object().unwrap().values().map(|e| e["info_hash"].as_str().unwrap().to_string()).collect()
+}
+
+fn add_url(l: &Leecher, dir: &Path, url: String) {
+    l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        source: AddSource::Url(url),
+        torrent_bytes: None,
+        save_path: dir.join("dl"),
+        create_subfolder: true,
+        category: Some("Late".into()),
+        tags: Vec::new(),
+        paused: true,
+        only_files: None,
+        add_to_top: false,
+        initial_peers: None,
+        added_by: None,
+    })));
+}
+
+/// Settings that need a session restart.
+fn restart_settings(dir: &Path) -> Box<crate::config::Settings> {
+    let mut cfg = settings(dir);
+    cfg.connection.max_peers_per_torrent += 1;
+    Box::new(cfg)
+}
+
+/// Wait for a toast with `text` in it; the other toasts seen on the way are returned too.
+async fn toast_with(l: &Leecher, text: &str, secs: u64) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let mut seen = Vec::new();
+    loop {
+        match l.events.try_recv() {
+            Ok(EngineEvent::Toast(_, t)) => {
+                let found = t.contains(text);
+                seen.push(t);
+                if found {
+                    return seen;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {
+                assert!(Instant::now() < deadline, "no toast with “{text}”: {seen:?}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
+
+/// A session restart waits for an add that is still fetching its metadata: run under it, the add
+/// would land in the old session and rewrite session.json from the old list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restart_waits_for_an_add_fetching_its_metadata() {
+    use super::faultserver::{self, Route};
+    let dir = temp_dir("restart-add");
+    let s = seeder(&dir).await;
+    let srv = faultserver::start().await;
+    let chunk = s.bytes.len() / 8 + 1;
+    srv.route("/a.torrent", Route::Slow { body: s.bytes.clone(), chunk, pause: Duration::from_millis(400) });
+    let l = start(&dir);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    add_url(&l, &dir, srv.url("/a.torrent"));
+    wait_for(&l, "the pending add", 10, |sn| sn.torrents.iter().any(|t| t.pending)).await;
+    l.engine.send(EngineCommand::ApplySettings(restart_settings(&dir)));
+    let seen = toast_with(&l, "Settings applied", 30).await;
+    assert!(seen.iter().any(|t| t.contains("will apply once")), "{seen:?}");
+    assert!(!seen.iter().any(|t| t.contains("Could not add")), "{seen:?}");
+    let snap = wait_for(&l, "the late torrent", 20, |sn| {
+        find(sn, s.hash).is_some_and(|t| t.category.as_deref() == Some("Late"))
+    })
+    .await;
+    assert_eq!(snap.torrents.iter().filter(|t| t.pending).count(), 0);
+    assert_eq!(srv.hits("/a.torrent"), 1, "it wasn't stopped");
+    // Added on the new session; the file must list this one and the one before the restart.
+    let tiny = {
+        l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+            source: AddSource::Bytes { name: "b.torrent".into(), bytes: tiny_torrent("after.bin", 7) },
+            torrent_bytes: None,
+            save_path: dir.join("dl"),
+            create_subfolder: false,
+            category: Some("After".into()),
+            tags: Vec::new(),
+            paused: true,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        })));
+        let snap = wait_for(&l, "the new session's add", 20, |sn| {
+            sn.torrents.iter().any(|t| t.category.as_deref() == Some("After"))
+        })
+        .await;
+        snap.torrents.iter().find(|t| t.category.as_deref() == Some("After")).unwrap().hash
+    };
+    let paths = stop(l).await;
+    let list = session_list(&paths);
+    assert!(list.contains(&s.hash.to_hex()) && list.contains(&tiny.to_hex()), "{list:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// One tiny torrent's metainfo (made-up piece hash).
+fn tiny_torrent(name: &str, fill: u8) -> Vec<u8> {
+    let mut bytes =
+        format!("d4:infod6:lengthi16384e4:name{}:{name}12:piece lengthi16384e6:pieces20:", name.len()).into_bytes();
+    bytes.extend_from_slice(&[fill; 20]);
+    bytes.extend_from_slice(b"ee");
+    bytes
+}
+
+/// A dead magnet never resolves, so the restart's wait is bounded: the add stops, the session
+/// restarts, and the add starts again on the new session (the row stays all along).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restart_stops_waiting_for_a_dead_add_and_adds_it_afterwards() {
+    use super::faultserver::{self, Route};
+    let dir = temp_dir("restart-dead-add");
+    let s = seeder(&dir).await;
+    let srv = faultserver::start().await;
+    srv.route("/a.torrent", Route::Hang);
+    let l = start(&dir);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    add_url(&l, &dir, srv.url("/a.torrent"));
+    wait_for(&l, "the pending add", 10, |sn| sn.torrents.iter().any(|t| t.pending)).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while srv.hits("/a.torrent") == 0 {
+        assert!(Instant::now() < deadline, "the add never asked the server");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let began = Instant::now();
+    l.engine.send(EngineCommand::ApplySettings(restart_settings(&dir)));
+    // It answers the next time; the first request still hangs.
+    srv.route(
+        "/a.torrent",
+        Route::Answer { status: 200, content_type: "application/x-bittorrent", body: s.bytes.clone() },
+    );
+    let seen = toast_with(&l, "Settings applied", 60).await;
+    assert!(began.elapsed() >= Duration::from_secs(14), "waited for the add: {:?}", began.elapsed());
+    assert!(!seen.iter().any(|t| t.contains("Could not add")), "{seen:?}");
+    let snap = wait_for(&l, "the add on the new session", 30, |sn| {
+        find(sn, s.hash).is_some_and(|t| t.category.as_deref() == Some("Late"))
+    })
+    .await;
+    assert_eq!(snap.torrents.iter().filter(|t| t.pending).count(), 0);
+    assert_eq!(srv.hits("/a.torrent"), 2);
+    let paths = stop(l).await;
+    assert!(session_list(&paths).contains(&s.hash.to_hex()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A torrent shown as a failed load keeps its record (its row says so): adding it again by hand,
+/// with nothing chosen in the request, keeps the category, tags and date.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adding_a_torrent_again_keeps_its_record() {
+    let dir = temp_dir("readd-record");
+    let l = start(&dir);
+    let hash = add_tiny_torrents(&l, &dir, 1).await[0];
+    let paths = stop(l).await;
+    let mut store = read_store(&paths);
+    let m = store.torrents.get_mut(&hash).unwrap();
+    m.added_at = 12345;
+    m.tags = vec!["kept".into()];
+    std::fs::write(paths.store_file(), serde_json::to_vec(&store).unwrap()).unwrap();
+    std::fs::remove_file(paths.session_dir().join(format!("{}.torrent", hash.to_hex()))).unwrap();
+    lose_session_db(&paths, false);
+    let l = start(&dir);
+    wait_for(&l, "the failed load", 30, |sn| find(sn, hash).is_some_and(|t| t.restore_failed)).await;
+    l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+        source: AddSource::Bytes { name: "again.torrent".into(), bytes: tiny_torrent("tiny-000.bin", 100) },
+        torrent_bytes: None,
+        save_path: dir.join("dl"),
+        create_subfolder: false,
+        category: None,
+        tags: Vec::new(),
+        paused: true,
+        only_files: None,
+        add_to_top: false,
+        initial_peers: None,
+        added_by: None,
+    })));
+    wait_for(&l, "added again", 30, |sn| find(sn, hash).is_some_and(|t| !t.restore_failed)).await;
+    let paths = stop(l).await;
+    let m = read_store(&paths).torrents.remove(&hash).unwrap();
+    assert_eq!(m.category.as_deref(), Some("Kept"));
+    assert_eq!(m.tags, vec!["kept".to_string()]);
+    assert_eq!(m.added_at, 12345);
+    assert!(!m.metainfo_missing);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Cancelling an add that is already past the point of stopping: it lands, so it is recorded
+/// properly and its watch-folder file is treated as added (it was renamed .failed before).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_an_add_that_lands_anyway_records_it() {
+    let dir = temp_dir("cancel-landed");
+    let s = seeder(&dir).await;
+    let watch = dir.join("watch");
+    std::fs::create_dir_all(&watch).unwrap();
+    let mut cfg = settings(&dir);
+    cfg.watch.push(crate::config::WatchFolder {
+        path: watch.clone(),
+        start_paused: true,
+        category: Some("Watched".into()),
+        ..Default::default()
+    });
+    let l = start_with(&dir, cfg);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    crate::faults::set_call_delay(s.hash.0, Duration::from_secs(3));
+    std::fs::write(watch.join("a.torrent"), &s.bytes).unwrap();
+    let snap = wait_for(&l, "the pending row", 30, |sn| sn.torrents.iter().any(|t| t.pending)).await;
+    let row = snap.torrents.iter().find(|t| t.pending).unwrap().hash;
+    // Past the checks and the folder: within the delay, before the engine's list.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !dir.join("dl").exists() {
+        assert!(Instant::now() < deadline, "the add never got to its folder");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    l.engine.send(EngineCommand::CancelAdd(row));
+    wait_for(&l, "the row to go", 10, |sn| !sn.torrents.iter().any(|t| t.pending)).await;
+    wait_for(&l, "the torrent, recorded", 20, |sn| {
+        find(sn, s.hash).is_some_and(|t| t.category.as_deref() == Some("Watched"))
+    })
+    .await;
+    crate::faults::clear_call_delay(s.hash.0);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !watch.join("a.torrent.added").exists() {
+        assert!(Instant::now() < deadline, "{:?}", std::fs::read_dir(&watch).unwrap().collect::<Vec<_>>());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!watch.join("a.torrent.failed").exists());
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Cancelling an add still fetching its metadata: it goes, without an error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_an_add_fetching_its_metadata_is_quiet() {
+    use super::faultserver::{self, Route};
+    let dir = temp_dir("cancel-fetching");
+    let srv = faultserver::start().await;
+    srv.route("/a.torrent", Route::Hang);
+    let l = start(&dir);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    add_url(&l, &dir, srv.url("/a.torrent"));
+    let snap = wait_for(&l, "the pending row", 10, |sn| sn.torrents.iter().any(|t| t.pending)).await;
+    let row = snap.torrents.iter().find(|t| t.pending).unwrap().hash;
+    l.engine.send(EngineCommand::CancelAdd(row));
+    wait_for(&l, "the row to go", 10, |sn| sn.torrents.is_empty()).await;
+    // A restart doesn't wait for it: it has reported back.
+    l.engine.send(EngineCommand::ApplySettings(restart_settings(&dir)));
+    let seen = toast_with(&l, "Settings applied", 10).await;
+    assert!(!seen.iter().any(|t| t.contains("Could not add")), "{seen:?}");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A batch add doesn't publish a snapshot (a clone of the whole list, a repaint) per message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_add_publishes_few_snapshots() {
+    let dir = temp_dir("batch-publish");
+    let mut cfg = settings(&dir);
+    cfg.advanced.refresh_interval_ms = 1000;
+    let l = start_with(&dir, cfg);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    let first = l.engine.snapshot().generation;
+    let began = Instant::now();
+    let n = 200;
+    for i in 0..n {
+        let name = format!("batch-{i:03}.bin");
+        let bytes = tiny_torrent(&name, 1);
+        l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+            source: AddSource::Bytes { name, bytes },
+            torrent_bytes: None,
+            save_path: dir.join("dl"),
+            create_subfolder: false,
+            category: Some("Batch".into()),
+            tags: Vec::new(),
+            paused: true,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        })));
+    }
+    let snap = wait_for(&l, "every torrent, recorded", 120, |sn| {
+        sn.torrents.iter().filter(|t| t.category.as_deref() == Some("Batch")).count() == n
+    })
+    .await;
+    let (bumps, took) = (snap.generation - first, began.elapsed());
+    // 400 messages. One snapshot per PUBLISH_GAP and tick while they last (a slow machine takes
+    // longer; a fast one takes about 2 s), plus a few; not one per message.
+    let most = 20 + 11 * took.as_secs() + 11;
+    eprintln!("{bumps} snapshots for {n} adds in {took:?}");
+    assert!(bumps <= most, "{bumps} snapshots for {n} adds in {took:?}");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// What a tick costs with many (paused) torrents, three trackers each: its slowest of the last
+/// 60, a clone of the snapshot, and copying every row's trackers (which each tick and each clone
+/// used to do). Numbers go to docs/PERFORMANCE.md.
+#[ignore = "timing, run by hand: cargo test -p corrent-core --release --lib perf_engine_tick -- --ignored --nocapture"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn perf_engine_tick_cost() {
+    let dir = temp_dir("perf-tick");
+    let l = start(&dir);
+    wait_for(&l, "the engine", 20, |sn| sn.session.listen_port.is_some()).await;
+    let n = 2000;
+    let t = Instant::now();
+    for i in 0..n {
+        let name = format!("t-{i:04}.bin");
+        let list = b"8:announce19:udp://a.example:1/a13:announce-listll19:udp://a.example:1/ael19:udp://b.example:1/ael19:udp://c.example:1/aee";
+        let mut bytes = b"d".to_vec();
+        bytes.extend_from_slice(list);
+        bytes.extend_from_slice(
+            format!("4:infod6:lengthi16384e4:name{}:{name}12:piece lengthi16384e6:pieces20:", name.len()).as_bytes(),
+        );
+        bytes.extend_from_slice(&[9; 20]);
+        bytes.extend_from_slice(b"ee");
+        l.engine.send(EngineCommand::Add(Box::new(AddRequest {
+            source: AddSource::Bytes { name, bytes },
+            torrent_bytes: None,
+            save_path: dir.join("dl"),
+            create_subfolder: false,
+            category: None,
+            tags: Vec::new(),
+            paused: true,
+            only_files: None,
+            add_to_top: false,
+            initial_peers: None,
+            added_by: None,
+        })));
+        if i % 200 == 199 {
+            let want = i + 1;
+            wait_for(&l, "the batch", 300, |sn| sn.torrents.iter().filter(|t| !t.pending).count() >= want).await;
+        }
+    }
+    println!("add {n}: {:?}", t.elapsed());
+    // Past the adds' own work: 60 ticks at 200 ms.
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    let snap = l.engine.snapshot();
+    println!("slowest of the last 60 ticks: {} ms", snap.session.tick_max_ms);
+    let timed = |what: &str, f: &dyn Fn()| {
+        let t = Instant::now();
+        for _ in 0..100 {
+            f();
+        }
+        println!("{what}: {:?}", t.elapsed() / 100);
+    };
+    timed("snapshot clone", &|| drop(std::hint::black_box((*snap).clone())));
+    timed("copying the rows' trackers", &|| {
+        let copies: Vec<Vec<String>> = snap.torrents.iter().map(|t| t.trackers.to_vec()).collect();
+        drop(std::hint::black_box(copies));
+    });
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An idle torrent has no sparkline data, one chosen for the details keeps a long history, and
+/// one with traffic has a full row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rate_history_is_kept_for_active_rows_and_the_detail_target() {
+    let dir = temp_dir("rate-history");
+    let s = seeder(&dir).await;
+    let l = start(&dir);
+    let idle = add_tiny_torrents(&l, &dir, 1).await[0];
+    l.engine.send(EngineCommand::SetDetailTarget(Some(idle)));
+    // Longer than a row's history (200 ms ticks here).
+    let snap = wait_for(&l, "a long history", 60, |sn| {
+        sn.detail.as_ref().is_some_and(|d| d.hash == idle && d.history.len() > 45)
+    })
+    .await;
+    assert!(snap.row_history.is_empty(), "nothing moved: {:?}", snap.row_history.len());
+    l.engine.send(EngineCommand::SetDetailTarget(None));
+    // A limit slow enough to be seen in the sparkline.
+    let mut cfg = settings(&dir);
+    cfg.speed.download_limit = 512;
+    l.engine.send(EngineCommand::ApplySettings(Box::new(cfg)));
+    add(&l, &s, &dir);
+    let snap = wait_for(&l, "a row with traffic", 60, |sn| {
+        sn.row_history.get(&s.hash).is_some_and(|r| r.iter().any(|(d, _)| *d > 0))
+    })
+    .await;
+    assert_eq!(snap.row_history[&s.hash].len(), 40);
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Past the first check of every torrent: a resume made during it does nothing.
+async fn first_checks_done(l: &Leecher) {
+    wait_for(l, "the first checks", 120, |sn| sn.torrents.iter().all(|t| t.state == TorrentState::Paused)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+}
+
+fn session_writes(paths: &Paths) -> u64 {
+    librqbit::corrent_hooks::session_writes(&paths.session_dir().join("session.json"))
+}
+
+/// F16: pausing many torrents writes session.json a few times, not once each, and the flusher
+/// does save it with the engine still running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_burst_of_pauses_costs_few_session_writes() {
+    let dir = temp_dir("session-coalesce");
+    let l = start(&dir);
+    let n = 60;
+    let hashes = add_tiny_torrents(&l, &dir, n).await;
+    first_checks_done(&l).await;
+    l.engine.send(EngineCommand::ResumeAll);
+    wait_for(&l, "all running", 60, |sn| sn.torrents.iter().all(|t| t.state != TorrentState::Paused)).await;
+    // Past the resumes' own write.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (before, began) = (session_writes(&l.paths), Instant::now());
+    l.engine.send(EngineCommand::PauseAll);
+    let paused = |paths: &Paths| {
+        let db: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(paths.session_dir().join("session.json")).unwrap()).unwrap();
+        let list = db["torrents"].as_object().unwrap();
+        list.len() == hashes.len() && list.values().all(|e| e["is_paused"] == true)
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !paused(&l.paths) {
+        assert!(Instant::now() < deadline, "the pauses never reached session.json");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (writes, took) = (session_writes(&l.paths) - before, began.elapsed());
+    eprintln!("{writes} writes of session.json for {n} pauses in {took:?}");
+    assert!(writes <= 2 + took.as_secs() * 2 && writes < u64::from(n) / 2, "{writes} writes in {took:?}");
+    stop(l).await;
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// F16: adds and deletes don't wait for the flusher: when they report back, they are on disk,
+/// and so is a pause made just before. The stop saves what is still owed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adds_deletes_and_stops_reach_the_session_file_at_once() {
+    let dir = temp_dir("session-at-once");
+    let l = start(&dir);
+    let hashes = add_tiny_torrents(&l, &dir, 3).await;
+    first_checks_done(&l).await;
+    let entry = |paths: &Paths, h: InfoHash| {
+        let db: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(paths.session_dir().join("session.json")).unwrap()).unwrap();
+        db["torrents"].as_object().unwrap().values().find(|e| e["info_hash"] == h.to_hex()).cloned()
+    };
+    for h in &hashes {
+        assert!(entry(&l.paths, *h).is_some(), "listed when its add reported back");
+    }
+    l.engine.send(EngineCommand::Resume(vec![hashes[0]]));
+    wait_for(&l, "running", 20, |sn| find(sn, hashes[0]).is_some_and(|t| t.state != TorrentState::Paused)).await;
+    while l.events.try_recv().is_ok() {}
+    l.engine.send(EngineCommand::Pause(vec![hashes[0]]));
+    // The pause goes through the engine-call worker, the delete doesn't: in this order, the pause
+    // is only in memory when the delete writes (well within the flusher's 500 ms).
+    wait_for(&l, "paused", 20, |sn| find(sn, hashes[0]).is_some_and(|t| t.state == TorrentState::Paused)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    l.engine.send(EngineCommand::Delete { hashes: vec![hashes[1]], with_data: false });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if matches!(l.events.try_recv(), Ok(EngineEvent::Removed { hash, .. }) if hash == hashes[1]) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the delete never reported back");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(entry(&l.paths, hashes[1]).is_none(), "gone when its delete reported back");
+    assert_eq!(entry(&l.paths, hashes[0]).unwrap()["is_paused"], true, "the delete's write took the pause along");
+    // Resume then stop at once: the last state is saved by the stop, not left to the flusher.
+    l.engine.send(EngineCommand::Resume(vec![hashes[2]]));
+    let paths = stop(l).await;
+    assert_eq!(entry(&paths, hashes[2]).unwrap()["is_paused"], false);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A `.magnet` file in a watch folder: its link is added (peers from a tracker here), and the
+/// file follows the same rules as a `.torrent`, also when it holds something else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_magnet_file_in_a_watch_folder_is_added() {
+    use super::faultserver::{self, Route};
+    let dir = temp_dir("watch-magnet");
+    let s = seeder(&dir).await;
+    let std::net::SocketAddr::V4(addr) = s.addr else { panic!("the seeder listens on IPv4") };
+    let mut announce = b"d8:intervali60e5:peers6:".to_vec();
+    announce.extend_from_slice(&addr.ip().octets());
+    announce.extend_from_slice(&addr.port().to_be_bytes());
+    announce.push(b'e');
+    let srv = faultserver::start().await;
+    srv.route("/announce", Route::Answer { status: 200, content_type: "text/plain", body: announce });
+    let watch = dir.join("watch");
+    std::fs::create_dir_all(&watch).unwrap();
+    let tracker = super::types::url_encode(&srv.url("/announce"));
+    let link = format!("magnet:?xt=urn:btih:{}&tr={tracker}", s.hash.to_hex());
+    std::fs::write(watch.join("good.magnet"), format!("{link}\n")).unwrap();
+    std::fs::write(watch.join("bad.magnet"), b"not a magnet link").unwrap();
+    let mut cfg = settings(&dir);
+    cfg.bittorrent.trackers_enabled = true;
+    cfg.watch.push(crate::config::WatchFolder { path: watch.clone(), start_paused: true, ..Default::default() });
+    let l = start_with(&dir, cfg);
+    wait_for(&l, "the torrent from its magnet", 60, |sn| find(sn, s.hash).is_some()).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !(watch.join("good.magnet.added").exists() && watch.join("bad.magnet.failed").exists()) {
+        assert!(Instant::now() < deadline, "{:?}", std::fs::read_dir(&watch).unwrap().collect::<Vec<_>>());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    stop(l).await;
     let _ = std::fs::remove_dir_all(dir);
 }
