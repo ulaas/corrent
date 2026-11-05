@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,9 +27,19 @@ const IDLE: Duration = Duration::from_secs(90);
 const PAUSE_AHEAD: u64 = 45;
 const RESUME_AHEAD: u64 = 20;
 const SEGMENT_WAIT: Duration = Duration::from_secs(60);
+/// How often encoders are paced. Tests look more often: their small clips encode in a second or
+/// two, which a 2 s tick can miss entirely.
+const PACE_EVERY: Duration = if cfg!(test) { Duration::from_millis(100) } else { Duration::from_secs(2) };
+/// Encoder runs of a session that may end before reaching what they were started for. After that
+/// the session stops starting encoders for segments it doesn't have (a file whose probed duration
+/// is far off, or which ends early at every seek).
+const MAX_SHORT_RUNS: u32 = 3;
 /// Below this much free space on the cache's disk no new transcode starts (a full disk would
 /// also break the library database and downloads).
 const MIN_FREE: u64 = 2 * 1024 * 1024 * 1024;
+const FREE_SPACE_FOR: Duration = Duration::from_secs(5);
+/// How long a stopped session waits for its encoder before deleting its files anyway.
+const STOP_WAIT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug)]
 pub struct HlsConfig {
@@ -117,7 +127,12 @@ struct Session {
     id: String,
     spec: SessionSpec,
     dir: PathBuf,
-    segments: u64,
+    /// In the playlist: from the probed duration, lowered when the stream turns out shorter.
+    segments: AtomicU64,
+    /// Encoder runs that ended by themselves without producing what was asked for.
+    short_runs: AtomicU32,
+    /// Encoders started.
+    runs: AtomicU32,
     done: Mutex<BTreeSet<u64>>,
     running: tokio::sync::Mutex<Option<Running>>,
     last_access: Mutex<Instant>,
@@ -134,9 +149,37 @@ impl Session {
         self.last_access.lock().unwrap_or_else(|e| e.into_inner()).elapsed()
     }
 
+    /// An encoder started at `start` ran to the end of the input before reaching a segment the
+    /// playlist promises (the probed duration was too long, or a seek went past the end): the
+    /// stream ends where it stopped. False when it produced nothing at all.
+    fn end_short(&self, start: u64) -> bool {
+        self.short_runs.fetch_add(1, Ordering::Relaxed);
+        let end = self
+            .done
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .range(start..)
+            .next_back()
+            .map_or(start, |last| last + 1);
+        if end == 0 {
+            return false;
+        }
+        self.segments.fetch_min(end, Ordering::Relaxed);
+        true
+    }
+
+    async fn has_segment(&self, n: u64, path: &Path) -> bool {
+        let listed = self.done.lock().unwrap_or_else(|e| e.into_inner()).contains(&n);
+        listed && tokio::fs::try_exists(path).await.unwrap_or(false)
+    }
+
+    fn may_start_encoder(&self) -> bool {
+        self.short_runs.load(Ordering::Relaxed) < MAX_SHORT_RUNS
+    }
+
     /// Reads the muxer's own playlist: every segment listed there is complete.
-    fn refresh_done(&self) {
-        let Ok(text) = std::fs::read_to_string(self.dir.join("index.m3u8")) else { return };
+    async fn refresh_done(&self) {
+        let Ok(text) = tokio::fs::read_to_string(self.dir.join("index.m3u8")).await else { return };
         let mut done = self.done.lock().unwrap_or_else(|e| e.into_inner());
         for line in text.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
             if let Some(n) = segment_number(line) {
@@ -177,6 +220,7 @@ impl std::error::Error for HlsError {}
 pub struct HlsManager {
     cfg: Mutex<HlsConfig>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    free: Mutex<Option<(Instant, u64)>>,
 }
 
 fn random_id() -> String {
@@ -199,11 +243,12 @@ impl HlsManager {
     /// paced to the players).
     pub fn new(cfg: HlsConfig) -> Arc<HlsManager> {
         let _ = std::fs::remove_dir_all(&cfg.root);
-        let m = Arc::new(HlsManager { cfg: Mutex::new(cfg), sessions: Mutex::new(HashMap::new()) });
+        let m =
+            Arc::new(HlsManager { cfg: Mutex::new(cfg), sessions: Mutex::new(HashMap::new()), free: Mutex::new(None) });
         let weak = Arc::downgrade(&m);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(PACE_EVERY).await;
                 let Some(m) = weak.upgrade() else { break };
                 let all: Vec<Arc<Session>> =
                     m.sessions.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
@@ -235,6 +280,20 @@ impl HlsManager {
         self.cfg.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Free space on the cache's disk, asked for at most every few seconds.
+    fn free_space(&self, root: &Path) -> Option<u64> {
+        let mut cached = self.free.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, free)) = *cached
+            && at.elapsed() < FREE_SPACE_FOR
+        {
+            return Some(free);
+        }
+        let free = fs4::available_space(root).ok()?;
+        *cached = Some((Instant::now(), free));
+        Some(free)
+    }
+
+    /// Touches the disk: from a blocking context.
     pub fn create(&self, spec: SessionSpec) -> Result<String, HlsError> {
         let cfg = self.config();
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -255,7 +314,7 @@ impl HlsManager {
             }
         }
         let _ = std::fs::create_dir_all(&cfg.root);
-        if fs4::available_space(&cfg.root).is_ok_and(|free| free < MIN_FREE) {
+        if self.free_space(&cfg.root).is_some_and(|free| free < MIN_FREE) {
             return Err(HlsError::NoSpace);
         }
         let id = random_id();
@@ -269,7 +328,9 @@ impl HlsManager {
                 id: id.clone(),
                 spec,
                 dir,
-                segments,
+                segments: AtomicU64::new(segments),
+                short_runs: AtomicU32::new(0),
+                runs: AtomicU32::new(0),
                 done: Mutex::new(BTreeSet::new()),
                 running: tokio::sync::Mutex::new(None),
                 last_access: Mutex::new(Instant::now()),
@@ -291,11 +352,22 @@ impl HlsManager {
         }
     }
 
+    /// Segments encoded so far (`None`: no such session any more).
+    pub fn produced(&self, id: &str) -> Option<usize> {
+        self.get(id).ok().map(|s| s.done.lock().unwrap_or_else(|e| e.into_inner()).len())
+    }
+
+    /// Tests: how many encoders the session started.
+    #[cfg(test)]
+    pub(crate) fn encoder_runs(&self, id: &str) -> u32 {
+        self.get(id).map_or(0, |s| s.runs.load(Ordering::Relaxed))
+    }
+
     /// Tests: whether the session's encoder runs, and how many segments are encoded.
     #[cfg(test)]
     pub(crate) async fn encoding(&self, id: &str) -> (bool, usize) {
         let Ok(s) = self.get(id) else { return (false, 0) };
-        s.refresh_done();
+        s.refresh_done().await;
         let running = s.running.lock().await;
         let on = running.as_ref().is_some_and(|r| r.ended.lock().unwrap_or_else(|e| e.into_inner()).is_none());
         (on, s.done.lock().unwrap_or_else(|e| e.into_inner()).len())
@@ -316,7 +388,7 @@ impl HlsManager {
             "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-TARGETDURATION:{}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-INDEPENDENT-SEGMENTS\n",
             seg.ceil() as u64 + 1
         );
-        for n in 0..s.segments {
+        for n in 0..s.segments.load(Ordering::Relaxed) {
             let len = (total - n as f64 * seg).clamp(0.1, seg);
             out.push_str(&format!("#EXTINF:{len:.3},\n{n}.ts\n"));
         }
@@ -327,7 +399,7 @@ impl HlsManager {
     /// The file of segment `n`, encoding (or re-positioning the encoder) as needed.
     pub async fn segment(&self, id: &str, n: u64) -> Result<PathBuf, HlsError> {
         let s = self.get(id)?;
-        if n >= s.segments {
+        if n >= s.segments.load(Ordering::Relaxed) {
             return Err(HlsError::NotFound);
         }
         s.touch();
@@ -336,12 +408,16 @@ impl HlsManager {
         let cfg = self.config();
         let deadline = Instant::now() + SEGMENT_WAIT;
         loop {
-            s.refresh_done();
-            if s.done.lock().unwrap_or_else(|e| e.into_inner()).contains(&n) && path.exists() {
+            s.refresh_done().await;
+            if s.has_segment(n, &path).await {
                 return Ok(path);
             }
             {
                 let mut running = s.running.lock().await;
+                // The pacing loop may have just found where the stream ends.
+                if n >= s.segments.load(Ordering::Relaxed) {
+                    return Err(HlsError::NotFound);
+                }
                 let produced = s.done.lock().unwrap_or_else(|e| e.into_inner()).range(..=n).next_back().copied();
                 let reachable = match running.as_ref() {
                     Some(r) => {
@@ -353,6 +429,20 @@ impl HlsManager {
                                 "the encoder stopped (started at segment {failed_at})"
                             )));
                         }
+                        if ended == Some(false) && n >= r.start {
+                            // It may have written `n` just after the check above.
+                            s.refresh_done().await;
+                            if s.has_segment(n, &path).await {
+                                return Ok(path);
+                            }
+                            let start = r.start;
+                            *running = None;
+                            return if s.end_short(start) {
+                                Err(HlsError::NotFound)
+                            } else {
+                                Err(HlsError::Failed("the encoder produced nothing".into()))
+                            };
+                        }
                         ended.is_none()
                             && n >= r.start
                             && n <= produced.unwrap_or(r.start).max(r.start) + AHEAD_SEGMENTS
@@ -360,10 +450,13 @@ impl HlsManager {
                     None => false,
                 };
                 if !reachable {
+                    if !s.may_start_encoder() {
+                        return Err(HlsError::NotFound);
+                    }
                     if let Some(old) = running.take() {
                         old.encoder.stop();
                     }
-                    *running = Some(start_encoder(&cfg, &s, n).map_err(HlsError::Failed)?);
+                    *running = Some(start_encoder(&cfg, &s, n).await.map_err(HlsError::Failed)?);
                 }
             }
             if Instant::now() >= deadline {
@@ -393,7 +486,7 @@ impl HlsManager {
                 item_id: s.spec.item_id,
                 encoder: encoder.clone(),
                 video: s.spec.video.is_some(),
-                segments: s.segments,
+                segments: s.segments.load(Ordering::Relaxed),
                 produced: s.done.lock().unwrap_or_else(|e| e.into_inner()).len() as u64,
                 encoding_from: s.running.try_lock().ok().and_then(|r| r.as_ref().map(|r| r.start)),
                 idle_secs: s.idle().as_secs(),
@@ -410,10 +503,10 @@ async fn pace(cfg: &HlsConfig, s: &Session) {
     if wanted == u64::MAX {
         return;
     }
-    s.refresh_done();
+    s.refresh_done().await;
     let next = {
         let done = s.done.lock().unwrap_or_else(|e| e.into_inner());
-        (wanted..s.segments).find(|n| !done.contains(n))
+        (wanted..s.segments.load(Ordering::Relaxed)).find(|n| !done.contains(n))
     };
     let Some(next) = next else { return };
     let mut running = s.running.lock().await;
@@ -430,8 +523,18 @@ async fn pace(cfg: &HlsConfig, s: &Session) {
         Some(Some(true)) | Some(None) => {}
         // Paused (or done with its part): the player is getting close.
         Some(Some(false)) | None => {
-            if ahead < RESUME_AHEAD && s.idle() < IDLE {
-                match start_encoder(cfg, s, next) {
+            // It ended by itself at or before `next`: nothing more will come from there.
+            let ran_out = running.as_ref().filter(|r| state == Some(Some(false)) && next >= r.start).map(|r| r.start);
+            if let Some(start) = ran_out {
+                s.refresh_done().await;
+                if !s.done.lock().unwrap_or_else(|e| e.into_inner()).contains(&next) {
+                    *running = None;
+                    s.end_short(start);
+                }
+                return;
+            }
+            if ahead < RESUME_AHEAD && s.idle() < IDLE && s.may_start_encoder() {
+                match start_encoder(cfg, s, next).await {
                     Ok(r) => *running = Some(r),
                     Err(e) => tracing::debug!("transcode {}: {e}", s.id),
                 }
@@ -441,13 +544,17 @@ async fn pace(cfg: &HlsConfig, s: &Session) {
 }
 
 async fn stop_session(s: Arc<Session>) {
-    if let Some(r) = s.running.lock().await.take() {
+    let running = s.running.lock().await.take();
+    if let Some(r) = running {
         r.encoder.stop();
+        // Until it has closed its files: an in-process encoder only notices within half a second,
+        // and would go on writing into a folder that's gone.
+        let deadline = Instant::now() + STOP_WAIT;
+        while r.ended.lock().unwrap_or_else(|e| e.into_inner()).is_none() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
-    let dir = s.dir.clone();
-    // Give a killed encoder a moment to close its files.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let _ = tokio::fs::remove_dir_all(dir).await;
+    let _ = tokio::fs::remove_dir_all(&s.dir).await;
 }
 
 /// mpv options for encoding from segment `start`.
@@ -508,21 +615,23 @@ pub fn job_options(cfg: &HlsConfig, spec: &SessionSpec, dir: &Path, start: u64) 
     o
 }
 
-fn start_encoder(cfg: &HlsConfig, s: &Session, start: u64) -> Result<Running, String> {
+async fn start_encoder(cfg: &HlsConfig, s: &Session, start: u64) -> Result<Running, String> {
     // A new run rewrites the muxer playlist from `start`; earlier complete segments stay.
-    let _ = std::fs::remove_file(s.dir.join("index.m3u8"));
+    let _ = tokio::fs::remove_file(s.dir.join("index.m3u8")).await;
     let job = EncodeJob {
         input: s.spec.input.clone(),
         output: s.dir.join("index.m3u8").display().to_string(),
         options: job_options(cfg, &s.spec, &s.dir, start),
         audio_file: None,
     };
-    tracing::debug!("transcode {} from segment {start} with {}", s.id, cfg.encoder);
+    let run = s.runs.fetch_add(1, Ordering::Relaxed) + 1;
+    tracing::debug!("transcode {} from segment {start} with {} (run {run})", s.id, cfg.encoder);
     let ended: Arc<Mutex<Option<bool>>> = Arc::default();
     let encoder = match &cfg.worker {
         Some(w) => {
             let job_file = s.dir.join(format!("job-{start}.json"));
-            std::fs::write(&job_file, serde_json::to_vec(&job).map_err(|e| e.to_string())?)
+            tokio::fs::write(&job_file, serde_json::to_vec(&job).map_err(|e| e.to_string())?)
+                .await
                 .map_err(|e| e.to_string())?;
             let mut cmd = tokio::process::Command::new(w);
             // No console window flashing up (the worker is a console program).

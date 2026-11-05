@@ -3,6 +3,7 @@
 //! `PRAGMA user_version` with a backup before each upgrade.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,6 +27,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("placement", include_str!("../migrations/0013_placement.sql")),
     ("placed_index", include_str!("../migrations/0014_placed_index.sql")),
     ("track_choice", include_str!("../migrations/0015_track_choice.sql")),
+    ("child_indexes", include_str!("../migrations/0016_child_indexes.sql")),
 ];
 
 pub fn schema_version() -> u32 {
@@ -54,8 +56,19 @@ type Reply = Box<dyn FnOnce(Option<String>) + Send>;
 /// Gets the batch transaction, or the reason none could be started.
 type Job = Box<dyn FnOnce(std::result::Result<&Transaction, &str>) -> (bool, Reply) + Send>;
 
+/// How much the database has been used.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DbStats {
+    /// Reads on the pool ([`Db::read`], [`Db::read_blocking`]).
+    pub reads: u64,
+    /// Write transactions committed.
+    pub commits: u64,
+}
+
 struct Inner {
     path: PathBuf,
+    reads: AtomicU64,
+    commits: Arc<AtomicU64>,
     writer: std::sync::mpsc::Sender<Job>,
     readers: Mutex<Vec<Connection>>,
     max_readers: usize,
@@ -104,28 +117,57 @@ fn migrate(c: &mut Connection, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// How to open the database.
+#[derive(Clone, Copy, Debug)]
+pub struct OpenOptions {
+    /// Read every page before anything else (`PRAGMA quick_check`): minutes on a large library
+    /// on a slow disk, so worth it after an unclean exit rather than at each start.
+    pub quick_check: bool,
+}
+
+impl Default for OpenOptions {
+    fn default() -> Self {
+        OpenOptions { quick_check: true }
+    }
+}
+
 impl Db {
-    /// Opens (creating if needed) and migrates the database at `path`.
+    /// Opens (creating if needed), checks and migrates the database at `path`.
     pub fn open(path: &Path) -> Result<Db> {
+        Db::open_with(path, OpenOptions::default())
+    }
+
+    /// [`Db::open`] with a choice about the integrity check.
+    pub fn open_with(path: &Path, options: OpenOptions) -> Result<Db> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| DbError::Other(format!("{}: {e}", dir.display())))?;
         }
         let mut c = Connection::open(path)?;
         c.pragma_update(None, "journal_mode", "WAL")?;
         configure(&c)?;
-        let check: String = c.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
-        if check != "ok" {
-            return Err(DbError::Corrupt(check));
+        if options.quick_check {
+            let check: String = c.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+            if check != "ok" {
+                return Err(DbError::Corrupt(check));
+            }
         }
         migrate(&mut c, path)?;
+        // New indexes and tables have no statistics yet.
+        if let Err(e) = c.execute_batch("PRAGMA optimize") {
+            tracing::debug!("PRAGMA optimize: {e}");
+        }
         let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let commits: Arc<AtomicU64> = Arc::default();
+        let counted = commits.clone();
         std::thread::Builder::new()
             .name("corrent-db-writer".into())
-            .spawn(move || writer_loop(c, rx))
+            .spawn(move || writer_loop(c, rx, counted))
             .map_err(|e| DbError::Other(e.to_string()))?;
         Ok(Db {
             inner: Arc::new(Inner {
                 path: path.to_path_buf(),
+                reads: AtomicU64::new(0),
+                commits,
                 writer: tx,
                 readers: Mutex::new(Vec::new()),
                 max_readers: 8,
@@ -135,6 +177,10 @@ impl Db {
 
     pub fn path(&self) -> &Path {
         &self.inner.path
+    }
+
+    pub fn stats(&self) -> DbStats {
+        DbStats { reads: self.inner.reads.load(Ordering::Relaxed), commits: self.inner.commits.load(Ordering::Relaxed) }
     }
 
     fn take_reader(&self) -> Result<Connection> {
@@ -158,6 +204,7 @@ impl Db {
 
     /// Runs a read on a pooled read-only connection (blocking; call from a blocking context).
     pub fn read_blocking<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
+        self.inner.reads.fetch_add(1, Ordering::Relaxed);
         let c = self.take_reader()?;
         let r = f(&c);
         self.put_reader(c);
@@ -221,13 +268,19 @@ impl Db {
         self.submit(f)?.blocking_recv().map_err(|_| DbError::Closed)?
     }
 
-    /// A consistent copy of the whole database (backups).
-    pub async fn backup_to(&self, dest: PathBuf) -> Result<()> {
-        self.write(move |t| t.execute("VACUUM INTO ?1", [dest.to_string_lossy()]).map(|_| ())).await
+    /// The integrity check on a read connection, for hosts that run it in the background.
+    pub async fn quick_check(&self) -> Result<()> {
+        let check: String = self.read(|c| c.query_row("PRAGMA quick_check", [], |r| r.get(0))).await?;
+        if check == "ok" { Ok(()) } else { Err(DbError::Corrupt(check)) }
+    }
+
+    /// Refreshes the query planner's statistics where they went stale.
+    pub async fn optimize(&self) -> Result<()> {
+        self.write(|t| t.execute_batch("PRAGMA optimize")).await
     }
 }
 
-fn writer_loop(mut c: Connection, rx: std::sync::mpsc::Receiver<Job>) {
+fn writer_loop(mut c: Connection, rx: std::sync::mpsc::Receiver<Job>, commits: Arc<AtomicU64>) {
     while let Ok(first) = rx.recv() {
         let mut batch = vec![first];
         while batch.len() < 256 {
@@ -276,6 +329,7 @@ fn writer_loop(mut c: Connection, rx: std::sync::mpsc::Receiver<Job>) {
             tracing::error!("database: commit failed: {e}");
             e.to_string()
         });
+        commits.fetch_add(1, Ordering::Relaxed);
         // Callers hear back only after the commit (or its failure). With synchronous=NORMAL in
         // WAL mode a committed write survives a crash of Corrent, but the very last
         // transactions can be lost on power failure — acceptable for this data.
@@ -343,6 +397,62 @@ mod tests {
         assert_eq!(failed, 5);
         let n: i64 = db.read(|c| c.query_row("SELECT count(*) FROM kv", [], |r| r.get(0))).await.unwrap();
         assert_eq!(n, 45, "failed jobs left nothing behind");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn foreign_key_children_have_indexes() {
+        let p = scratch("child-indexes");
+        let db = Db::open(&p).unwrap();
+        for name in [
+            "watch_state_item",
+            "playlist_items_item",
+            "collection_items_item",
+            "grabs_item",
+            "grabs_wanted",
+            "wanted_library",
+            "wanted_profile",
+            "monitored_profile",
+            "collections_library",
+        ] {
+            let n: i64 = db
+                .read(move |c| {
+                    c.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?1", [name], |r| {
+                        r.get(0)
+                    })
+                })
+                .await
+                .unwrap();
+            assert_eq!(n, 1, "{name}");
+        }
+        // What a cascade from `items` looks up.
+        let plan: String = db
+            .read(|c| {
+                c.query_row("EXPLAIN QUERY PLAN SELECT user_id FROM watch_state WHERE item_id = 1", [], |r| r.get(3))
+            })
+            .await
+            .unwrap();
+        assert!(plan.contains("watch_state_item"), "{plan}");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn the_integrity_check_only_runs_when_asked_for() {
+        let p = scratch("quick-check");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch("PRAGMA page_size=4096; PRAGMA journal_mode=DELETE; CREATE TABLE t(a);").unwrap();
+            for _ in 0..200 {
+                c.execute("INSERT INTO t VALUES (zeroblob(500))", []).unwrap();
+            }
+            c.pragma_update(None, "user_version", schema_version()).unwrap();
+        }
+        // Garbage in a table page: only reading every page notices.
+        let mut bytes = std::fs::read(&p).unwrap();
+        bytes[4096 * 3..4096 * 4].fill(0xa5);
+        std::fs::write(&p, bytes).unwrap();
+        assert!(Db::open_with(&p, OpenOptions { quick_check: false }).is_ok(), "a clean start doesn't look");
+        assert!(Db::open_with(&p, OpenOptions { quick_check: true }).is_err(), "an unclean one does");
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 

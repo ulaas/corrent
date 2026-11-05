@@ -117,10 +117,42 @@ async fn stream(State(st): State<Arc<AppState>>, _auth: Auth, Path(id): Path<Str
             .ok_or_else(|| err(ErrorCode::BadRequest, "the playlist names no stream"))?;
         res = open(target).await.map_err(upstream)?;
     }
-    let ct = res.headers().get(header::CONTENT_TYPE).cloned().unwrap_or(HeaderValue::from_static("audio/mpeg"));
+    let ct = stream_type(res.headers().get(header::CONTENT_TYPE));
     Ok((
-        [(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        [
+            (header::CONTENT_TYPE, ct),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            (header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
+        ],
         Body::from_stream(res.bytes_stream()),
     )
         .into_response())
+}
+
+/// The station's Content-Type when it is audio: this goes out on the API's origin, where a station
+/// answering `text/html` would otherwise render as our own page.
+fn stream_type(upstream: Option<&HeaderValue>) -> HeaderValue {
+    let Some(v) = upstream else { return HeaderValue::from_static("audio/mpeg") };
+    let t = v.to_str().unwrap_or("").to_ascii_lowercase();
+    if t.starts_with("audio/") || t.starts_with("application/ogg") || t.starts_with("video/mp2t") {
+        v.clone()
+    } else {
+        HeaderValue::from_static("application/octet-stream")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_audio_types_pass() {
+        let t = |s: &'static str| stream_type(Some(&HeaderValue::from_static(s)));
+        assert_eq!(t("audio/aacp"), "audio/aacp");
+        assert_eq!(t("application/ogg"), "application/ogg");
+        assert_eq!(t("video/MP2T"), "video/MP2T");
+        assert_eq!(t("text/html; charset=utf-8"), "application/octet-stream");
+        assert_eq!(t("image/svg+xml"), "application/octet-stream");
+        assert_eq!(stream_type(None), "audio/mpeg");
+    }
 }

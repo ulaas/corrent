@@ -206,6 +206,11 @@ fn kind_from(s: &str) -> WantedKind {
     }
 }
 
+/// Ids for an SQL `IN (...)`.
+fn id_list(ids: &[i64]) -> String {
+    ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+}
+
 const WANTED_COLS: &str = "id, library_id, kind, title, year, season, episode, query, profile_id, status, torrent, added_by, created_at, searched_at";
 
 fn wanted_row(r: &Row) -> rusqlite::Result<Wanted> {
@@ -294,11 +299,27 @@ impl Library {
     }
 
     pub async fn wanted(&self, status: Option<String>) -> Result<Vec<Wanted>> {
+        self.wanted_where(status, None).await
+    }
+
+    /// The wanted list as a user sees it: entries of other libraries stay hidden.
+    pub async fn wanted_for(&self, user: i64, status: Option<String>) -> Result<Vec<Wanted>> {
+        self.wanted_where(status, Some(user)).await
+    }
+
+    async fn wanted_where(&self, status: Option<String>, user: Option<i64>) -> Result<Vec<Wanted>> {
         Ok(self
             .db()
             .read(move |c| {
+                let only = match user {
+                    Some(u) => crate::query::allowed(c, u)?,
+                    None => None,
+                };
+                let libs = only
+                    .map(|a| format!(" AND (library_id IS NULL OR library_id IN ({}))", id_list(&a)))
+                    .unwrap_or_default();
                 let mut st = c.prepare(&format!(
-                    "SELECT {WANTED_COLS} FROM wanted WHERE ?1 IS NULL OR status = ?1 ORDER BY created_at DESC LIMIT 1000"
+                    "SELECT {WANTED_COLS} FROM wanted WHERE (?1 IS NULL OR status = ?1){libs} ORDER BY created_at DESC LIMIT 1000"
                 ))?;
                 st.query_map([status], wanted_row)?.collect()
             })
@@ -441,13 +462,27 @@ impl Library {
     }
 
     pub async fn monitored(&self) -> Result<Vec<corrent_proto::library::MonitoredShow>> {
+        self.monitored_where(None).await
+    }
+
+    /// The followed shows a user may see.
+    pub async fn monitored_for(&self, user: i64) -> Result<Vec<corrent_proto::library::MonitoredShow>> {
+        self.monitored_where(Some(user)).await
+    }
+
+    async fn monitored_where(&self, user: Option<i64>) -> Result<Vec<corrent_proto::library::MonitoredShow>> {
         Ok(self
             .db()
-            .read(|c| {
-                let mut st = c.prepare(
+            .read(move |c| {
+                let only = match user {
+                    Some(u) => crate::query::allowed(c, u)?,
+                    None => None,
+                };
+                let libs = only.map(|a| format!(" WHERE i.library_id IN ({})", id_list(&a))).unwrap_or_default();
+                let mut st = c.prepare(&format!(
                     "SELECT m.item_id, i.title, m.profile_id, m.from_season, m.checked_at FROM monitored_shows m \
-                     JOIN items i ON i.id = m.item_id ORDER BY i.sort_title",
-                )?;
+                     JOIN items i ON i.id = m.item_id{libs} ORDER BY i.sort_title",
+                ))?;
                 st.query_map([], |r| {
                     Ok(corrent_proto::library::MonitoredShow {
                         item_id: r.get(0)?,

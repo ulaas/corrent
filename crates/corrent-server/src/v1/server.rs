@@ -76,6 +76,51 @@ pub fn redact(mut s: Settings) -> Settings {
     s
 }
 
+/// What a URL may show to someone who may not change the settings: scheme and host. Private
+/// trackers and indexers put passkeys into the user info, the path and the query.
+pub fn mask_url(url: &str) -> String {
+    if url.is_empty() {
+        return String::new();
+    }
+    if url.starts_with("magnet:") {
+        return "magnet:…".into();
+    }
+    let Ok(u) = url::Url::parse(url) else { return "(invalid address)".into() };
+    match (u.host_str(), u.port()) {
+        (Some(h), Some(p)) => format!("{}://{h}:{p}/…", u.scheme()),
+        (Some(h), None) => format!("{}://{h}/…", u.scheme()),
+        _ => format!("{}:…", u.scheme()),
+    }
+}
+
+/// Feed URLs out of the RSS configuration (rules name their feeds by URL).
+pub fn mask_rss_settings(rss: &mut corrent_core::rss::RssSettings) {
+    for f in &mut rss.feeds {
+        f.url = mask_url(&f.url);
+    }
+    for r in &mut rss.rules {
+        for f in &mut r.feeds {
+            *f = mask_url(f);
+        }
+    }
+}
+
+/// The settings for someone with `settings.read` only, on top of [`redact`]: nothing that
+/// carries an account's passkey (trackers, feeds), the proxy's identity, or what the server runs.
+fn redact_for_reader(mut s: Settings) -> Settings {
+    s.bittorrent.default_trackers.clear();
+    s.connection.proxy_host.clear();
+    s.connection.proxy_username.clear();
+    s.connection.blocklist_url.clear();
+    s.connection.allowlist_url.clear();
+    s.behavior.run_on_complete.clear();
+    mask_rss_settings(&mut s.rss);
+    for p in &mut s.search.providers {
+        p.url = mask_url(&p.url);
+    }
+    s
+}
+
 /// Puts stored secrets back where a client sent the mask.
 pub fn unredact(mut new: Settings, old: &Settings) -> Settings {
     if new.connection.proxy_password == SECRET_MASK {
@@ -100,7 +145,8 @@ pub fn unredact(mut new: Settings, old: &Settings) -> Settings {
 
 async fn get_settings(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<Settings> {
     auth.require(Perms::SETTINGS_READ)?;
-    Ok(Json(redact((**st.settings.load()).clone())))
+    let s = redact((**st.settings.load()).clone());
+    Ok(Json(if auth.0.can(Perms::SETTINGS_WRITE) { s } else { redact_for_reader(s) }))
 }
 
 /// Replaces the settings (whole document, as returned by GET with any changes).
@@ -367,6 +413,37 @@ impl WithText for super::ApiErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn urls_lose_everything_but_the_host() {
+        assert_eq!(mask_url("https://user:pw@t.example:8443/abc123/announce?k=1"), "https://t.example:8443/…");
+        assert_eq!(mask_url("http://t.example/rss?passkey=x"), "http://t.example/…");
+        assert_eq!(mask_url("magnet:?xt=urn:btih:ab&tr=http://t/abc"), "magnet:…");
+        assert_eq!(mask_url(""), "");
+        assert_eq!(mask_url("not a url"), "(invalid address)");
+    }
+
+    #[test]
+    fn readers_get_no_passkeys_or_proxy_identity() {
+        let mut s = Settings::default();
+        s.bittorrent.default_trackers = vec!["https://t.example/secretkey/announce".into()];
+        s.connection.proxy_host = "proxy.example".into();
+        s.connection.proxy_username = "me".into();
+        s.connection.blocklist_url = "https://b.example/list?key=secretkey".into();
+        s.connection.allowlist_url = "https://a.example/list?key=secretkey".into();
+        s.behavior.run_on_complete = "notify secretkey".into();
+        s.rss.feeds.push(corrent_core::rss::FeedConfig {
+            url: "https://t.example/rss/secretkey".into(),
+            name: String::new(),
+            enabled: true,
+        });
+        s.search.providers.push(corrent_core::search::TorznabProvider {
+            url: "https://j.example/secretkey/api".into(),
+            ..Default::default()
+        });
+        let text = serde_json::to_string(&redact_for_reader(redact(s))).unwrap();
+        assert!(!text.contains("secretkey") && !text.contains("proxy.example"), "{text}");
+    }
 
     #[test]
     fn secrets_are_masked_and_kept() {

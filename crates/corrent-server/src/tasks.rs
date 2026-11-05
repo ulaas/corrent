@@ -190,6 +190,8 @@ async fn execute(st: &Arc<AppState>, id: &str) -> Result<String, String> {
             let root = st.paths.data_dir.join("transcode");
             let active: HashSet<String> = st.hls.sessions().into_iter().map(|s| s.id).collect();
             let n = tokio::task::spawn_blocking(move || cleanup(&root, &active)).await.map_err(|e| e.to_string())?;
+            // Daily, like this task: the planner's statistics follow the library.
+            st.identity.db().optimize().await.map_err(|e| e.to_string())?;
             Ok(format!("{n} removed"))
         }
         "backup" => {

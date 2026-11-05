@@ -72,6 +72,9 @@ Images are content-addressed (`/images/{sha}?w=`, immutable, ETag). Playback sta
 bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a session playlist;
 `DELETE /playback/sessions/{id}` ends it). Watch progress: `PUT /items/{id}/state`.
 
+Text answers (JSON, playlists, subtitles, the web client) are compressed with gzip or Brotli when
+the client asks for it. Media files, HLS and remux segments and torrent streams never are.
+
 ## Endpoints
 
 ### Accounts and sign-in
@@ -141,6 +144,12 @@ bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a sess
 | GET | `/api/v1/home` |
 | GET | `/api/v1/library/search` |
 | GET PUT | `/api/v1/users/{id}/libraries` |
+
+`GET /items` also takes `in_progress=true` (started and not finished, most recently played first
+unless `sort` says otherwise; paged) and `next_up=true` (the next episode of each show being
+watched, the most recent first). `next_up` isn't paged: it returns at most 100 items with
+`total` = their number, and of the other parameters only `library_id` applies. An item whose main
+file is gone from disk has `missing: true`; the field is left out otherwise.
 
 ### Playlists and collections
 
@@ -256,6 +265,13 @@ bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a sess
 | POST | `/api/v1/rss/refresh` |
 | POST | `/api/v1/rss/download` |
 
+Feeds and article links can carry a tracker passkey, so callers without `settings.write` get them
+masked to scheme and host (`https://tracker.example/…`, `magnet:…`) in `GET /rss` and
+`GET /rss/config`. Each feed in `GET /rss` has a stable `id`. `POST /rss/refresh` (`url`) and
+`POST /rss/download` (`feed`) take the id, the URL or the masked URL. `GET /server/settings` also
+arrives with `default_trackers`, `proxy_host`, `proxy_username`, `blocklist_url`, `allowlist_url` and
+`run_on_complete` empty, and feed and provider URLs masked, for those callers.
+
 ### Torrent search
 
 | Method | Path |
@@ -277,6 +293,9 @@ bandwidth caps) and answers `direct` (a Range-capable file URL) or `hls` (a sess
 | GET | `/api/v1/monitored` |
 | POST | `/api/v1/items/{id}/grab` |
 | GET | `/api/v1/torrents/{hash}/files/{file}/stream` |
+
+Torrents are shared on the server: any signed-in account can use the stream, `/torrents/{hash}/detail`
+and the `torrent` event topic (files and peers) for any torrent.
 
 ### Tasks, notifications, backups (admins)
 

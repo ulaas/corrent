@@ -87,8 +87,8 @@ struct Client {
     auth: Auth,
     rate: Duration,
     topics: HashSet<Topic>,
-    sent: Option<Vec<Torrent>>,
-    labels: Option<Labels>,
+    sent: Option<Arc<Vec<Torrent>>>,
+    labels: Option<Arc<Labels>>,
     generation: u64,
     last_tick: Instant,
     log_seen: u64,
@@ -220,41 +220,60 @@ impl Client {
             return Ok(());
         }
         let snap = self.st.engine.snapshot();
-        if !force && snap.generation == self.generation && !self.topics.contains(&Topic::Log) {
+        let changed = force || snap.generation != self.generation;
+        let new_log = self.topics.contains(&Topic::Log)
+            && corrent_core::logbuf::LINES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .back()
+                .is_some_and(|l| l.seq > self.log_seen);
+        if !changed && !new_log {
             return Ok(());
         }
         self.last_tick = Instant::now();
         self.generation = snap.generation;
-        if self.topics.contains(&Topic::Torrents) {
-            let now: Vec<Torrent> =
-                wire::torrents(&snap).into_iter().map(|t| super::redact_torrent(&self.auth.0, t)).collect();
-            let labels = wire::labels(&snap);
+        if changed && self.topics.contains(&Topic::Torrents) {
+            let shared = self.st.hub.wire_list(&snap);
+            // Those who may manage everything see the shared list as it is.
+            let now = if self.auth.0.can(Perms::TORRENTS_MANAGE_ALL) {
+                shared.torrents
+            } else {
+                Arc::new(shared.torrents.iter().map(|t| super::redact_torrent(&self.auth.0, t.clone())).collect())
+            };
+            let labels = shared.labels;
             match &self.sent {
-                None => self.send(ws, &Event::TorrentsFull { torrents: now.clone(), labels: labels.clone() }).await?,
+                None => {
+                    let full = Event::TorrentsFull { torrents: (*now).clone(), labels: (*labels).clone() };
+                    self.send(ws, &full).await?;
+                }
                 Some(before) => {
-                    let delta = torrent::diff(before, &now);
-                    if !delta.is_empty() {
-                        self.send(ws, &Event::TorrentsDelta { delta }).await?;
+                    if !Arc::ptr_eq(before, &now) {
+                        let delta = torrent::diff(before, &now);
+                        if !delta.is_empty() {
+                            self.send(ws, &Event::TorrentsDelta { delta }).await?;
+                        }
                     }
-                    if self.labels.as_ref() != Some(&labels) {
-                        self.send(ws, &Event::Labels { labels: labels.clone() }).await?;
+                    if self.labels.as_deref() != Some(&*labels) {
+                        self.send(ws, &Event::Labels { labels: (*labels).clone() }).await?;
                     }
                 }
             }
             self.sent = Some(now);
             self.labels = Some(labels);
         }
-        if self.topics.contains(&Topic::Session) {
+        if changed && self.topics.contains(&Topic::Session) {
             self.send(ws, &Event::Session { stats: wire::session(&snap) }).await?;
         }
-        if self.topics.contains(&Topic::Log) {
+        if new_log {
             let lines: Vec<Event> = {
                 let buf = corrent_core::logbuf::LINES.lock().unwrap_or_else(|e| e.into_inner());
-                let new: Vec<&corrent_core::logbuf::LogLine> = buf.iter().filter(|l| l.seq > self.log_seen).collect();
-                if let Some(last) = new.last() {
+                let new: Vec<&corrent_core::logbuf::LogLine> =
+                    buf.iter().rev().take_while(|l| l.seq > self.log_seen).take(200).collect();
+                if let Some(last) = new.first() {
                     self.log_seen = last.seq;
                 }
                 new.into_iter()
+                    .rev()
                     .map(|l| Event::Log {
                         level: l.level.to_string(),
                         target: l.target.clone(),
@@ -263,7 +282,7 @@ impl Client {
                     })
                     .collect()
             };
-            for l in lines.iter().rev().take(200).rev() {
+            for l in &lines {
                 self.send(ws, l).await?;
             }
         }

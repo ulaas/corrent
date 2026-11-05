@@ -201,6 +201,7 @@ pub async fn restart_watching(st: &AppState) {
 
 /// The whole HTTP surface: `/api/v1`, and (when enabled) the qBittorrent API and classic web UI.
 pub fn router(st: Arc<AppState>) -> Router {
+    use tower_http::compression::predicate::{Predicate, SizeAbove};
     let mut app = Router::new().nest("/api/v1", v1::router().with_state(st.clone()));
     if st.cfg.load().qbt_api {
         app =
@@ -211,9 +212,56 @@ pub fn router(st: Arc<AppState>) -> Router {
     }
     app = app.nest_service("/jellyfin", jellyfin::service(st.clone()));
     app.fallback(webclient::serve)
+        // Dynamic JSON too: a level that costs little CPU.
+        .layer(
+            tower_http::compression::CompressionLayer::new()
+                .quality(tower_http::CompressionLevel::Precise(4))
+                .compress_when(text_response.and(SizeAbove::new(256))),
+        )
+        .layer(axum::middleware::from_fn(no_compression_for_media))
         .layer(axum::middleware::from_fn_with_state(st.clone(), v1::guard))
         // Small by default; the routes that take uploads raise it for themselves.
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
+}
+
+/// For the compression layer: only what is text.
+fn text_response(
+    _: axum::http::StatusCode,
+    _: axum::http::Version,
+    headers: &axum::http::HeaderMap,
+    _: &axum::http::Extensions,
+) -> bool {
+    headers.get(axum::http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(compressible)
+}
+
+fn compressible(content_type: &str) -> bool {
+    let t = content_type.to_ascii_lowercase();
+    t.starts_with("text/")
+        || t.starts_with("application/json")
+        || t.starts_with("application/javascript")
+        || t.starts_with("application/manifest+json")
+        || t.starts_with("application/vnd.apple.mpegurl")
+        || t.starts_with("application/x-mpegurl")
+        || t.starts_with("image/svg+xml")
+}
+
+/// Whatever their type says: streams and segments go out byte for byte, so that ranges and
+/// lengths stay true (a text file inside a torrent is served by the stream route too).
+fn is_media_route(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/api/v1/") else { return false };
+    let stream = rest.starts_with("torrents/") && rest.ends_with("/stream");
+    let segment = (rest.starts_with("hls/") || rest.starts_with("remux/")) && !rest.ends_with(".m3u8");
+    stream || segment
+}
+
+async fn no_compression_for_media(
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if is_media_route(req.uri().path()) || req.headers().contains_key(axum::http::header::RANGE) {
+        req.headers_mut().remove(axum::http::header::ACCEPT_ENCODING);
+    }
+    next.run(req).await
 }
 
 pub use integrate::forward_engine_events;
@@ -294,6 +342,37 @@ pub(crate) async fn serve_https_config(
         addr,
         stop: Some(Box::new(move || handle.graceful_shutdown(Some(std::time::Duration::from_secs(5))))),
     })
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use super::*;
+
+    #[test]
+    fn media_routes_stay_as_they_are() {
+        for p in [
+            "/api/v1/torrents/ab/files/0/stream",
+            "/api/v1/hls/abc/12.ts",
+            "/api/v1/remux/1/0/seg-3.m4s",
+            "/api/v1/remux/1/0/init.mp4",
+        ] {
+            assert!(is_media_route(p), "{p}");
+        }
+        for p in ["/api/v1/torrents", "/api/v1/hls/abc/index.m3u8", "/api/v1/remux/1/0/index.m3u8", "/assets/a.js"] {
+            assert!(!is_media_route(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn only_text_is_compressed() {
+        for t in ["application/json", "text/vtt", "text/html; charset=utf-8", "application/vnd.apple.mpegurl"] {
+            assert!(compressible(t), "{t}");
+        }
+        for t in ["video/mp4", "video/mp2t", "audio/mpeg", "image/jpeg", "application/zip", "application/octet-stream"]
+        {
+            assert!(!compressible(t), "{t}");
+        }
+    }
 }
 
 #[cfg(test)]

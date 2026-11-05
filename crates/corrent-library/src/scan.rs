@@ -9,11 +9,13 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use corrent_db::rusqlite::{self, OptionalExtension, Transaction, params};
 use corrent_mpv::{ProbeResult, TrackKind};
 use corrent_proto::library::{ItemKind, LibraryKind, ScanStatus};
+use futures_util::stream::{self, StreamExt};
 
 use crate::nfo::Nfo;
 use crate::parse::{self, FileKind};
@@ -1069,6 +1071,56 @@ struct Known {
     missing_since: Option<i64>,
 }
 
+/// Files written per transaction, and how long results wait for the rest of a batch.
+const BATCH_FILES: usize = 50;
+const BATCH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Writes analyzed files in one transaction (one file failing costs only that file), then each
+/// touched item's search entry once.
+async fn apply_batch(
+    lib: &Library,
+    library_id: i64,
+    batch: Vec<Analyzed>,
+    known: &HashMap<String, Known>,
+    status: &mut ScanStatus,
+) {
+    let written = lib
+        .db()
+        .write(move |t| {
+            let mut touched = std::collections::BTreeSet::new();
+            let mut out = Vec::with_capacity(batch.len());
+            for a in &batch {
+                t.execute_batch("SAVEPOINT scan_file")?;
+                match apply(t, library_id, a) {
+                    Ok(items) => {
+                        t.execute_batch("RELEASE scan_file")?;
+                        touched.extend(items);
+                        out.push((a.path.display().to_string(), None));
+                    }
+                    Err(e) => {
+                        t.execute_batch("ROLLBACK TO scan_file; RELEASE scan_file")?;
+                        out.push((a.path.display().to_string(), Some(e.to_string())));
+                    }
+                }
+            }
+            refresh_fts(t, &touched.into_iter().collect::<Vec<_>>())?;
+            Ok(out)
+        })
+        .await;
+    match written {
+        Ok(files) => {
+            for (path, failed) in files {
+                match failed {
+                    Some(e) => tracing::warn!("library: couldn't add {path}: {e}"),
+                    None if known.contains_key(&path) => status.updated += 1,
+                    None => status.added += 1,
+                }
+            }
+        }
+        Err(e) => tracing::warn!("library: couldn't add files: {e}"),
+    }
+}
+
 pub(crate) async fn scan(lib: &Library, library_id: i64, cancel: &AtomicBool) -> Result<()> {
     let (kind, roots, _settings) = lib.library_row(library_id).await?;
     let mut status = ScanStatus { library_id, running: true, phase: "walk".into(), ..Default::default() };
@@ -1124,16 +1176,12 @@ pub(crate) async fn scan(lib: &Library, library_id: i64, cancel: &AtomicBool) ->
         .read(move |c| c.query_row("SELECT placement FROM libraries WHERE id = ?1", [library_id], |r| r.get(0)))
         .await?;
     let mut repaired = version >= PLACEMENT_VERSION;
-    let mut touched_all: Vec<i64> = Vec::new();
     if !repaired {
         if matches!(kind, LibraryKind::Movies | LibraryKind::Shows) {
             status.phase = "repair".into();
             lib.set_status(status.clone());
             match repair(lib, library_id, kind, &roots, &per_folder, &seen, cancel, &mut status).await {
-                Ok(t) => {
-                    touched_all.extend(t);
-                    repaired = offline.is_empty();
-                }
+                Ok(_) => repaired = offline.is_empty(),
                 Err(e) => tracing::warn!("library {library_id}: repairing placements failed: {e}"),
             }
         } else {
@@ -1168,59 +1216,81 @@ pub(crate) async fn scan(lib: &Library, library_id: i64, cancel: &AtomicBool) ->
         .map(|(_, k)| ((k.quick_hash.clone(), k.size), k.id))
         .collect();
     let mut moved_ids = HashSet::new();
+    let parallel = lib.prober().parallel();
 
-    for (n, f) in todo.into_iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            status.error = Some("cancelled".into());
-            break;
-        }
-        let p2 = f.path.clone();
-        let qh = tokio::task::spawn_blocking(move || quick_hash(&p2, f.size))
-            .await
-            .map_err(|e| LibError::Db(e.to_string()))?
-            .unwrap_or_default();
+    // Hashes first, so that which file takes over a row doesn't depend on timing.
+    let hashed: Vec<(Found, String)> = stream::iter(todo)
+        .map(|f| async move {
+            let p2 = f.path.clone();
+            let size = f.size;
+            let qh = tokio::task::spawn_blocking(move || quick_hash(&p2, size)).await.ok().and_then(|r| r.ok());
+            (f, qh.unwrap_or_default())
+        })
+        .buffered(parallel)
+        .take_while(|_| std::future::ready(!cancel.load(Ordering::Relaxed)))
+        .collect()
+        .await;
+    let mut rest = Vec::with_capacity(hashed.len());
+    let mut moves = Vec::new();
+    for (f, qh) in hashed {
         if !known.contains_key(&f.path.display().to_string())
             && let Some(old) = gone_by_hash.get(&(qh.clone(), f.size as i64)).copied()
             && moved_ids.insert(old)
         {
-            let (path, mtime) = (f.path.display().to_string(), f.mtime);
-            lib.db()
-                .write(move |t| {
+            tracing::info!("library: {} was moved here", f.path.display());
+            moves.push((f.path.display().to_string(), f.mtime, old));
+        } else {
+            rest.push((f, qh));
+        }
+    }
+    if !moves.is_empty() {
+        status.updated += moves.len() as u64;
+        status.done += moves.len() as u64;
+        lib.db()
+            .write(move |t| {
+                for (path, mtime, old) in &moves {
                     t.execute(
                         "UPDATE files SET path = ?1, mtime = ?2, missing_since = NULL WHERE id = ?3",
                         params![path, mtime, old],
-                    )
-                    .map(|_| ())
-                })
-                .await?;
-            tracing::info!("library: {} was moved here", f.path.display());
-            status.updated += 1;
-            status.done = n as u64 + 1;
-            continue;
-        }
-        let cx = context(&per_folder, &f.path);
-        let analyzed = analyze(lib, kind, &roots, f, qh, cx, true).await;
-        let is_new = !known.contains_key(&analyzed.path.display().to_string());
-        let touched = lib.db().write(move |t| {
-            let touched = apply(t, library_id, &analyzed)?;
-            refresh_fts(t, &touched)?;
-            Ok(touched)
-        });
-        match touched.await {
-            Ok(tch) => {
-                touched_all.extend(tch);
-                if is_new {
-                    status.added += 1;
-                } else {
-                    status.updated += 1;
+                    )?;
                 }
-            }
-            Err(e) => tracing::warn!("library: couldn't add a file: {e}"),
+                Ok(())
+            })
+            .await?;
+    }
+
+    // Several files are read at once; `buffered` keeps their order, so main files still get to
+    // the database before the extras that look for them.
+    let mut analyzed = pin!(
+        stream::iter(rest)
+            .map(|(f, qh)| {
+                let cx = context(&per_folder, &f.path);
+                let roots = &roots;
+                async move { analyze(lib, kind, roots, f, qh, cx, true).await }
+            })
+            .buffered(parallel)
+    );
+    let mut batch = Vec::with_capacity(BATCH_FILES);
+    let mut last_write = std::time::Instant::now();
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            status.error = Some("cancelled".into());
+            break;
         }
-        status.done = n as u64 + 1;
-        if n % 25 == 0 {
+        let Some(a) = analyzed.next().await else { break };
+        batch.push(a);
+        status.done += 1;
+        if batch.len() >= BATCH_FILES || last_write.elapsed() >= BATCH_WAIT {
+            apply_batch(lib, library_id, std::mem::take(&mut batch), &known, &mut status).await;
+            last_write = std::time::Instant::now();
             lib.set_status(status.clone());
         }
+    }
+    if !batch.is_empty() {
+        apply_batch(lib, library_id, batch, &known, &mut status).await;
+    }
+    if cancel.load(Ordering::Relaxed) {
+        status.error = Some("cancelled".into());
     }
 
     // 4. Missing files: mark now, remove after the grace period.

@@ -83,6 +83,28 @@ fn trickplay_dir(st: &AppState, file_id: i64) -> PathBuf {
     st.paths.data_dir.join("trickplay").join(file_id.to_string())
 }
 
+/// After a failed attempt a file isn't tried again for this long (each try decodes all of it).
+const TRICKPLAY_RETRY_SECS: i64 = 7 * 86_400;
+const TRICKPLAY_FAILED: &str = "failed";
+
+/// Whether making sheets for this folder failed recently (the marker holds the time).
+async fn trickplay_failed_recently(dir: &std::path::Path, now: i64) -> bool {
+    let Ok(text) = tokio::fs::read_to_string(dir.join(TRICKPLAY_FAILED)).await else { return false };
+    text.trim().parse::<i64>().is_ok_and(|at| now - at < TRICKPLAY_RETRY_SECS)
+}
+
+/// Makes trickplay sheets once the session's encoder has its first segment (or the session has
+/// ended): a full decode next to a starting transcode would make the player wait.
+fn trickplay_after_first_segment(st: &Arc<AppState>, session: String, file_id: i64, input: String) {
+    let st = st.clone();
+    tokio::spawn(async move {
+        while st.hls.produced(&session) == Some(0) {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        ensure_trickplay(&st, file_id, input);
+    });
+}
+
 /// Starts making trickplay sheets for a file (once; one at a time server-wide).
 pub fn ensure_trickplay(st: &Arc<AppState>, file_id: i64, input: String) {
     {
@@ -95,13 +117,18 @@ pub fn ensure_trickplay(st: &Arc<AppState>, file_id: i64, input: String) {
     tokio::spawn(async move {
         let _one = st.trickplay_slot.lock().await;
         let dir = trickplay_dir(&st, file_id);
-        if !dir.join("index.vtt").exists() {
-            let _ = std::fs::create_dir_all(&dir);
+        let now = corrent_core::util::now_unix();
+        let done = tokio::fs::try_exists(dir.join("index.vtt")).await.unwrap_or(false);
+        if !done && !trickplay_failed_recently(&dir, now).await {
+            let _ = tokio::fs::create_dir_all(&dir).await;
+            let _ = tokio::fs::remove_file(dir.join(TRICKPLAY_FAILED)).await;
             match corrent_transcode::trickplay::generate(&input, &dir, 10, 240, corrent_mpv::worker_path()).await {
                 Ok(n) => tracing::info!("trickplay for file {file_id}: {n} frames"),
                 Err(e) => {
                     tracing::debug!("trickplay for file {file_id}: {e}");
-                    let _ = std::fs::remove_dir_all(&dir);
+                    let _ = tokio::fs::remove_dir_all(&dir).await;
+                    let _ = tokio::fs::create_dir_all(&dir).await;
+                    let _ = tokio::fs::write(dir.join(TRICKPLAY_FAILED), now.to_string()).await;
                 }
             }
         }
@@ -193,14 +220,10 @@ pub(crate) async fn prepare(
         .collect();
     let has_video = facts.video.is_some();
     let tp = trickplay_dir(&st, file.id);
-    let trickplay = if tp.join("index.vtt").exists() {
-        Some(format!("/api/v1/files/{}/trickplay/index.vtt", file.id))
-    } else {
-        if has_video {
-            ensure_trickplay(&st, file.id, file.path.clone());
-        }
-        None
-    };
+    let trickplay = tokio::fs::try_exists(tp.join("index.vtt"))
+        .await
+        .unwrap_or(false)
+        .then(|| format!("/api/v1/files/{}/trickplay/index.vtt", file.id));
     let (method, url, session_id, reasons) = match decision {
         Decision::Transcode { reasons, .. } if let Some(audio) = remux => (
             "remux".to_string(),
@@ -247,10 +270,20 @@ pub(crate) async fn prepare(
                 title: detail.item.title.clone(),
                 item_id: Some(item),
             };
-            let id = st.hls.create(spec).map_err(hls_err)?;
+            let hls = st.hls.clone();
+            let id = tokio::task::spawn_blocking(move || hls.create(spec))
+                .await
+                .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
+                .map_err(hls_err)?;
             ("hls".to_string(), format!("/api/v1/hls/{id}/index.m3u8"), Some(id), reasons)
         }
     };
+    if trickplay.is_none() && has_video {
+        match &session_id {
+            Some(id) => trickplay_after_first_segment(&st, id.clone(), file.id, file.path.clone()),
+            None => ensure_trickplay(&st, file.id, file.path.clone()),
+        }
+    }
     Ok(PlaybackInfo {
         method,
         url,
@@ -443,7 +476,7 @@ async fn trickplay(
         return Err(err(ErrorCode::NotFound, "no such file"));
     }
     let path = trickplay_dir(&st, id).join(&name);
-    if !path.exists() {
+    if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
         return Err(err(ErrorCode::NotFound, "not generated yet"));
     }
     let mime = if name.ends_with(".vtt") { "text/vtt" } else { "image/jpeg" };

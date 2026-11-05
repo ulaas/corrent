@@ -249,9 +249,18 @@ pub async fn call(st: &Arc<AppState>, who: &Principal, name: &str, a: &Value) ->
     }
 }
 
+/// Longest `reason`, `title` or `provider` a proposal may carry.
+const MAX_FIELD: usize = 200;
+
 /// What a proposal would do, for the person who decides (checked against the library now, so a
 /// proposal about something that isn't there is refused right away).
 async fn summarize(st: &Arc<AppState>, who: &Principal, tool: &str, a: &Value) -> Result<String, String> {
+    // The summary is what a person reads before approving: it stays short enough to read whole.
+    for field in ["reason", "title", "provider", "provider_id"] {
+        if text(a, field).is_some_and(|s| s.chars().count() > MAX_FIELD) {
+            return Err(format!("{field} is longer than {MAX_FIELD} characters"));
+        }
+    }
     let user = who.user.id;
     let lib = |e: corrent_library::LibError| e.to_string();
     let title_of = |d: &corrent_proto::library::ItemDetail| match d.item.year {

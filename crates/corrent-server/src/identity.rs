@@ -210,11 +210,19 @@ pub struct Identity {
     hashing: Arc<tokio::sync::Semaphore>,
     /// A hash at the real cost, checked for unknown user names so their timing matches.
     dummy: Arc<tokio::sync::OnceCell<String>>,
+    /// Counts changes to accounts, so sessions kept elsewhere (qBittorrent API) look again.
+    user_changes: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Identity {
     pub fn new(db: Db, cost: HashCost) -> Identity {
-        Identity { db, cost, hashing: Arc::new(tokio::sync::Semaphore::new(2)), dummy: Default::default() }
+        Identity {
+            db,
+            cost,
+            hashing: Arc::new(tokio::sync::Semaphore::new(2)),
+            dummy: Default::default(),
+            user_changes: Default::default(),
+        }
     }
 
     pub fn db(&self) -> &Db {
@@ -577,6 +585,24 @@ impl Identity {
             .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "no such user"))
     }
 
+    /// Goes up whenever an account is changed or deleted.
+    pub fn user_changes(&self) -> u64 {
+        self.user_changes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// An account and its stored password hash.
+    pub async fn signin_state(&self, id: i64) -> Result<Option<(User, String)>, ApiError> {
+        self.db
+            .read(move |c| {
+                c.query_row(&format!("SELECT {USER_COLS}, pw_hash FROM users WHERE id = ?1"), [id], |r| {
+                    Ok((user_row(r)?, r.get::<_, String>(8)?))
+                })
+                .optional()
+            })
+            .await
+            .map_err(db_err)
+    }
+
     pub async fn update_user(&self, id: i64, u: UserUpdate) -> Result<User, ApiError> {
         let pw = match u.password {
             Some(p) if p.len() < 8 => {
@@ -625,6 +651,7 @@ impl Identity {
             .await
             .map_err(db_err)?;
         r.map_err(|m| ApiError::new(ErrorCode::Conflict, m))?;
+        self.user_changes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.user(id).await
     }
 
@@ -647,6 +674,7 @@ impl Identity {
             })
             .await
             .map_err(db_err)?;
+        self.user_changes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         r.map_err(|c| ApiError::new(c, "can't delete that user"))
     }
 

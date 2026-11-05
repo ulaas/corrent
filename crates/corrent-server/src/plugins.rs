@@ -42,6 +42,21 @@ impl KvStore for DbKv {
             })
             .map_err(|e| e.to_string())?
     }
+
+    fn tripped(&self, plugin: &str) {
+        let p = plugin.to_string();
+        let now = corrent_core::util::now_unix();
+        let r = self.0.write_blocking(move |t| {
+            t.execute(
+                "INSERT INTO plugins(id, enabled, settings, installed_at) VALUES (?1, 0, '{}', ?2) \
+                 ON CONFLICT(id) DO UPDATE SET enabled = 0",
+                params![p, now],
+            )
+        });
+        if let Err(e) = r {
+            tracing::warn!("recording that plugin {plugin} is disabled: {e}");
+        }
+    }
 }
 
 /// `<data>/plugins/<id>/` holds installed (non-built-in) plugins.
@@ -244,5 +259,39 @@ impl corrent_plugins::LibraryAccess for LibraryView {
             Err(corrent_library::LibError::NotFound) => Ok(None),
             Err(e) => Err(e.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod breaker_tests {
+    use super::*;
+
+    #[test]
+    fn a_tripped_plugin_stays_disabled_and_keeps_its_settings() {
+        let d = std::env::temp_dir().join(format!("corrent-breaker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let db = Db::open(&d.join("corrent.db")).unwrap();
+        let kv = DbKv(db.clone());
+        kv.tripped("new");
+        db.write_blocking(|t| {
+            t.execute(
+                "INSERT INTO plugins(id, enabled, settings, installed_at) VALUES ('old', 1, '{\"a\":\"b\"}', 1)",
+                [],
+            )
+        })
+        .unwrap();
+        kv.tripped("old");
+        let rows: Vec<(String, i64, String)> = db
+            .read_blocking(|c| {
+                let mut st = c.prepare("SELECT id, enabled, settings FROM plugins ORDER BY id")?;
+                st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
+            })
+            .unwrap();
+        assert_eq!(
+            rows,
+            [("new".to_string(), 0, "{}".to_string()), ("old".to_string(), 0, "{\"a\":\"b\"}".to_string())]
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(d);
     }
 }

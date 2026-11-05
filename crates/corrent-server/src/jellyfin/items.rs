@@ -156,12 +156,17 @@ async fn run(st: &AppState, user: i64, mut q: ItemQuery, limit: i64) -> (Vec<Ite
 
 pub(crate) async fn dtos(st: &AppState, c: &Ctx, user: i64, items: &[Item], detail: bool) -> Vec<Value> {
     let libs = kinds_of_libraries(&st.library.list().await.unwrap_or_default());
+    let mut details = if detail {
+        st.library.details(user, items.iter().map(|i| i.id).collect()).await.unwrap_or_default()
+    } else {
+        Default::default()
+    };
     let mut out = Vec::with_capacity(items.len());
     for it in items {
         if libs.get(&it.library_id).is_some_and(|k| dto::collection_type(*k).is_none()) {
             continue;
         }
-        let d = if detail { st.library.item(user, it.id).await.ok() } else { None };
+        let d = details.remove(&it.id);
         out.push(dto::item_dto(c, it, libs.get(&it.library_id).copied(), d.as_ref()));
     }
     out
@@ -665,9 +670,7 @@ async fn serve_image(State(st): State<Arc<AppState>>, id: String, ty: String, q:
 
 async fn send_image(st: &AppState, sha: &str, width: u32, req: Request, immutable: bool) -> Response {
     let w = [200, 400, 800].into_iter().find(|v| *v >= width);
-    let Some(path) = corrent_library::artwork::existing(st.library.artwork_root(), sha, w)
-        .or_else(|| corrent_library::artwork::existing(st.library.artwork_root(), sha, None))
-    else {
+    let Some(path) = corrent_library::artwork::find(st.library.artwork_root(), sha, w).await else {
         return fail(StatusCode::NOT_FOUND, "Image not found");
     };
     if req

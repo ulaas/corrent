@@ -275,8 +275,16 @@ fn admin_tool(args: &[String]) -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!(e.message))?;
             let scheme = if cfg.tls { "https" } else { "http" };
             let base = format!("{scheme}://127.0.0.1:{}/api/v1", cfg.https_port);
-            // Loopback to our own server: its certificate is self-signed.
-            let http = reqwest::Client::builder().tls_danger_accept_invalid_certs(true).build()?;
+            // Loopback to our own server, trusting only its own CA: the token must not go to
+            // whatever else listens on that port while the server is down.
+            let mut http = reqwest::Client::builder();
+            if cfg.tls {
+                let pem = std::fs::read(paths.data_dir.join("tls").join("ca.pem")).map_err(|e| {
+                    anyhow::anyhow!("reading the server's CA ({e}); with your own certificate, use the web client")
+                })?;
+                http = http.tls_certs_only([reqwest::Certificate::from_pem(&pem)?]);
+            }
+            let http = http.build()?;
             let r: anyhow::Result<()> = rt.block_on(async {
                 let libs: Vec<corrent_proto::library::Library> = http
                     .get(format!("{base}/libraries"))
@@ -456,8 +464,10 @@ fn run(args: Args) -> anyhow::Result<()> {
     };
 
     // A restore staged from the web client is applied before anything opens the database.
+    let mut restored = false;
     match corrent_server::backups::apply_pending(&paths.data_dir) {
         Some(Ok(m)) => {
+            restored = true;
             tracing::info!("{m}");
             println!("{m}");
         }
@@ -467,7 +477,17 @@ fn run(args: Args) -> anyhow::Result<()> {
         }
         None => {}
     }
-    let db = corrent_db::Db::open(&paths.data_dir.join("corrent.db"))?;
+    corrent_core::crash::install_hook(paths.log_dir());
+    corrent_core::crash::note(|c| {
+        c.build = format!("correntd {}", env!("CARGO_PKG_VERSION"));
+        c.portable = args.portable;
+    });
+    let previous = corrent_core::crash::start(&paths.log_dir());
+    // Reading every page can take minutes on a big library: only when there is a reason to.
+    let db = corrent_db::Db::open_with(
+        &paths.data_dir.join("corrent.db"),
+        corrent_db::OpenOptions { quick_check: previous.unclean || restored },
+    )?;
     let identity = Identity::new(db.clone(), HashCost::STANDARD);
 
     let mut cfg = ServerConfig::load(&paths.data_dir)?;
@@ -501,12 +521,6 @@ fn run(args: Args) -> anyhow::Result<()> {
     };
     let fingerprint = tls_material.as_ref().map(|t| t.fingerprint.clone()).filter(|f| !f.is_empty());
 
-    corrent_core::crash::install_hook(paths.log_dir());
-    corrent_core::crash::note(|c| {
-        c.build = format!("correntd {}", env!("CARGO_PKG_VERSION"));
-        c.portable = args.portable;
-    });
-    let previous = corrent_core::crash::start(&paths.log_dir());
     corrent_core::watchdog::start(paths.log_dir(), corrent_core::watchdog::Limits::SERVER);
     if previous.unclean {
         tracing::warn!("the previous run did not shut down cleanly (computer restarted since: {})", previous.rebooted);

@@ -102,7 +102,12 @@ async fn stored(st: &AppState, user: i64, key: &str) -> Option<Value> {
     st.identity.jf_pref(user, key).await.ok().flatten().and_then(|s| serde_json::from_str(&s).ok())
 }
 
-async fn public(State(st): State<Arc<AppState>>) -> Response {
+/// The accounts for a sign-in screen, to clients on the local network only: from elsewhere the
+/// list stays empty and Jellyfin apps ask for the user name.
+async fn public(State(st): State<Arc<AppState>>, ip: ClientIp) -> Response {
+    if !crate::net::is_local(ip.0, &st.nets.load().allowed) {
+        return json(Value::Array(Vec::new()));
+    }
     let c = ctx(&st);
     let users = st.identity.signin_users().await.unwrap_or_default();
     json(Value::Array(users.iter().map(|u| dto::user_dto(&c, u, None)).collect()))

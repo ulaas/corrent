@@ -75,6 +75,57 @@ fn authorization_header() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_whole_season_with_media_sources_stays_a_few_reads() {
+    use crate::api_tests::{empty_library, seed_item};
+    let h = harness("jf-batch", ServerConfig { tls: false, jellyfin_api: true, ..Default::default() }).await;
+    let admin = admin_token(&h.app).await;
+    let lib = empty_library(&h, &admin, "Shows", "shows").await;
+    let show = seed_item(&h, lib, "show", None, None, "Show", None).await;
+    let season = seed_item(&h, lib, "season", Some(show), Some(1), "Season 1", None).await;
+    for n in 1..=24 {
+        let path = h.dir.join(format!("e{n}.mkv")).display().to_string();
+        seed_item(&h, lib, "episode", Some(season), Some(n), &format!("Episode {n}"), Some(path)).await;
+    }
+    let (token, _) = login(&h.app).await;
+    let a = with_token(&token);
+    let (show_id, season_id) = (ids::enc(ids::ITEM, show), ids::enc(ids::ITEM, season));
+    let uri = format!("/jellyfin/Shows/{show_id}/Episodes?SeasonId={season_id}&Fields=MediaSources,Overview");
+    let db = h.st.identity.db().clone();
+    let before = db.stats().reads;
+    let (s, v, _) = jf(&h.app, Method::GET, &uri, Some(&a), None).await;
+    let reads = db.stats().reads - before;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["Items"].as_array().unwrap().len(), 24, "{v}");
+    assert!(v["Items"][23]["MediaSources"][0]["Id"].is_string(), "{v}");
+    assert!(reads <= 15, "one read per episode is back: {reads}");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn account_list_stays_on_the_local_network() {
+    use crate::api_tests::{Call, call};
+    let h = harness(
+        "jf-public",
+        ServerConfig { tls: false, jellyfin_api: true, remote_access: true, ..Default::default() },
+    )
+    .await;
+    let _ = admin_token(&h.app).await;
+    let list = |peer: &'static str| {
+        let app = h.app.clone();
+        async move {
+            let c = Call { peer: Some(peer), ..Default::default() };
+            call(&app, Method::GET, "/jellyfin/Users/Public", c).await
+        }
+    };
+    let (s, v, _) = list("192.168.1.20").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v[0]["Name"], "admin");
+    let (s, v, _) = list("8.8.8.8").await;
+    assert_eq!((s, v), (StatusCode::OK, json!([])));
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn handshake_and_login() {
     let h = harness("jf-login", ServerConfig { tls: false, jellyfin_api: true, ..Default::default() }).await;
     let app = &h.app;

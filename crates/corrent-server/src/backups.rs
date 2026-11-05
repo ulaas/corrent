@@ -96,9 +96,10 @@ pub async fn create(st: &AppState) -> Result<BackupFile, String> {
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(0o600);
         let mut add = |zip_name: &str, path: &Path| -> std::io::Result<()> {
-            if let Ok(bytes) = std::fs::read(path) {
-                z.start_file(zip_name, opts).map_err(std::io::Error::other)?;
-                z.write_all(&bytes)?;
+            if let Ok(mut f) = std::fs::File::open(path) {
+                let big = f.metadata()?.len() >= u64::from(u32::MAX);
+                z.start_file(zip_name, opts.large_file(big)).map_err(std::io::Error::other)?;
+                std::io::copy(&mut f, &mut z)?;
             }
             Ok(())
         };
@@ -126,6 +127,16 @@ pub async fn create(st: &AppState) -> Result<BackupFile, String> {
     Ok(BackupFile { name, size, created: corrent_core::util::now_unix() })
 }
 
+/// Largest single file a restore writes: a crafted zip can't fill the disk at the next start.
+const MAX_ENTRY: u64 = 64 << 30;
+
+/// Copies at most `limit` bytes, failing if there is more.
+fn copy_limited(from: &mut impl std::io::Read, to: &mut impl Write, limit: u64) -> Result<(), String> {
+    let mut limited = std::io::Read::take(&mut *from, limit.saturating_add(1));
+    let n = std::io::copy(&mut limited, to).map_err(|e| e.to_string())?;
+    if n > limit { Err("a file in the backup is too large".into()) } else { Ok(()) }
+}
+
 /// Files a backup may contain (anything else in a zip is refused).
 const FILES: [&str; 6] = ["corrent.db", "server.toml", "settings.toml", "store.json", "rss.json", "connect.key"];
 
@@ -147,6 +158,9 @@ pub fn validate(path: &Path) -> Result<(), String> {
                 .is_some_and(|f| !f.is_empty() && !f.contains(['/', '\\']) && !f.starts_with('.'));
         if !ok {
             return Err(format!("unexpected file in the backup: {name}"));
+        }
+        if e.size() > MAX_ENTRY {
+            return Err(format!("{name} in the backup is too large"));
         }
         has_db |= name == "corrent.db";
     }
@@ -241,8 +255,9 @@ pub fn apply_pending(data_dir: &Path) -> Option<Result<String, String>> {
             let mut e = z.by_index(i).map_err(|e| e.to_string())?;
             let target = data_dir.join(e.name().map_err(|e| e.to_string())?.as_ref());
             created.push(target.clone());
-            let mut out = std::fs::File::create(&target).map_err(|e| e.to_string())?;
-            std::io::copy(&mut e, &mut out).map_err(|e| e.to_string())?;
+            // Keys and the database stay the owner's, as when they were made.
+            let mut out = private_file(&target).map_err(|e| e.to_string())?;
+            copy_limited(&mut e, &mut out, MAX_ENTRY)?;
         }
         Ok(())
     })();
@@ -275,6 +290,16 @@ mod restore_tests {
             z.write_all(b).unwrap();
         }
         z.finish().unwrap();
+    }
+
+    #[test]
+    fn restored_files_are_limited_in_size() {
+        let mut out = Vec::new();
+        assert!(copy_limited(&mut &[1u8; 10][..], &mut out, 10).is_ok());
+        assert_eq!(out.len(), 10);
+        let mut out = Vec::new();
+        assert!(copy_limited(&mut &[1u8; 11][..], &mut out, 10).is_err());
+        assert_eq!(out.len(), 11, "stops one byte past the limit");
     }
 
     #[test]

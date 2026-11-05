@@ -157,6 +157,463 @@ pub(crate) async fn admin_token(app: &Router) -> String {
     v["token"].as_str().unwrap().to_string()
 }
 
+/// A plain `user` account and its device token.
+pub(crate) async fn user_token(app: &Router, admin: &str, name: &str) -> String {
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        admin,
+        json!({ "name": name, "password": "long enough pw", "role": "user" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v, _) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call {
+            body: Some(json!({ "username": name, "password": "long enough pw", "device": device() })),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v["token"].as_str().unwrap().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agent_requests_have_limits() {
+    let h = harness("agent-caps", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let lib = empty_library(&h, &admin, "Films", "movies").await;
+    let item = seed_item(&h, lib, "movie", None, None, "Sintel", None).await;
+    let ping = json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" });
+    let batch = |n: usize| Value::Array(vec![ping.clone(); n]);
+    assert_eq!(send(app, Method::POST, "/api/v1/mcp", &admin, batch(33)).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(send(app, Method::POST, "/api/v1/mcp", &admin, batch(32)).await.0, StatusCode::OK);
+    let propose = |title: String| {
+        let body = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "propose_details", "arguments": { "item_id": item, "title": title } } });
+        let (app, admin) = (app.clone(), admin.clone());
+        async move { send(&app, Method::POST, "/api/v1/mcp", &admin, body).await.1 }
+    };
+    let long = propose("x".repeat(201)).await;
+    assert!(long.to_string().contains("longer than 200"), "{long}");
+    let fine = propose("x".repeat(200)).await;
+    assert!(!fine.to_string().contains("longer than"), "{fine}");
+    h.stop().await;
+}
+
+/// A library in a new folder of the test's directory (nothing to scan) and its id.
+pub(crate) async fn empty_library(h: &H, admin: &str, name: &str, kind: &str) -> i64 {
+    let folder = h.dir.join(format!("lib-{name}"));
+    std::fs::create_dir_all(&folder).unwrap();
+    let (s, v, _) = send(
+        &h.app,
+        Method::POST,
+        "/api/v1/libraries",
+        admin,
+        json!({ "name": name, "kind": kind, "folders": [folder] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v["id"].as_i64().unwrap()
+}
+
+/// An item written straight into the database, with its main file when `path` is given.
+pub(crate) async fn seed_item(
+    h: &H,
+    library: i64,
+    kind: &str,
+    parent: Option<i64>,
+    index: Option<i64>,
+    title: &str,
+    path: Option<String>,
+) -> i64 {
+    let (kind, title) = (kind.to_string(), title.to_string());
+    h.st.identity
+        .db()
+        .write(move |t| {
+            t.execute(
+                "INSERT INTO items(library_id, kind, parent_id, title, sort_title, index_no, added_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, 1, 1)",
+                corrent_db::rusqlite::params![library, kind, parent, title, index],
+            )?;
+            let item = t.last_insert_rowid();
+            if let Some(path) = path {
+                t.execute(
+                    "INSERT INTO files(library_id, path, size, mtime) VALUES (?1, ?2, 1, 1)",
+                    corrent_db::rusqlite::params![library, path],
+                )?;
+                t.execute("INSERT INTO item_files(item_id, file_id) VALUES (?1, ?2)", [item, t.last_insert_rowid()])?;
+            }
+            Ok(item)
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hidden_libraries_stay_hidden_from_wanted_monitors_and_streams() {
+    let h = harness("visibility", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let bob = user_token(app, &admin, "bob").await;
+    let bob_id = get(app, "/api/v1/auth/me", &bob).await.1["user"]["id"].as_i64().unwrap();
+    let open = empty_library(&h, &admin, "Open", "shows").await;
+    let hidden = empty_library(&h, &admin, "Hidden", "shows").await;
+    h.st.library.set_user_libraries(bob_id, vec![open]).await.unwrap();
+
+    // The wanted list.
+    for (library, title) in [(Some(open), "Seen"), (Some(hidden), "Secret"), (None, "Anywhere")] {
+        let (s, v, _) = send(
+            app,
+            Method::POST,
+            "/api/v1/wanted",
+            &admin,
+            json!({ "library_id": library, "kind": "movie", "title": title }),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let titles = |v: &Value| -> Vec<String> {
+        let mut t: Vec<String> = v.as_array().unwrap().iter().map(|w| w["title"].as_str().unwrap().into()).collect();
+        t.sort();
+        t
+    };
+    assert_eq!(titles(&get(app, "/api/v1/wanted", &bob).await.1), ["Anywhere", "Seen"]);
+    assert_eq!(titles(&get(app, "/api/v1/wanted", &admin).await.1), ["Anywhere", "Secret", "Seen"]);
+
+    // Followed shows.
+    let shown = seed_item(&h, open, "show", None, None, "Open Show", None).await;
+    let secret = seed_item(&h, hidden, "show", None, None, "Secret Show", None).await;
+    for (who, id, status) in
+        [(&admin, secret, StatusCode::OK), (&bob, secret, StatusCode::NOT_FOUND), (&bob, shown, StatusCode::OK)]
+    {
+        let (s, v, _) = send(app, Method::PUT, &format!("/api/v1/items/{id}/monitor"), who, json!({})).await;
+        assert_eq!(s, status, "{v}");
+    }
+    assert_eq!(titles(&get(app, "/api/v1/monitored", &bob).await.1), ["Open Show"]);
+    assert_eq!(titles(&get(app, "/api/v1/monitored", &admin).await.1), ["Open Show", "Secret Show"]);
+    let uri = format!("/api/v1/items/{secret}/monitor");
+    let (s, _, _) = call(app, Method::DELETE, &uri, Call { bearer: Some(&bob), ..Default::default() }).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Scan progress.
+    assert_eq!(get(app, &format!("/api/v1/libraries/{open}/scan"), &bob).await.0, StatusCode::OK);
+    assert_eq!(get(app, &format!("/api/v1/libraries/{hidden}/scan"), &bob).await.0, StatusCode::NOT_FOUND);
+
+    // Torrents are shared on the server, by the owner's choice: someone else's download streams
+    // and shows its details for any signed-in account, whatever its libraries.
+    let seeder = testkit::seeder_with(&h.dir, "Sintel.2010.mkv", vec![7u8; 10_000]).await;
+    testkit::add(&h.l, &seeder, &h.dir);
+    testkit::wait_for(&h.l, "the download", 60, |sn| testkit::complete(sn, seeder.hash)).await;
+    let content = testkit::find(&h.l.engine.snapshot(), seeder.hash).unwrap().content_path.clone();
+    seed_item(&h, hidden, "movie", None, None, "Sintel", Some(content.display().to_string())).await;
+    let hash = seeder.hash.to_hex();
+    assert_ne!(get(app, &format!("/api/v1/torrents/{hash}/files/0/stream"), &bob).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(get(app, &format!("/api/v1/torrents/{hash}/detail"), &bob).await.0, StatusCode::OK);
+
+    // A PIN opens any profile that has one, administrators' too (also the owner's choice).
+    let (s, v, _) = send(app, Method::PUT, "/api/v1/auth/pin", &admin, json!({ "pin": "2468" })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let admin_id = get(app, "/api/v1/auth/me", &admin).await.1["user"]["id"].as_i64().unwrap();
+    let switch = json!({ "user_id": admin_id, "pin": "2468", "device": device() });
+    let (s, v, _) = send(app, Method::POST, "/api/v1/auth/profile", &bob, switch).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn items_whose_file_is_gone_are_flagged() {
+    let h = harness("missing", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let lib = empty_library(&h, &admin, "Films", "movies").await;
+    let here =
+        seed_item(&h, lib, "movie", None, None, "Here", Some(h.dir.join("here.mkv").display().to_string())).await;
+    let gone =
+        seed_item(&h, lib, "movie", None, None, "Gone", Some(h.dir.join("gone.mkv").display().to_string())).await;
+    let bare = seed_item(&h, lib, "movie", None, None, "No file yet", None).await;
+    h.st.identity
+        .db()
+        .write(move |t| {
+            t.execute(
+                "UPDATE files SET missing_since = 1 WHERE id IN (SELECT file_id FROM item_files WHERE item_id = ?1)",
+                [gone],
+            )
+        })
+        .await
+        .unwrap();
+    let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+    let flag = |id: i64| v["items"].as_array().unwrap().iter().find(|i| i["id"] == id).unwrap()["missing"].clone();
+    assert_eq!(flag(gone), true, "{v}");
+    assert_eq!(flag(here), Value::Null, "left out when false");
+    assert_eq!(flag(bare), Value::Null, "no file was ever known");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn text_is_compressed_and_video_is_not() {
+    let h = harness("compress", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let raw = |uri: String, header_name: header::HeaderName, value: String| {
+        let (app, admin) = (app.clone(), admin.clone());
+        async move {
+            let mut r = Request::builder()
+                .uri(uri)
+                .header(header::HOST, "127.0.0.1:8443")
+                .header(header::AUTHORIZATION, format!("Bearer {admin}"))
+                .header(header_name, value)
+                .body(Body::empty())
+                .unwrap();
+            r.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+            let res = app.oneshot(r).await.unwrap();
+            let (status, headers) = (res.status(), res.headers().clone());
+            let bytes = res.into_body().collect().await.unwrap().to_bytes();
+            (status, headers, bytes)
+        }
+    };
+    // A list long enough to be worth it.
+    let seeder = testkit::seeder(&h.dir).await;
+    testkit::add(&h.l, &seeder, &h.dir);
+    testkit::wait_for(&h.l, "the torrent", 60, |sn| testkit::find(sn, seeder.hash).is_some()).await;
+    for encoding in ["br", "gzip"] {
+        let (s, hd, body) = raw("/api/v1/torrents".into(), header::ACCEPT_ENCODING, encoding.into()).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(hd.get(header::CONTENT_ENCODING).map(|v| v.to_str().unwrap()), Some(encoding), "{hd:?} {body:?}");
+    }
+
+    // A video file, whole and in part.
+    let lib = empty_library(&h, &admin, "Films", "movies").await;
+    let video = h.dir.join("film.mp4");
+    std::fs::write(&video, vec![0u8; 100_000]).unwrap();
+    let item = seed_item(&h, lib, "movie", None, None, "Film", Some(video.display().to_string())).await;
+    let (s, hd, _) = raw(format!("/api/v1/items/{item}/file"), header::ACCEPT_ENCODING, "br, gzip".into()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(hd.get(header::CONTENT_ENCODING).is_none(), "{hd:?}");
+
+    // The client's page: revalidated, not sent again.
+    let (s, hd, body) = raw("/".into(), header::ACCEPT_ENCODING, "identity".into()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(!body.is_empty());
+    let etag = hd[header::ETAG].to_str().unwrap().to_string();
+    let (s, hd, body) = raw("/".into(), header::IF_NONE_MATCH, etag.clone()).await;
+    assert_eq!(s, StatusCode::NOT_MODIFIED);
+    assert_eq!(hd[header::ETAG].to_str().unwrap(), etag);
+    assert!(body.is_empty());
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_item_list_has_in_progress_and_next_up() {
+    let h = harness("rows", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let admin_id = get(app, "/api/v1/auth/me", &admin).await.1["user"]["id"].as_i64().unwrap();
+    let films = empty_library(&h, &admin, "Films", "movies").await;
+    let shows = empty_library(&h, &admin, "Shows", "shows").await;
+    let mut in_progress = Vec::new();
+    for n in 0..3 {
+        in_progress.push(seed_item(&h, films, "movie", None, None, &format!("Film {n}"), None).await);
+    }
+    let finished = seed_item(&h, films, "movie", None, None, "Finished", None).await;
+    let mut seen = Vec::new();
+    for name in ["Old show", "New show"] {
+        let show = seed_item(&h, shows, "show", None, None, name, None).await;
+        let season = seed_item(&h, shows, "season", Some(show), Some(1), "Season 1", None).await;
+        let e1 = seed_item(&h, shows, "episode", Some(season), Some(1), "One", None).await;
+        let e2 = seed_item(&h, shows, "episode", Some(season), Some(2), "Two", None).await;
+        seen.push((e1, e2));
+    }
+    // (item, position, played, last played)
+    let rows = vec![
+        (in_progress[0], 1000, 0, 100),
+        (in_progress[1], 1000, 0, 300),
+        (in_progress[2], 1000, 0, 200),
+        (finished, 1000, 1, 400),
+        (seen[0].0, 0, 1, 500),
+        (seen[1].0, 0, 1, 600),
+    ];
+    h.st.identity
+        .db()
+        .write(move |t| {
+            for (item, pos, played, at) in rows {
+                t.execute(
+                    "INSERT INTO watch_state(user_id, item_id, position_ms, played, last_played_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    [admin_id, item, pos, played, at],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let ids = |v: &Value| v["items"].as_array().unwrap().iter().map(|i| i["id"].as_i64().unwrap()).collect::<Vec<_>>();
+    let (s, v, _) = get(app, "/api/v1/items?in_progress=true", &admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(ids(&v), [in_progress[1], in_progress[2], in_progress[0]], "most recent first: {v}");
+    assert_eq!(v["total"], 3);
+    let (_, v, _) = get(app, "/api/v1/items?in_progress=true&limit=2", &admin).await;
+    assert_eq!(ids(&v), [in_progress[1], in_progress[2]]);
+    assert_eq!((v["total"].as_i64(), v["next"].as_i64()), (Some(3), Some(2)));
+    let (_, v, _) = get(app, "/api/v1/items?in_progress=true&limit=2&offset=2", &admin).await;
+    assert_eq!(ids(&v), [in_progress[0]]);
+    let (s, v, _) = get(app, "/api/v1/items?next_up=true", &admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(ids(&v), [seen[1].1, seen[0].1], "the show watched last comes first: {v}");
+    assert_eq!((v["total"].as_i64(), v["next"].as_i64()), (Some(2), None));
+    let (_, v, _) = get(app, &format!("/api/v1/items?next_up=true&library_id={films}"), &admin).await;
+    assert_eq!(ids(&v), Vec::<i64>::new());
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clients_share_one_conversion_per_generation() {
+    let h = harness("hub", ServerConfig { tls: false, ..Default::default() }).await;
+    let snap = h.st.engine.snapshot();
+    let before = h.st.hub.wire_builds();
+    let first = h.st.hub.wire_list(&snap);
+    let second = h.st.hub.wire_list(&snap);
+    assert_eq!(h.st.hub.wire_builds(), before + 1, "two clients, one generation, one conversion");
+    assert!(Arc::ptr_eq(&first.torrents, &second.torrents) && Arc::ptr_eq(&first.labels, &second.labels));
+    h.stop().await;
+}
+
+/// Signs in to the qBittorrent API and returns the session cookie.
+async fn qbt_login(app: &Router, name: &str, password: &str) -> String {
+    let mut r = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v2/auth/login")
+        .header(header::HOST, "127.0.0.1:8443")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(format!("username={name}&password={}", password.replace(' ', "%20"))))
+        .unwrap();
+    r.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+    let res = app.clone().oneshot(r).await.unwrap();
+    let cookie = res.headers().get(header::SET_COOKIE).expect("signed in").to_str().unwrap();
+    cookie.split(';').next().unwrap().to_string()
+}
+
+async fn qbt_status(app: &Router, cookie: &str) -> StatusCode {
+    let mut r = Request::builder()
+        .uri("/api/v2/app/version")
+        .header(header::HOST, "127.0.0.1:8443")
+        .header(header::COOKIE, cookie)
+        .body(Body::empty())
+        .unwrap();
+    r.extensions_mut().insert(ConnectInfo("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+    app.clone().oneshot(r).await.unwrap().status()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn qbittorrent_sessions_end_with_their_account() {
+    let h = harness("qbt-owner", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        &admin,
+        json!({ "name": "sonarr", "password": "long enough pw", "role": "admin" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let id = v["id"].as_i64().unwrap();
+    let patch = |body: Value| {
+        let (admin, uri) = (admin.clone(), format!("/api/v1/users/{id}"));
+        async move { send(app, Method::PATCH, &uri, &admin, body).await.0 }
+    };
+    // Disabled: the very next call is refused, and re-enabling doesn't bring the session back.
+    let sid = qbt_login(app, "sonarr", "long enough pw").await;
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::OK);
+    assert_eq!(patch(json!({ "disabled": true })).await, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::FORBIDDEN);
+    assert_eq!(patch(json!({ "disabled": false })).await, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::FORBIDDEN);
+    // A new password.
+    let sid = qbt_login(app, "sonarr", "long enough pw").await;
+    assert_eq!(patch(json!({ "display_name": "Sonarr" })).await, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::OK, "other changes leave it alone");
+    assert_eq!(patch(json!({ "password": "another long pw" })).await, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::FORBIDDEN);
+    // No longer allowed to use this API.
+    let sid = qbt_login(app, "sonarr", "another long pw").await;
+    assert_eq!(patch(json!({ "role": "user" })).await, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::FORBIDDEN);
+    // Deleted.
+    assert_eq!(patch(json!({ "role": "admin" })).await, StatusCode::OK);
+    let sid = qbt_login(app, "sonarr", "another long pw").await;
+    let (s, _, _) =
+        call(app, Method::DELETE, &format!("/api/v1/users/{id}"), Call { bearer: Some(&admin), ..Default::default() })
+            .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(qbt_status(app, &sid).await, StatusCode::FORBIDDEN);
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn feed_passkeys_stay_with_those_who_may_change_settings() {
+    let h = harness("rss-mask", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let bob = user_token(app, &admin, "bob").await;
+    let rss = r#"<?xml version="1.0"?><rss version="2.0"><channel><title>Tracker</title>
+        <item><title>Sintel</title><guid>g1</guid>
+        <enclosure url="https://t.example/dl/SECRETKEY/sintel.torrent" length="1" type="application/x-bittorrent"/>
+        </item></channel></rss>"#;
+    let base = crate::net::test_server::serve(
+        [("/rss?passkey=SECRETKEY".to_string(), crate::net::test_server::ok(rss.as_bytes()))].into(),
+    )
+    .await;
+    let url = format!("{base}/rss?passkey=SECRETKEY");
+    let mut cfg = get(app, "/api/v1/rss/config", &admin).await.1;
+    cfg["feeds"] = json!([{ "url": url, "name": "", "enabled": true }]);
+    let (s, v, _) = send(app, Method::PUT, "/api/v1/rss/config", &admin, cfg).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let mut settings = get(app, "/api/v1/server/settings", &admin).await.1;
+    settings["bittorrent"]["default_trackers"] = json!(["https://t.example/SECRETKEY/announce"]);
+    let (s, v, _) = send(app, Method::PUT, "/api/v1/server/settings", &admin, settings).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    send(app, Method::POST, "/api/v1/rss/refresh", &admin, json!({})).await;
+    let mut seen = Value::Null;
+    for _ in 0..200 {
+        seen = get(app, "/api/v1/rss", &admin).await.1;
+        if seen["feeds"][0]["articles"][0]["article"]["guid"] == "g1" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(seen["feeds"][0]["articles"][0]["article"]["guid"], "g1", "{seen}");
+    assert!(seen.to_string().contains("SECRETKEY"), "the admin sees the real links");
+    assert!(get(app, "/api/v1/rss/config", &admin).await.1.to_string().contains("SECRETKEY"));
+    assert!(get(app, "/api/v1/server/settings", &admin).await.1.to_string().contains("SECRETKEY"));
+
+    for route in ["/api/v1/rss", "/api/v1/rss/config", "/api/v1/server/settings"] {
+        let (s, v, _) = get(app, route, &bob).await;
+        assert_eq!(s, StatusCode::OK, "{route}");
+        assert!(!v.to_string().contains("SECRETKEY"), "{route}: {v}");
+    }
+    let view = get(app, "/api/v1/rss", &bob).await.1;
+    let feed = &view["feeds"][0];
+    assert_eq!(feed["url"], format!("{base}/…"));
+    assert_eq!(feed["id"], seen["feeds"][0]["id"]);
+    assert_eq!(feed["articles"][0]["article"]["torrent"], "https://t.example/…", "still says it has a torrent");
+    // Downloading works from what the caller was given: the id or the masked URL.
+    for name in [feed["id"].clone(), feed["url"].clone()] {
+        let (s, v, _) =
+            send(app, Method::POST, "/api/v1/rss/download", &bob, json!({ "feed": name, "guid": "g1" })).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let (s, _, _) =
+        send(app, Method::POST, "/api/v1/rss/download", &bob, json!({ "feed": "nope", "guid": "g1" })).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn setup_login_and_permissions() {
     let h = harness("auth", ServerConfig { tls: false, ..Default::default() }).await;
@@ -1662,11 +2119,15 @@ async fn dlna_browses_and_streams() {
     let (dlna, _) = crate::dlna::test_router(h.st.clone(), true).await.unwrap();
 
     // The description, from the local network only.
-    let desc = || Request::builder().uri("/dlna/description.xml").body(Body::empty()).unwrap();
+    let host =
+        |h: &str| Request::builder().uri("/dlna/description.xml").header(header::HOST, h).body(Body::empty()).unwrap();
+    let desc = || host("192.168.1.5:8201");
     let (s, d) = raw(&dlna, "192.168.1.9", desc()).await;
     assert_eq!(s, StatusCode::OK);
     assert!(String::from_utf8_lossy(&d).contains("urn:schemas-upnp-org:device:MediaServer:1"));
     assert_eq!(raw(&dlna, "8.8.8.8", desc()).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(raw(&dlna, "192.168.1.9", host("rebound.example:8201")).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(raw(&dlna, "192.168.1.9", host("[fe80::1]:8201")).await.0, StatusCode::OK);
 
     // Root → the library → the photo with a signed URL.
     let (s, root) = soap(&dlna, "192.168.1.9", "Browse", &browse("0", "BrowseDirectChildren")).await;
@@ -1679,15 +2140,13 @@ async fn dlna_browses_and_streams() {
     let url = &items[start..];
     let url = &url[..url.find("&lt;").unwrap()];
     let path = url.trim_start_matches("http://192.168.1.5:8201");
-    let (s, bytes) = raw(&dlna, "192.168.1.9", Request::builder().uri(path).body(Body::empty()).unwrap()).await;
+    let on_host = |uri: String| Request::builder().uri(uri).header(header::HOST, "192.168.1.5:8201");
+    let (s, bytes) = raw(&dlna, "192.168.1.9", on_host(path.to_string()).body(Body::empty()).unwrap()).await;
     assert_eq!(s, StatusCode::OK);
     assert!(bytes.starts_with(b"\x89PNG"));
     // A forged signature, an unknown object, an unknown action.
     let forged = format!("/dlna/media/{item}/000000000000000000000000.png");
-    assert_eq!(
-        raw(&dlna, "192.168.1.9", Request::builder().uri(forged).body(Body::empty()).unwrap()).await.0,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(raw(&dlna, "192.168.1.9", on_host(forged).body(Body::empty()).unwrap()).await.0, StatusCode::NOT_FOUND);
     let (_, meta) = soap(&dlna, "192.168.1.9", "Browse", &browse(&format!("i{item}"), "BrowseMetadata")).await;
     assert!(meta.contains("<NumberReturned>1</NumberReturned>"), "{meta}");
     let (s, nope) = soap(&dlna, "192.168.1.9", "Browse", &browse("i999999", "BrowseMetadata")).await;

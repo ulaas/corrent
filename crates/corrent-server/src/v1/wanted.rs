@@ -40,8 +40,8 @@ struct ListQuery {
     status: Option<String>,
 }
 
-async fn list(State(st): State<Arc<AppState>>, _auth: Auth, Query(q): Query<ListQuery>) -> ApiResult<Vec<Wanted>> {
-    Ok(Json(st.library.wanted(q.status).await.map_err(lib_err)?))
+async fn list(State(st): State<Arc<AppState>>, auth: Auth, Query(q): Query<ListQuery>) -> ApiResult<Vec<Wanted>> {
+    Ok(Json(st.library.wanted_for(auth.0.user.id, q.status).await.map_err(lib_err)?))
 }
 
 async fn add(State(st): State<Arc<AppState>>, auth: Auth, Json(w): Json<NewWanted>) -> ApiResult<Wanted> {
@@ -240,6 +240,8 @@ async fn monitor(
     Json(r): Json<corrent_proto::library::MonitorRequest>,
 ) -> ApiResult<Vec<corrent_proto::library::MonitoredShow>> {
     auth.require(Perms::TORRENTS_ADD)?;
+    let user = auth.0.user.id;
+    st.library.item(user, id).await.map_err(lib_err)?;
     st.library.monitor_show(id, r.profile_id, r.from_season.unwrap_or(1), auth.name()).await.map_err(lib_err)?;
     let st2 = st.clone();
     tokio::spawn(async move {
@@ -249,18 +251,19 @@ async fn monitor(
             tracing::info!("monitor {}: {e}", show.title);
         }
     });
-    Ok(Json(st.library.monitored().await.map_err(lib_err)?))
+    Ok(Json(st.library.monitored_for(user).await.map_err(lib_err)?))
 }
 
 async fn unmonitor(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<i64>) -> ApiResult<serde_json::Value> {
     auth.require(Perms::TORRENTS_ADD)?;
+    st.library.item(auth.0.user.id, id).await.map_err(lib_err)?;
     st.library.unmonitor_show(id).await.map_err(lib_err)?;
     Ok(Json(serde_json::json!({})))
 }
 
 async fn monitored(
     State(st): State<Arc<AppState>>,
-    _auth: Auth,
+    auth: Auth,
 ) -> ApiResult<Vec<corrent_proto::library::MonitoredShow>> {
-    Ok(Json(st.library.monitored().await.map_err(lib_err)?))
+    Ok(Json(st.library.monitored_for(auth.0.user.id).await.map_err(lib_err)?))
 }

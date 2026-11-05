@@ -357,6 +357,11 @@ struct CatalogItem {
     installed: Option<String>,
 }
 
+fn capped_err(e: String) -> super::ApiErr {
+    let code = if e == crate::net::TOO_LARGE { ErrorCode::PayloadTooLarge } else { ErrorCode::BadRequest };
+    err(code, e)
+}
+
 async fn fetch_index(st: &AppState) -> Result<Vec<CatalogEntry>, super::ApiErr> {
     let url = st.cfg.load().plugin_catalog.clone();
     let res = st
@@ -366,10 +371,7 @@ async fn fetch_index(st: &AppState) -> Result<Vec<CatalogEntry>, super::ApiErr> 
         .send()
         .await
         .map_err(|e| err(ErrorCode::BadRequest, format!("catalog: {e}")))?;
-    let bytes = res.bytes().await.map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
-    if bytes.len() > 4 * 1024 * 1024 {
-        return Err(err(ErrorCode::PayloadTooLarge, "catalog too large"));
-    }
+    let bytes = crate::net::read_capped(res, 4 * 1024 * 1024).await.map_err(capped_err)?;
     let idx: CatalogIndex =
         serde_json::from_slice(&bytes).map_err(|e| err(ErrorCode::BadRequest, format!("catalog: {e}")))?;
     Ok(idx.plugins)
@@ -433,13 +435,7 @@ async fn install_from_catalog(
         .send()
         .await
         .map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
-    if res.content_length().is_some_and(|l| l > 32 * 1024 * 1024) {
-        return Err(err(ErrorCode::PayloadTooLarge, "plugin too large"));
-    }
-    let zip = res.bytes().await.map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
-    if zip.len() > 32 * 1024 * 1024 {
-        return Err(err(ErrorCode::PayloadTooLarge, "plugin too large"));
-    }
+    let zip = crate::net::read_capped(res, 32 * 1024 * 1024).await.map_err(capped_err)?;
     let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &zip);
     let hex: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
     if !hex.eq_ignore_ascii_case(entry.sha256.trim()) {

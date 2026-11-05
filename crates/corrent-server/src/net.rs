@@ -145,7 +145,7 @@ pub async fn get_public(
     total: Option<std::time::Duration>,
 ) -> Result<reqwest::Response, String> {
     let mut u = url::Url::parse(url).map_err(|e| e.to_string())?;
-    for _ in 0..6 {
+    for hop in 0..6 {
         if !matches!(u.scheme(), "http" | "https") {
             return Err("only http and https addresses".into());
         }
@@ -154,8 +154,9 @@ pub async fn get_public(
         let addrs: Vec<std::net::SocketAddr> =
             tokio::net::lookup_host((host.as_str(), port)).await.map_err(|e| format!("{host}: {e}"))?.collect();
         let Some(addr) = addrs.first().copied() else { return Err(format!("{host} has no address")) };
-        // Tests serve their feeds on loopback.
-        let allowed = |ip: std::net::IpAddr| corrent_plugins::is_public(ip) || (cfg!(test) && ip.is_loopback());
+        // Tests serve their feeds on loopback (a redirect there is refused, as in production).
+        let allowed =
+            |ip: std::net::IpAddr| corrent_plugins::is_public(ip) || (cfg!(test) && hop == 0 && ip.is_loopback());
         if addrs.iter().any(|a| !allowed(a.ip())) {
             return Err(format!("{host} is on a private network"));
         }
@@ -190,6 +191,81 @@ pub async fn get_public(
     Err("too many redirects".into())
 }
 
+/// What [`read_capped`] says about a body over its cap.
+pub const TOO_LARGE: &str = "the answer is too large";
+
+/// Reads a response into memory, stopping as soon as it passes `cap` bytes (a declared length
+/// over it fails before reading anything).
+pub async fn read_capped(mut res: reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
+    if res.content_length().is_some_and(|l| l > cap as u64) {
+        return Err(TOO_LARGE.into());
+    }
+    let mut body = Vec::new();
+    while let Some(c) = res.chunk().await.map_err(|e| e.to_string())? {
+        if body.len() + c.len() > cap {
+            return Err(TOO_LARGE.into());
+        }
+        body.extend_from_slice(&c);
+    }
+    Ok(body)
+}
+
+/// [`get_public`] and [`read_capped`] with one time limit for all of it.
+pub async fn fetch_public(url: &str, cap: usize, limit: std::time::Duration) -> Result<Vec<u8>, String> {
+    read_capped(get_public(url, limit, Some(limit)).await?, cap).await
+}
+
+#[cfg(test)]
+pub(crate) mod test_server {
+    use std::collections::HashMap;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A loopback HTTP server for fetch tests: path -> raw response. Returns its base URL.
+    pub(crate) async fn serve(routes: HashMap<String, Vec<u8>>) -> String {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut c, _)) = l.accept().await {
+                let mut buf = vec![0u8; 4096];
+                let n = c.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                let answer = routes
+                    .get(&path)
+                    .cloned()
+                    .unwrap_or_else(|| b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec());
+                let _ = c.write_all(&answer).await;
+                let _ = c.shutdown().await;
+            }
+        });
+        base
+    }
+
+    pub(crate) fn redirect(to: &str) -> Vec<u8> {
+        format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes()
+    }
+
+    pub(crate) fn ok(body: &[u8]) -> Vec<u8> {
+        let mut r =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+        r.extend_from_slice(body);
+        r
+    }
+
+    /// Chunked, so no length is declared up front.
+    pub(crate) fn chunked(body: &[u8]) -> Vec<u8> {
+        let mut r = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_vec();
+        for c in body.chunks(64 * 1024) {
+            r.extend_from_slice(format!("{:x}\r\n", c.len()).as_bytes());
+            r.extend_from_slice(c);
+            r.extend_from_slice(b"\r\n");
+        }
+        r.extend_from_slice(b"0\r\n\r\n");
+        r
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -209,6 +285,40 @@ mod tests {
     }
 
     use super::*;
+
+    #[tokio::test]
+    async fn fetches_refuse_a_redirect_into_the_own_network() {
+        use super::test_server::{ok, redirect, serve};
+        let target = serve([("/secret".to_string(), ok(b"internal"))].into()).await;
+        let base = serve(
+            [
+                ("/plain".to_string(), ok(b"d8:announce")),
+                ("/to-loopback".to_string(), redirect(&format!("{target}/secret"))),
+                ("/to-lan".to_string(), redirect("http://10.1.2.3/secret")),
+            ]
+            .into(),
+        )
+        .await;
+        let t = std::time::Duration::from_secs(5);
+        assert_eq!(fetch_public(&format!("{base}/plain"), 1024, t).await.unwrap(), b"d8:announce");
+        for path in ["to-loopback", "to-lan"] {
+            let e = fetch_public(&format!("{base}/{path}"), 1024, t).await.unwrap_err();
+            assert!(e.contains("private network"), "{path}: {e}");
+        }
+    }
+
+    #[tokio::test]
+    async fn bodies_over_the_cap_are_cut_off() {
+        use super::test_server::{chunked, ok, serve};
+        let big = vec![7u8; 256 * 1024];
+        let base = serve([("/chunked".to_string(), chunked(&big)), ("/declared".to_string(), ok(&big))].into()).await;
+        let t = std::time::Duration::from_secs(5);
+        for path in ["chunked", "declared"] {
+            let e = fetch_public(&format!("{base}/{path}"), 64 * 1024, t).await.unwrap_err();
+            assert!(e.contains("too large"), "{path}: {e}");
+        }
+        assert_eq!(fetch_public(&format!("{base}/chunked"), big.len(), t).await.unwrap().len(), big.len());
+    }
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()

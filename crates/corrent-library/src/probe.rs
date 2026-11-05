@@ -12,6 +12,7 @@ use corrent_mpv::ProbeResult;
 pub struct Prober {
     worker: Option<PathBuf>,
     permits: Arc<tokio::sync::Semaphore>,
+    parallel: usize,
     timeout: Duration,
 }
 
@@ -20,8 +21,14 @@ impl Prober {
         Prober {
             worker,
             permits: Arc::new(tokio::sync::Semaphore::new(parallel.max(1))),
+            parallel: parallel.max(1),
             timeout: Duration::from_secs(45),
         }
+    }
+
+    /// How many probes run at once.
+    pub fn parallel(&self) -> usize {
+        self.parallel
     }
 
     /// Finds `corrent-mpvw` (see [`corrent_mpv::worker_path`]).

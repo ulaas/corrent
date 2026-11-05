@@ -16,6 +16,7 @@ corrent-mpv = { path = "../corrent-mpv" }
 corrent-proto = { path = "../corrent-proto" }
 corrent-i18n = { path = "../corrent-i18n" }
 tokio = { version = "1.53", features = ["rt", "sync", "process", "time", "macros"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 lofty = "0.25"
 quick-xml = "=0.42.0"

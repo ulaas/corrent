@@ -60,6 +60,9 @@ fn origin_ok(headers: &HeaderMap) -> bool {
         .is_some_and(|h| h == "localhost" || h == "127.0.0.1" || h == "[::1]")
 }
 
+/// Messages one request may carry.
+const MAX_BATCH: usize = 32;
+
 /// One JSON-RPC message (or a batch) per request; answers are plain JSON. Notifications and
 /// responses from the client get 202 with no body.
 async fn mcp(State(st): State<Arc<AppState>>, ip: ClientIp, headers: HeaderMap, body: axum::body::Bytes) -> Response {
@@ -75,6 +78,10 @@ async fn mcp(State(st): State<Arc<AppState>>, ip: ClientIp, headers: HeaderMap, 
             serde_json::json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": "parse error" } });
         return (StatusCode::BAD_REQUEST, Json(e)).into_response();
     };
+    if msg.as_array().is_some_and(|b| b.len() > MAX_BATCH) {
+        let e = serde_json::json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32600, "message": "batch too large" } });
+        return (StatusCode::BAD_REQUEST, Json(e)).into_response();
+    }
     let answers: Vec<Value> = match &msg {
         Value::Array(batch) => {
             let mut out = Vec::new();
