@@ -555,8 +555,14 @@ fn moving_through_the_list_with_the_keyboard() {
     assert_eq!(sel(&h), [1, 2]);
     let _ = two;
     // / goes to the search box.
-    press(&mut h, M::NONE, Key::Slash);
+    // A real keyboard sends the key's text in the same frame (queued events would each get their
+    // own), and that isn't typed into the box.
+    let slash =
+        egui::Event::Key { key: Key::Slash, physical_key: None, pressed: true, repeat: false, modifiers: M::NONE };
+    h.input_mut().events.extend([slash, egui::Event::Text("/".into())]);
+    h.run_steps(2);
     assert_eq!(h.state().ctx.memory(|m| m.focused()), Some(egui::Id::new("search_box")));
+    assert_eq!(h.state().search, "", "the search stays empty");
 }
 
 #[test]
@@ -1609,7 +1615,7 @@ fn metadata_settings_list_providers_and_save_a_key() {
     h.get_by_label("Save").click_accesskit();
     step_until(&mut h, "the saved key", |h| h.query_by_label_contains("looked up again").is_some());
     step_until(&mut h, "TMDB ready", |h| {
-        h.query_all_by_label("Needs an API key").count() == 0 || h.query_by_label("Ready").is_some()
+        h.query_all_by_label("Needs an API key").count() == 0 || h.query_all_by_label("Ready").next().is_some()
     });
 }
 

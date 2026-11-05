@@ -240,7 +240,9 @@ impl CorrentApp {
     pub fn media_files(&mut self, hash: crate::engine::types::InfoHash) -> std::sync::Arc<Vec<(usize, String, u64)>> {
         let snap = self.snap.clone();
         let Some(d) = snap.detail.as_ref().filter(|d| d.hash == hash) else { return Default::default() };
-        let included = d.files.iter().filter(|f| f.included).count();
+        // Which ones, not how many: one file off and another on keeps the count.
+        let included =
+            d.files.iter().filter(|f| f.included).fold(0usize, |h, f| h.wrapping_mul(31).wrapping_add(f.index + 1));
         if let Some((h, n, i, list)) = &self.media_files_cache
             && (*h, *n, *i) == (hash, d.files.len(), included)
         {
@@ -357,9 +359,6 @@ impl CorrentApp {
         if self.main_view != super::feeds::MainView::Torrents || egui::Popup::is_any_open(ctx) {
             return;
         }
-        if self.main_view != super::feeds::MainView::Torrents || egui::Popup::is_any_open(ctx) {
-            return;
-        }
         if consume(sc(Modifiers::COMMAND, Key::A)) {
             let rows = self.visible_rows().to_vec();
             self.selected = rows.iter().filter_map(|&i| self.snap.torrents.get(i).map(|t| t.hash)).collect();
@@ -405,6 +404,8 @@ impl CorrentApp {
         }
         if consume(sc(Modifiers::NONE, Key::Slash)) {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("search_box")));
+            // The key comes with its text, which the box (focused from this frame on) would type.
+            ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "/")));
         }
         if consume(sc(Modifiers::COMMAND, Key::Space)) {
             self.toggle_focused();
@@ -487,6 +488,8 @@ impl CorrentApp {
         let current =
             self.focus.filter(|f| self.selected.contains(f)).or_else(|| self.selected_hashes().first().copied());
         let Some(base) = current.and_then(|h| snap.torrents.iter().find(|t| t.hash == h)) else { return };
+        // Not `self.rows`: from the palette in another view, the table hasn't refreshed them.
+        let rows = self.visible_rows().to_vec();
         let mut base_hosts: Vec<String> = Vec::new();
         for u in base.trackers.iter() {
             base_hosts.push(self.counts.hosts.get(u).to_string());
@@ -498,7 +501,7 @@ impl CorrentApp {
             SameAs::Tracker => t.trackers.iter().any(|u| base_hosts.iter().any(|h| h == hosts.peek(u))),
         };
         let chosen: Vec<InfoHash> =
-            (self.rows.iter().filter_map(|&i| snap.torrents.get(i))).filter(|t| same(t)).map(|t| t.hash).collect();
+            rows.iter().filter_map(|&i| snap.torrents.get(i)).filter(|t| same(t)).map(|t| t.hash).collect();
         self.selected = chosen.into_iter().collect();
     }
 }
