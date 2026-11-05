@@ -360,7 +360,7 @@ pub async fn lan_links(st: &Arc<AppState>) -> anyhow::Result<crate::dlna::Links>
             tracing::info!("casting: port {port}: {e:#}; using a free one");
             crate::dlna::start(st.clone(), false, crate::dlna::address(&cfg, 0)).await?
         }
-        Err(e) => return Err(e),
+        Err(e) => return Err(e.context(format!("can't open port {port} for casting"))),
     };
     let links = d.links();
     run.dlna = Some(d);

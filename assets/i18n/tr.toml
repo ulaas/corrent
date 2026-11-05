@@ -1531,7 +1531,7 @@
 "Casting" = "Yayınlama"
 "Casting now" = "Şu anda yayınlanıyor"
 "Allow casting to Chromecasts" = "Chromecast’lere yayına izin ver"
-"While something is casting, the device fetches it from this computer over plain HTTP on the local network. Only signed links are served, and the port closes a minute after casting ends." = "Yayın sürerken cihaz içeriği yerel ağda düz HTTP ile bu bilgisayardan alır. Yalnızca imzalı bağlantılara yanıt verilir ve yayın bittikten bir dakika sonra bağlantı noktası kapanır."
+"While something is casting, the device fetches it from this computer over plain HTTP on the local network. Only signed links are served, and the port closes soon after casting ends." = "Yayın sürerken cihaz içeriği yerel ağda düz HTTP ile bu bilgisayardan alır. Yalnızca imzalı bağlantılara yanıt verilir ve yayın bittikten kısa süre sonra bağlantı noktası kapanır."
 "Largest picture sent as it is" = "Olduğu gibi gönderilen en büyük görüntü"
 "Taller videos are converted first. Older Chromecasts stop at 1080p." = "Daha yüksek çözünürlüklü videolar önce dönüştürülür. Eski Chromecast’ler 1080p’de kalır."
 "Highest bitrate sent as it is" = "Olduğu gibi gönderilen en yüksek bit hızı"

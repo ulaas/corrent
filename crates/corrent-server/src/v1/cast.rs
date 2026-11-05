@@ -83,6 +83,11 @@ async fn put_config(
     if let Some(bad) = c.devices.iter().find(|l| crate::cast::manual_device(l).is_none()) {
         return Err(err(ErrorCode::BadRequest, format!("not a device on this network: {bad}")));
     }
+    let own = st.cfg.load();
+    if c.port != 0 && [own.https_port, own.http_port, own.jellyfin_port].contains(&c.port) {
+        return Err(err(ErrorCode::BadRequest, format!("port {} is used by the server itself", c.port)));
+    }
+    drop(own);
     {
         let _w = st.settings_lock.lock().await;
         // From the file: what a hosted server forces (its loopback address) isn't its setting.
@@ -113,8 +118,13 @@ fn may_control(st: &AppState, auth: &Auth, device: &str) -> Result<(), super::Ap
     }
 }
 
-async fn status(State(st): State<Arc<AppState>>, _auth: Auth, Path(device): Path<String>) -> ApiResult<CastStatus> {
-    st.casts.status(&device).map(Json).ok_or_else(|| err(ErrorCode::NotFound, "nothing is casting there"))
+async fn status(State(st): State<Arc<AppState>>, auth: Auth, Path(device): Path<String>) -> ApiResult<CastStatus> {
+    // What someone else is watching is theirs.
+    st.casts
+        .status(&device)
+        .filter(|s| s.by == auth.name() || auth.0.can(Perms::USERS_MANAGE))
+        .map(Json)
+        .ok_or_else(|| err(ErrorCode::NotFound, "nothing is casting there"))
 }
 
 #[derive(Deserialize)]

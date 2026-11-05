@@ -122,7 +122,7 @@ impl CorrentApp {
                 ui,
                 p,
                 t!("Allow casting to Chromecasts"),
-                t!("While something is casting, the device fetches it from this computer over plain HTTP on the local network. Only signed links are served, and the port closes a minute after casting ends."),
+                t!("While something is casting, the device fetches it from this computer over plain HTTP on the local network. Only signed links are served, and the port closes soon after casting ends."),
                 &mut d.enabled,
             );
             row(ui, p, t!("Largest picture sent as it is"), t!("Taller videos are converted first. Older Chromecasts stop at 1080p."), |ui| {

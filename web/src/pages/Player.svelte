@@ -190,6 +190,9 @@
             : item
               ? resumeAt(item, next.duration_ms) / 1000
               : 0);
+      // Before anything plays here: the item may be on a device already.
+      await followCast(itemId);
+      if (stale()) return;
       const seekTo = () => {
         pendingSeek = null;
         if (from > 0) el.currentTime = from;
@@ -205,7 +208,6 @@
       void loadTrickplay();
       setMediaSession();
       void findNext();
-      void followCast(itemId);
     } catch (e) {
       if (stale()) return;
       error = errorText(e);

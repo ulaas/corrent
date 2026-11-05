@@ -41,6 +41,8 @@ export class Cast {
   private volumeAt = 0;
   /** Bumped by every play request: answers to older polls are dropped. */
   private generation = 0;
+  private starting = 0;
+  private closed = false;
 
   constructor(readonly device: CastDevice) {}
 
@@ -51,17 +53,32 @@ export class Cast {
   }
 
   async start(itemId: number, positionMs: number, audioTrack?: number | null, subtitle?: number | null) {
+    const before = this.status;
     this.generation++;
-    this.status = await api.post<CastStatus>(`/cast/${encodeURIComponent(this.device.id)}/play`, {
-      item_id: itemId,
-      position_ms: Math.round(positionMs),
-      audio_track: audioTrack ?? null,
-      subtitle: subtitle ?? null,
-    });
-    this.stop ??= everyVisible(() => void this.refresh(), 1000);
+    this.starting++;
+    // At once: from here on the status is about this item, not how the one before ended.
+    if (before) this.status = { ...before, state: 'loading', item_id: itemId, finished: false, error: undefined };
+    try {
+      const s = await api.post<CastStatus>(`/cast/${encodeURIComponent(this.device.id)}/play`, {
+        item_id: itemId,
+        position_ms: Math.round(positionMs),
+        audio_track: audioTrack ?? null,
+        subtitle: subtitle ?? null,
+      });
+      if (this.closed) return;
+      this.generation++;
+      this.status = s;
+      this.stop ??= everyVisible(() => void this.refresh(), 1000);
+    } catch (e) {
+      if (!this.closed) this.status = before;
+      throw e;
+    } finally {
+      this.starting--;
+    }
   }
 
   async refresh() {
+    if (this.starting || this.closed) return;
     const at = this.generation;
     try {
       const s = await api.get<CastStatus>(`/cast/${encodeURIComponent(this.device.id)}`);
@@ -108,6 +125,7 @@ export class Cast {
   }
 
   close() {
+    this.closed = true;
     this.stop?.();
     this.stop = null;
     if (this.volumeTimer) clearTimeout(this.volumeTimer);

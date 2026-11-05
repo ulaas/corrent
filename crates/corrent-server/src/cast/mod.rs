@@ -33,6 +33,12 @@ pub const CANT_PLAY: &str = "cant_play";
 pub const CANT_REACH: &str = "cant_reach";
 /// How long a device may take to start playing what it was told to load.
 const LOAD_DEADLINE: Duration = Duration::from_secs(60);
+/// How long a device stays ours with nothing on it (for the next item) before it is let go, which
+/// also lets the media listener close.
+#[cfg(not(test))]
+const IDLE_EXIT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const IDLE_EXIT: Duration = Duration::from_secs(1);
 /// The port receivers listen on.
 const DEVICE_PORT: u16 = 8009;
 /// Devices are looked for again after this long.
@@ -82,6 +88,8 @@ enum Cmd {
 struct Session {
     tx: mpsc::Sender<Cmd>,
     status: Arc<Mutex<CastStatus>>,
+    /// Told to stop: it won't read anything more, though its channel is still open.
+    stopping: bool,
 }
 
 #[derive(Default)]
@@ -93,7 +101,7 @@ pub struct Casts {
 }
 
 /// A device typed into the settings: `address`, `address:port` or `name=address[:port]`. Local
-/// addresses only: this is where the server opens connections.
+/// IPv4 addresses only: this is where the server opens connections.
 pub fn manual_device(line: &str) -> Option<Found> {
     let line = line.trim();
     let (name, at) = match line.split_once('=') {
@@ -104,10 +112,11 @@ pub fn manual_device(line: &str) -> Option<Found> {
         Ok(ip) => SocketAddr::new(ip, DEVICE_PORT),
         Err(_) => at.parse::<SocketAddr>().ok()?,
     };
-    if !crate::net::is_local(addr.ip(), &[]) {
+    // IPv4 like what the search finds, and like the media listener.
+    if !addr.is_ipv4() || !crate::net::is_local(addr.ip(), &[]) {
         return None;
     }
-    let id = format!("manual-{}-{}", addr.ip(), addr.port()).replace(':', "-");
+    let id = format!("manual-{}-{}", addr.ip(), addr.port());
     let name = if name.is_empty() { addr.ip().to_string() } else { name.to_string() };
     Some(Found { device: CastDevice { id, name, model: String::new() }, addr })
 }
@@ -256,7 +265,7 @@ impl Casts {
     pub fn play(&self, st: Arc<crate::state::AppState>, found: Found, media: Media) {
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let id = found.device.id.clone();
-        if let Some(s) = sessions.get(&id)
+        if let Some(s) = sessions.get(&id).filter(|s| !s.stopping)
             && s.tx.try_send(Cmd::Load(Box::new(media.clone()))).is_ok()
         {
             mark_loading(&s.status, &media);
@@ -282,12 +291,14 @@ impl Casts {
                 s.state = "idle".into();
             }
         });
-        sessions.insert(id, Session { tx, status });
+        sessions.insert(id, Session { tx, status, stopping: false });
     }
 
     pub fn command(&self, id: &str, c: CastCommand) -> bool {
-        let s = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        s.get(id).is_some_and(|s| s.tx.try_send(Cmd::Control(c)).is_ok())
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(s) = sessions.get_mut(id) else { return false };
+        s.stopping |= c == CastCommand::Stop;
+        s.tx.try_send(Cmd::Control(c)).is_ok()
     }
 }
 
@@ -480,6 +491,8 @@ async fn connection(
     let mut played_at = 0i64;
     // The media session the item now loading replaces.
     let mut replaced: Option<i64> = None;
+    // Nothing on the device since then.
+    let mut idle_since: Option<Instant> = None;
     let (frames_tx, mut frames) = mpsc::channel::<anyhow::Result<CastMessage>>(32);
     // Reading runs on its own so a half-read frame is never dropped by `select!`.
     let reader = tokio::spawn(async move {
@@ -542,6 +555,14 @@ async fn connection(
                         drop(s);
                         stop_hls(&current);
                         current = None;
+                        idle_since = Some(Instant::now());
+                    }
+                    if idle_since.is_some_and(|t: Instant| t.elapsed() > IDLE_EXIT) && pending.is_none() {
+                        if let Some(sid) = &session_id {
+                            req += 1;
+                            w.write_all(&msg("receiver-0", NS_RECEIVER, json!({ "type": "STOP", "sessionId": sid, "requestId": req }))).await?;
+                        }
+                        return Ok(());
                     }
                 }
                 _ = poll.tick(), if transport.is_some() && media_session.is_some() => {
@@ -560,6 +581,9 @@ async fn connection(
                             stop_hls(&current);
                             current = None;
                             replaced = media_session.take();
+                            idle_since = None;
+                            // 4: one still waiting for the player is never going to be played.
+                            stop_hls(&pending);
                             match &transport {
                                 Some(_) => pending = Some(m),
                                 None => {
@@ -678,6 +702,7 @@ async fn connection(
                                 current = None;
                                 media_session = None;
                                 loading_since = None;
+                                idle_since = Some(Instant::now());
                             }
                         }
                         (NS_MEDIA, "LOAD_FAILED" | "LOAD_CANCELLED" | "INVALID_REQUEST") => {
@@ -688,6 +713,7 @@ async fn connection(
                             stop_hls(&current);
                             current = None;
                             loading_since = None;
+                            idle_since = Some(Instant::now());
                         }
                         (NS_CONNECTION, "CLOSE") if Some(&m.source) == transport.as_ref() => return Ok(()),
                         _ => {}
@@ -782,8 +808,8 @@ mod tests {
         assert_eq!((f.device.name.as_str(), f.addr), ("Bedroom", "192.168.1.20:8009".parse().unwrap()));
         let f = manual_device(" 10.0.0.5:9000 ").unwrap();
         assert_eq!((f.device.name.as_str(), f.addr.port()), ("10.0.0.5", 9000));
-        assert_eq!(manual_device("[fd00::1]:8009").unwrap().device.id, "manual-fd00--1-8009");
-        for bad in ["", "tv.local", "8.8.8.8", "Far=8.8.8.8:8009", "192.168.1.20:port"] {
+        assert_eq!(manual_device("10.0.0.5:9000").unwrap().device.id, "manual-10.0.0.5-9000");
+        for bad in ["", "tv.local", "8.8.8.8", "Far=8.8.8.8:8009", "192.168.1.20:port", "[fd00::1]:8009", "fd00::1"] {
             assert!(manual_device(bad).is_none(), "{bad}");
         }
     }

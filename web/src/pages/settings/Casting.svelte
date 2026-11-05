@@ -96,7 +96,7 @@
   <div class="sgroup">
     <h3>{t('Casting')}</h3>
     <div class="srow toggle-row">
-      <Toggle bind:checked={draft.enabled} label={t('Allow casting to Chromecasts')} hint={t('While something is casting, the device fetches it from this computer over plain HTTP on the local network. Only signed links are served, and the port closes a minute after casting ends.')} />
+      <Toggle bind:checked={draft.enabled} label={t('Allow casting to Chromecasts')} hint={t('While something is casting, the device fetches it from this computer over plain HTTP on the local network. Only signed links are served, and the port closes soon after casting ends.')} />
     </div>
     <div class="srow">
       <div class="stext"><span class="slabel">{t('Largest picture sent as it is')}</span><span class="shint">{t('Taller videos are converted first. Older Chromecasts stop at 1080p.')}</span></div>

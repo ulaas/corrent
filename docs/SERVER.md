@@ -277,7 +277,7 @@ Stop.
 | Setting | Default | |
 |---|---|---|
 | `enabled` | `true` | Off: no devices, and nothing can be cast. |
-| `devices` | `[]` | Devices to offer besides what the search finds: `192.168.1.20`, `192.168.1.20:8009` or `Bedroom=192.168.1.20`. For networks where mDNS doesn't pass (VLANs, guest Wi-Fi). Local addresses only. |
+| `devices` | `[]` | Devices to offer besides what the search finds: `192.168.1.20`, `192.168.1.20:8009` or `Bedroom=192.168.1.20`. For networks where mDNS doesn't pass (VLANs, guest Wi-Fi). Local IPv4 addresses only. |
 | `max_height` | `1080` | Taller videos are transcoded. 0: no limit. |
 | `max_bitrate_kbps` | `0` | Files above this are transcoded. 0: no limit. |
 | `hevc` | `false` | The devices play H.265, so such files needn't be transcoded. |
@@ -285,7 +285,7 @@ Stop.
 
 **In the desktop app** the server's API stays on `127.0.0.1`. Only while something is casting, the
 app also opens the media listener on the network: plain HTTP, signed links, local addresses only, with
-none of the rest of the API. It closes a minute after casting ends, and the links die with it. Windows
+none of the rest of the API. It closes a minute or two after casting ends, and the links die with it. Windows
 may ask to allow Corrent through the firewall on the first cast (again for a portable copy in a new
 folder); if that's refused, the cast fails with "The device couldn't reach this computer". A `correntd`
 whose owner set `bind = "127.0.0.1"` stays on loopback and refuses to cast. Closing the app ends what

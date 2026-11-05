@@ -2215,101 +2215,112 @@ async fn fake_receiver_with(seen: tokio::sync::mpsc::UnboundedSender<String>, re
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let mut s = acceptor.accept(tcp).await.unwrap();
-        let send = |ns: &str, src: &str, payload: Value| {
-            CastMessage {
-                source: src.into(),
-                destination: "sender-corrent".into(),
-                namespace: ns.into(),
-                payload: payload.to_string(),
-            }
-            .encode()
-        };
-        let mut state = "IDLE";
-        let mut volume = json!({ "level": 0.5, "muted": false });
         loop {
-            let mut len = [0u8; 4];
-            if s.read_exact(&mut len).await.is_err() {
-                return;
-            }
-            let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
-            s.read_exact(&mut body).await.unwrap();
-            let m = CastMessage::decode(&body).unwrap();
-            let v: Value = serde_json::from_str(&m.payload).unwrap();
-            let ty = v["type"].as_str().unwrap_or("").to_string();
-            let media = |state: &str, reason: Option<&str>| {
-                let mut st = json!({ "mediaSessionId": 9, "playerState": state, "currentTime": 3.0 });
-                if let Some(r) = reason {
-                    st["idleReason"] = json!(r);
-                }
-                send("urn:x-cast:com.google.cast.media", "t-1", json!({ "type": "MEDIA_STATUS", "status": [st] }))
-            };
-            let out = match ty.as_str() {
-                "GET_STATUS" if m.namespace == "urn:x-cast:com.google.cast.receiver" => Some(send(
-                    "urn:x-cast:com.google.cast.receiver",
-                    "receiver-0",
-                    json!({ "type": "RECEIVER_STATUS", "status": { "applications": [], "volume": volume } }),
-                )),
-                "SET_VOLUME" => {
-                    let _ = seen.send(format!("VOLUME {}", v["volume"]));
-                    for k in ["level", "muted"] {
-                        if let Some(x) = v["volume"].get(k) {
-                            volume[k] = x.clone();
+            let (tcp, _) = listener.accept().await.unwrap();
+            let (acceptor, seen) = (acceptor.clone(), seen.clone());
+            tokio::spawn(async move {
+                let mut s = acceptor.accept(tcp).await.unwrap();
+                let send = |ns: &str, src: &str, payload: Value| {
+                    CastMessage {
+                        source: src.into(),
+                        destination: "sender-corrent".into(),
+                        namespace: ns.into(),
+                        payload: payload.to_string(),
+                    }
+                    .encode()
+                };
+                let mut state = "IDLE";
+                let mut volume = json!({ "level": 0.5, "muted": false });
+                loop {
+                    let mut len = [0u8; 4];
+                    if s.read_exact(&mut len).await.is_err() {
+                        return;
+                    }
+                    let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+                    s.read_exact(&mut body).await.unwrap();
+                    let m = CastMessage::decode(&body).unwrap();
+                    let v: Value = serde_json::from_str(&m.payload).unwrap();
+                    let ty = v["type"].as_str().unwrap_or("").to_string();
+                    let media = |state: &str, reason: Option<&str>| {
+                        let mut st = json!({ "mediaSessionId": 9, "playerState": state, "currentTime": 3.0 });
+                        if let Some(r) = reason {
+                            st["idleReason"] = json!(r);
                         }
+                        send(
+                            "urn:x-cast:com.google.cast.media",
+                            "t-1",
+                            json!({ "type": "MEDIA_STATUS", "status": [st] }),
+                        )
+                    };
+                    let out = match ty.as_str() {
+                        "GET_STATUS" if m.namespace == "urn:x-cast:com.google.cast.receiver" => Some(send(
+                            "urn:x-cast:com.google.cast.receiver",
+                            "receiver-0",
+                            json!({ "type": "RECEIVER_STATUS", "status": { "applications": [], "volume": volume } }),
+                        )),
+                        "SET_VOLUME" => {
+                            let _ = seen.send(format!("VOLUME {}", v["volume"]));
+                            for k in ["level", "muted"] {
+                                if let Some(x) = v["volume"].get(k) {
+                                    volume[k] = x.clone();
+                                }
+                            }
+                            Some(send(
+                                "urn:x-cast:com.google.cast.receiver",
+                                "receiver-0",
+                                json!({ "type": "RECEIVER_STATUS", "status": { "volume": volume, "applications": [{ "appId": "CC1AD845", "transportId": "t-1", "sessionId": "s-1" }] } }),
+                            ))
+                        }
+                        "LOAD" if refuse_load => Some(send(
+                            "urn:x-cast:com.google.cast.media",
+                            "t-1",
+                            json!({ "type": "LOAD_FAILED", "requestId": v["requestId"] }),
+                        )),
+                        "SEEK" if v["currentTime"].as_f64().unwrap_or(0.0) > 1000.0 => {
+                            state = "IDLE";
+                            Some(media("IDLE", Some("FINISHED")))
+                        }
+                        "LAUNCH" => Some(send(
+                            "urn:x-cast:com.google.cast.receiver",
+                            "receiver-0",
+                            json!({ "type": "RECEIVER_STATUS", "status": { "applications": [{ "appId": "CC1AD845", "transportId": "t-1", "sessionId": "s-1" }] } }),
+                        )),
+                        "LOAD" => {
+                            let _ = seen.send(format!("LOAD {}", v["media"]["contentId"].as_str().unwrap()));
+                            if v["activeTrackIds"] == json!([1]) {
+                                let _ = seen.send(format!(
+                                    "TRACK {}",
+                                    v["media"]["tracks"][0]["trackContentId"].as_str().unwrap()
+                                ));
+                            }
+                            state = "PLAYING";
+                            Some(send(
+                                "urn:x-cast:com.google.cast.media",
+                                "t-1",
+                                json!({ "type": "MEDIA_STATUS", "status": [{ "mediaSessionId": 9, "playerState": state, "currentTime": 0.0 }] }),
+                            ))
+                        }
+                        "PAUSE" | "PLAY" | "SEEK" | "STOP" => {
+                            let _ = seen.send(ty.clone());
+                            state = if ty == "PAUSE" { "PAUSED" } else { "PLAYING" };
+                            Some(send(
+                                "urn:x-cast:com.google.cast.media",
+                                "t-1",
+                                json!({ "type": "MEDIA_STATUS", "status": [{ "mediaSessionId": 9, "playerState": state, "currentTime": 3.0 }] }),
+                            ))
+                        }
+                        "GET_STATUS" => Some(send(
+                            "urn:x-cast:com.google.cast.media",
+                            "t-1",
+                            json!({ "type": "MEDIA_STATUS", "status": [{ "mediaSessionId": 9, "playerState": state, "currentTime": 3.0 }] }),
+                        )),
+                        _ => None,
+                    };
+                    if let Some(o) = out {
+                        s.write_all(&o).await.unwrap();
                     }
-                    Some(send(
-                        "urn:x-cast:com.google.cast.receiver",
-                        "receiver-0",
-                        json!({ "type": "RECEIVER_STATUS", "status": { "volume": volume, "applications": [{ "appId": "CC1AD845", "transportId": "t-1", "sessionId": "s-1" }] } }),
-                    ))
                 }
-                "LOAD" if refuse_load => Some(send(
-                    "urn:x-cast:com.google.cast.media",
-                    "t-1",
-                    json!({ "type": "LOAD_FAILED", "requestId": v["requestId"] }),
-                )),
-                "SEEK" if v["currentTime"].as_f64().unwrap_or(0.0) > 1000.0 => {
-                    state = "IDLE";
-                    Some(media("IDLE", Some("FINISHED")))
-                }
-                "LAUNCH" => Some(send(
-                    "urn:x-cast:com.google.cast.receiver",
-                    "receiver-0",
-                    json!({ "type": "RECEIVER_STATUS", "status": { "applications": [{ "appId": "CC1AD845", "transportId": "t-1", "sessionId": "s-1" }] } }),
-                )),
-                "LOAD" => {
-                    let _ = seen.send(format!("LOAD {}", v["media"]["contentId"].as_str().unwrap()));
-                    if v["activeTrackIds"] == json!([1]) {
-                        let _ =
-                            seen.send(format!("TRACK {}", v["media"]["tracks"][0]["trackContentId"].as_str().unwrap()));
-                    }
-                    state = "PLAYING";
-                    Some(send(
-                        "urn:x-cast:com.google.cast.media",
-                        "t-1",
-                        json!({ "type": "MEDIA_STATUS", "status": [{ "mediaSessionId": 9, "playerState": state, "currentTime": 0.0 }] }),
-                    ))
-                }
-                "PAUSE" | "PLAY" | "SEEK" | "STOP" => {
-                    let _ = seen.send(ty.clone());
-                    state = if ty == "PAUSE" { "PAUSED" } else { "PLAYING" };
-                    Some(send(
-                        "urn:x-cast:com.google.cast.media",
-                        "t-1",
-                        json!({ "type": "MEDIA_STATUS", "status": [{ "mediaSessionId": 9, "playerState": state, "currentTime": 3.0 }] }),
-                    ))
-                }
-                "GET_STATUS" => Some(send(
-                    "urn:x-cast:com.google.cast.media",
-                    "t-1",
-                    json!({ "type": "MEDIA_STATUS", "status": [{ "mediaSessionId": 9, "playerState": state, "currentTime": 3.0 }] }),
-                )),
-                _ => None,
-            };
-            if let Some(o) = out {
-                s.write_all(&o).await.unwrap();
-            }
+            });
         }
     });
     addr
@@ -2408,6 +2419,9 @@ async fn casts_to_a_receiver() {
     let other = v["token"].as_str().unwrap().to_string();
     let (s, _, _) = send(app, Method::POST, "/api/v1/cast/tv/command", &other, json!({ "action": "pause" })).await;
     assert_eq!(s, StatusCode::CONFLICT);
+    // Nor what they're watching theirs to read.
+    let (s, _, _) = get(app, "/api/v1/cast/tv", &other).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
     // Only yours (or an administrator's view) to attach to.
     let (_, v, _) = get(app, "/api/v1/cast/active", &admin).await;
     assert_eq!((v.as_array().unwrap().len(), v[0]["item_id"].as_i64()), (1, Some(item)), "{v}");
@@ -2434,6 +2448,15 @@ async fn casts_to_a_receiver() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!((v["state"].as_str(), v["finished"].as_bool()), (Some("loading"), Some(false)), "{v}");
     assert!(next(&mut seen).await.starts_with("LOAD "));
+    // Told to stop and given something right after: that opens a new connection, not a dead one.
+    send(app, Method::POST, "/api/v1/cast/tv/command", &admin, json!({ "action": "stop" })).await;
+    let (s, v, _) = send(app, Method::POST, "/api/v1/cast/tv/play", &admin, json!({ "item_id": item })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    loop {
+        if next(&mut seen).await.starts_with("LOAD ") {
+            break;
+        }
+    }
     h.stop().await;
 }
 
@@ -2594,9 +2617,11 @@ async fn the_server_in_the_app_casts_with_its_api_on_loopback() {
     // While casting it stays, however long nothing asks for links.
     assert!(crate::remote::close_cast_listener(&h.st, std::time::Duration::ZERO).await);
     assert!(reqwest::get(url).await.is_ok());
-    // Once casting has ended it closes, and its links die with it.
-    send(app, Method::POST, "/api/v1/cast/tv/command", &admin, json!({ "action": "stop" })).await;
-    wait_cast(app, &admin, |v| v["state"] == "idle").await;
+    // Played to its end and nothing after it: the device is let go, the listener closes, and its
+    // links die with it.
+    send(app, Method::POST, "/api/v1/cast/tv/command", &admin, json!({ "action": "seek", "position_ms": 2_000_000 }))
+        .await;
+    wait_cast(app, &admin, |v| v["state"] == "idle" && v["finished"] == true).await;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while crate::remote::close_cast_listener(&h.st, std::time::Duration::ZERO).await {
         assert!(std::time::Instant::now() < deadline);
@@ -2651,6 +2676,9 @@ async fn cast_settings_are_saved_and_followed() {
             send(app, Method::PUT, "/api/v1/cast/config", &admin, json!({ "enabled": true, "devices": [bad] })).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
     }
+    let (s, _, _) =
+        send(app, Method::PUT, "/api/v1/cast/config", &admin, json!({ "enabled": true, "port": 8443 })).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "the server's own port");
     let (s, v, _) = send(
         app,
         Method::PUT,
