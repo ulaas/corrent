@@ -214,6 +214,18 @@ pub struct Behavior {
     /// Switch back to the server the app fell back from as soon as it is reachable again,
     /// without asking.
     pub auto_switch_server: bool,
+    /// What double-clicking a torrent in the list does.
+    pub double_click: DoubleClick,
+}
+
+/// What double-clicking a torrent in the list does.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DoubleClick {
+    #[default]
+    Open,
+    OpenFolder,
+    PauseResume,
+    Details,
 }
 
 impl Default for Behavior {
@@ -236,6 +248,7 @@ impl Default for Behavior {
             handler_prompt_dismissed: false,
             find_servers: true,
             auto_switch_server: false,
+            double_click: DoubleClick::Open,
         }
     }
 }

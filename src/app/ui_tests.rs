@@ -808,6 +808,26 @@ fn fit_columns_measures_and_applies() {
 }
 
 #[test]
+fn double_click_does_what_the_setting_says() {
+    use crate::config::DoubleClick;
+    let (_f, mut app) =
+        app("double", vec![torrent(1, "Alpha", TorrentState::Downloading), torrent(2, "Beta", TorrentState::Paused)]);
+    let log = record_commands(&mut app);
+    app.prefs.show_details = false;
+    let mut h = harness(app);
+    h.run_steps(2);
+    h.state_mut().settings.behavior.double_click = DoubleClick::PauseResume;
+    h.state_mut().double_click_row(InfoHash([1; 20]));
+    h.state_mut().double_click_row(InfoHash([2; 20]));
+    let sent = commands_sent(h.state(), &log);
+    assert!(sent[0].starts_with("Pause(") && sent[1].starts_with("Resume("), "{sent:?}");
+    h.state_mut().settings.behavior.double_click = DoubleClick::Details;
+    h.state_mut().double_click_row(InfoHash([1; 20]));
+    assert!(h.state().prefs.show_details);
+    assert!(commands_sent(h.state(), &log).is_empty());
+}
+
+#[test]
 fn empty_list_offers_add_actions() {
     let (_f, app) = app("empty", vec![]);
     let mut h = harness(app);

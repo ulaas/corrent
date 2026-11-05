@@ -64,8 +64,12 @@ define_class!(
             for item in items {
                 let url: Option<Retained<NSURL>> = unsafe { msg_send![&*item, fileURLValue] };
                 let path = url.and_then(|u| u.path()).map(|p| p.to_string());
-                if let Some(p) = path {
-                    self.deliver(Some(AddSource::File(p.into())));
+                // As from other processes on the other platforms: existing .torrent files only.
+                if let Some(p) = path.map(std::path::PathBuf::from)
+                    && p.is_file()
+                    && super::single_instance::has_torrent_extension(&p)
+                {
+                    self.deliver(Some(AddSource::File(p)));
                 }
             }
         }

@@ -530,13 +530,35 @@ impl CorrentApp {
         }
         if let Some((h, mods, double)) = clicked {
             if double {
-                if self.server.is_none()
-                    && let Some(t) = snap.torrents.iter().find(|t| t.hash == h)
-                {
-                    super::open_path(&t.content_path);
-                }
+                self.double_click_row(h);
             } else {
                 self.click_row(h, mods, &rows);
+            }
+        }
+    }
+
+    /// What Settings → General says a double click does.
+    pub(super) fn double_click_row(&mut self, h: InfoHash) {
+        use crate::config::DoubleClick;
+        let snap = self.snap.clone();
+        let Some(t) = snap.torrents.iter().find(|t| t.hash == h) else { return };
+        // A server's files aren't on this computer.
+        let local = self.server.is_none();
+        match self.settings.behavior.double_click {
+            DoubleClick::Open if local => super::open_path(&t.content_path),
+            DoubleClick::OpenFolder if local => super::open_path(&t.save_path),
+            DoubleClick::Open | DoubleClick::OpenFolder => {}
+            DoubleClick::PauseResume => {
+                let cmd = if t.state.is_paused_like() || t.state == TorrentState::Error {
+                    crate::engine::EngineCommand::Resume(vec![h])
+                } else {
+                    crate::engine::EngineCommand::Pause(vec![h])
+                };
+                self.engine.send(cmd);
+            }
+            DoubleClick::Details => {
+                self.prefs.show_details = true;
+                self.prefs.details_tab = super::DetailsTab::General;
             }
         }
     }

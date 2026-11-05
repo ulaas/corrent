@@ -9,7 +9,9 @@ use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
 use super::pickers::{PickKind, PickTarget};
-use crate::config::{Accent, AfterAdd, ListenMode, PalettePreset, SeedAction, Settings, SpeedUnits, ThemeMode};
+use crate::config::{
+    Accent, AfterAdd, DoubleClick, ListenMode, PalettePreset, SeedAction, Settings, SpeedUnits, ThemeMode,
+};
 use crate::engine::{EngineCommand, ToastKind};
 use crate::integration::os_handler::{self, HandlerState};
 use crate::ui::theme::{self, Palette, accent_color};
@@ -118,7 +120,7 @@ impl Page {
         match self {
             Page::Behavior => {
                 t!(
-                    "confirm exit tray close minimize start minimized notifications notify delete dialog skip run program command complete default handler magnet torrent association register updates version server servers network lan find switch"
+                    "confirm exit tray close minimize start minimized notifications notify delete dialog skip run program command complete default handler magnet torrent association register updates version server servers network lan find switch double click"
                 )
             }
             Page::Downloads => {
@@ -646,6 +648,31 @@ impl CorrentApp {
                     );
                     s.behavior.skip_add_dialog = !show;
                     toggle(ui, p, t!("Confirm before removing torrents"), "", &mut s.behavior.confirm_delete);
+                });
+                ui.add_space(10.0);
+                card(p).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    heading(ui, p, t!("Torrent list"));
+                    row(ui, p, t!("Double-clicking a torrent"), "", |ui| {
+                        let name = |d: DoubleClick| match d {
+                            DoubleClick::Open => t!("Opens it"),
+                            DoubleClick::OpenFolder => t!("Opens its folder"),
+                            DoubleClick::PauseResume => t!("Pauses or resumes it"),
+                            DoubleClick::Details => t!("Shows its details"),
+                        };
+                        egui::ComboBox::from_id_salt("double_click")
+                            .selected_text(name(s.behavior.double_click))
+                            .show_ui(ui, |ui| {
+                                for d in [
+                                    DoubleClick::Open,
+                                    DoubleClick::OpenFolder,
+                                    DoubleClick::PauseResume,
+                                    DoubleClick::Details,
+                                ] {
+                                    ui.selectable_value(&mut s.behavior.double_click, d, name(d));
+                                }
+                            });
+                    });
                 });
                 ui.add_space(10.0);
                 card(p).show(ui, |ui| {
