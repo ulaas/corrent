@@ -4,6 +4,7 @@
 import { accents, fixedAccentPresets } from 'virtual:tokens';
 import { api } from './api';
 import { onColor } from './color';
+import { defaultFx, normalizeFx, normalizePresets, type AudioFx, type UserPreset } from './audiofxmodel';
 
 export type ThemeMode = 'system' | 'dark' | 'light';
 export type Density = 'compact' | 'comfortable' | 'spacious';
@@ -26,6 +27,9 @@ export interface Prefs {
   torrentColumns: string[];
   sidebarCollapsed: boolean;
   volume: number;
+  /** Sound processing (see lib/audiofxmodel.ts): off by default, and then no Web Audio at all. */
+  audioFx: AudioFx;
+  audioPresets: UserPreset[];
 }
 
 const DEFAULTS: Prefs = {
@@ -43,6 +47,8 @@ const DEFAULTS: Prefs = {
   torrentColumns: ['size', 'state', 'down', 'up', 'eta', 'ratio', 'peers'],
   sidebarCollapsed: false,
   volume: 1,
+  audioFx: defaultFx(),
+  audioPresets: [],
 };
 
 const KEY = 'corrent.prefs';
@@ -64,7 +70,14 @@ export async function syncPrefs(): Promise<void> {
   try {
     const remote = await api.get<Partial<Prefs>>('/me/prefs');
     if (remote && Object.keys(remote).length) {
-      Object.assign(prefs, { ...DEFAULTS, ...remote, volume: prefs.volume, sidebarCollapsed: prefs.sidebarCollapsed });
+      Object.assign(prefs, {
+        ...DEFAULTS,
+        ...remote,
+        audioFx: normalizeFx(remote.audioFx),
+        audioPresets: normalizePresets(remote.audioPresets),
+        volume: prefs.volume,
+        sidebarCollapsed: prefs.sidebarCollapsed,
+      });
     } else if (!hadLocal) {
       const t = await api.get<{ preset: string; accent: string; custom_accent: string }>('/theme');
       Object.assign(prefs, { preset: t.preset, accent: t.accent, customAccent: t.custom_accent });
@@ -79,16 +92,26 @@ function load(): Prefs {
   try {
     const raw = localStorage.getItem(KEY);
     hadLocal = !!raw;
-    if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
+    if (raw) {
+      const p = JSON.parse(raw);
+      return { ...DEFAULTS, ...p, audioFx: normalizeFx(p.audioFx), audioPresets: normalizePresets(p.audioPresets) };
+    }
   } catch {
     /* ignore */
   }
-  return { ...DEFAULTS };
+  return { ...DEFAULTS, audioFx: defaultFx() };
 }
 
 export const prefs = $state<Prefs>(load());
 
 export const ACCENTS = Object.keys(accents);
+
+/** The volume slider (0..1) as an amplitude: cubic, like mpv's, so 30 % sounds the same on the web
+ *  and on the desktop. */
+export function perceptual(v: number): number {
+  const x = Math.max(0, Math.min(1, v));
+  return x * x * x;
+}
 
 const darkQuery = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
 const reducedQuery = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
@@ -111,7 +134,7 @@ export function ms(base: number): number {
 }
 
 export function resetPrefs() {
-  Object.assign(prefs, { ...DEFAULTS, homeOrder: [], homeHidden: [] });
+  Object.assign(prefs, { ...DEFAULTS, homeOrder: [], homeHidden: [], audioFx: prefs.audioFx, audioPresets: prefs.audioPresets });
 }
 
 /** Keeps <html> attributes and CSS variables in sync with the preferences. */

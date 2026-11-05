@@ -6,6 +6,15 @@ import { inflate } from '../src/lib/events.svelte';
 import { bytes, clock, duration } from '../src/lib/format';
 import { keysIn, placeholders } from '../scripts/i18n-keys.mjs';
 import { onColor } from '../src/lib/color';
+import { imageSrcset } from '../src/lib/api';
+
+describe('artwork widths', () => {
+  it('offers the buckets narrower than the original, and the original', () => {
+    expect(imageSrcset('s', 640)).toBe('/api/v1/images/s?w=200 200w, /api/v1/images/s?w=400 400w, /api/v1/images/s 640w');
+    expect(imageSrcset('s', 1920)).toContain('?w=800 800w');
+    expect(imageSrcset('s')).toContain('/api/v1/images/s 1920w');
+  });
+});
 
 describe('i18n', () => {
   it('fills named placeholders and keeps unknown ones', () => {

@@ -1,6 +1,9 @@
 // Who is signed in, the server's identity, and what the user may do.
 import { api, setCsrf, setUnauthorizedHandler } from './api';
 import { events } from './events.svelte';
+import { resetExtensions } from './extensions.svelte';
+import { forgetGrids } from './gridcache';
+import { resetLibraries } from './libraries.svelte';
 import { syncPrefs } from './prefs.svelte';
 import { Perm, type LoginResponse, type ServerInfo, type User } from './types';
 
@@ -18,6 +21,13 @@ export function can(p: number): boolean {
 
 export const isAdmin = () => can(Perm.SETTINGS_WRITE);
 
+/** What was fetched for this user must not show for the next one signing in in this tab. */
+function forgetUser() {
+  resetLibraries();
+  resetExtensions();
+  forgetGrids();
+}
+
 function signedIn(r: LoginResponse) {
   setCsrf(r.csrf);
   session.user = r.user;
@@ -32,6 +42,7 @@ export async function boot(): Promise<void> {
       session.user = null;
       session.expired = true;
       events.stop();
+      forgetUser();
     }
   });
   try {
@@ -67,6 +78,7 @@ export async function logout() {
   }
   events.stop();
   setCsrf('');
+  forgetUser();
   session.user = null;
 }
 

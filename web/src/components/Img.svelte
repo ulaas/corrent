@@ -1,7 +1,7 @@
 <script lang="ts">
   // Artwork with a blurhash placeholder that fades into the real image.
   import { decode } from 'blurhash';
-  import { imageUrl } from '../lib/api';
+  import { imageSrcset, imageUrl } from '../lib/api';
   import type { ImageRef } from '../lib/types';
 
   let {
@@ -10,8 +10,17 @@
     alt = '',
     fit = 'cover',
     eager = false,
-  }: { image?: ImageRef | null; w?: 200 | 400 | 800 | 0; alt?: string; fit?: 'cover' | 'contain'; eager?: boolean } =
-    $props();
+    sizes,
+  }: {
+    image?: ImageRef | null;
+    /** The width bucket to ask for (0: the original); with `sizes`, what browsers without srcset get. */
+    w?: 200 | 400 | 800 | 0;
+    alt?: string;
+    fit?: 'cover' | 'contain';
+    eager?: boolean;
+    /** How wide it shows (the `sizes` attribute): lets the browser pick the width it needs. */
+    sizes?: string;
+  } = $props();
 
   let loaded = $state(false);
   let failed = $state(false);
@@ -46,6 +55,8 @@
   {/if}
   {#if image && !failed}
     <img
+      srcset={sizes ? imageSrcset(image.sha, image.width) : undefined}
+      {sizes}
       src={imageUrl(image.sha, w || undefined)}
       {alt}
       loading={eager ? 'eager' : 'lazy'}

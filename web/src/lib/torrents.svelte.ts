@@ -9,12 +9,16 @@ import { Perm, type Labels, type SessionStats, type Torrent } from './types';
 
 const map = new Map<string, Torrent>();
 
-export const live = $state<{
-  list: Torrent[];
-  labels: Labels;
-  stats: SessionStats | null;
-  loaded: boolean;
-}>({ list: [], labels: { categories: {}, tags: [] }, stats: null, loaded: false });
+// Rows are immutable and replaced whole once a second (delta.ts): `raw` keeps Svelte from wrapping
+// thousands of them in proxies every time.
+class Live {
+  list = $state.raw<Torrent[]>([]);
+  labels = $state.raw<Labels>({ categories: {}, tags: [] });
+  stats = $state.raw<SessionStats | null>(null);
+  loaded = $state(false);
+}
+
+export const live = new Live();
 
 let users = 0;
 let unsub: (() => void) | null = null;

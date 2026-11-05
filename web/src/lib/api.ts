@@ -126,7 +126,7 @@ async function request<T>(method: string, path: string, o: RequestOptions = {}):
 export const api = {
   get: <T>(path: string, query?: Query, signal?: AbortSignal) => request<T>('GET', path, { query, signal }),
   post: <T>(path: string, body?: unknown, o?: RequestOptions) => request<T>('POST', path, { ...o, body }),
-  put: <T>(path: string, body?: unknown) => request<T>('PUT', path, { body }),
+  put: <T>(path: string, body?: unknown, o?: RequestOptions) => request<T>('PUT', path, { ...o, body }),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, { body }),
   del: <T>(path: string, o?: RequestOptions) => request<T>('DELETE', path, { ...o }),
 };
@@ -134,6 +134,14 @@ export const api = {
 /** Artwork URL for a width bucket the server caches (200, 400, 800); none = the original. */
 export function imageUrl(sha: string, w?: 200 | 400 | 800): string {
   return `${BASE}/images/${sha}` + (w ? `?w=${w}` : '');
+}
+
+/** `srcset` for artwork: the server's width buckets narrower than the original, and the original.
+ *  An unknown original width counts as wide. */
+export function imageSrcset(sha: string, width?: number): string {
+  const parts = ([200, 400, 800] as const).filter((w) => !width || w < width).map((w) => `${imageUrl(sha, w)} ${w}w`);
+  parts.push(`${imageUrl(sha)} ${width || 1920}w`);
+  return parts.join(', ');
 }
 
 export function itemFileUrl(id: number): string {

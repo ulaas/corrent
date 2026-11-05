@@ -3,6 +3,7 @@
   import { fade, fly } from 'svelte/transition';
   import Icon from '../components/Icon.svelte';
   import Seek from '../components/Seek.svelte';
+  import MenuList from '../components/MenuList.svelte';
   import Spinner from '../components/Spinner.svelte';
   import { api, errorText } from '../lib/api';
   import { back, go, route, setQuery } from '../lib/router.svelte';
@@ -13,9 +14,15 @@
   import { music } from '../lib/player.svelte';
   import { backdrop, image, segmentAt, skipAt } from '../lib/media';
   import { clock } from '../lib/format';
+  import type { MenuItem } from '../lib/contextmenu.svelte';
+  import { mediaAction, moveInRows, TapTracker } from '../lib/playerinput';
   import { cueAt, parseTrickplay, type TrickCue } from '../lib/trickplay';
   import { imageUrl } from '../lib/api';
   import { ms, prefs } from '../lib/prefs.svelte';
+  import { FxHost } from '../lib/fxhost.svelte';
+  import { browserProfile, type HlsStats } from '../lib/player.svelte';
+  import SoundPanel from '../components/SoundPanel.svelte';
+  import PlayerStats from '../components/PlayerStats.svelte';
   import { t, tk } from '../lib/i18n.svelte';
   import type { CastDevice, Item, ItemDetail, Page } from '../lib/types';
 
@@ -41,7 +48,7 @@
   let trick = $state<TrickCue[]>([]);
   let nextUp = $state<Item | null>(null);
   let countdown = $state(0);
-  let menu = $state<'' | 'speed' | 'subs' | 'audio' | 'cast' | 'settings'>('');
+  let menu = $state<'' | 'speed' | 'subs' | 'audio' | 'cast' | 'settings' | 'sound'>('');
 
   // ---- playback settings (as the desktop's, src/app/media/player.rs; browsers can't delay
   // audio or take mpv's screenshots) ----
@@ -51,7 +58,8 @@
   let aspect = $state<Aspect>('');
   const RATIO: Record<string, number> = { '16:9': 16 / 9, '4:3': 4 / 3, '2.35:1': 2.35 };
   let stats = $state(false);
-  let statsText = $state('');
+  let hlsStats = $state.raw<HlsStats | null>(null);
+  let fx = $state.raw<FxHost | null>(null);
   // Subtitle cues as they came, so the delay can be changed again.
   const cueTimes = new WeakMap<TextTrackCue, [number, number]>();
   function shiftCues() {
@@ -79,28 +87,6 @@
     aspect = '';
     setRate(1);
   }
-  $effect(() => {
-    if (!stats) return;
-    const tick = () => {
-      if (!video) return;
-      const q = video.getVideoPlaybackQuality?.();
-      let ahead = 0;
-      for (let i = 0; i < video.buffered.length; i++) {
-        if (video.buffered.start(i) <= video.currentTime && video.currentTime <= video.buffered.end(i)) ahead = video.buffered.end(i) - video.currentTime;
-      }
-      statsText = [
-        `${video.videoWidth}×${video.videoHeight}`,
-        info?.method ?? '',
-        q ? t('{dropped}/{total} frames dropped', { dropped: q.droppedVideoFrames, total: q.totalVideoFrames }) : '',
-        t('{s} s buffered', { s: ahead.toFixed(1) }),
-      ]
-        .filter(Boolean)
-        .join(' · ');
-    };
-    tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
-  });
   // "Use this frame as the thumbnail" (T): taken on the server from the file, locked against
   // providers.
   const canThumb = $derived(!!item && (item.kind === 'movie' || item.kind === 'episode' || item.kind === 'video'));
@@ -120,6 +106,10 @@
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   let countTimer: ReturnType<typeof setInterval> | null = null;
   let retried = false;
+  // Overlapping start()s (a track chosen twice, the next episode while one is loading): only the
+  // newest may touch the element and the state.
+  let startGen = 0;
+  let pendingSeek: (() => void) | null = null;
 
   const file = $derived(item?.files.find((f) => f.role === 'main') ?? item?.files[0]);
   const chapters = $derived(file?.chapters ?? []);
@@ -132,62 +122,90 @@
   const TEXT_SUBS = ['srt', 'subrip', 'ass', 'ssa', 'vtt', 'webvtt'];
 
   async function start(itemId: number, o: PlaybackOptions, at: number | null) {
+    const gen = ++startGen;
+    const stale = () => gen !== startGen;
     error = '';
     waiting = true;
     nextUp = null;
     clearCountdown();
     const el = video!;
+    if (pendingSeek) el.removeEventListener('loadedmetadata', pendingSeek);
+    pendingSeek = null;
     try {
       let restoredBurn = false;
       if (!item || item.id !== itemId) {
-        item = await api.get<ItemDetail>(`/items/${itemId}`);
+        const loaded = await api.get<ItemDetail>(`/items/${itemId}`);
+        if (stale()) return;
+        item = loaded;
         if (music.playing) music.pause();
-        o = restoreTracks(item, o);
+        o = restoreTracks(loaded, o);
         restoredBurn = o.burn_subtitle != null;
         opts = o;
       }
       const old = info;
+      let next: PlaybackInfo;
       try {
-        info = await resolveSource(itemId, o);
+        next = await resolveSource(itemId, o);
       } catch (e) {
+        if (stale()) return;
         // Burning the remembered subtitle isn't possible (no transcoding): play without it.
         if (!restoredBurn) throw e;
         o = { ...o, burn_subtitle: undefined };
         opts = o;
         subtitle = null;
-        info = await resolveSource(itemId, o);
+        next = await resolveSource(itemId, o);
       }
-      stopSession(old && old.session_id !== info.session_id ? old : null);
+      if (stale()) return stopSession(next);
+      info = next;
+      hlsStats = null;
+      stopSession(old && old.session_id !== next.session_id ? old : null);
       detach?.();
-      detach = await attachSource(el, info, (msg) => {
-        // Copied streams the browser can't take after all: transcode instead.
-        if (info?.method === 'remux' && !retried) {
-          retried = true;
-          opts = { ...opts, force_transcode: true };
-          void start(itemId, opts, el.currentTime || at);
-          return;
-        }
-        error = t('Playback failed ({reason}).', { reason: msg });
-      });
-      duration = (info.duration_ms ?? item.runtime_ms ?? 0) / 1000;
+      detach = null;
+      const attached = await attachSource(
+        el,
+        next,
+        (msg) => {
+          if (stale()) return;
+          // Copied streams the browser can't take after all: transcode instead.
+          if (info?.method === 'remux' && !retried) {
+            retried = true;
+            opts = { ...opts, force_transcode: true };
+            void start(itemId, opts, el.currentTime || at);
+            return;
+          }
+          error = t('Playback failed ({reason}).', { reason: msg });
+        },
+        () => !stale(),
+        (s) => (hlsStats = s),
+      );
+      if (stale()) return attached();
+      detach = attached;
+      duration = (next.duration_ms ?? item?.runtime_ms ?? 0) / 1000;
       const from =
         at ??
         (route.query.get('from') === '0'
           ? 0
           : route.query.get('t')
             ? +route.query.get('t')!
-            : resumeAt(item, info.duration_ms) / 1000);
+            : item
+              ? resumeAt(item, next.duration_ms) / 1000
+              : 0);
       const seekTo = () => {
+        pendingSeek = null;
         if (from > 0) el.currentTime = from;
         el.playbackRate = rate;
         void el.play().catch(() => (playing = false));
       };
       if (el.readyState >= 1) seekTo();
-      else el.addEventListener('loadedmetadata', seekTo, { once: true });
+      else {
+        pendingSeek = seekTo;
+        el.addEventListener('loadedmetadata', seekTo, { once: true });
+      }
       void loadTrickplay();
       setMediaSession();
       void findNext();
     } catch (e) {
+      if (stale()) return;
       error = errorText(e);
       waiting = false;
     }
@@ -235,7 +253,10 @@
     try {
       const eps = (await api.get<Page<Item>>('/items', { parent_id: it.parent_id, sort: 'index', limit: 1000 })).items;
       const i = eps.findIndex((e) => e.id === it.id);
-      if (i >= 0 && i + 1 < eps.length) return void (nextUp = eps[i + 1]);
+      if (i >= 0 && i + 1 < eps.length) {
+        if (item?.id === it.id) nextUp = eps[i + 1];
+        return;
+      }
       const season = await api.get<ItemDetail>(`/items/${it.parent_id}`);
       if (!season.parent_id) return;
       const seasons = (await api.get<Page<Item>>('/items', { parent_id: season.parent_id, sort: 'index', limit: 200 })).items;
@@ -269,9 +290,20 @@
   $effect(() => {
     if (!video) return;
     const el = video;
-    el.volume = untrack(() => prefs.volume);
     stopReport = reportProgress(el, () => item?.id ?? null);
     return () => stopReport?.();
+  });
+
+  // The volume (wherever it's changed, the mini player's slider too) and sound processing. Safari's
+  // native HLS can't go through Web Audio, and the element may switch to it at any time.
+  $effect(() => {
+    if (!video) return;
+    const h = new FxHost(video, () => muted, () => browserProfile() === 'safari');
+    fx = h;
+    return () => {
+      h.dispose();
+      fx = null;
+    };
   });
 
   // (Re)start when the item changes.
@@ -288,6 +320,7 @@
   });
 
   onDestroy(() => {
+    startGen++;
     detach?.();
     stopSession(info);
     clearCountdown();
@@ -478,17 +511,11 @@
 
   function setVolume(v: number) {
     prefs.volume = Math.max(0, Math.min(1, v));
-    if (video) {
-      video.volume = prefs.volume;
-      video.muted = false;
-      muted = false;
-    }
+    muted = false;
   }
 
   function toggleMute() {
-    if (!video) return;
-    video.muted = !video.muted;
-    muted = video.muted;
+    muted = !muted;
   }
 
   function setRate(r: number) {
@@ -499,8 +526,26 @@
 
   async function toggleFullscreen() {
     if (!stage) return;
-    if (document.fullscreenElement) await document.exitFullscreen();
-    else await stage.requestFullscreen().catch(() => {});
+    if (document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => {});
+      return;
+    }
+    // iPhones have fullscreen for the video element only.
+    const native = video as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | undefined;
+    try {
+      if (!document.fullscreenEnabled || !stage.requestFullscreen) throw new Error('no element fullscreen');
+      await stage.requestFullscreen();
+      if (matchMedia('(pointer: coarse)').matches) {
+        const o = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+        await o.lock?.('landscape').catch(() => {});
+      }
+    } catch {
+      try {
+        native?.webkitEnterFullscreen?.();
+      } catch {
+        /* not allowed */
+      }
+    }
   }
 
   async function togglePip() {
@@ -553,11 +598,179 @@
     }, 3000);
   }
 
+  // ---- touch: the first tap shows the controls; while they show a tap toggles; two quick taps on
+  // a half of the picture skip 10 s ----
+  let lastPointer = 'mouse';
+  let chromeAtDown = true;
+  let keyFocus = false;
+  const taps = new TapTracker();
+  let tapTimer: ReturnType<typeof setTimeout> | null = null;
+  let flash = $state<{ side: -1 | 1; n: number } | null>(null);
+  let flashTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function onStageDown(e: PointerEvent) {
+    lastPointer = e.pointerType;
+    keyFocus = false;
+    chromeAtDown = chrome || !playing;
+    poke();
+    if (menu && !(e.target as HTMLElement).closest('.cm, .menu, .pop, .statsbox')) closePop();
+  }
+
+  function onVideoClick(e: MouseEvent) {
+    if (lastPointer !== 'touch' || !video) return toggle();
+    const r = video.getBoundingClientRect();
+    const side = e.clientX < r.left + r.width / 2 ? -1 : 1;
+    if (taps.tap(performance.now(), side) === 'double') {
+      if (tapTimer) clearTimeout(tapTimer);
+      tapTimer = null;
+      skip(side * 10);
+      flash = { side, n: flash?.side === side ? flash.n + 10 : 10 };
+      if (flashTimer) clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => (flash = null), 700);
+      return;
+    }
+    // Starting needs the tap itself (browsers refuse play() later); pausing can wait for a second tap.
+    if (!playing) return toggle();
+    if (!chromeAtDown) return;
+    tapTimer = setTimeout(() => {
+      tapTimer = null;
+      toggle();
+    }, 300);
+  }
+
+  // ---- menus over the bar ----
+  let menuAt = $state.raw({ x: 0, y: 0 });
+  let menuBtn: HTMLElement | null = null;
+
+  function openPop(name: typeof menu, e: Event) {
+    const b = e.currentTarget as HTMLElement;
+    const r = b.getBoundingClientRect();
+    menuBtn = b;
+    menuAt = { x: r.right, y: r.top - 10 };
+    menu = name;
+  }
+
+  function closePop(giveFocusBack = false) {
+    menu = '';
+    if (giveFocusBack) menuBtn?.focus();
+  }
+
+  const clickPop = (name: typeof menu) => (e: Event) => (menu === name ? closePop() : openPop(name, e));
+
+  function chooseRow(run: () => void) {
+    const b = menuBtn;
+    run();
+    if (!menu && keyFocus) b?.focus();
+  }
+
+  const speedRows = $derived<MenuItem[]>([
+    { kind: 'header', label: t('Playback speed') },
+    ...speeds.map((s) => ({ label: s === 1 ? t('Normal') : `${s}×`, checked: rate === s, radio: true, onselect: () => setRate(s) })),
+  ]);
+  const subRows = $derived<MenuItem[]>([
+    { kind: 'header', label: t('Subtitles') },
+    { label: t('Off'), checked: subtitle == null, radio: true, onselect: () => chooseSubtitle(null) },
+    ...(info?.subtitles ?? []).map((s) => ({
+      label: s.url ? subLabel(s) : `${subLabel(s)} · ${t('burn in')}`,
+      checked: subtitle === s.index,
+      radio: true,
+      onselect: () => chooseSubtitle(s.index),
+    })),
+  ]);
+  const audioRows = $derived<MenuItem[]>([
+    { kind: 'header', label: t('Audio track') },
+    ...audioTracks.map((a) => ({
+      label: [a.title, a.lang?.toUpperCase(), a.codec?.toUpperCase(), a.channels ? t('{n} ch', { n: a.channels }) : ''].filter(Boolean).join(' · '),
+      checked: (opts.audio_track ?? audioTracks[0].index) === a.index,
+      radio: true,
+      onselect: () => chooseAudio(a.index),
+    })),
+  ]);
+  const castRows = $derived<MenuItem[]>([
+    { kind: 'header', label: t('Cast to') },
+    ...(castLoading
+      ? [{ label: t('Looking for devices…'), disabled: true, onselect: () => {} }]
+      : !castList?.length
+        ? [{ label: t('No Chromecasts found on the server’s network.'), disabled: true, onselect: () => {} }]
+        : castList.map((d) => ({
+            label: d.model ? `${d.name} · ${d.model}` : d.name,
+            checked: cast?.device.id === d.id,
+            radio: true,
+            onselect: () => void castTo(d),
+          }))),
+    ...(cast ? [{ label: t('Stop casting'), onselect: () => ((menu = ''), stopCast()) }] : []),
+    { label: t('Look again'), icon: 'arrows-clockwise' as const, onselect: () => void openCast(true) },
+  ]);
+
+  function settingsKey(e: KeyboardEvent) {
+    const list = [...(e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('button:not(:disabled), input')];
+    const i = list.indexOf(document.activeElement as HTMLElement);
+    if (e.key === 'ArrowDown') list[(i + 1) % list.length]?.focus();
+    else if (e.key === 'ArrowUp') list[(i - 1 + list.length) % list.length]?.focus();
+    else if (e.key === 'Escape') closePop(true);
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  // ---- D-pad: arrows walk the controls once the focus is on them ----
+  /** A TV remote: no pointer at all. Up and down go to the controls instead of the volume, which
+   *  the TV has its own keys for. */
+  const remote = typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: none)').matches;
+
+  function controlRows(): HTMLElement[][] {
+    const pick = (sel: string) => [...(stage?.querySelectorAll<HTMLElement>(sel) ?? [])];
+    return [pick('.top button'), pick('.bottom [role="slider"]'), pick('.bar > button, .bar > .vol > button, .bar > .pop > button')];
+  }
+
+  function moveFocus(from: HTMLElement | null, key: 'up' | 'down' | 'left' | 'right'): boolean {
+    const rows = controlRows();
+    const y = from ? rows.findIndex((r) => r.includes(from)) : -1;
+    if (y < 0) {
+      rows[2][0]?.focus();
+      return true;
+    }
+    const to = moveInRows(rows.map((r) => r.length), y, rows[y].indexOf(from!), key);
+    if (to) rows[to[0]][to[1]]?.focus();
+    return !!to;
+  }
+
   function onkeydown(e: KeyboardEvent) {
-    if ((e.target as HTMLElement).closest('input, select, textarea')) return;
+    const target = e.target as HTMLElement;
+    if (e.key === 'Tab') {
+      keyFocus = true;
+      poke();
+      return;
+    }
+    if (e.defaultPrevented) return void poke();
+    if (target.closest('input, select, textarea')) return;
     const k = e.key.toLowerCase();
-    if (k === ' ' || k === 'k') {
-      if ((e.target as HTMLElement).closest('button') && k === ' ') return;
+    const media = mediaAction(k, e.keyCode);
+    const shown = chrome || !playing;
+    const dir = k === 'arrowup' ? 'up' : k === 'arrowdown' ? 'down' : k === 'arrowleft' ? 'left' : k === 'arrowright' ? 'right' : null;
+    const onControl = !!target.closest('.top, .bottom') && shown;
+    if (dir && ((onControl && keyFocus) || (remote && shown && (dir === 'up' || dir === 'down')))) {
+      keyFocus = true;
+      moveFocus(onControl ? target : null, dir);
+      e.preventDefault();
+      poke();
+      return;
+    }
+    if (k === 'enter') {
+      if (target.closest('button, a, [role="slider"]')) return;
+      if (shown) toggle();
+    } else if (media === 'toggle') toggle();
+    else if (media === 'play') {
+      if (!playing) toggle();
+    } else if (media === 'pause') {
+      if (playing) toggle();
+    } else if (media === 'stop') close();
+    else if (media === 'forward') skip(10);
+    else if (media === 'rewind') skip(-10);
+    else if (media === 'next') {
+      if (nextUp) playNext();
+    } else if (k === ' ' || k === 'k') {
+      if (target.closest('button') && k === ' ') return;
       toggle();
     } else if (k === 'arrowleft' || k === 'j') skip(k === 'j' ? -10 : -5);
     else if (k === 'arrowright' || k === 'l') skip(k === 'l' ? 10 : 5);
@@ -565,10 +778,14 @@
     else if (k === 'arrowdown') setVolume(prefs.volume - 0.05);
     else if (k === 'f') void toggleFullscreen();
     else if (k === 'm') toggleMute();
+    else if (k === 'i') {
+      if (e.shiftKey) prefs.audioFx.meters = !prefs.audioFx.meters;
+      else stats = !stats;
+    }
     else if (k === 'n' && nextUp) playNext();
     else if (k === 't' && canThumb) void setThumbnail();
-    else if (k === 'escape') {
-      if (menu) menu = '';
+    else if (k === 'escape' || media === 'back') {
+      if (menu) closePop(true);
       else if (!document.fullscreenElement) close();
       else return;
     } else return;
@@ -598,7 +815,11 @@
 </script>
 
 <svelte:window {onkeydown} />
-<svelte:document onfullscreenchange={() => (fs = !!document.fullscreenElement)} />
+<svelte:document
+  onfullscreenchange={() => {
+    fs = !!document.fullscreenElement;
+    if (!fs) (screen.orientation as ScreenOrientation & { unlock?: () => void })?.unlock?.();
+  }} />
 
 <div
   class="stage"
@@ -607,7 +828,7 @@
   role="application"
   aria-label={t('Video player')}
   onpointermove={poke}
-  onpointerdown={poke}>
+  onpointerdown={onStageDown}>
   <!-- svelte-ignore a11y_media_has_caption -->
   <video
     bind:this={video}
@@ -616,8 +837,8 @@
     style:--ratio={RATIO[aspect] ?? null}
     style:--sub-scale={subScale}
     playsinline
-    onclick={toggle}
-    ondblclick={toggleFullscreen}
+    onclick={onVideoClick}
+    ondblclick={() => lastPointer !== 'touch' && void toggleFullscreen()}
     onplay={() => ((playing = true), poke(), room?.send('play', video?.currentTime ?? time))}
     onpause={() => ((playing = false), (chrome = true), room?.send('pause', video?.currentTime ?? time))}
     onwaiting={() => (waiting = true)}
@@ -634,7 +855,15 @@
     {/each}
   </video>
 
-  {#if stats && statsText}<div class="stats num">{statsText}</div>{/if}
+  {#if stats || prefs.audioFx.meters}
+    <div class="statsbox"><PlayerStats {video} {info} {fx} av={stats} audio={prefs.audioFx.meters} hls={hlsStats} /></div>
+  {/if}
+
+  {#if flash}
+    <div class="flash num" class:right={flash.side > 0} aria-hidden="true" transition:fade={{ duration: ms(120) }}>
+      <Icon name={flash.side > 0 ? 'arrow-clockwise' : 'arrow-counter-clockwise'} size={28} />{t('{n} s', { n: flash.n })}
+    </div>
+  {/if}
 
   {#if waiting && !error}
     <div class="center" transition:fade={{ duration: ms(150) }}><Spinner size={44} /></div>
@@ -717,21 +946,17 @@
       <span class="spacer"></span>
 
       <div class="pop">
-        <button class="btn ghost sm" aria-haspopup="menu" aria-expanded={menu === 'speed'} aria-label={t('Playback speed')} title={t('Playback speed')} onclick={() => (menu = menu === 'speed' ? '' : 'speed')}><Icon name="gauge" size={20} /><span class="num">{rate}×</span></button>
+        <button class="btn ghost sm" aria-haspopup="menu" aria-expanded={menu === 'speed'} aria-label={t('Playback speed')} title={t('Playback speed')} onclick={clickPop('speed')}><Icon name="gauge" size={20} /><span class="num">{rate}×</span></button>
         {#if menu === 'speed'}
-          <div class="menu" role="menu" transition:fly={{ y: 8, duration: ms(140) }}>
-            <div class="mh">{t('Playback speed')}</div>
-            {#each speeds as s (s)}
-              <button class="mi" role="menuitemradio" aria-checked={rate === s} onclick={() => setRate(s)}>{s === 1 ? t('Normal') : `${s}×`}{#if rate === s}<Icon name="check" size={14} />{/if}</button>
-            {/each}
-          </div>
+          <MenuList items={speedRows} at={menuAt} above focusFirst label={t('Playback speed')} onchoose={chooseRow} onback={(byKey) => closePop(byKey)} />
         {/if}
       </div>
 
       <div class="pop">
-        <button class="btn ghost icon" aria-haspopup="menu" aria-expanded={menu === 'settings'} aria-label={t('Playback settings')} title={t('Playback settings')} onclick={() => (menu = menu === 'settings' ? '' : 'settings')}><Icon name="sliders-horizontal" size={20} /></button>
+        <button class="btn ghost icon" aria-haspopup="menu" aria-expanded={menu === 'settings'} aria-label={t('Playback settings')} title={t('Playback settings')} onclick={clickPop('settings')}><Icon name="sliders-horizontal" size={20} /></button>
         {#if menu === 'settings'}
-          <div class="menu settings" role="menu" transition:fly={{ y: 8, duration: ms(140) }}>
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div class="menu settings" role="menu" tabindex="-1" transition:fly={{ y: 8, duration: ms(140) }} onkeydown={settingsKey} {@attach (el) => el.querySelector<HTMLElement>('button:not(:disabled)')?.focus({ preventScroll: true })}>
             <div class="mh">{t('Playback settings')}</div>
             <div class="adj">
               <span class="grow">{t('Subtitle delay')}</span>
@@ -756,64 +981,40 @@
               <button class="mi" role="menuitem" onclick={() => ((menu = ''), void setThumbnail())}><span>{t('Use this frame as the thumbnail (T)')}</span><Icon name="image" size={14} /></button>
             {/if}
             <button class="mi" role="menuitemcheckbox" aria-checked={stats} onclick={() => (stats = !stats)}>{t('Stats')}{#if stats}<Icon name="check" size={14} />{/if}</button>
+            <button class="mi" role="menuitem" onclick={() => (menu = 'sound')}><span>{t('Sound…')}</span><Icon name="caret-right" size={14} /></button>
             <button class="mi" role="menuitem" onclick={resetSettings}>{t('Reset')}</button>
+          </div>
+        {/if}
+        {#if menu === 'sound'}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div class="menu sound" role="dialog" aria-label={t('Sound')} tabindex="-1" transition:fly={{ y: 8, duration: ms(140) }} onkeydown={(e) => e.key === 'Escape' && (e.stopPropagation(), closePop(true))} {@attach (el) => el.querySelector<HTMLElement>('input')?.focus({ preventScroll: true })}>
+            <SoundPanel />
           </div>
         {/if}
       </div>
 
       {#if (info?.subtitles.length ?? 0) > 0 || subStreams.length > 0}
         <div class="pop">
-          <button class="btn ghost icon" class:on={subtitle != null} aria-haspopup="menu" aria-expanded={menu === 'subs'} aria-label={t('Subtitles')} title={t('Subtitles')} onclick={() => (menu = menu === 'subs' ? '' : 'subs')}><Icon name="closed-captioning" size={22} /></button>
+          <button class="btn ghost icon" class:on={subtitle != null} aria-haspopup="menu" aria-expanded={menu === 'subs'} aria-label={t('Subtitles')} title={t('Subtitles')} onclick={clickPop('subs')}><Icon name="closed-captioning" size={22} /></button>
           {#if menu === 'subs'}
-            <div class="menu" role="menu" transition:fly={{ y: 8, duration: ms(140) }}>
-              <div class="mh">{t('Subtitles')}</div>
-              <button class="mi" role="menuitemradio" aria-checked={subtitle == null} onclick={() => chooseSubtitle(null)}>{t('Off')}</button>
-              {#each info?.subtitles ?? [] as s (s.index)}
-                <button class="mi" role="menuitemradio" aria-checked={subtitle === s.index} onclick={() => chooseSubtitle(s.index)}>
-                  <span class="grow ellipsis">{subLabel(s)}</span>
-                  {#if !s.url}<span class="badge">{t('burn in')}</span>{/if}
-                </button>
-              {/each}
-            </div>
+            <MenuList items={subRows} at={menuAt} above focusFirst label={t('Subtitles')} onchoose={chooseRow} onback={(byKey) => closePop(byKey)} />
           {/if}
         </div>
       {/if}
 
       {#if audioTracks.length > 1}
         <div class="pop">
-          <button class="btn ghost icon" aria-haspopup="menu" aria-expanded={menu === 'audio'} aria-label={t('Audio track')} title={t('Audio track')} onclick={() => (menu = menu === 'audio' ? '' : 'audio')}><Icon name="speaker-high" size={20} /></button>
+          <button class="btn ghost icon" aria-haspopup="menu" aria-expanded={menu === 'audio'} aria-label={t('Audio track')} title={t('Audio track')} onclick={clickPop('audio')}><Icon name="speaker-high" size={20} /></button>
           {#if menu === 'audio'}
-            <div class="menu" role="menu" transition:fly={{ y: 8, duration: ms(140) }}>
-              <div class="mh">{t('Audio track')}</div>
-              {#each audioTracks as a (a.index)}
-                <button class="mi" role="menuitemradio" aria-checked={(opts.audio_track ?? audioTracks[0].index) === a.index} onclick={() => chooseAudio(a.index)}>
-                  {[a.title, a.lang?.toUpperCase(), a.codec?.toUpperCase(), a.channels ? t('{n} ch', { n: a.channels }) : ''].filter(Boolean).join(' · ')}
-                </button>
-              {/each}
-            </div>
+            <MenuList items={audioRows} at={menuAt} above focusFirst label={t('Audio track')} onchoose={chooseRow} onback={(byKey) => closePop(byKey)} />
           {/if}
         </div>
       {/if}
 
       <div class="pop">
-        <button class="btn ghost icon" class:on={cast != null} aria-haspopup="menu" aria-expanded={menu === 'cast'} aria-label={t('Cast to a device')} title={t('Cast to a device')} onclick={() => (menu === 'cast' ? (menu = '') : void openCast())}><Icon name="screencast" size={20} /></button>
+        <button class="btn ghost icon" class:on={cast != null} aria-haspopup="menu" aria-expanded={menu === 'cast'} aria-label={t('Cast to a device')} title={t('Cast to a device')} onclick={(e) => (menu === 'cast' ? closePop() : (openPop('cast', e), void openCast()))}><Icon name="screencast" size={20} /></button>
         {#if menu === 'cast'}
-          <div class="menu" role="menu" transition:fly={{ y: 8, duration: ms(140) }}>
-            <div class="mh">{t('Cast to')}</div>
-            {#if castLoading}
-              <div class="mi"><Spinner size={14} />{t('Looking for devices…')}</div>
-            {:else if !castList?.length}
-              <div class="mi muted">{t('No Chromecasts found on the server’s network.')}</div>
-            {:else}
-              {#each castList as d (d.id)}
-                <button class="mi" role="menuitemradio" aria-checked={cast?.device.id === d.id} onclick={() => castTo(d)}>
-                  <span class="grow ellipsis">{d.name}</span>{#if d.model}<span class="small muted">{d.model}</span>{/if}
-                </button>
-              {/each}
-            {/if}
-            {#if cast}<button class="mi" onclick={() => ((menu = ''), stopCast())}>{t('Stop casting')}</button>{/if}
-            <button class="mi" onclick={() => openCast(true)}><Icon name="arrows-clockwise" size={14} />{t('Look again')}</button>
-          </div>
+          <MenuList items={castRows} at={menuAt} above focusFirst label={t('Cast to')} onchoose={chooseRow} onback={(byKey) => closePop(byKey)} />
         {/if}
       </div>
       <button class="btn ghost icon" class:on={room != null} aria-label={t('Watch together')} title={room ? t('Watching together: {n} people', { n: room.state?.members.length ?? 1 }) : t('Watch together')} onclick={watchTogether}><Icon name="users" size={20} /></button>
@@ -871,6 +1072,11 @@
     --text: #fff;
     --text-dim: rgba(255, 255, 255, 0.72);
     --hover: rgba(255, 255, 255, 0.12);
+    /* Menus over the picture keep to the dark look in a light theme too. */
+    --bg2: rgb(20, 22, 28);
+    --border: rgba(255, 255, 255, 0.12);
+    --border-hi: rgba(255, 255, 255, 0.18);
+    --text-mute: rgba(255, 255, 255, 0.55);
   }
   .stage.chrome {
     cursor: default;
@@ -880,6 +1086,8 @@
     height: 100%;
     object-fit: contain;
     display: block;
+    /* The double tap is ours, not the browser's zoom. */
+    touch-action: manipulation;
   }
   video.fill {
     object-fit: cover;
@@ -897,19 +1105,36 @@
     background: rgba(0, 0, 0, 0.6);
     font-size: calc(1.1em * var(--sub-scale, 1));
   }
-  .stats {
+  .statsbox {
     position: absolute;
     top: 64px;
     left: 16px;
-    padding: 6px 10px;
-    border-radius: var(--r-sm);
-    background: rgba(0, 0, 0, 0.6);
-    color: #fff;
-    font-size: 12px;
+    z-index: 2;
+  }
+  .sound {
+    width: min(340px, calc(100vw - 32px));
+    padding: 10px;
+  }
+  .flash {
+    position: absolute;
+    top: 50%;
+    left: 15%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 14px 18px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.5);
+    font-size: 13px;
     pointer-events: none;
   }
+  .flash.right {
+    left: 85%;
+  }
   .settings {
-    min-width: 320px;
+    min-width: min(320px, calc(100vw - 32px));
   }
   .adj {
     display: flex;
@@ -981,17 +1206,21 @@
     left: 0;
     right: 0;
     opacity: 0;
+    /* Hidden means out of the tab order too; the delay lets it fade first. */
+    visibility: hidden;
     transition:
       opacity var(--dur-page) var(--ease-standard),
-      transform var(--dur-page) var(--ease-standard);
+      transform var(--dur-page) var(--ease-standard),
+      visibility 0s linear var(--dur-page);
     pointer-events: none;
   }
   .chrome .top,
-  .chrome .bottom,
-  .stage:focus-within .bottom {
+  .chrome .bottom {
     opacity: 1;
     transform: none;
     pointer-events: auto;
+    visibility: visible;
+    transition-delay: 0s;
   }
   .top {
     top: 0;

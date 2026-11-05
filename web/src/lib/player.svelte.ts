@@ -3,6 +3,8 @@
 import { api, ApiError, imageUrl, itemFileUrl } from './api';
 import { image } from './media';
 import { prefs } from './prefs.svelte';
+import { FxHost } from './fxhost.svelte';
+import { mustBypass } from './audiofxmodel';
 import type { Item, ItemDetail, Page } from './types';
 
 // ---- sources ----
@@ -62,17 +64,28 @@ export function stopSession(info: PlaybackInfo | null | undefined, leaving = fal
   if (info?.session_id) void api.del(`/playback/sessions/${info.session_id}`, { keepalive: leaving }).catch(() => {});
 }
 
-type HlsLike = { destroy(): void; loadSource(u: string): void; attachMedia(el: HTMLMediaElement): void; on(ev: string, f: (e: string, d: { fatal?: boolean; type?: string }) => void): void; recoverMediaError(): void; startLoad(): void };
+type HlsEvent = { fatal?: boolean; type?: string; frag?: { duration: number; stats?: { total: number; loading: { start: number; end: number } } } };
+type HlsLike = { destroy(): void; loadSource(u: string): void; attachMedia(el: HTMLMediaElement): void; on(ev: string, f: (e: string, d: HlsEvent) => void): void; recoverMediaError(): void; startLoad(): void };
+
+/** The last HLS segment, for the stats overlay. */
+export interface HlsStats {
+  bps: number;
+  loadMs: number;
+}
 
 /** Attaches a source to a media element; the returned function detaches it. `onfatal` is
- *  called when an HLS stream can't continue. */
+ *  called when an HLS stream can't continue. `current` is asked once hls.js has loaded: a request
+ *  that was overtaken meanwhile must not attach over the newer one. */
 export async function attachSource(
   el: HTMLMediaElement,
   src: Pick<PlaybackInfo, 'method' | 'url'>,
   onfatal?: (msg: string) => void,
+  current?: () => boolean,
+  onstats?: (s: HlsStats) => void,
 ): Promise<() => void> {
   if ((src.method === 'hls' || src.method === 'remux') && !el.canPlayType('application/vnd.apple.mpegurl')) {
     const { default: Hls } = await import('hls.js/dist/hls.light.mjs');
+    if (current && !current()) return () => {};
     if (!Hls.isSupported()) throw new Error('HLS is not supported by this browser');
     const hls = new Hls({ maxBufferLength: 30, backBufferLength: 60, xhrSetup: (x: XMLHttpRequest) => {
         x.withCredentials = true;
@@ -88,6 +101,12 @@ export async function attachSource(
         hls.startLoad();
       } else onfatal?.(String(d.type));
     });
+    if (onstats) {
+      hls.on(Hls.Events.FRAG_LOADED, (_e, d) => {
+        const s = d.frag?.stats;
+        if (s && d.frag?.duration) onstats({ bps: (s.total * 8) / d.frag.duration, loadMs: s.loading.end - s.loading.start });
+      });
+    }
     hls.loadSource(src.url);
     hls.attachMedia(el);
     return () => {
@@ -105,13 +124,13 @@ export async function attachSource(
 
 // ---- progress ----
 
-/** Reports the position every 10 s while playing, and on pause and end. */
+/** Reports the position every 10 s while playing, on pause and end, and when the page closes. */
 export function reportProgress(el: HTMLMediaElement, id: () => number | null): () => void {
   let last = -1;
-  const send = (body: { position_ms: number; played?: boolean }) => {
+  const send = (body: { position_ms: number; played?: boolean }, keepalive = false) => {
     const i = id();
     if (i == null) return;
-    void api.put(`/items/${i}/state`, body).catch(() => {});
+    void api.put(`/items/${i}/state`, body, { keepalive }).catch(() => {});
   };
   const pos = () => Math.round(el.currentTime * 1000);
   const timer = setInterval(() => {
@@ -126,12 +145,18 @@ export function reportProgress(el: HTMLMediaElement, id: () => number | null): (
     send({ position_ms: last });
   };
   const onEnded = () => send({ position_ms: 0, played: true });
+  // Kept alive past the closing page: the last 10 seconds would be lost otherwise.
+  const onHide = () => {
+    if (!el.ended && el.currentTime > 1) send({ position_ms: pos() }, true);
+  };
   el.addEventListener('pause', onPause);
   el.addEventListener('ended', onEnded);
+  addEventListener('pagehide', onHide);
   return () => {
     clearInterval(timer);
     el.removeEventListener('pause', onPause);
     el.removeEventListener('ended', onEnded);
+    removeEventListener('pagehide', onHide);
     if (!el.ended && el.currentTime > 1) send({ position_ms: pos() });
   };
 }
@@ -193,7 +218,12 @@ class Music {
   repeat = $state<'off' | 'all' | 'one'>('off');
   expanded = $state(false);
   error = $state('');
+  muted = $state(false);
   private el: HTMLAudioElement | null = null;
+  private loadGen = 0;
+  /** The element's link to sound processing and the volume. */
+  fx = $state.raw<FxHost | null>(null);
+  private plain = false;
   private info: PlaybackInfo | null = null;
   private detach: (() => void) | null = null;
   private stopReport: (() => void) | null = null;
@@ -211,7 +241,8 @@ class Music {
     if (this.el) return this.el;
     const a = new Audio();
     a.preload = 'auto';
-    a.volume = prefs.volume;
+    // Follows the volume wherever it's changed (the video player's slider too).
+    this.fx = new FxHost(a, () => this.muted, () => this.plain);
     a.addEventListener('play', () => (this.playing = true));
     a.addEventListener('pause', () => (this.playing = false));
     a.addEventListener('timeupdate', () => (this.time = a.currentTime));
@@ -275,12 +306,29 @@ class Music {
     this.repeat = this.repeat === 'off' ? 'all' : this.repeat === 'all' ? 'one' : 'off';
   }
 
+  /** An element that went through Web Audio stays there; a source that can't needs a new one. */
+  private newElement() {
+    this.stopReport?.();
+    this.stopReport = null;
+    this.fx?.dispose();
+    this.fx = null;
+    const old = this.el;
+    this.el = null;
+    old?.pause();
+    old?.removeAttribute('src');
+  }
+
   private async load(autoplay: boolean) {
     const cur = this.current;
     if (!cur) return;
-    const a = this.audio();
+    const safari = browserProfile() === 'safari';
+    this.plain = mustBypass({ external: !!cur.stream }, safari);
+    if (this.plain && this.fx?.chain) this.newElement();
+    let a = this.audio();
+    const gen = ++this.loadGen;
     this.error = '';
     this.detach?.();
+    this.detach = null;
     this.time = 0;
     this.duration = (cur.runtime_ms ?? 0) / 1000;
     this.loading = true;
@@ -291,11 +339,21 @@ class Music {
         a.src = cur.stream;
         this.detach = () => a.removeAttribute('src');
       } else {
-        this.info = await resolveSource(cur.id);
-        this.detach = await attachSource(a, this.info);
+        const info = await resolveSource(cur.id);
+        if (gen !== this.loadGen) return stopSession(info);
+        this.info = info;
+        this.plain = mustBypass({ method: info.method }, safari);
+        if (this.plain && this.fx?.chain) {
+          this.newElement();
+          a = this.audio();
+        }
+        const detach = await attachSource(a, info, undefined, () => gen === this.loadGen);
+        if (gen !== this.loadGen) return detach();
+        this.detach = detach;
       }
       if (autoplay) await a.play();
     } catch (e) {
+      if (gen !== this.loadGen) return;
       if (!(e instanceof DOMException && e.name === 'AbortError')) this.error = String(e);
       this.loading = false;
     }
@@ -340,7 +398,12 @@ class Music {
 
   setVolume(v: number) {
     prefs.volume = v;
-    if (this.el) this.el.volume = v;
+    this.muted = false;
+  }
+
+  /** Muting keeps the volume, so unmuting goes back to it. */
+  toggleMute() {
+    this.muted = !this.muted;
   }
 
   removeAt(orderPos: number) {
@@ -358,6 +421,7 @@ class Music {
   }
 
   close() {
+    this.loadGen++;
     this.el?.pause();
     this.detach?.();
     this.detach = null;

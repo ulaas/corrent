@@ -9,7 +9,7 @@
 </script>
 
 <script lang="ts">
-  import { fly } from 'svelte/transition';
+  import { fade, fly } from 'svelte/transition';
   import Icon from '../components/Icon.svelte';
   import Menu from '../components/Menu.svelte';
   import Spinner from '../components/Spinner.svelte';
@@ -143,6 +143,28 @@
     selected = allSel ? new Set() : new Set(rows.map((r) => r.hash));
   }
 
+  function closeDetails() {
+    detailHash = null;
+    detailTab = 'general';
+    sheetDrag = 0;
+  }
+
+  // The phone's details sheet: pull the grip down to close it.
+  let sheetDrag = $state(0);
+  let gripFrom: number | null = null;
+  function gripDown(e: PointerEvent) {
+    gripFrom = e.clientY;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+  function gripMove(e: PointerEvent) {
+    if (gripFrom !== null) sheetDrag = Math.max(0, e.clientY - gripFrom);
+  }
+  function gripUp() {
+    gripFrom = null;
+    if (sheetDrag > 80) closeDetails();
+    else sheetDrag = 0;
+  }
+
   function onListKey(e: KeyboardEvent) {
     if (!rows.length) return;
     const i = Math.max(0, rows.findIndex((r) => r.hash === focusHash));
@@ -178,6 +200,11 @@
       e.preventDefault();
       const x = byHash.get(sel[0]);
       if (x) editing = { torrent: x, focus: 'name' };
+      return;
+    } else if (e.key === 'Escape' && detailHash && matchMedia('(max-width: 760px)').matches) {
+      // The sheet covers the list: it goes first.
+      e.preventDefault();
+      closeDetails();
       return;
     } else if (e.key === 'Escape' && sel.length) {
       e.preventDefault();
@@ -618,9 +645,21 @@
     </div>
 
     {#if detailTorrent}
-      <div class="dpanel" transition:fly={{ y: 40, duration: ms(220) }}>
+      <button class="dscrim" aria-label={t('Close')} tabindex="-1" onclick={closeDetails} transition:fade={{ duration: ms(160) }}></button>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="dpanel"
+        style:transform={sheetDrag ? `translateY(${sheetDrag}px)` : null}
+        onkeydown={(e) => {
+          if (e.key === 'Escape') {
+            e.stopPropagation();
+            closeDetails();
+          }
+        }}
+        transition:fly={{ y: 40, duration: ms(220) }}>
+        <div class="dgrip" aria-hidden="true" onpointerdown={gripDown} onpointermove={gripMove} onpointerup={gripUp} onpointercancel={() => (sheetDrag = 0)}><span></span></div>
         {#key detailTab}
-          <Details torrent={detailTorrent} initialTab={detailTab} onclose={() => ((detailHash = null), (detailTab = 'general'))} />
+          <Details torrent={detailTorrent} initialTab={detailTab} onclose={closeDetails} />
         {/key}
       </div>
     {/if}
@@ -919,6 +958,10 @@
     place-items: center;
     padding: 80px 0;
   }
+  .dscrim,
+  .dgrip {
+    display: none;
+  }
   .dpanel {
     height: 44%;
     min-height: 240px;
@@ -1028,14 +1071,37 @@
       padding-left: 0;
       margin-left: 0;
     }
+    .dscrim {
+      display: block;
+      position: fixed;
+      inset: 0;
+      z-index: 44;
+      background: var(--scrim);
+    }
     .dpanel {
       position: fixed;
       inset: 30% 0 0 0;
       height: auto;
       z-index: 45;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg1);
       border-radius: var(--r-xl) var(--r-xl) 0 0;
       overflow: hidden;
       box-shadow: var(--shadow-4);
+    }
+    .dgrip {
+      display: grid;
+      place-items: center;
+      flex: none;
+      height: 22px;
+      touch-action: none;
+    }
+    .dgrip span {
+      width: 40px;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--text-mute);
     }
     .hide-sm {
       display: none;

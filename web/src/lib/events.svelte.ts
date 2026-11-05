@@ -1,13 +1,23 @@
 // The realtime channel (`/api/v1/events`): one WebSocket with reference-counted topic
 // subscriptions, ordered delivery (compressed binary frames are inflated in order), keep-alive
-// pings and reconnects with backoff.
+// pings that notice a dead socket, and reconnects with backoff (at once when the network or the
+// tab comes back).
+import { untrack } from 'svelte';
 import type { ServerEvent, Topic } from './types';
 
 type Listener = (e: ServerEvent) => void;
 
 const key = (t: Topic) => ('arg' in t ? `${t.topic}:${t.arg}` : t.topic);
 
-export const link = $state({ connected: false, everConnected: false, attempts: 0 });
+/** `generation` counts reconnects, not the first connection: everything fetched once may have
+ *  missed events while it was offline and has to fetch again (see `onRelink`). */
+export const link = $state({ connected: false, everConnected: false, attempts: 0, generation: 0 });
+
+const PING_MS = 30_000;
+/** A socket that stays quiet for this many pings is treated as dead. */
+const MISSED_PINGS = 2;
+/** Quicker check when the tab or the network comes back: phones often sleep on a dead socket. */
+const WAKE_PROBE_MS = 4000;
 
 class Events {
   private ws: WebSocket | null = null;
@@ -19,9 +29,14 @@ class Events {
   private ping: ReturnType<typeof setInterval> | null = null;
   private wanted = false;
   private pingId = 0;
+  private missed = 0;
+  private probe: ReturnType<typeof setTimeout> | null = null;
+  private wakeWired = false;
+  private reopen = new Set<() => void>();
 
   start() {
     this.wanted = true;
+    this.wireWake();
     if (!this.ws) this.connect();
   }
 
@@ -29,6 +44,7 @@ class Events {
     this.wanted = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.stopTimers();
     this.ws?.close(1000);
     this.ws = null;
     link.connected = false;
@@ -61,6 +77,12 @@ class Events {
     return () => this.listeners.delete(f);
   }
 
+  /** Runs `f` after each reconnect (for state outside components). */
+  onReopen(f: () => void): () => void {
+    this.reopen.add(f);
+    return () => this.reopen.delete(f);
+  }
+
   private send(msg: unknown) {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
   }
@@ -71,15 +93,27 @@ class Events {
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
     ws.onopen = () => {
+      if (this.ws !== ws) return;
       this.retry = 0;
+      const again = link.everConnected;
       link.connected = true;
       link.everConnected = true;
       link.attempts = 0;
+      this.missed = 0;
       const topics = [...this.topics.values()].map((t) => t.topic);
       if (topics.length) this.send({ t: 'subscribe', topics });
-      this.ping = setInterval(() => this.send({ t: 'ping', id: ++this.pingId }), 30_000);
+      this.ping = setInterval(() => this.keepAlive(), PING_MS);
+      if (again) {
+        link.generation++;
+        for (const f of this.reopen) f();
+      }
     };
     ws.onmessage = (m) => {
+      if (this.ws !== ws) return;
+      // Anything arriving proves the link works.
+      this.missed = 0;
+      if (this.probe) clearTimeout(this.probe);
+      this.probe = null;
       const data = m.data;
       // Keep the order: a compressed frame takes a moment to inflate.
       this.chain = this.chain
@@ -89,20 +123,72 @@ class Events {
         })
         .catch((e) => console.warn('events: bad message', e));
     };
-    ws.onclose = () => {
-      if (this.ping) clearInterval(this.ping);
-      this.ping = null;
-      if (this.ws === ws) this.ws = null;
-      link.connected = false;
-      if (!this.wanted) return;
-      const delay = Math.min(30_000, 500 * 2 ** this.retry) * (0.75 + Math.random() * 0.5);
-      this.retry = Math.min(this.retry + 1, 6);
-      link.attempts++;
-      this.timer = setTimeout(() => {
-        this.timer = null;
-        if (this.wanted) this.connect();
-      }, delay);
-    };
+    ws.onclose = () => this.closed(ws);
+  }
+
+  private keepAlive() {
+    if (++this.missed > MISSED_PINGS) {
+      this.drop();
+      return;
+    }
+    this.send({ t: 'ping', id: ++this.pingId });
+  }
+
+  /** Gives up on the current socket now: on a half-open one `close()` alone can take minutes to
+   *  report back, so the reconnect doesn't wait for it. */
+  private drop() {
+    const ws = this.ws;
+    if (!ws) return;
+    ws.close();
+    this.closed(ws);
+  }
+
+  private closed(ws: WebSocket) {
+    if (this.ws !== ws) return;
+    this.ws = null;
+    this.stopTimers();
+    link.connected = false;
+    if (!this.wanted) return;
+    const delay = Math.min(30_000, 500 * 2 ** this.retry) * (0.75 + Math.random() * 0.5);
+    this.retry = Math.min(this.retry + 1, 6);
+    link.attempts++;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      if (this.wanted) this.connect();
+    }, delay);
+  }
+
+  private stopTimers() {
+    if (this.ping) clearInterval(this.ping);
+    this.ping = null;
+    if (this.probe) clearTimeout(this.probe);
+    this.probe = null;
+  }
+
+  private wireWake() {
+    if (this.wakeWired) return;
+    this.wakeWired = true;
+    addEventListener('online', () => this.wake());
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') this.wake();
+    });
+  }
+
+  /** The tab or the network came back: reconnect now, or test the socket that seems open. */
+  private wake() {
+    if (!this.wanted) return;
+    if (!this.ws) {
+      if (this.timer) clearTimeout(this.timer);
+      this.timer = null;
+      this.retry = 0;
+      this.connect();
+    } else if (this.ws.readyState === WebSocket.OPEN && !this.probe) {
+      this.send({ t: 'ping', id: ++this.pingId });
+      this.probe = setTimeout(() => {
+        this.probe = null;
+        this.drop();
+      }, WAKE_PROBE_MS);
+    }
   }
 
   private dispatch(e: ServerEvent) {
@@ -124,3 +210,14 @@ export async function inflate(buf: ArrayBuffer): Promise<string> {
 }
 
 export const events = new Events();
+
+/** Calls `f` in this component whenever the link came back after being lost. */
+export function onRelink(f: () => void) {
+  let seen = link.generation;
+  $effect(() => {
+    const g = link.generation;
+    if (g === seen) return;
+    seen = g;
+    untrack(f);
+  });
+}

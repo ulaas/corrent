@@ -56,9 +56,9 @@ export function itemMenu(item: Item, o: ItemMenuOptions): MenuItem[] {
   if (o.onplay) {
     rows.push({ label: t('Play'), icon: 'play', onselect: () => o.onplay!(item) });
   } else if (playable) {
-    rows.push({ label: t('Play'), icon: 'play', onselect: () => go(playHref(item.id)) });
+    rows.push({ label: t('Play'), icon: 'play', disabled: item.missing, onselect: () => go(playHref(item.id)) });
     if (item.state.position_ms > 0 && !item.state.played) {
-      rows.push({ label: t('From the start'), icon: 'arrow-counter-clockwise', onselect: () => go(playHref(item.id, false)) });
+      rows.push({ label: t('From the start'), icon: 'arrow-counter-clockwise', disabled: item.missing, onselect: () => go(playHref(item.id, false)) });
     }
   }
   if (isPlayable(k) || k === 'album' || k === 'season') {

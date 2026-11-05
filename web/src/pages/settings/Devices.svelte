@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { everyVisible } from '../../lib/visibility.svelte';
   import Icon from '../../components/Icon.svelte';
   import Spinner from '../../components/Spinner.svelte';
   import Modal from '../../components/Modal.svelte';
@@ -56,8 +57,7 @@
       left = Math.max(0, p.expires_at - Math.floor(Date.now() / 1000));
     };
     tick();
-    const h = setInterval(tick, 1000);
-    return () => clearInterval(h);
+    return everyVisible(tick, 1000);
   });
 
   const ICON: Record<string, IconName> = { windows: 'desktop', linux: 'desktop', macos: 'desktop', web: 'globe', tv: 'television-simple', android: 'devices', ios: 'devices' };

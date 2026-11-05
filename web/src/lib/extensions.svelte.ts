@@ -43,9 +43,23 @@ function scopedId(id: unknown): string {
   return own ? `${safeId(current ?? 'ext')}.${own}` : '';
 }
 
+/** Times the list was loaded: a module runs once per URL, so a later sign-in in the same tab asks
+ *  for it under a new one to have it register again. */
+let loads = 0;
+
+/** Sign-out: nothing of this user's stays for the next one. */
+export function resetExtensions() {
+  loaded = false;
+  extensions.itemActions = [];
+  extensions.pages = [];
+  extensions.errors = [];
+  delete (window as unknown as { corrent?: unknown }).corrent;
+}
+
 export async function loadExtensions() {
   if (loaded) return;
   loaded = true;
+  const load = loads++;
   let list: { id: string; name: string; entry: string }[] = [];
   try {
     list = await api.get('/plugins/web');
@@ -78,7 +92,8 @@ export async function loadExtensions() {
     // take each other's ids (later ones, e.g. after an await, fall back to "ext").
     current = p.id;
     try {
-      await import(/* @vite-ignore */ p.entry);
+      const entry = load ? `${p.entry}${p.entry.includes('?') ? '&' : '?'}load=${load}` : p.entry;
+      await import(/* @vite-ignore */ entry);
     } catch (e) {
       extensions.errors.push(`${p.name}: ${errorText(e)}`);
     }

@@ -4,6 +4,7 @@
   import Icon from './Icon.svelte';
   import Img from './Img.svelte';
   import Seek from './Seek.svelte';
+  import { lazy } from '../lib/lazy.svelte';
   import { music } from '../lib/player.svelte';
   import { motion, ms, prefs } from '../lib/prefs.svelte';
   import { clock } from '../lib/format';
@@ -12,7 +13,13 @@
   import type { Lyrics } from '../lib/types';
 
   const cur = $derived(music.current);
-  let tab = $state<'queue' | 'lyrics'>('queue');
+  // Loaded when the tab opens: the music player is part of every first page.
+  const SoundPanel = $derived(tabIsSound() ? lazy('sound-panel', () => import('./SoundPanel.svelte')) : undefined);
+  const PlayerStats = $derived(tabIsSound() ? lazy('player-stats', () => import('./PlayerStats.svelte')) : undefined);
+  function tabIsSound() {
+    return tab === 'sound';
+  }
+  let tab = $state<'queue' | 'lyrics' | 'sound'>('queue');
   // Lyrics of the current track (null: none; undefined: loading).
   let lyrics = $state<Lyrics | null | undefined>(undefined);
   let lyricsFor = -1;
@@ -86,8 +93,8 @@
       <div class="side">
         <span class="time num hide-sm">{clock(music.time * 1000)} / {clock(music.duration * 1000)}</span>
         <div class="vol hide-sm">
-          <button class="btn ghost icon sm" aria-label={prefs.volume ? t('Mute') : t('Unmute')} onclick={() => music.setVolume(prefs.volume ? 0 : 1)}>
-            <Icon name={prefs.volume === 0 ? 'speaker-x' : prefs.volume < 0.5 ? 'speaker-low' : 'speaker-high'} />
+          <button class="btn ghost icon sm" aria-label={music.muted ? t('Unmute') : t('Mute')} onclick={() => music.toggleMute()}>
+            <Icon name={music.muted || prefs.volume === 0 ? 'speaker-x' : prefs.volume < 0.5 ? 'speaker-low' : 'speaker-high'} />
           </button>
           <input
             class="range"
@@ -95,8 +102,8 @@
             min="0"
             max="1"
             step="0.01"
-            value={prefs.volume}
-            style:--fill="{prefs.volume * 100}%"
+            value={music.muted ? 0 : prefs.volume}
+            style:--fill="{(music.muted ? 0 : prefs.volume) * 100}%"
             aria-label={t('Volume')}
             oninput={(e) => music.setVolume(+e.currentTarget.value)} />
         </div>
@@ -112,10 +119,16 @@
         <div class="tabs" role="tablist">
           <button role="tab" class:sel={tab === 'queue'} aria-selected={tab === 'queue'} onclick={() => (tab = 'queue')}>{t('Up next')}</button>
           <button role="tab" class:sel={tab === 'lyrics'} aria-selected={tab === 'lyrics'} onclick={() => (tab = 'lyrics')}>{t('Lyrics')}</button>
+          <button role="tab" class:sel={tab === 'sound'} aria-selected={tab === 'sound'} onclick={() => (tab = 'sound')}>{t('Sound')}</button>
         </div>
         {#if tab === 'queue'}<span class="caption muted">{music.order.length === 1 ? t('1 track') : t('{n} tracks', { n: music.order.length })}</span>{/if}
       </header>
-      {#if tab === 'lyrics'}
+      {#if tab === 'sound'}
+        <div class="soundtab">
+          {#if SoundPanel}<SoundPanel />{/if}
+          {#if prefs.audioFx.meters && PlayerStats}<PlayerStats fx={music.fx} audio />{/if}
+        </div>
+      {:else if tab === 'lyrics'}
         <div class="lyrics" bind:this={lyricsBox}>
           {#if lyrics === undefined}
             <p class="muted">{t('Loading…')}</p>
@@ -156,6 +169,15 @@
 {/if}
 
 <style>
+  .soundtab {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
   .mini {
     position: fixed;
     left: var(--sidebar-w);

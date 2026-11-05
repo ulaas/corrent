@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { everyVisible } from '../lib/visibility.svelte';
   import Icon from '../components/Icon.svelte';
   import Spinner from '../components/Spinner.svelte';
   import Modal from '../components/Modal.svelte';
@@ -10,6 +11,7 @@
   import { t } from '../lib/i18n.svelte';
   import { Perm, type Article, type RssSettings, type RssView } from '../lib/types';
   import { contextMenu, type MenuItem } from '../lib/contextmenu.svelte';
+  import { onRelink } from '../lib/events.svelte';
 
   let view = $state<RssView | null>(null);
   let error = $state('');
@@ -27,16 +29,16 @@
     }
   }
   void load();
+  onRelink(load);
 
   // Feeds refresh in the background: poll while something is loading (or shortly after a refresh).
   $effect(() => {
     const busy = refreshing || view?.feeds.some((f) => f.loading);
     if (!busy) return;
-    const timer = setInterval(async () => {
+    return everyVisible(async () => {
       await load();
       if (!view?.feeds.some((f) => f.loading)) refreshing = false;
     }, 1500);
-    return () => clearInterval(timer);
   });
 
   async function refresh(url?: string) {

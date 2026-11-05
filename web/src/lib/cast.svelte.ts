@@ -1,5 +1,6 @@
 // Casting from the web player: the server finds Chromecasts on its network and plays the item
 // on one; this side picks the device, follows its status and sends play/pause/seek/stop.
+import { everyVisible } from './visibility.svelte';
 import { api } from './api';
 import type { CastDevice, CastStatus } from './types';
 
@@ -9,7 +10,7 @@ export function castDevices(refresh = false): Promise<CastDevice[]> {
 
 export class Cast {
   status = $state<CastStatus | null>(null);
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private stop: (() => void) | null = null;
 
   constructor(readonly device: CastDevice) {}
 
@@ -19,7 +20,7 @@ export class Cast {
       position_ms: Math.round(positionMs),
       audio_track: audioTrack ?? null,
     });
-    this.timer ??= setInterval(() => void this.refresh(), 1000);
+    this.stop ??= everyVisible(() => void this.refresh(), 1000);
   }
 
   async refresh() {
@@ -43,7 +44,7 @@ export class Cast {
   }
 
   close() {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.stop?.();
+    this.stop = null;
   }
 }

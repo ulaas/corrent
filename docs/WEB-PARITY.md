@@ -99,6 +99,31 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
 Known gaps kept: the torrent creator (Ctrl+N) has no web version; `Torrent` has no owner, so
 users who may manage only their own torrents see entries the server then refuses.
 
+## Quality round 2026-11: sound processing and input
+
+The web's sound processing mirrors `playback.fx` in `prefs.audioFx` (`lib/audiofxmodel.ts`, same field
+names, per user through `/me/prefs`; volume stays per device). With it off there is no `AudioContext`
+and the graph isn't even loaded. Once it has run, an element stays routed: off means source → volume.
+
+- **Web only:** the spectrum (the browser's `AnalyserNode`).
+- **Desktop only:** output device, exclusive mode, passthrough, profiles; centre boost on 5.1.
+- **Implemented differently:** Live loudness is an AudioWorklet leveller toward -18 LUFS instead of
+  `dynaudnorm`; the limiter is a `DynamicsCompressorNode` at -1 dB, not a true-peak limiter; Night's
+  level is within about 1 dB of `acompressor` (the node's built-in makeup is compensated); the
+  crossfeed shelf has Web Audio's fixed slope (S = 1, FFmpeg's default is 0.5). Meters follow
+  BS.1770-4 and EBU Tech 3341/3342 at the context's real sample rate, tested in `web/tests/audiodsp.test.ts`.
+- **No processing at all, the source plays as it is:** cross-origin radio streams (Web Audio would
+  output silence; the music player swaps to a fresh element) and Safari (native HLS is unreliable
+  through Web Audio). The overlay says so. The graph adds output latency the browser doesn't
+  compensate; the overlay shows it.
+- **Keys:** `i` A/V stats and `Shift+I` audio meters as on the desktop. Left over from the review:
+  web arrows seek ±5 s and `j`/`l` ±10 s, the desktop's arrows seek ±10 s and it has no `j`/`k`/`l`;
+  `?` lists them. Touch: first tap shows the controls, double tap on a half skips 10 s. A D-pad walks the
+  controls; a remote with no pointer at all (`hover: none, pointer: none`) enters them with up or down,
+  so its volume keys stay the TV's.
+- **Rows:** "See all" for Continue watching and Next up needs the server's `in_progress` / `next_up`
+  filters and falls back to the home row without them. Items with `missing` show a badge and can't play.
+
 ## Verification
 
 `npm run check` (svelte-check, i18n, vitest); `node web/scripts/screenshots.mjs` against

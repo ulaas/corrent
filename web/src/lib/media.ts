@@ -64,6 +64,10 @@ export function cardImage(item: Item, shape: Shape): ImageRef | undefined {
   return image(item, 'poster', 'thumb', 'backdrop') ?? item.images?.[0];
 }
 
+/** `sizes` of a full-width backdrop. It sits behind a veil, so a phone's 800 px bucket looks the same
+ *  as a many-megabyte original: on narrow screens it asks for half its width. */
+export const BACKDROP_SIZES = '(max-width: 600px) 50vw, 100vw';
+
 export function backdrop(item: Pick<Item, 'images'> | null | undefined): ImageRef | undefined {
   return image(item, 'backdrop', 'thumb');
 }

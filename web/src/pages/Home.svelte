@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { everyVisible } from '../lib/visibility.svelte';
   import { fade } from 'svelte/transition';
   import Shelf from '../components/Shelf.svelte';
   import Icon from '../components/Icon.svelte';
@@ -6,7 +7,8 @@
   import { api } from '../lib/api';
   import { link, go } from '../lib/router.svelte';
   import { libs, library } from '../lib/libraries.svelte';
-  import { backdrop, homeRowTitle, image, isPlayable, itemHref, playHref, subtitle } from '../lib/media';
+  import { onRelink } from '../lib/events.svelte';
+  import { BACKDROP_SIZES, backdrop, homeRowTitle, image, isPlayable, itemHref, playHref, subtitle } from '../lib/media';
   import { runtime } from '../lib/format';
   import { prefs, ms, motion } from '../lib/prefs.svelte';
   import { can } from '../lib/session.svelte';
@@ -28,6 +30,7 @@
     }
   }
   void load();
+  onRelink(load);
 
   // Refresh when a library changes (new items) — at most every few seconds.
   let last = 0;
@@ -71,8 +74,7 @@
 
   $effect(() => {
     if (heroes.length < 2 || motion() === 0) return;
-    const timer = setInterval(() => (heroIndex = (heroIndex + 1) % heroes.length), 9000);
-    return () => clearInterval(timer);
+    return everyVisible(() => (heroIndex = (heroIndex + 1) % heroes.length), 9000);
   });
 
   function rowHref(id: string): string | undefined {
@@ -98,7 +100,7 @@
     <section class="hero" aria-label={t('Featured')}>
       {#key hero.id}
         <div class="bg" transition:fade={{ duration: ms(900) }}>
-          <Img image={backdrop(hero)} w={0} eager />
+          <Img image={backdrop(hero)} w={0} eager sizes={BACKDROP_SIZES} />
         </div>
       {/key}
       <div class="veil"></div>
@@ -119,7 +121,7 @@
             {#if d?.overview}<p class="overview">{d.overview}</p>{/if}
             <div class="row wrap cta">
               {#if isPlayable(hero.kind)}
-                <button class="btn primary lg" onclick={() => go(playHref(hero.id))}>
+                <button class="btn primary lg" disabled={hero.missing} onclick={() => go(playHref(hero.id))}>
                   <Icon name="play-fill" />
                   {hero.state.position_ms > 0 && !hero.state.played ? t('Resume') : t('Play')}
                 </button>

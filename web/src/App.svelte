@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Component } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { fly } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import Sidebar from './components/Sidebar.svelte';
@@ -11,10 +11,11 @@
   import MiniPlayer from './components/MiniPlayer.svelte';
   import BottomNav from './components/BottomNav.svelte';
   import Spinner from './components/Spinner.svelte';
+  import Icon from './components/Icon.svelte';
   import Auth from './pages/Auth.svelte';
   import Home from './pages/Home.svelte';
   import { boot, session } from './lib/session.svelte';
-  import { define, match, route } from './lib/router.svelte';
+  import { define, match, rememberScroll, route, scrollOf } from './lib/router.svelte';
   import { ms, prefs } from './lib/prefs.svelte';
   import { music } from './lib/player.svelte';
   import { startLibraries } from './lib/libraries.svelte';
@@ -22,6 +23,7 @@
   import { startSessionFeed } from './lib/torrents.svelte';
   import { link } from './lib/events.svelte';
   import { t } from './lib/i18n.svelte';
+  import { lazy, lazyFailed, type Loader } from './lib/lazy.svelte';
 
   define('home', '/');
   define('library', '/library/:id');
@@ -42,7 +44,7 @@
   define('settings', '/settings/:section');
 
   // Pages other than Home load on demand (keeps the first load small).
-  const pages: Record<string, () => Promise<{ default: Component<any> }>> = {
+  const pages: Record<string, Loader> = {
     library: () => import('./pages/Library.svelte'),
     item: () => import('./pages/ItemPage.svelte'),
     play: () => import('./pages/Player.svelte'),
@@ -62,16 +64,13 @@
   };
 
   const m = $derived(match(route.path));
+  // What makes a page a new page: Settings stays mounted while its sections change.
+  const routeKey = $derived(m.name === 'settings' ? 'settings' : route.path);
+  const Page = $derived(m.name === 'home' ? undefined : lazy(m.name, pages[m.name]));
   let drawer = $state(false);
   let scroller: HTMLElement | undefined = $state();
 
-  boot().then(() => {
-    if (session.user) {
-      startLibraries();
-      startSessionFeed();
-      void loadExtensions();
-    }
-  });
+  void boot();
 
   $effect(() => {
     if (session.user) {
@@ -83,19 +82,70 @@
     }
   });
 
-  // New page: close the drawer and scroll to the top (history navigation keeps the position
-  // the browser restores for the window; our scroller is the main element).
+  // New page: close the drawer and scroll to the top. Back and Forward go to where the entry was
+  // left (browsers only do that for the window; our scroller is the main element).
+  let lastPath = route.path;
+  let restoring = false;
+  let endRestore: (() => void) | null = null;
+
   $effect(() => {
-    void route.path;
-    drawer = false;
-    scroller?.scrollTo({ top: 0 });
+    const path = route.path;
+    const key = route.key;
+    const restored = route.restored;
+    untrack(() => {
+      drawer = false;
+      const changed = path !== lastPath;
+      lastPath = path;
+      endRestore?.();
+      if (restored) restoreScroll(key);
+      else if (changed) scroller?.scrollTo({ top: 0 });
+    });
   });
 
+  /** The page may not be tall enough yet (its data is on the way): keeps trying for a few seconds,
+   *  unless the person starts scrolling themselves. */
+  function restoreScroll(key: number) {
+    const el = scroller;
+    const target = scrollOf(key);
+    if (!el) return;
+    if (!target) return el.scrollTo({ top: 0 });
+    restoring = true;
+    const until = performance.now() + 3000;
+    let frame = 0;
+    const stop = () => {
+      cancelAnimationFrame(frame);
+      restoring = false;
+      endRestore = null;
+      for (const k of ['wheel', 'touchstart', 'pointerdown', 'keydown']) el.removeEventListener(k, stop);
+    };
+    endRestore = stop;
+    for (const k of ['wheel', 'touchstart', 'pointerdown', 'keydown']) el.addEventListener(k, stop, { passive: true });
+    const attempt = () => {
+      el.scrollTop = target;
+      if (Math.abs(el.scrollTop - target) < 2 || performance.now() > until) return stop();
+      frame = requestAnimationFrame(attempt);
+    };
+    void tick().then(attempt);
+  }
+
+  function onMainScroll() {
+    if (!restoring && scroller) rememberScroll(route.key, scroller.scrollTop);
+  }
+
   const fullscreen = $derived(m.name === 'play');
+  let help = $state(false);
+  const Shortcuts = $derived(help ? lazy('shortcuts', () => import('./components/Shortcuts.svelte')) : undefined);
 
   function onkeydown(e: KeyboardEvent) {
     const target = e.target as HTMLElement;
     const typing = target.closest('input, textarea, select, [contenteditable="true"]');
+    if (e.key === '?' && !typing && !e.ctrlKey && !e.metaKey && session.user) {
+      e.preventDefault();
+      // A dialog can't show over an element in full screen.
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+      help = !help;
+      return;
+    }
     if (e.key === '/' && !typing && !e.ctrlKey && !e.metaKey) {
       const box = document.getElementById('global-search') as HTMLInputElement | null;
       if (box) {
@@ -137,17 +187,20 @@
           </div>
         {/if}
       {/if}
-      <main id="main" bind:this={scroller} tabindex="-1">
-        {#key route.path}
+      <main id="main" bind:this={scroller} tabindex="-1" onscroll={onMainScroll}>
+        {#key routeKey}
           <div class="route" in:fly={{ y: 10, duration: ms(260), easing: cubicOut }}>
             {#if m.name === 'home'}
               <Home />
             {:else}
-              {#await pages[m.name]()}
+              {#if Page}
+                <Page params={m.params} />
+              {:else if lazyFailed(m.name)}
+                <div class="page"><div class="empty"><div class="empty-icon"><Icon name="warning-circle" size={30} /></div><h3>{t("Couldn't load this page.")}</h3>
+                  <button class="btn" onclick={() => location.reload()}><Icon name="arrow-clockwise" />{t('Try again')}</button></div></div>
+              {:else}
                 <div class="page-loading"><Spinner /></div>
-              {:then mod}
-                <mod.default params={m.params} />
-              {/await}
+              {/if}
             {/if}
           </div>
         {/key}
@@ -164,6 +217,7 @@
 <ConfirmHost />
 <ContextMenu />
 <IdentifyHost />
+{#if Shortcuts}<Shortcuts onclose={() => (help = false)} />{/if}
 
 <style>
   .skip {

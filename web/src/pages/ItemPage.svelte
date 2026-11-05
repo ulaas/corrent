@@ -2,18 +2,18 @@
   import { fade } from 'svelte/transition';
   import Icon from '../components/Icon.svelte';
   import Img from '../components/Img.svelte';
-  import Card from '../components/Card.svelte';
+  import VirtualGrid from '../components/VirtualGrid.svelte';
   import Spinner from '../components/Spinner.svelte';
   import PhotoViewer from '../components/PhotoViewer.svelte';
   import Modal from '../components/Modal.svelte';
+  import { onRelink } from '../lib/events.svelte';
   import { api, errorText } from '../lib/api';
   import { back, go, link, route, setQuery } from '../lib/router.svelte';
-  import { backdrop, image, isPlayable, KIND_LABEL, playHref, shapeFor, watched } from '../lib/media';
+  import { BACKDROP_SIZES, backdrop, image, isPlayable, KIND_LABEL, playHref, shapeFor, watched } from '../lib/media';
   import { bytes, clock, runtime } from '../lib/format';
   import { toggleFavorite, togglePlayed } from '../lib/itemstate';
   import { music, toEntry, tracksOf } from '../lib/player.svelte';
   import { library } from '../lib/libraries.svelte';
-  import { cardWidth } from '../lib/cards.svelte';
   import { toast } from '../lib/toast.svelte';
   import { ms } from '../lib/prefs.svelte';
   import { t } from '../lib/i18n.svelte';
@@ -163,7 +163,8 @@
       }
       item = d;
       if (['show', 'season', 'artist', 'album', 'folder'].includes(d.kind)) {
-        const p = await api.get<Page<Item>>('/items', { parent_id: id, sort: 'index', limit: 1000 });
+        // A folder or artist pages through its grid; the first child tells the shape of its cards.
+        const p = await api.get<Page<Item>>('/items', { parent_id: id, sort: 'index', limit: d.kind === 'folder' || d.kind === 'artist' ? 1 : 1000 });
         children = p.items;
         if (d.kind === 'show' && children.length) {
           const next = children.find((s) => (s.state.unplayed ?? 0) > 0) ?? children[0];
@@ -188,7 +189,18 @@
     void load(id);
   });
 
-  const bg = $derived(item ? (backdrop(item) ?? backdrop(parent)) : undefined);
+  // Back from offline: the item may have changed; keep what's shown while it loads.
+  onRelink(async () => {
+    if (!item) return void load(id);
+    try {
+      const d = await api.get<ItemDetail>(`/items/${id}`);
+      if (d.id === id) item = d;
+    } catch {
+      /* the next reconnect tries again */
+    }
+  });
+
+  const bg =$derived(item ? (backdrop(item) ?? backdrop(parent)) : undefined);
   const poster = $derived(item ? (image(item, 'poster') ?? image(parent, 'poster')) : undefined);
   const file = $derived(item?.files.find((f) => f.role === 'main') ?? item?.files[0]);
   const video = $derived(file?.streams.find((s) => s.kind === 'video'));
@@ -224,6 +236,7 @@
     music.play([toEntry(item, item)]);
   }
 
+  const childQuery = $derived({ parent_id: id, sort: 'index' });
   const lib = $derived(item ? library(item.library_id) : undefined);
   const albumTime = $derived(children.reduce((a, c) => a + (c.runtime_ms ?? 0), 0));
   const isCurrent = (tid: number) => music.current?.id === tid;
@@ -239,7 +252,7 @@
 {:else}
   <article class="detail" class:square>
     <div class="backdrop">
-      {#if bg}<div class="bgimg" in:fade={{ duration: ms(700) }}><Img image={bg} w={0} eager /></div>{/if}
+      {#if bg}<div class="bgimg" in:fade={{ duration: ms(700) }}><Img image={bg} w={0} eager sizes={BACKDROP_SIZES} /></div>{/if}
       <div class="veil"></div>
     </div>
 
@@ -270,6 +283,7 @@
             {#if site('rotten_tomatoes')}<span>Rotten Tomatoes {site('rotten_tomatoes')}</span>{/if}
             {#if site('metacritic')}<span>Metacritic {site('metacritic')}</span>{/if}
             {#if video?.height}<span class="tag">{video.height >= 2000 ? '4K' : video.height >= 1000 ? 'HD 1080p' : video.height >= 700 ? 'HD 720p' : `${video.height}p`}</span>{/if}
+            {#if item.missing}<span class="badge err"><Icon name="warning-circle" size={12} />{t('File missing')}</span>{/if}
             {#if item.partial}<span class="badge warn"><Icon name="download-simple" size={12} />{t('Still downloading')}</span>{/if}
           </p>
           {#if item.genres.length}
@@ -283,13 +297,13 @@
               <button class="btn primary lg" onclick={() => playAlbum(false)}><Icon name="play-fill" />{t('Play')}</button>
               <button class="btn lg" onclick={() => playAlbum(true)}><Icon name="shuffle" />{t('Shuffle')}</button>
             {:else if item.kind === 'book'}
-              <button class="btn primary lg" onclick={playBook}><Icon name="play-fill" />{resumable ? t('Resume') : t('Listen')}</button>
+              <button class="btn primary lg" disabled={item.missing} onclick={playBook}><Icon name="play-fill" />{resumable ? t('Resume') : t('Listen')}</button>
             {:else if isPlayable(item.kind)}
-              <button class="btn primary lg" onclick={() => go(playHref(item!.id))}>
+              <button class="btn primary lg" disabled={item.missing} onclick={() => go(playHref(item!.id))}>
                 <Icon name="play-fill" />{resumable ? t('Resume from {time}', { time: clock(item.state.position_ms) }) : t('Play')}
               </button>
               {#if resumable}
-                <button class="btn lg" onclick={() => go(playHref(item!.id, false))}><Icon name="arrow-counter-clockwise" />{t('From the start')}</button>
+                <button class="btn lg" disabled={item.missing} onclick={() => go(playHref(item!.id, false))}><Icon name="arrow-counter-clockwise" />{t('From the start')}</button>
               {/if}
             {/if}
             {#if item.kind === 'show' && can(Perm.TORRENTS_ADD)}
@@ -412,9 +426,7 @@
           {/each}
         </ol>
       {:else if children.length}
-        <div class="grid" style:--w="{cardWidth(shapeFor(children[0].kind))}px">
-          {#each children as c (c.id)}<Card item={c} shape={shapeFor(c.kind)} />{/each}
-        </div>
+        <VirtualGrid query={childQuery} shape={shapeFor(children[0].kind)} />
       {/if}
 
       {#if cast.length}
@@ -839,11 +851,6 @@
     50% {
       height: 14px;
     }
-  }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(var(--w), 1fr));
-    gap: 20px;
   }
   .cast {
     display: flex;

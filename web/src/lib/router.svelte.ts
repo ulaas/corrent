@@ -37,7 +37,24 @@ function read() {
   return { path: location.pathname, query: new URLSearchParams(location.search), key: history.state?.key ?? 0 };
 }
 
-export const route = $state(read());
+/** `restored`: this entry was reached with Back or Forward, so its scroll position comes back. */
+export const route = $state({ ...read(), restored: false });
+
+const MAX_SCROLLS = 200;
+const scrolls = new Map<number, number>();
+
+/** Remembers how far history entry `key` is scrolled. */
+export function rememberScroll(key: number, top: number) {
+  if (!scrolls.has(key) && scrolls.size >= MAX_SCROLLS) {
+    const oldest = scrolls.keys().next().value;
+    if (oldest !== undefined) scrolls.delete(oldest);
+  }
+  scrolls.set(key, top);
+}
+
+export function scrollOf(key: number): number {
+  return scrolls.get(key) ?? 0;
+}
 let seq = Date.now();
 
 export function go(to: string, opts: { replace?: boolean } = {}) {
@@ -46,7 +63,13 @@ export function go(to: string, opts: { replace?: boolean } = {}) {
   const key = ++seq;
   if (opts.replace) history.replaceState({ key }, '', u.pathname + u.search + u.hash);
   else history.pushState({ key }, '', u.pathname + u.search + u.hash);
-  Object.assign(route, read());
+  Object.assign(route, read(), { restored: false });
+}
+
+/** Changes the address only: no navigation, the page stays as it is (the photo viewer stepping
+ *  through siblings, where a reload should land on the photo shown). */
+export function replaceAddress(to: string) {
+  history.replaceState(history.state, '', to);
 }
 
 /** Updates the query string without a new history entry. */
@@ -65,7 +88,7 @@ export function back(fallback = '/') {
   else go(fallback);
 }
 
-addEventListener('popstate', () => Object.assign(route, read()));
+addEventListener('popstate', () => Object.assign(route, read(), { restored: true }));
 
 /** `<a href use:link>`: client-side navigation for internal links. */
 export function link(node: HTMLAnchorElement) {

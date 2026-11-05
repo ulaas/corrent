@@ -3,6 +3,7 @@
   import Img from './Img.svelte';
   import { link, go } from '../lib/router.svelte';
   import { cardImage, initials, isPlayable, itemHref, playHref, subtitle, watched, type Shape, LIBRARY_ICON } from '../lib/media';
+  import { cardWidth } from '../lib/cards.svelte';
   import { toggleFavorite } from '../lib/itemstate';
   import { contextMenu } from '../lib/contextmenu.svelte';
   import { itemMenu } from '../lib/itemmenu';
@@ -41,7 +42,7 @@
 <a {href} use:link class="card {shape}" title={item.title} use:contextMenu={{ items: () => itemMenu(item, { manage: can(Perm.LIBRARY_MANAGE), onplay }), title: item.title }}>
   <div class="art">
     {#if img}
-      <Img image={img} w={shape === 'landscape' ? 400 : 400} alt="" />
+      <Img image={img} w={400} alt="" sizes="{Math.round(cardWidth(shape) * 1.3)}px" />
     {:else}
       {@const ini = initials(item.title)}
       <div class="ph">{#if ini}<span class="ini">{ini}</span><Icon name={fallbackIcon} size={18} />{:else}<Icon name={fallbackIcon} size={36} />{/if}</div>
@@ -52,12 +53,14 @@
     {:else if unplayed > 0 && (item.kind === 'show' || item.kind === 'season')}
       <span class="badge-corner count num" title={t('{n} unplayed', { n: unplayed })}>{unplayed}</span>
     {/if}
-    {#if item.partial}
+    {#if item.missing}
+      <span class="badge-dl missing" title={t('File missing')}><Icon name="warning-circle" size={13} /></span>
+    {:else if item.partial}
       <span class="badge-dl" title={t('Still downloading')}><Icon name="download-simple" size={13} /></span>
     {/if}
     <div class="actions">
       {#if isPlayable(item.kind) && item.kind !== 'track'}
-        <button class="play" aria-label={t('Play {title}', { title: item.title })} onclick={play}>
+        <button class="play" aria-label={t('Play {title}', { title: item.title })} disabled={item.missing} title={item.missing ? t('File missing') : undefined} onclick={play}>
           <Icon name="play-fill" size={22} />
         </button>
       {:else if onplay}
@@ -172,6 +175,14 @@
   .count {
     background: var(--accent);
     color: var(--on-accent);
+  }
+  .badge-dl.missing {
+    background: var(--error);
+    color: #fff;
+  }
+  .play:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
   .badge-dl {
     position: absolute;

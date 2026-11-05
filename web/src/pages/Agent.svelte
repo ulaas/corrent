@@ -1,6 +1,7 @@
 <script lang="ts">
   // AI agent (as the desktop's, src/app/media/agent.rs): how to connect an MCP client to this
   // server, and the changes agents propose, each approved or rejected here.
+  import { everyVisible } from '../lib/visibility.svelte';
   import Icon from '../components/Icon.svelte';
   import Spinner from '../components/Spinner.svelte';
   import { api, errorText } from '../lib/api';
@@ -32,8 +33,7 @@
   }
   $effect(() => {
     void load();
-    const timer = setInterval(load, 3000);
-    return () => clearInterval(timer);
+    return everyVisible(load, 3000);
   });
 
   async function decide(p: Proposal, approve: boolean) {

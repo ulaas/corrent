@@ -152,7 +152,7 @@ export function sortTorrents(list: Torrent[], k: SortKey, desc: boolean): Torren
   return [...list].sort((a, b) => {
     const x = key(a, k), y = key(b, k);
     const c = typeof x === 'string' ? coll.compare(x, y as string) : (x as number) - (y as number);
-    return c !== 0 ? c * dir : a.name.localeCompare(b.name);
+    return c !== 0 ? c * dir : coll.compare(a.name, b.name);
   });
 }
 
