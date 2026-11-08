@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Corrent — a calm, beautiful BitTorrent client</title>
-  <meta name="description" content="Corrent is a free, open-source BitTorrent client and media server written in Rust. Fast, stable and beautiful, with no ads and no tracking.">
+  <title>Corrent — your own media server and player</title>
+  <meta name="description" content="Corrent is a free, open-source media server and player with a BitTorrent client built in, written in Rust. Your movies, shows and music on the desktop, in the browser, on the TV and on Chromecast.">
   <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#0b0d12">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Corrent — a calm, beautiful BitTorrent client">
-  <meta property="og:description" content="Free and open source, written in Rust. Fast, stable and beautiful, with no ads and no tracking.">
-  <meta property="og:image" content="img/list.webp">
+  <meta property="og:title" content="Corrent — your own media server and player">
+  <meta property="og:description" content="A media server and player with a BitTorrent client built in. Free and open source, written in Rust, with no ads and no tracking.">
+  <meta property="og:image" content="img/media-home.webp">
   <link rel="icon" href="favicon.ico" sizes="any">
   <link rel="icon" href="img/corrent-64.png" type="image/png">
   <link rel="preload" href="fonts/Inter-Regular.woff2" as="font" type="font/woff2" crossorigin>
@@ -60,7 +60,8 @@
     </a>
     <ul class="nav-links">
       <li><a href="#tour">Tour</a></li>
-      <li><a href="#media">Media</a></li>
+      <li><a href="#media">Everywhere</a></li>
+      <li><a href="#torrents">Torrents</a></li>
       <li><a href="#stability">Stability</a></li>
       <li><a href="#open">Open source</a></li>
     </ul>
@@ -77,10 +78,11 @@
     <div class="aurora" aria-hidden="true"></div>
     <div class="wrap hero-text">
       <p class="eyebrow reveal">Free &amp; open source · Written in Rust</p>
-      <h1 id="hero-title" class="reveal" style="--d:1">Torrents,<br><span class="grad">beautifully calm.</span></h1>
+      <h1 id="hero-title" class="reveal" style="--d:1">Your media,<br><span class="grad">everywhere.</span></h1>
       <p class="lede reveal" style="--d:2">
-        Corrent is a BitTorrent client and media server that stays out of your way.
-        Fast, stable and good-looking, with no ads, no tracking and nothing to sign up for.
+        Corrent is your own media server and player, with a BitTorrent client built in.
+        Your movies, shows and music on the desktop, in the browser, on the TV and on Chromecast,
+        with no ads, no tracking and nothing to sign up for.
       </p>
       <div class="cta reveal" style="--d:3">
         <a class="btn btn-primary" href="https://github.com/ulaas/corrent">
@@ -93,9 +95,9 @@
     </div>
     <div class="wrap hero-shot">
       <figure class="frame tilt">
-        <img src="img/list.webp" srcset="img/list-sm.webp 960w, img/list.webp 1920w"
+        <img src="img/media-home.webp" srcset="img/media-home-sm.webp 960w, img/media-home.webp 1920w"
              sizes="(min-width: 1200px) 1120px, 94vw" width="1920" height="1200" fetchpriority="high"
-             alt="Corrent's main window: a sidebar with status, category and tag filters, a list of ten torrents such as Sintel and Debian downloading or seeding with progress bars, and details of the selected torrent below.">
+             alt="Corrent's media home: Sintel, an open movie, large at the top with a Resume watching button, and below it a Continue watching row with Sintel, Big Buck Bunny and an episode of Caminandes.">
       </figure>
     </div>
   </section>
@@ -120,9 +122,9 @@
         <p>No accounts, no ads, no telemetry. Remote access is off until you turn it on, and then it needs a password.</p>
       </li>
       <li class="card reveal" style="--d:3">
-        <svg class="i i-lg" aria-hidden="true"><use href="#sliders-horizontal"/></svg>
-        <h3>Yours to tune</h3>
-        <p>Every limit, queue and schedule is a setting away, with sensible defaults so you never have to touch them.</p>
+        <svg class="i i-lg" aria-hidden="true"><use href="#download-simple"/></svg>
+        <h3>Torrents built in</h3>
+        <p>The download engine is part of the server. What finishes lands in your library, and you can watch while it downloads.</p>
       </li>
     </ul>
   </section>
@@ -132,48 +134,48 @@
     <div class="wrap">
       <header class="section-head reveal">
         <p class="eyebrow">The tour</p>
-        <h2 id="tour-title">Everything you need,<br>exactly where you'd look.</h2>
+        <h2 id="tour-title">From the library<br>to the big picture.</h2>
       </header>
       <div class="tour-grid">
         <ol class="steps">
           <li class="step" data-shot="0">
             <span class="step-n" aria-hidden="true">01</span>
-            <h3>The whole picture at a glance</h3>
-            <p>Two-line rows show what each torrent is doing, how fast and how long it has left. Filter by status, category, tag or tracker, with live counts.</p>
-            <img class="step-img" src="img/list-sm.webp" width="960" height="600" loading="lazy" alt="The torrent list with status filters and categories in the sidebar.">
+            <h3>Pick up where you left off</h3>
+            <p>Home shows what you're in the middle of, what's next in a show and what's new in each library, with artwork and metadata for every item.</p>
+            <img class="step-img" src="img/media-home-sm.webp" width="960" height="600" loading="lazy" alt="The media home with Continue watching and Next up.">
           </li>
           <li class="step" data-shot="1">
             <span class="step-n" aria-hidden="true">02</span>
-            <h3>Every peer, live</h3>
-            <p>See who you're trading with, over which protocol, and how fast, updated every second.</p>
-            <img class="step-img" src="img/peers-sm.webp" width="960" height="600" loading="lazy" alt="The Peers tab: a table of connected peers with their client, protocol and transfer speeds.">
+            <h3>Everything about a film</h3>
+            <p>Plot, genres, people, the file's tracks, and buttons for subtitles, playlists and finding the right metadata.</p>
+            <img class="step-img" src="img/media-item-sm.webp" width="960" height="600" loading="lazy" alt="Sintel's page: a wide backdrop, the plot, genres, director and the file's video and audio tracks.">
           </li>
           <li class="step" data-shot="2">
             <span class="step-n" aria-hidden="true">03</span>
-            <h3>Watch the pieces arrive</h3>
-            <p>A piece map shows what you have and what's still missing. Files download in order, so videos can play while they download.</p>
-            <img class="step-img" src="img/pieces-sm.webp" width="960" height="600" loading="lazy" alt="The Pieces tab: a grid of squares, filled for pieces already downloaded.">
+            <h3>A real player</h3>
+            <p>mpv inside the app: subtitles, audio tracks, chapters, an equalizer and night mode, casting and Watch together, all one click away.</p>
+            <img class="step-img" src="img/media-player-sm.webp" width="960" height="600" loading="lazy" alt="Big Buck Bunny playing full screen, paused, with the player's controls along the bottom.">
           </li>
           <li class="step" data-shot="3">
             <span class="step-n" aria-hidden="true">04</span>
-            <h3>Speed you can read</h3>
-            <p>Smooth graphs for one torrent or all of them, plus tiny activity lines right in the status bar.</p>
-            <img class="step-img" src="img/speed-sm.webp" width="960" height="600" loading="lazy" alt="The Speed tab: a download speed graph over the last two and a half minutes.">
+            <h3>Shows, season by season</h3>
+            <p>Episodes in order with what you've already seen marked, so the next one is always a click away.</p>
+            <img class="step-img" src="img/media-show-sm.webp" width="960" height="600" loading="lazy" alt="The page of Caminandes, an open animated series, with its first season's episodes.">
           </li>
           <li class="step" data-shot="4">
             <span class="step-n" aria-hidden="true">05</span>
-            <h3>Only the files you want</h3>
-            <p>Pick files and folders before or during a download, set priorities, and play them straight from the list.</p>
-            <img class="step-img" src="img/files-sm.webp" width="960" height="600" loading="lazy" alt="The Files tab: a file tree with checkboxes, per-file progress and a Play button.">
+            <h3>Downloads that land in the library</h3>
+            <p>The torrent client is part of it. Finished downloads are imported into your libraries, and a video can play while it downloads.</p>
+            <img class="step-img" src="img/list-sm.webp" width="960" height="600" loading="lazy" alt="The torrent list with status filters and categories in the sidebar.">
           </li>
         </ol>
         <div class="stage" aria-hidden="true">
           <figure class="frame stage-frame">
-            <img class="shot is-on" src="img/list.webp" srcset="img/list-sm.webp 960w, img/list.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
-            <img class="shot" src="img/peers.webp" srcset="img/peers-sm.webp 960w, img/peers.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
-            <img class="shot" src="img/pieces.webp" srcset="img/pieces-sm.webp 960w, img/pieces.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
-            <img class="shot" src="img/speed.webp" srcset="img/speed-sm.webp 960w, img/speed.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
-            <img class="shot" src="img/files.webp" srcset="img/files-sm.webp 960w, img/files.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
+            <img class="shot is-on" src="img/media-home.webp" srcset="img/media-home-sm.webp 960w, img/media-home.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
+            <img class="shot" src="img/media-item.webp" srcset="img/media-item-sm.webp 960w, img/media-item.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
+            <img class="shot" src="img/media-player.webp" srcset="img/media-player-sm.webp 960w, img/media-player.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
+            <img class="shot" src="img/media-show.webp" srcset="img/media-show-sm.webp 960w, img/media-show.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
+            <img class="shot" src="img/list.webp" srcset="img/list-sm.webp 960w, img/list.webp 1920w" sizes="(min-width: 1000px) 60vw, 94vw" width="1920" height="1200" loading="lazy" alt="">
           </figure>
           <div class="dots"><span class="is-on"></span><span></span><span></span><span></span><span></span></div>
         </div>
@@ -190,8 +192,8 @@
     </header>
     <div class="duo">
       <figure class="frame reveal">
-        <img src="img/light.webp" srcset="img/light-sm.webp 960w, img/light.webp 1920w" sizes="(min-width: 1000px) 560px, 94vw" width="1920" height="1200" loading="lazy"
-             alt="Corrent in the light theme with a violet accent.">
+        <img src="img/media-home-light.webp" srcset="img/media-home-light-sm.webp 960w, img/media-home-light.webp 1920w" sizes="(min-width: 1000px) 560px, 94vw" width="1920" height="1200" loading="lazy"
+             alt="The media home in the light theme with a violet accent.">
       </figure>
       <figure class="frame reveal" style="--d:1">
         <img src="img/settings.webp" srcset="img/settings-sm.webp 960w, img/settings.webp 1920w" sizes="(min-width: 1000px) 560px, 94vw" width="1920" height="1200" loading="lazy"
@@ -212,44 +214,37 @@
     <div class="wrap media-grid">
       <div>
         <header class="section-head left reveal">
-          <p class="eyebrow">More than a torrent client</p>
-          <h2 id="media-title">Your own media server, built in.</h2>
-          <p class="sub">Point Corrent at your movies, shows and music. It organizes them into a library you can watch here, in a browser, or on the TV.</p>
+          <p class="eyebrow">Watch anywhere</p>
+          <h2 id="media-title">One library, every screen.</h2>
+          <p class="sub">Run Corrent on your computer, or the headless server on a home server or NAS, and watch from wherever you are.</p>
         </header>
         <ul class="feature-list">
-          <li class="reveal"><svg class="i" aria-hidden="true"><use href="#play-circle"/></svg><div><strong>Play while it downloads.</strong> A built-in player with subtitles, audio tracks and picture in picture.</div></li>
-          <li class="reveal" style="--d:1"><svg class="i" aria-hidden="true"><use href="#television"/></svg><div><strong>TV mode.</strong> A big-screen interface you drive with a remote.</div></li>
-          <li class="reveal" style="--d:2"><svg class="i" aria-hidden="true"><use href="#users-three"/></svg><div><strong>Watch together.</strong> Share a room code and stay in sync with friends.</div></li>
-          <li class="reveal" style="--d:3"><svg class="i" aria-hidden="true"><use href="#browser"/></svg><div><strong>Any device.</strong> Run the headless server at home and use the app or the web client from anywhere on your network.</div></li>
-          <li class="reveal" style="--d:4"><svg class="i" aria-hidden="true"><use href="#wifi-high"/></svg><div><strong>Finds itself.</strong> The app spots your server on the network and pairs with a short code.</div></li>
+          <li class="reveal"><svg class="i" aria-hidden="true"><use href="#browser"/></svg><div><strong>Web client.</strong> Served by the server itself and installable as an app on phones, tablets and TV browsers.</div></li>
+          <li class="reveal" style="--d:1"><svg class="i" aria-hidden="true"><use href="#television"/></svg><div><strong>TV mode.</strong> A full-screen interface you drive with arrow keys, a remote or a gamepad.</div></li>
+          <li class="reveal" style="--d:2"><svg class="i" aria-hidden="true"><use href="#play-circle"/></svg><div><strong>Plays everything.</strong> Direct play when the device can, a light repackage when only the container is wrong, and transcoding with NVENC or Quick Sync when it must.</div></li>
+          <li class="reveal" style="--d:3"><svg class="i" aria-hidden="true"><use href="#users-three"/></svg><div><strong>Cast and share.</strong> Send it to a Chromecast, or watch together in sync with a room code.</div></li>
+          <li class="reveal" style="--d:4"><svg class="i" aria-hidden="true"><use href="#wifi-high"/></svg><div><strong>Finds itself.</strong> The app spots your server on the network and pairs with a short code; Corrent Connect reaches it from outside without port forwarding.</div></li>
         </ul>
       </div>
-      <div class="posters" aria-hidden="true">
-        <div class="poster p1 reveal"><span>Sintel</span><small>2010 · Animation</small></div>
-        <div class="poster p2 reveal" style="--d:1"><span>Big Buck Bunny</span><small>2008 · Comedy</small></div>
-        <div class="poster p3 reveal" style="--d:2"><span>Tears of Steel</span><small>2012 · Sci-fi</small></div>
-        <div class="poster p4 reveal" style="--d:3"><span>Elephants Dream</span><small>2006 · Surreal</small></div>
-        <div class="poster p5 reveal" style="--d:4"><span>Cosmos Laundromat</span><small>2015 · Fantasy</small></div>
-        <div class="poster p6 reveal" style="--d:5"><span>Spring</span><small>2019 · Fantasy</small></div>
-        <div class="player reveal" style="--d:3">
-          <div class="player-bar"><span class="player-fill"></span></div>
-          <div class="player-row"><svg class="i" aria-hidden="true"><use href="#play-circle"/></svg><span>Sintel</span><span class="mono">06:41 / 14:48</span></div>
-        </div>
-      </div>
+      <figure class="frame reveal" style="--d:1">
+        <img src="img/media-tv.webp" srcset="img/media-tv-sm.webp 960w, img/media-tv.webp 1920w" sizes="(min-width: 900px) 50vw, 94vw" width="1920" height="1080" loading="lazy"
+             alt="TV mode: the media home full screen with large text, Sintel at the top and a Continue watching row.">
+      </figure>
     </div>
   </section>
 
   <!-- Automation -->
-  <section class="auto wrap" aria-labelledby="auto-title">
+  <section class="auto wrap" id="torrents" aria-labelledby="auto-title">
     <header class="section-head reveal">
-      <p class="eyebrow">Hands-off</p>
-      <h2 id="auto-title">Set it up once. Let it run.</h2>
+      <p class="eyebrow">The torrent client, built in</p>
+      <h2 id="auto-title">Set it up once. Let it fill your library.</h2>
+      <p class="sub">A complete BitTorrent client is part of Corrent, and it works on its own too.</p>
     </header>
     <ul class="grid3">
       <li class="tile reveal"><svg class="i i-lg" aria-hidden="true"><use href="#rss"/></svg><h3>Feeds and rules</h3><p>Follow RSS feeds and download what matches: words or patterns, episode ranges, one release per episode.</p></li>
       <li class="tile reveal" style="--d:1"><svg class="i i-lg" aria-hidden="true"><use href="#magnifying-glass"/></svg><h3>Search</h3><p>Search the Torznab providers you add, such as Jackett or Prowlarr, without leaving the app.</p></li>
       <li class="tile reveal" style="--d:2"><svg class="i i-lg" aria-hidden="true"><use href="#plug"/></svg><h3>Works with your tools</h3><p>A qBittorrent-compatible API, so Sonarr, Radarr and friends can use Corrent as their download client.</p></li>
-      <li class="tile reveal"><svg class="i i-lg" aria-hidden="true"><use href="#folder-open"/></svg><h3>Watch folders</h3><p>Drop a .torrent into a folder and it starts, with its own category and save location.</p></li>
+      <li class="tile reveal"><svg class="i i-lg" aria-hidden="true"><use href="#folder-open"/></svg><h3>Straight into the library</h3><p>Finished downloads are imported into a library, with a wanted list and "Follow new episodes" for shows.</p></li>
       <li class="tile reveal" style="--d:1"><svg class="i i-lg" aria-hidden="true"><use href="#queue"/></svg><h3>Queue and schedules</h3><p>Limits for active torrents, seeding goals, and slower speeds on a weekly schedule.</p></li>
       <li class="tile reveal" style="--d:2"><svg class="i i-lg" aria-hidden="true"><use href="#robot"/></svg><h3>AI-ready</h3><p>An optional MCP bridge lets AI assistants check on and manage your downloads.</p></li>
     </ul>
@@ -261,7 +256,7 @@
       <header class="section-head reveal">
         <p class="eyebrow">Built not to break</p>
         <h2 id="stability-title">Quietly reliable.</h2>
-        <p class="sub">A torrent client runs for weeks at a time and holds files you care about. Corrent is engineered and tested for exactly that.</p>
+        <p class="sub">A media server runs for months at a time and holds files you care about. Corrent is engineered and tested for exactly that.</p>
       </header>
       <ul class="facts">
         <li class="fact reveal"><span class="fact-k">Never blocks</span><span class="fact-v">The window never waits on your disk or network. The engine runs on its own and the interface only reads snapshots of it.</span></li>
@@ -280,12 +275,13 @@
       <img src="img/corrent-256.png" alt="" width="96" height="96" class="open-logo">
       <h2 id="open-title">Free. Open. Yours.</h2>
       <p class="sub">Corrent is open source under the MIT or Apache 2.0 license, built in Rust on
-        <a href="https://github.com/ikatson/rqbit">librqbit</a> and <a href="https://github.com/emilk/egui">egui</a>.
-        Windows is ready today; Linux and macOS builds are on their way.</p>
+        <a href="https://github.com/emilk/egui">egui</a>, <a href="https://mpv.io/">mpv</a> and
+        <a href="https://github.com/ikatson/rqbit">librqbit</a>. Builds for Windows, Linux and macOS;
+        Windows has had the most testing so far.</p>
       <ul class="platforms" aria-label="Platforms">
         <li><svg class="i" aria-hidden="true"><use href="#windows-logo"/></svg>Windows</li>
-        <li><svg class="i" aria-hidden="true"><use href="#linux-logo"/></svg>Linux <em>soon</em></li>
-        <li><svg class="i" aria-hidden="true"><use href="#apple-logo"/></svg>macOS <em>soon</em></li>
+        <li><svg class="i" aria-hidden="true"><use href="#linux-logo"/></svg>Linux <em>preview</em></li>
+        <li><svg class="i" aria-hidden="true"><use href="#apple-logo"/></svg>macOS <em>preview</em></li>
       </ul>
       <div class="cta center">
         <a class="btn btn-primary" href="https://github.com/ulaas/corrent">
@@ -302,7 +298,7 @@
 <footer class="foot">
   <div class="wrap foot-row">
     <p>Corrent · MIT or Apache 2.0</p>
-    <p class="dim">Screenshots use demo data with freely licensed films and Linux ISOs.</p>
+    <p class="dim">Screenshots show open movies by the <a href="https://studio.blender.org/films/">Blender Foundation</a> (Creative Commons) and demo torrents of freely licensed films and Linux ISOs.</p>
     <a href="#top" class="to-top">Back to top <svg class="i" aria-hidden="true"><use href="#arrow-right"/></svg></a>
   </div>
 </footer>

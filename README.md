@@ -17,6 +17,11 @@ Website: **[ulaas.github.io/corrent](https://ulaas.github.io/corrent/)** · Down
 [Releases](https://github.com/ulaas/corrent/releases) · Server guide: [docs/SERVER.md](docs/SERVER.md) ·
 Changes: [CHANGELOG.md](CHANGELOG.md)
 
+<p align="center">
+  <img src="site/img/media-home.webp" width="900"
+       alt="Corrent's media home: Sintel at the top with Resume watching, and a Continue watching row with Sintel, Big Buck Bunny and an episode of Caminandes">
+</p>
+
 ## One app, or a server and clients
 
 | | |
@@ -27,6 +32,11 @@ Changes: [CHANGELOG.md](CHANGELOG.md)
 | **TV mode** | `corrent --tv`: a full-screen, 10-foot interface driven by arrow keys, a remote or a gamepad. |
 
 ## Media
+
+<p align="center">
+  <img src="site/img/media-item-sm.webp" width="440" alt="A film's page: backdrop, plot, genres, director and the file's tracks">
+  <img src="site/img/media-player-sm.webp" width="440" alt="The built-in player, paused, with its controls">
+</p>
 
 **Libraries**
 - Movies, shows, music and photos, scanned and watched for changes, with metadata and artwork from
@@ -221,3 +231,6 @@ MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache-2.0 ([LICENSE-APACHE](LICENSE-APACHE)
 Contributions are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md); please report security problems
 privately as described in [SECURITY.md](SECURITY.md). Bundled fonts: Inter and JetBrains Mono (SIL Open Font License, see
 `assets/fonts`). Icons: Phosphor (MIT).
+
+Screenshots show open movies by the [Blender Foundation](https://studio.blender.org/films/) (Sintel, Big Buck
+Bunny, Tears of Steel, Elephants Dream, Cosmos Laundromat, Caminandes), under Creative Commons licenses.
