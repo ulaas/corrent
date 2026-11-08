@@ -4,17 +4,69 @@
 [![CodeQL](https://github.com/ulaas/corrent/actions/workflows/codeql.yml/badge.svg)](https://github.com/ulaas/corrent/actions/workflows/codeql.yml)
 [![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-blue)](#license)
 
-A beautiful, stable, cross-platform BitTorrent client written in Rust with an
-[egui](https://github.com/emilk/egui) interface and the [librqbit](https://github.com/ikatson/rqbit) engine.
+**Your own media server and player, with a BitTorrent client built in.**
+
+Corrent organizes your movies, shows, music and photos into libraries and plays them anywhere: in a
+native desktop app with an embedded mpv player, in the browser, on a TV or on a Chromecast. Unlike
+other media servers, the torrent engine is part of it: downloads land in your libraries, you can
+watch while they download, and Sonarr and Radarr can use it as their download client.
+Written in Rust, with an [egui](https://github.com/emilk/egui) desktop app, a Svelte web client,
+[libmpv](https://mpv.io/) for playback and transcoding, and the [librqbit](https://github.com/ikatson/rqbit) engine.
+
 Website: **[ulaas.github.io/corrent](https://ulaas.github.io/corrent/)** · Downloads:
-[Releases](https://github.com/ulaas/corrent/releases) · Changes: [CHANGELOG.md](CHANGELOG.md)
+[Releases](https://github.com/ulaas/corrent/releases) · Server guide: [docs/SERVER.md](docs/SERVER.md) ·
+Changes: [CHANGELOG.md](CHANGELOG.md)
+
+## One app, or a server and clients
+
+| | |
+|---|---|
+| **`corrent`**, the desktop app | Runs everything on its own for one person: libraries, the player and the torrent engine. It can also pair with a server and act as its client. Windows, Linux, macOS. |
+| **`correntd`**, the server | Headless and multi-user, for a home server or NAS: libraries, transcoding, the torrent engine, the API and the web client over HTTPS. Runs as a systemd, launchd or Windows service, or in [Docker](packaging/server/docker). |
+| **Web client** | Served by the server itself: an installable web app for desktop, phone and TV browsers, with its own player. |
+| **TV mode** | `corrent --tv`: a full-screen, 10-foot interface driven by arrow keys, a remote or a gamepad. |
+
+## Media
+
+**Libraries**
+- Movies, shows, music and photos, scanned and watched for changes, with metadata and artwork from
+  plugins (TMDB, MusicBrainz and the Cover Art Archive built in) and manual Identify
+- Frame thumbnails, trickplay previews on the seek bar, cast and crew pages, collections, playlists and search
+- Continue watching, Next up and watch state for every user
+
+**Playback**
+- Direct play when the device can, direct stream (MKV with H.264/HEVC is repackaged without
+  re-encoding) and transcoding through libmpv with NVENC and Quick Sync detection
+- Subtitles from the library, the web or a file you choose; audio tracks, chapters, resume,
+  picture in picture
+- Sound processing: a 10-band equalizer, Night mode, Clearer dialogue, headphone crossfeed and a
+  loudness leveller, with loudness meters and A/V stats over the picture
+- Casting to Chromecasts with device volume, tracks and queueing; Watch together; DLNA
+
+**Torrents feed the library**
+- Finished downloads are imported into a library (in place, hard link or copy), with seeding goals
+  and a guard against deleting what a library still uses
+- A wanted list with quality profiles, "Follow new episodes" for shows, and releases you can grab
+  from an item's page
+- Play while downloading, both in the desktop player and through the server
+- A qBittorrent-compatible API, so Sonarr, Radarr and similar tools can use Corrent as their download client
+
+**Server**
+- Multiple users with permissions, devices paired by a short code, an audit log
+- HTTPS with the server's own certificate authority (pinned by the clients) or Let's Encrypt
+- Found on the local network automatically; reachable from outside without port forwarding through
+  Corrent Connect (peer-to-peer over [iroh](https://github.com/n0-computer/iroh)), or with UPnP/NAT-PMP port mapping
+- Scheduled tasks, notifications (ntfy, Discord, webhooks), backups, Prometheus metrics, sandboxed
+  WebAssembly plugins, and an MCP bridge for AI agents
+
+## Torrent client
+
+The torrent side is a complete client of its own, also usable without any libraries.
 
 <p align="center">
   <img src="site/img/list.webp" width="900"
-       alt="Corrent's main window: the torrent list with status filters and categories in the sidebar">
+       alt="Corrent's torrent list with status filters and categories in the sidebar">
 </p>
-
-## Features
 
 **Adding torrents**
 - `.torrent` files, magnet links, info hashes and `http(s)` links to `.torrent` files
@@ -56,7 +108,13 @@ Website: **[ulaas.github.io/corrent](https://ulaas.github.io/corrent/)** · Down
 - IP filter: blocklist and allowlist (URL or file, plain or gzip) plus your own addresses
 - Falls back to a random port if the configured one is unavailable
 
-**Desktop**
+**Remote control** (off by default)
+- qBittorrent-compatible Web API, so Sonarr, Radarr and similar tools can use Corrent as their
+  download client; a small web interface at the same address
+- Local-only unless you allow other devices; password required (stored as a PBKDF2 hash)
+
+## Desktop app
+
 - Custom title bar in the app's own style (native window buttons on macOS)
 - Dark and light themes (or follow the system), six accent colors plus a custom color,
   interface scaling, speed units, animations
@@ -68,12 +126,8 @@ Website: **[ulaas.github.io/corrent](https://ulaas.github.io/corrent/)** · Down
 - Screen-reader support (AccessKit), keyboard focus rings, labelled icon buttons
 - English and Turkish (follows the system language or pick one in Settings → Appearance)
 
-**Remote control** (off by default)
-- qBittorrent-compatible Web API, so Sonarr, Radarr and similar tools can use Corrent as their
-  download client; a small web interface at the same address
-- Local-only unless you allow other devices; password required (stored as a PBKDF2 hash)
+## Stability
 
-**Stability**
 - The engine runs on its own async runtime; the UI only reads immutable snapshots, so it never
   blocks on disk or network I/O
 - Fast resume is on by default: restarting never re-downloads and normally skips re-verification
@@ -84,7 +138,7 @@ Website: **[ulaas.github.io/corrent](https://ulaas.github.io/corrent/)** · Down
 - Damaged settings/data files are recovered from backups; backup and restore of all app data
 - Opt-in update check (GitHub releases; nothing is installed automatically)
 
-## Keyboard shortcuts
+## Keyboard shortcuts (torrent list)
 
 | Shortcut | Action |
 |---|---|
