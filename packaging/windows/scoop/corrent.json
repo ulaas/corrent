@@ -1,0 +1,36 @@
+{
+    "##": "Scoop manifest template. The package-manifests workflow fills in the version and the SHA-256 of the portable zip after a release is published; the result can go to a bucket (e.g. ScoopInstaller/Extras) by hand. See docs/PACKAGING.md.",
+    "version": "{{VERSION}}",
+    "description": "A beautiful, stable, cross-platform BitTorrent client",
+    "homepage": "https://ulaas.github.io/corrent/",
+    "license": "MIT|Apache-2.0",
+    "notes": "Corrent runs in portable mode here: its data lives in $persist_dir\\corrent-data. Settings > General > 'Open with Corrent' registers it for magnet links and .torrent files.",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/ulaas/corrent/releases/download/v{{VERSION}}/Corrent-{{VERSION}}-windows-portable.zip",
+            "hash": "{{SHA256}}"
+        }
+    },
+    "extract_dir": "Corrent",
+    "bin": "corrent.exe",
+    "shortcuts": [
+        [
+            "corrent.exe",
+            "Corrent"
+        ]
+    ],
+    "persist": "corrent-data",
+    "checkver": {
+        "github": "https://github.com/ulaas/corrent"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/ulaas/corrent/releases/download/v$version/Corrent-$version-windows-portable.zip",
+                "hash": {
+                    "url": "https://github.com/ulaas/corrent/releases/download/v$version/SHA256SUMS.txt"
+                }
+            }
+        }
+    }
+}

@@ -9,6 +9,11 @@ A beautiful, stable, cross-platform BitTorrent client written in Rust with an
 Website: **[ulaas.github.io/corrent](https://ulaas.github.io/corrent/)** · Downloads:
 [Releases](https://github.com/ulaas/corrent/releases) · Changes: [CHANGELOG.md](CHANGELOG.md)
 
+<p align="center">
+  <img src="site/img/list.webp" width="900"
+       alt="Corrent's main window: the torrent list with status filters and categories in the sidebar">
+</p>
+
 ## Features
 
 **Adding torrents**

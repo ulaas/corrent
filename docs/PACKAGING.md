@@ -8,6 +8,9 @@ workflow uploads all artifacts to a **draft** GitHub release; nothing is publish
 | Windows | `Corrent-<v>-x86_64.msi` (per-user, no admin) | `scripts/package-windows.ps1 -Msi` (cargo-wix + WiX 3, config in `wix/main.wxs`) |
 | Windows | `Corrent-<v>-windows-portable.zip` | `scripts/package-windows.ps1` |
 | Windows | winget manifests | release workflow fills `packaging/windows/winget/*.yaml` |
+| Windows | Scoop manifest | `packaging/windows/scoop/corrent.json` (portable zip) |
+| macOS | Homebrew cask | `packaging/macos/homebrew/corrent.rb` (dmg) |
+| Linux | AUR `corrent-bin` | `packaging/linux/aur/PKGBUILD` (tarball) |
 | Linux | `Corrent-<v>-x86_64.AppImage` | `scripts/package-appimage.sh` (linuxdeploy) |
 | Linux | `Corrent-<v>-linux-x86_64.tar.gz` | release workflow |
 | Linux | Flatpak | `packaging/linux/flatpak/io.github.ulaas.Corrent.yml` (manual, see below) |
@@ -90,4 +93,8 @@ Without them the dmg is unsigned and opens after right-click › Open.
    passed on the tagged commit before building, and fails if that CI run fails or is cancelled (re-run CI, then the
    release). A manual run can tick `skip_ci_gate` in an emergency.
 4. Check the draft release's artifacts on each platform (`docs/PLATFORM-TESTING.md`), then publish.
-5. Submit the winget manifests, and keep the `symbols-windows` artifact with the release.
+5. Publishing the release runs `.github/workflows/package-manifests.yml`: it fills the winget, Scoop,
+   Homebrew and AUR templates with the release's version and SHA-256 sums and attaches them to the
+   release (`package-manifests.zip` and the single files; re-run it by hand with a tag if needed).
+   Submit them by hand (winget-pkgs, a Scoop bucket, a Homebrew tap, the AUR — run
+   `makepkg --printsrcinfo > .SRCINFO` there), and keep the `symbols-windows` artifact with the release.

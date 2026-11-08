@@ -1,0 +1,107 @@
+name: Package manifests
+
+# After a release is published, fills in the package-manager templates under packaging/ with the
+# release's version and SHA-256 sums and attaches them to the release (package-manifests.zip plus
+# the individual files). Nothing is pushed anywhere: the owner submits them by hand
+# (winget-pkgs, a Scoop bucket, a Homebrew tap, the AUR; see docs/PACKAGING.md).
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to render manifests for (e.g. v0.4.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: package-manifests-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  manifests:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      # Templates come from the default branch, so older releases get the current templates too.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Check the tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]] || { echo "::error::Not a version tag: $TAG"; exit 1; }
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Download release assets
+        run: |
+          mkdir -p assets
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D assets \
+            -p "Corrent-$VERSION-x86_64.msi" \
+            -p "Corrent-$VERSION-windows-portable.zip" \
+            -p "Corrent-$VERSION-macos.dmg" \
+            -p "Corrent-$VERSION-linux-x86_64.tar.gz"
+          ls -l assets
+
+      # The AUR package also fetches a few files from the tagged source tree: hash exactly what
+      # makepkg will download.
+      - name: Download files the AUR package uses
+        run: |
+          mkdir -p raw
+          base="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$TAG"
+          curl -fsSL -o raw/corrent.desktop "$base/packaging/linux/corrent.desktop"
+          curl -fsSL -o raw/corrent.png "$base/assets/icon/corrent-256.png"
+          curl -fsSL -o raw/LICENSE-MIT "$base/LICENSE-MIT"
+          curl -fsSL -o raw/LICENSE-APACHE "$base/LICENSE-APACHE"
+
+      - name: Render manifests
+        run: |
+          sha() { sha256sum "$1" | cut -d' ' -f1; }
+          msi="Corrent-$VERSION-x86_64.msi"
+          out=out/package-manifests
+          mkdir -p "$out/winget" "$out/scoop" "$out/homebrew" "$out/aur"
+
+          # winget (same substitutions as release.yml, which keeps them only as a build artifact).
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$msi"
+          for f in packaging/windows/winget/*.yaml; do
+            sed -e "s|{{VERSION}}|$VERSION|g" -e "s|{{URL}}|$url|g" -e "s|{{SHA256}}|$(sha "assets/$msi")|g" \
+              "$f" > "$out/winget/$(basename "$f")"
+          done
+
+          sed -e "s|{{VERSION}}|$VERSION|g" \
+              -e "s|{{SHA256}}|$(sha "assets/Corrent-$VERSION-windows-portable.zip")|g" \
+            packaging/windows/scoop/corrent.json > "$out/scoop/corrent.json"
+
+          sed -e "s|{{VERSION}}|$VERSION|g" \
+              -e "s|{{SHA256}}|$(sha "assets/Corrent-$VERSION-macos.dmg")|g" \
+            packaging/macos/homebrew/corrent.rb > "$out/homebrew/corrent.rb"
+
+          sed -e "s|{{VERSION}}|$VERSION|g" \
+              -e "s|{{SHA256_TARBALL}}|$(sha "assets/Corrent-$VERSION-linux-x86_64.tar.gz")|g" \
+              -e "s|{{SHA256_DESKTOP}}|$(sha raw/corrent.desktop)|g" \
+              -e "s|{{SHA256_ICON}}|$(sha raw/corrent.png)|g" \
+              -e "s|{{SHA256_LICENSE_MIT}}|$(sha raw/LICENSE-MIT)|g" \
+              -e "s|{{SHA256_LICENSE_APACHE}}|$(sha raw/LICENSE-APACHE)|g" \
+            packaging/linux/aur/PKGBUILD > "$out/aur/PKGBUILD"
+
+          if grep -rnE '{{[A-Z0-9_]+}}' "$out"; then echo "::error::Unfilled placeholders"; exit 1; fi
+          python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$out/scoop/corrent.json"
+          bash -n "$out/aur/PKGBUILD"
+          ruby -c "$out/homebrew/corrent.rb"
+          find "$out" -type f -print -exec cat {} \;
+
+      - name: Upload to the release
+        run: |
+          cd out
+          zip -r package-manifests.zip package-manifests
+          mkdir flat
+          cp package-manifests/winget/*.yaml flat/
+          cp package-manifests/scoop/corrent.json flat/corrent.scoop.json
+          cp package-manifests/homebrew/corrent.rb flat/corrent.cask.rb
+          cp package-manifests/aur/PKGBUILD flat/corrent-bin.PKGBUILD
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber package-manifests.zip flat/*

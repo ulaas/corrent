@@ -1,0 +1,37 @@
+# AUR PKGBUILD template for corrent-bin (prebuilt Linux tarball from GitHub releases).
+# The package-manifests workflow fills in the version and SHA-256 placeholders after a release
+# is published. To publish: copy the rendered file into the AUR repo, run
+# `makepkg --printsrcinfo > .SRCINFO`, then commit and push there.
+# Maintainer: ulaas <https://github.com/ulaas>
+pkgname=corrent-bin
+pkgver={{VERSION}}
+pkgrel=1
+pkgdesc="A beautiful, stable, cross-platform BitTorrent client"
+arch=('x86_64')
+url="https://ulaas.github.io/corrent/"
+license=('MIT OR Apache-2.0')
+depends=('gcc-libs' 'glibc' 'libxkbcommon' 'libglvnd' 'systemd-libs' 'hicolor-icon-theme')
+optdepends=('mpv: play and probe media in the built-in player and library (libmpv)'
+            'xdg-desktop-portal: native file dialogs')
+provides=('corrent')
+conflicts=('corrent')
+_raw="https://raw.githubusercontent.com/ulaas/corrent/v${pkgver}"
+source=("Corrent-${pkgver}-linux-x86_64.tar.gz::https://github.com/ulaas/corrent/releases/download/v${pkgver}/Corrent-${pkgver}-linux-x86_64.tar.gz"
+        "corrent-${pkgver}.desktop::${_raw}/packaging/linux/corrent.desktop"
+        "corrent-${pkgver}.png::${_raw}/assets/icon/corrent-256.png"
+        "LICENSE-MIT-${pkgver}::${_raw}/LICENSE-MIT"
+        "LICENSE-APACHE-${pkgver}::${_raw}/LICENSE-APACHE")
+sha256sums=('{{SHA256_TARBALL}}'
+            '{{SHA256_DESKTOP}}'
+            '{{SHA256_ICON}}'
+            '{{SHA256_LICENSE_MIT}}'
+            '{{SHA256_LICENSE_APACHE}}')
+
+package() {
+  install -Dm755 corrent "${pkgdir}/usr/bin/corrent"
+  install -Dm755 corrent-mpvw "${pkgdir}/usr/bin/corrent-mpvw"
+  install -Dm644 "corrent-${pkgver}.desktop" "${pkgdir}/usr/share/applications/corrent.desktop"
+  install -Dm644 "corrent-${pkgver}.png" "${pkgdir}/usr/share/icons/hicolor/256x256/apps/corrent.png"
+  install -Dm644 "LICENSE-MIT-${pkgver}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"
+  install -Dm644 "LICENSE-APACHE-${pkgver}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE"
+}
