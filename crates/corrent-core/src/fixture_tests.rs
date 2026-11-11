@@ -81,6 +81,8 @@ fn write_current_fixture() {
     s.speed.download_limit = 512;
     s.behavior.skip_add_dialog = true;
     s.queue.max_active_downloads = 4;
+    // Switched off by the user (format 2 on): it must load switched off.
+    s.updates.check_automatically = false;
     s.rss.feeds.push(crate::rss::FeedConfig {
         url: "https://feeds.example/tv.xml".into(),
         name: "TV".into(),
@@ -234,7 +236,7 @@ fn every_fixture_loads_losslessly() {
         .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("profile-v")))
         .collect();
     dirs.sort();
-    assert!(dirs.len() >= 3, "fixtures: {dirs:?}");
+    assert!(dirs.len() >= 4, "fixtures: {dirs:?}");
     let rt = tokio::runtime::Runtime::new().unwrap();
     for fixture in dirs {
         let name = fixture.file_name().unwrap().to_string_lossy().into_owned();
@@ -250,14 +252,28 @@ fn every_fixture_loads_losslessly() {
             pb.remove("equalizer");
             pb.remove("normalize");
         }
-        let store_in: Value = serde_json::from_str(&read("store.json")).unwrap();
-        let rss_in: Value = serde_json::from_str(&read("rss.json")).unwrap();
         // As written, before anything migrates them.
         let settings_from = crate::migrate::toml_version(&read("settings.toml"));
+        // Settings format 2 switches the update check on once (migrate.rs): older files said
+        // `false` because that was the default.
+        if settings_from < 2 {
+            let was = settings_in
+                .get_mut("updates")
+                .and_then(Value::as_object_mut)
+                .and_then(|u| u.remove("check_automatically"));
+            assert_eq!(was, Some(Value::Bool(false)), "{name}: the old default, written out");
+        }
+        let store_in: Value = serde_json::from_str(&read("store.json")).unwrap();
+        let rss_in: Value = serde_json::from_str(&read("rss.json")).unwrap();
         let store_from = crate::migrate::json_version(read("store.json").as_bytes());
 
         let (settings, _, warning) = Settings::load(&paths);
         assert_eq!(settings.schema_version, crate::migrate::SETTINGS_VERSION, "{name}");
+        if settings_from < 2 {
+            assert!(settings.updates.check_automatically, "{name}: the update check is on after the migration");
+        } else {
+            assert!(!settings.updates.check_automatically, "{name}: switched off in this format stays off");
+        }
         let settings_out = serde_json::to_value(&settings).unwrap();
         if let Some(m) = missing(&without_version(settings_in), &settings_out, "settings") {
             panic!("{name}: {m} (warning {warning:?})");

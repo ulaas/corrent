@@ -84,6 +84,63 @@ Signing and notarization need the owner's Developer ID: locally set `CODESIGN_ID
 App Store Connect API key (`MACOS_NOTARY_KEY_P8`, `MACOS_NOTARY_KEY_ID`, `MACOS_NOTARY_ISSUER`).
 Without them the dmg is unsigned and opens after right-click › Open.
 
+## Updates in place
+
+Once a day (Settings › Behavior › Updates, on by default) the app asks
+`https://api.github.com/repos/ulaas/corrent/releases/latest` for the latest release: one
+anonymous HTTPS request through the user's proxy if one is set, with `Corrent/<version>` as the
+User-Agent and nothing that identifies the user or the profile. Drafts and pre-releases are
+ignored. A newer release is announced (a toast, About, the Updates card); **nothing is downloaded
+until the user clicks**. The click downloads one file, checks it, installs it and restarts
+(`crates/corrent-core/src/self_update.rs`, `src/integration/updater.rs`, `src/app/update_ui.rs`).
+
+**What is checked.** Only addresses under `https://github.com/ulaas/corrent/releases/download/`
+are fetched, over HTTPS (redirects included), at most 600 MiB, and the size must be the one the
+release states. The file is installed only if its SHA-256 equals the entry in the release's
+`SHA256SUMS.txt` *and* the `digest` GitHub's API reports for the asset. Every source the release
+has must agree and there must be at least one; a list that is there but doesn't name the file, or
+can't be fetched, stops the update. Releases are not signed: this guards against a damaged or
+swapped download, not against someone who can publish a release.
+
+**Which file, and how it goes in** (by exact name; the kind is detected, never guessed):
+
+| This copy | Detected by | Release file | How |
+|---|---|---|---|
+| Windows portable | the `portable` marker and `corrent-mpvw.exe` beside `corrent.exe`, folder writable | `Corrent-<v>-windows-portable.zip` | `Corrent/corrent.exe`, `corrent-mpvw.exe` and `LICENSE.txt` are unpacked into `.corrent-update-<n>\` beside them. The running files are renamed to `*.old` (a running program can be renamed, not overwritten), the new ones take their names, the new `corrent.exe` is started. If any step fails, or the new program doesn't start, every file is put back. `corrent-data`, `corrent-lib` and the marker are never touched. The next start deletes `*.old`. |
+| Windows MSI | `HKCU\Software\Corrent\Installer` `InstallDir` is the program's folder | `Corrent-<v>-x86_64.msi` | Downloaded into `<profile>\update\`. The app copies itself there as `corrent-update.exe`, starts it with `--run-installer` and quits. The copy waits until the app is gone, checks the MSI's SHA-256 once more, runs `msiexec /i <msi> /passive /norestart` (progress window, no questions, no UAC: the MSI is per-user) and starts the installed `corrent.exe`. Exit codes 0, 3010 and 1641 count as installed; anything else shows a message and starts the version that is there (the installer rolls a failed upgrade back). |
+| AppImage | `$APPIMAGE` names a file in a writable folder | `Corrent-<v>-x86_64.AppImage` | Downloaded beside it, made executable, the old file is linked to `*.old`, the new one is renamed over it (one step), then started. |
+| Linux tarball | `corrent` and `corrent-mpvw` in a writable folder outside `/usr`, `/opt`… | `Corrent-<v>-linux-x86_64.tar.gz` | The two programs are unpacked and swapped like the portable zip (old files linked to `*.old`, new ones renamed over). |
+| macOS app | runs from `*.app/Contents/MacOS` | `Corrent-<v>-macos.dmg` | **Not replaced in place.** The disk image is downloaded to Downloads, checked and opened; the dialog says to quit and drag Corrent into Applications. Replacing a bundle safely needs things nobody has run yet on a real Mac (ad-hoc or Developer ID signatures surviving the copy, App Translocation, `/Applications` owned by another user). |
+| Scoop, Homebrew, `/usr`·`/opt`·`/nix` (AUR and other packages), Flatpak, Snap | the path (`\scoop\apps\`), a `corrent` cask in the Caskroom, `$FLATPAK_ID`, `$SNAP` | none | Never touched. The dialog shows the command (`scoop update corrent`, `brew upgrade --cask corrent`, `yay -S corrent-bin`, `flatpak update io.github.ulaas.Corrent`, `snap refresh corrent`) and the release page. |
+| Read-only folder, a build from source, a copy moved out of its package, not x86-64 | — | none | Told so, with the release page. |
+
+**Coming back.** A process holds the data-folder lock (`corrent.lock`) for its whole life. The
+new version is started with `--after-update` *before* the old one quits and waits (up to 90 s)
+for that lock; then the old engine has saved and stopped, its single-instance pipe is closed and
+its files are free, and the usual start follows. Without the wait the new process would forward
+its launch to the old instance and exit. `--portable` and `--tv` are passed on.
+
+**The MSI's own actions.** Corrent passes nothing to the installer but `/passive /norestart`: the
+upgrade keeps the features the installation had (`MajorUpgrade` migrates them). `--unregister`
+is skipped on upgrades (`NOT UPGRADINGPRODUCTCODE`); `--register` runs again only where the
+*Open magnet links and .torrent files with Corrent* feature was installed, exactly as when the
+user runs a newer MSI by hand. The updater itself never registers or unregisters anything. A
+`corrent-mpvw.exe` still running (a scan in flight) can leave the installer with a file in use:
+Windows then replaces it at the next restart (3010).
+
+**Contracts a release must keep** (older versions rely on them):
+- the asset names in the table above, and `SHA256SUMS.txt` in `sha256sum` format listing them;
+- the portable zip's top folder `Corrent/`, the tarball's flat `corrent` and `corrent-mpvw`;
+- `--after-update` (wait for the previous version, then start normally) and the MSI's
+  `UpgradeCode`, per-user scope and `InstallDir` registry value.
+
+Not covered: `correntd` and the web client (docs/WEB-PARITY.md), pre-releases, delta updates,
+going back to an older version after an update that worked.
+
+Testing without GitHub (debug builds only): `CORRENT_DEV_UPDATE=http://127.0.0.1:<port>` makes
+the check read `<base>/latest.json` and accept downloads under `<base>/` over plain HTTP;
+`CORRENT_DEV_UPDATE_NOW=1` starts the update as soon as it is found.
+
 ## Checklist for a release
 
 1. Bump `version` in `Cargo.toml` and the `<release>` in the metainfo; `cargo build` to update the lock file.

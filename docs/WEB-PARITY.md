@@ -147,6 +147,12 @@ No file-system actions (Open, Open folder), no offline downloads, no TV
 mode, no mpv-only player features; long-press sheets on phones; Play ▸ for torrents streams from
 the server rather than an external player.
 
+No update check and no "Update and restart" (desktop: Settings › Behavior › Updates,
+`src/app/update_ui.rs`). The web client is served by the server it talks to, so it is always that
+server's version. `correntd` itself neither checks for releases nor updates itself: whatever
+installed it does (the archive, the Docker image, a service package). A "newer version" notice for
+administrators in the web client is open; replacing a running service is out of scope there.
+
 ## Sound processing, desktop side (quality round, stream C)
 
 The sound sheet (Player → Playback settings → Sound; the mini player's sliders button; Settings →

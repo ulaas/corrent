@@ -331,11 +331,109 @@ async fn fm_http_update_check_fails_cleanly() {
     srv.route("/hang", Route::Hang);
     srv.route("/wrong", Route::Answer { status: 200, content_type: "text/html", body: b"<html>".to_vec() });
     let c = quick_client();
-    assert_eq!(crate::updates::check_at(&c, &srv.url("/nothing-yet")).await, Ok(None), "404: no release");
+    let at = |path: &str| crate::updates::Source { api: srv.url(path), ..crate::updates::Source::github() };
+    assert_eq!(crate::updates::check_at(&c, &at("/nothing-yet")).await, Ok(None), "404: no release");
     for path in ["/500", "/huge", "/hang", "/wrong"] {
-        let r = crate::updates::check_at(&c, &srv.url(path)).await;
+        let r = crate::updates::check_at(&c, &at(path)).await;
         assert!(r.is_err(), "{path}: {r:?}");
     }
+}
+
+/// The fault matrix for the download: each failure is an error with a message, soon, and
+/// leaves no file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fm_http_update_download_fails_cleanly() {
+    use super::faultserver::{Route, start};
+    use crate::self_update::{MAX_DOWNLOAD, Plan, fetch};
+    use crate::updates::Asset;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const NAME: &str = "Corrent-9.0.0-windows-portable.zip";
+    let sha = |b: &[u8]| -> String {
+        aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, b).as_ref().iter().map(|b| format!("{b:02x}")).collect()
+    };
+    let answer = |body: Vec<u8>| Route::Answer { status: 200, content_type: "application/octet-stream", body };
+    let leftovers = |dir: &std::path::Path| -> Vec<String> {
+        std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()
+    };
+    let dir = temp_dir("fm-update-download");
+    std::fs::create_dir_all(&dir).unwrap();
+    let srv = start().await;
+    let plan_at = |path: &str, size: u64, digest: Option<String>| Plan {
+        version: "9.0.0".into(),
+        page: "https://github.com/ulaas/corrent/releases/tag/v9.0.0".into(),
+        asset: Asset { name: NAME.into(), url: srv.url(path), size, sha256: digest },
+        sums: None,
+    };
+    // Like the real client: no limit on the whole transfer, only on silence.
+    let c = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .read_timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let get = async |plan: &Plan| fetch(&c, plan, &dir, |_| {}, &AtomicBool::new(false)).await;
+    let data: Vec<u8> = (0..200_000u32).flat_map(|i| i.to_le_bytes()).collect();
+    let good = sha(&data);
+    let size = data.len() as u64;
+    let mut flipped = data.clone();
+    flipped[1000] ^= 1;
+    srv.route("/flipped", answer(flipped));
+    srv.route("/cut", Route::Truncated { body: data.clone(), sent: 50_000 });
+    srv.route("/hang", Route::Hang);
+    srv.route("/reset", Route::Reset);
+    srv.route("/500", Route::Answer { status: 500, content_type: "text/html", body: b"oops".to_vec() });
+    srv.route("/short", answer(data.get(..data.len() - 1).unwrap().to_vec()));
+    srv.route("/long", answer([data.clone(), vec![0]].concat()));
+    srv.route("/endless", Route::Huge { len: 4 << 20 });
+    srv.route("/loop", Route::RedirectLoop);
+    srv.route("/trickle", Route::Slow { body: data.clone(), chunk: 16, pause: Duration::from_secs(3) });
+    for (path, what) in [
+        ("/flipped", "checksum"),
+        ("/cut", ""),
+        ("/hang", ""),
+        ("/reset", ""),
+        ("/500", "500"),
+        ("/short", "size"),
+        ("/long", "size"),
+        ("/endless", "size"),
+        ("/loop", ""),
+        ("/trickle", ""),
+        ("/nothing-here", "404"),
+    ] {
+        let started = std::time::Instant::now();
+        let e = get(&plan_at(path, size, Some(good.clone()))).await;
+        let e = e.err().unwrap_or_else(|| panic!("{path} should fail"));
+        assert!(!e.trim().is_empty() && e.contains(what), "{path}: {e}");
+        assert!(started.elapsed() < Duration::from_secs(8), "{path} took {:?}", started.elapsed());
+        assert!(leftovers(&dir).is_empty(), "{path} left {:?}", leftovers(&dir));
+    }
+    // A release that doesn't say how large the file is: the checksum still decides, and an
+    // endless answer stops at the cap of what was asked for.
+    srv.route("/ok", answer(data.clone()));
+    assert!(get(&plan_at("/ok", 0, Some(good.clone()))).await.is_ok());
+    std::fs::remove_file(dir.join(NAME)).unwrap();
+    // Larger than any release: refused before a request is made.
+    let e = get(&plan_at("/ok", MAX_DOWNLOAD + 1, Some(good.clone()))).await.unwrap_err();
+    assert!(e.contains("larger"), "{e}");
+    // A name that is a path is never written.
+    let mut p = plan_at("/ok", size, Some(good.clone()));
+    p.asset.name = "../evil.zip".into();
+    assert!(get(&p).await.is_err());
+
+    // Cancel during a hang: at once, not after the timeout.
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let c2 = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        c2.store(true, Ordering::Relaxed);
+    });
+    let slow = reqwest::Client::builder().read_timeout(Duration::from_secs(30)).build().unwrap();
+    let started = std::time::Instant::now();
+    let p = plan_at("/hang", size, Some(good));
+    let e = fetch(&slow, &p, &dir, |_| {}, &cancel).await.unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(3), "cancelling took {:?}", started.elapsed());
+    assert!(!e.is_empty());
+    assert!(leftovers(&dir).is_empty(), "{:?}", leftovers(&dir));
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Adding from a URL that redirects forever or resets: an error toast, the engine fine.

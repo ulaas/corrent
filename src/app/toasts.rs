@@ -18,8 +18,9 @@ pub enum ToastAction {
     /// Show these torrents, all selected.
     ShowAll(Vec<crate::engine::types::InfoHash>),
     Copy(String),
-    OpenUrl(String),
     SkipVersion(String),
+    /// Take the update that was found (or say how).
+    Update,
 }
 
 struct Toast {

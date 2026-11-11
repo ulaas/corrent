@@ -608,9 +608,12 @@ impl CorrentApp {
                         ui,
                         p,
                         t!("Check for new versions automatically"),
-                        t!("Once a day, asks GitHub for the latest release. Nothing is downloaded or installed."),
+                        t!("Once a day, asks GitHub's public release list for the latest version. The request carries nothing about you, your torrents or your library. A newer version is announced; it is downloaded and installed only when you choose Update."),
                         &mut s.updates.check_automatically,
                     );
+                    if self.update_notice(ui, p) {
+                        self.open_update();
+                    }
                     if ui.button(format!("{}  {}", icons::ARROW_CIRCLE_UP, t!("Check now"))).clicked() {
                         self.check_for_updates(true);
                     }

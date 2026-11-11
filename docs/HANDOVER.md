@@ -210,7 +210,8 @@ and a first tagged release.
     (`write_current_fixture`).
 - S7 adds:
   - store schema 2: `TorrentMeta::{output_folder, only_files, paused}`, copies of the engine's
-    side, and `metainfo_missing`. `migrate::PROFILE_VERSION` names the fixtures (`profile-v2`).
+    side, and `metainfo_missing`. `migrate::PROFILE_VERSION` names the fixtures (`profile-v3`; settings format 2 switched the
+    update check on once).
   - `session_db::plan`/`commit`: restore from a good copy (D6a) or rebuild from
     `session/*.torrent` + the store (D6b); the store is saved before the list is written.
   - `corrent-harness damage <scratch> garbage|missing` for the rebuild in the kill test.

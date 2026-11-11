@@ -38,6 +38,7 @@ mod tray;
 mod tv;
 #[cfg(test)]
 mod ui_tests;
+mod update_ui;
 mod web_account;
 mod when_done;
 mod win_chrome;
@@ -432,6 +433,8 @@ pub struct CorrentApp {
     pub creator: Option<creator::CreatorState>,
     pub import: Option<import_dialog::ImportDialog>,
     pub when_done: when_done::WhenDoneState,
+    /// Update checks, the release that was found and "Update and restart".
+    pub update: update_ui::UpdateState,
     /// Newest crash report while the engine is down (looked up once).
     engine_report: Option<Option<std::path::PathBuf>>,
     /// Generation of the latest engine snapshot and when it arrived (stall detection).
@@ -639,6 +642,7 @@ impl CorrentApp {
             creator: None,
             import: None,
             when_done: Default::default(),
+            update: Default::default(),
             engine_report: None,
             last_snapshot: (0, std::time::Instant::now()),
             refused_seen: 0,
@@ -1164,15 +1168,11 @@ impl CorrentApp {
                 }
                 toasts::ToastAction::OpenFolder(p) | toasts::ToastAction::OpenFile(p) => open_path(&p),
                 toasts::ToastAction::Copy(text) => self.copy(text),
-                toasts::ToastAction::OpenUrl(url) => {
-                    if url.starts_with("https://") {
-                        let _ = open::that_detached(url);
-                    }
-                }
                 toasts::ToastAction::SkipVersion(v) => {
                     self.settings.updates.skip_version = v;
                     self.save_settings();
                 }
+                toasts::ToastAction::Update => self.open_update(),
                 toasts::ToastAction::Show(h) => self.show_torrents(ctx, vec![h]),
                 toasts::ToastAction::ShowAll(hashes) => self.show_torrents(ctx, hashes),
             }
@@ -1462,6 +1462,7 @@ impl CorrentApp {
         if self.tv.on {
             egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg0)).show(ui, |ui| self.tv_view(ui, &p));
             self.dialogs(&ctx, &p);
+            self.update_window(&ctx, &p);
             self.toasts.bottom_inset = 16.0;
             let actions = self.toasts.show(&ctx, &p);
             self.run_toast_actions(&ctx, actions);

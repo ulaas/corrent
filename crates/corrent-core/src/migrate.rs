@@ -10,11 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::config::{Settings, default_download_dir, os_download_dir};
 use crate::store::StoreData;
 
-pub const SETTINGS_VERSION: u32 = 1;
+pub const SETTINGS_VERSION: u32 = 2;
 pub const STORE_VERSION: u32 = 2;
 /// Names the profile fixtures (`tests/fixtures/profile-v<n>`): bumped whenever any file format
 /// changes (settings, store, feed history), so each release that changes one adds a fixture.
-pub const PROFILE_VERSION: u32 = 2;
+pub const PROFILE_VERSION: u32 = 3;
 
 /// Set when settings.toml comes from a newer version: saving is disabled.
 pub static SETTINGS_READ_ONLY: AtomicBool = AtomicBool::new(false);
@@ -53,6 +53,13 @@ pub fn migrate_settings(s: &mut Settings, from: u32) -> bool {
         if s.downloads.save_path == os_download_dir() {
             s.downloads.save_path = default_download_dir();
         }
+        changed = true;
+    }
+    if from < 2 {
+        // v1 → v2: the daily update check became on by default. Every older file says `false`
+        // (it was the default and settings are written in full), so that is not a choice anyone
+        // made: it is switched on once, here. Switched off afterwards, it stays off.
+        s.updates.check_automatically = true;
         changed = true;
     }
     s.schema_version = SETTINGS_VERSION;
@@ -162,6 +169,23 @@ download_limit = 512
         assert_eq!(json_version(&out), 2);
         let back: StoreData = serde_json::from_slice(&out).unwrap();
         assert_eq!(back.torrents.values().next().unwrap().tags, vec!["t".to_string()]);
+    }
+
+    #[test]
+    fn the_update_check_is_switched_on_once_for_older_files() {
+        // As 0.4.1 and earlier wrote it: off was the default, written out.
+        const OFF: &str = "[updates]\ncheck_automatically = false\n";
+        for (text, from) in [(OFF.to_string(), 0), (format!("schema_version = 1\n{OFF}"), 1)] {
+            assert_eq!(toml_version(&text), from);
+            let mut s: Settings = toml::from_str(&text).unwrap();
+            assert!(migrate_settings(&mut s, from));
+            assert!(s.updates.check_automatically, "from format {from}");
+        }
+        // Switched off in this format: left alone.
+        let text = format!("schema_version = {SETTINGS_VERSION}\n{OFF}");
+        let mut s: Settings = toml::from_str(&text).unwrap();
+        assert!(!migrate_settings(&mut s, toml_version(&text)));
+        assert!(!s.updates.check_automatically);
     }
 
     #[test]

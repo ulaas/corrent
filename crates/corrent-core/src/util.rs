@@ -102,7 +102,9 @@ pub fn write_replace(path: &Path, data: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
+/// A rename that waits out a file held for a moment (a virus scanner reading what was just
+/// written): a few tries over about 1.5 s.
+pub(crate) fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
     let mut delay = Duration::from_millis(50);
     loop {
         match std::fs::rename(from, to) {

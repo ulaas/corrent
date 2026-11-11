@@ -172,7 +172,11 @@ upstream feature we don't enable yet.
 - **C8 Import from other clients:** qBittorrent (`BT_backup` + `.fastresume`), Transmission; Deluge
   only as ".torrent files" (its state is a Python pickle); adds paused with `overwrite: true` (re-verify, never re-download), keeps categories/tags.
 - **C9 Shutdown when done:** nothing / exit / sleep / shut down, 30 s cancellable countdown.
-- **C10 Update checks:** opt-in, GitHub Releases JSON, toast with a Download action; no auto-install.
+- **C10 Update checks:** GitHub Releases JSON once a day, on by default (opt-in up to 0.4.1; settings
+  format 2 switches it on once). A newer release is announced with "Update and restart": one click
+  downloads the file for this kind of installation, checks it (SHA256SUMS.txt and GitHub's digest),
+  installs it and restarts (`self_update.rs`, `integration/updater.rs`, docs/PACKAGING.md "Updates in
+  place"). Nothing is downloaded before the click; package-managed copies are only told how.
 - **C11 Packaging:** MSI (cargo-wix, per-user, optional handler registration) + winget; portable
   zip with the `portable` marker; macOS app bundle + dmg (notarization with the owner's keys);
   AppImage and Flatpak with `.desktop`/MIME from `packaging/`.

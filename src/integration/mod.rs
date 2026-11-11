@@ -5,3 +5,4 @@ pub mod macos_events;
 pub mod os_handler;
 pub mod power;
 pub mod single_instance;
+pub mod updater;

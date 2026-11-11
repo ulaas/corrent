@@ -136,7 +136,13 @@ impl CorrentApp {
                         }
                     },
                 );
-                if ui.button(format!("{}  {}", icons::ARROW_CIRCLE_UP, t!("Check for updates"))).clicked() {
+                // Once a newer version is known, the item is the update itself.
+                if let Some(version) = self.update_version().map(str::to_string) {
+                    let label = t!("Update to Corrent {version}", version = version);
+                    if ui.button(format!("{}  {}", icons::ARROW_CIRCLE_UP, label)).clicked() {
+                        self.open_update();
+                    }
+                } else if ui.button(format!("{}  {}", icons::ARROW_CIRCLE_UP, t!("Check for updates"))).clicked() {
                     self.check_for_updates(true);
                 }
                 if local
@@ -196,12 +202,14 @@ impl CorrentApp {
         self.shortcuts_window(ctx, p);
         self.diagnostics_window(ctx, p);
         self.get_mpv_window(ctx, p);
+        self.update_window(ctx, p);
     }
 
     fn about_window(&mut self, ctx: &Context, p: &Palette) {
         if !self.extras.about {
             return;
         }
+        let mut update = false;
         let r = egui::Modal::new(Id::new("about")).show(ctx, |ui| {
             ui.set_width(380.0);
             ui.vertical_centered(|ui| {
@@ -213,6 +221,10 @@ impl CorrentApp {
                 if let Some(sha) = crate::BUILD_SHA {
                     ui.label(RichText::new(t!("Build {sha}", sha = sha)).monospace().small().color(p.text_dim))
                         .on_hover_text(t!("The commit this build was made from (+: with uncommitted changes)"));
+                }
+                if self.update.available.is_some() {
+                    ui.add_space(8.0);
+                    update = self.update_notice(ui, p);
                 }
                 ui.add_space(8.0);
                 ui.label(RichText::new(t!("A beautiful, stable BitTorrent client.")).color(p.text));
@@ -230,6 +242,10 @@ impl CorrentApp {
         });
         if r.should_close() {
             self.extras.about = false;
+        }
+        if update {
+            self.extras.about = false;
+            self.open_update();
         }
     }
 

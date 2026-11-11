@@ -53,6 +53,12 @@ fn split_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
 }
 
 fn main() -> eframe::Result {
+    // A copy of this program started to run the MSI of an update once the app has quit
+    // (integration/updater.rs). Nothing else of Corrent starts in that mode.
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().is_some_and(|a| a == integration::updater::RUN_INSTALLER) {
+        std::process::exit(integration::updater::run_installer(raw.get(1..).unwrap_or_default()));
+    }
     // The handler registration passes links and file names here: nothing after the first of
     // them is an option, whatever it looks like.
     let (args, items) = split_args(std::env::args().skip(1).collect());
@@ -131,6 +137,11 @@ fn main() -> eframe::Result {
         std::process::exit(handler_cli(flag("--register"), flag("--unregister")));
     }
 
+    // Started by the version this one replaces: wait until it has quit (it holds the data folder
+    // until then), or this launch would be handed to it and end here.
+    if flag(integration::updater::AFTER_UPDATE) {
+        integration::updater::wait_for_previous(&paths.data_dir);
+    }
     let (mut listener, unresponsive) = match integration::single_instance::acquire(&paths, &items) {
         integration::single_instance::Acquire::Forwarded => return Ok(()),
         integration::single_instance::Acquire::Primary(l) => (l, false),
@@ -207,6 +218,7 @@ fn main() -> eframe::Result {
     }
     let restore_note = backup::apply_pending(&paths);
     corrent_core::retention::sweep_temp_files(&paths);
+    integration::updater::cleanup(&paths.data_dir);
     corrent_core::retention::prune_in_background(&paths);
     // A media-server restore staged from the web interface replaces settings.toml too, so it goes
     // before the settings are read.

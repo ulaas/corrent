@@ -1,22 +1,17 @@
-//! "When downloads finish" (quit / sleep / shut down with a cancellable countdown) and update
-//! checks.
+//! "When downloads finish" (quit / sleep / shut down with a cancellable countdown).
 
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use egui::{Align, Context, Id, Layout, RichText, ViewportCommand};
 use egui_phosphor::regular as icons;
 
-use super::{CorrentApp, toasts};
+use super::CorrentApp;
 use crate::engine::ToastKind;
 use crate::integration::power::WhenDone;
 use crate::ui::theme::{self, Palette};
 use crate::ui::widgets::{danger_button, secondary_button};
-use crate::updates::Release;
 
 pub const COUNTDOWN: Duration = Duration::from_secs(30);
-
-type UpdateReply = (bool, Result<Option<Release>, String>);
 
 #[derive(Default)]
 pub struct WhenDoneState {
@@ -24,8 +19,6 @@ pub struct WhenDoneState {
     /// Something was downloading since the action was chosen.
     had_active: bool,
     pub countdown: Option<Instant>,
-    update_rx: Option<mpsc::Receiver<UpdateReply>>,
-    auto_checked: bool,
 }
 
 impl CorrentApp {
@@ -93,8 +86,7 @@ impl CorrentApp {
             cancel = true;
         }
         if cancel {
-            self.when_done =
-                WhenDoneState { update_rx: self.when_done.update_rx.take(), auto_checked: true, ..Default::default() };
+            self.when_done = WhenDoneState::default();
             self.toasts.push(ToastKind::Info, t!("Cancelled; Corrent will keep running."));
             return;
         }
@@ -125,56 +117,6 @@ impl CorrentApp {
         self.quitting = true;
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Close);
-    }
-
-    // ------------------------------------------------------------------ updates
-
-    pub fn check_for_updates(&mut self, manual: bool) {
-        if self.when_done.update_rx.is_some() {
-            return;
-        }
-        let (tx, rx) = mpsc::channel();
-        let (proxy, ctx) = (self.settings.connection.proxy_url(), self.ctx.clone());
-        self.rt.spawn(async move {
-            let _ = tx.send((manual, crate::updates::check(proxy).await));
-            ctx.request_repaint();
-        });
-        self.when_done.update_rx = Some(rx);
-        self.settings.updates.last_check = crate::util::now_unix();
-        self.save_settings();
-    }
-
-    pub(super) fn poll_updates(&mut self) {
-        if !self.when_done.auto_checked {
-            self.when_done.auto_checked = true;
-            let u = &self.settings.updates;
-            if u.check_automatically && crate::util::now_unix() - u.last_check > 24 * 3600 {
-                self.check_for_updates(false);
-            }
-        }
-        let Some(rx) = &self.when_done.update_rx else { return };
-        let Ok((manual, result)) = rx.try_recv() else { return };
-        self.when_done.update_rx = None;
-        match result {
-            Ok(Some(r)) if manual || r.version != self.settings.updates.skip_version => {
-                self.toasts.push_with(
-                    ToastKind::Info,
-                    t!(
-                        "Corrent {new} is available (you have {current}).",
-                        new = r.version,
-                        current = env!("CARGO_PKG_VERSION")
-                    ),
-                    vec![
-                        (t!("Download").into(), toasts::ToastAction::OpenUrl(r.url)),
-                        (t!("Skip this version").into(), toasts::ToastAction::SkipVersion(r.version)),
-                    ],
-                );
-            }
-            Ok(_) if manual => self.toasts.push(ToastKind::Success, t!("Corrent is up to date.")),
-            Ok(_) => {}
-            Err(e) if manual => self.toasts.push(ToastKind::Error, t!("Couldn't check for updates: {e}", e = e)),
-            Err(e) => tracing::info!("update check failed: {e}"),
-        }
     }
 }
 

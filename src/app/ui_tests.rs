@@ -43,6 +43,8 @@ fn settings(dir: &std::path::Path) -> Settings {
     s.behavior.handler_prompt_dismissed = true;
     // No multicast from tests (they inject what the network would announce).
     s.behavior.find_servers = false;
+    // Tests never ask GitHub for releases.
+    s.updates.check_automatically = false;
     // Tests read English labels, whatever the machine's language.
     s.appearance.language = "en".into();
     s
@@ -1994,4 +1996,92 @@ fn playing_without_mpv_offers_to_get_it() {
     }
     h.run_steps(2);
     assert!(h.state().get_mpv.is_none(), "the dialog closes without downloading");
+}
+
+fn newer_release(kind: corrent_core::self_update::InstallKind) -> super::update_ui::Found {
+    super::update_ui::Found {
+        release: crate::updates::Release {
+            version: "99.0.0".into(),
+            url: "https://github.com/ulaas/corrent/releases/tag/v99.0.0".into(),
+            assets: Vec::new(),
+        },
+        kind,
+    }
+}
+
+#[test]
+fn a_newer_release_is_announced_once_with_the_button_for_this_copy() {
+    use corrent_core::self_update::InstallKind;
+    let (_f, mut app) = app("update-toast", vec![torrent(1, "a", TorrentState::Seeding)]);
+    let portable = newer_release(InstallKind::WindowsPortable { dir: "nowhere".into() });
+    app.update.deliver(false, Ok(Some(portable.clone())));
+    app.poll_updates();
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label(&format!("Corrent 99.0.0 is available (you have {}).", env!("CARGO_PKG_VERSION")));
+    h.get_by_label("Update and restart");
+    assert_eq!(h.state().update.dialog(), (false, false), "nothing starts before the click");
+    h.get_by_label("Skip this version").click();
+    h.run_steps(3);
+    assert_eq!(h.state().settings.updates.skip_version, "99.0.0");
+    // Skipped: the daily check says nothing more about it, About and Settings still offer it.
+    h.state_mut().update.deliver(false, Ok(Some(portable.clone())));
+    h.state_mut().poll_updates();
+    h.run_steps(3);
+    assert!(h.query_by_label("Skip this version").is_none());
+    assert_eq!(h.state().update.available, Some(portable.clone()));
+    h.state_mut().extras.about = true;
+    h.run_steps(3);
+    h.get_by_label("Corrent 99.0.0 is available.");
+    assert!(h.query_by_label_contains("Update and restart").is_some());
+    assert_eq!(h.state().update_version(), Some("99.0.0"), "the menu offers it too");
+
+    // Found while hidden in the tray: the notice waits until the window is back.
+    h.state_mut().extras.about = false;
+    h.state_mut().window_hidden = true;
+    h.state_mut().update.deliver(true, Ok(Some(portable.clone())));
+    h.state_mut().poll_updates();
+    h.run_steps(3);
+    assert!(h.query_by_label("Skip this version").is_none(), "not while hidden");
+    h.state_mut().window_hidden = false;
+    h.state_mut().poll_updates();
+    h.run_steps(3);
+    h.get_by_label("Skip this version");
+    h.state_mut().extras.about = true;
+    h.run_steps(3);
+    // A check that finds nothing newer takes the offer away again.
+    h.state_mut().update.deliver(false, Ok(None));
+    h.state_mut().poll_updates();
+    h.run_steps(3);
+    assert!(h.query_by_label("Corrent 99.0.0 is available.").is_none());
+}
+
+#[test]
+fn a_package_managed_copy_is_told_how_to_update_and_downloads_nothing() {
+    use corrent_core::self_update::{InstallKind, Manager};
+    let (_f, mut app) = app("update-managed", vec![torrent(1, "a", TorrentState::Seeding)]);
+    app.update.deliver(true, Ok(Some(newer_release(InstallKind::Managed(Manager::Scoop)))));
+    app.poll_updates();
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label("How to update").click();
+    h.run_steps(3);
+    h.get_by_label("Update to Corrent 99.0.0");
+    h.get_by_label("scoop update corrent");
+    h.get_by_label("Open the release page");
+    assert_eq!(h.state().update.dialog(), (true, false), "told how; nothing is downloaded");
+    h.get_by_label("Close").click();
+    h.run_steps(3);
+    assert_eq!(h.state().update.dialog(), (false, false));
+
+    // A copy Corrent can't write to, and one that isn't a package, get the release page.
+    for kind in [InstallKind::ReadOnly, InstallKind::Unknown] {
+        h.state_mut().update.available = Some(newer_release(kind));
+        h.state_mut().open_update();
+        h.run_steps(3);
+        h.get_by_label("Open the release page");
+        assert_eq!(h.state().update.dialog(), (true, false));
+        h.get_by_label("Close").click();
+        h.run_steps(3);
+    }
 }

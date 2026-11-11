@@ -48,6 +48,11 @@ pub enum Progress {
 /// A client for the download: no limit on the whole transfer (it may take minutes on a slow
 /// line), only on connecting and on silence.
 pub fn client(proxy: Option<String>) -> reqwest::Client {
+    client_builder(proxy).build().unwrap_or_default()
+}
+
+/// `client` before it is built (the updater adds to it).
+pub(crate) fn client_builder(proxy: Option<String>) -> reqwest::ClientBuilder {
     let mut b = reqwest::Client::builder()
         .user_agent(concat!("Corrent/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15))
@@ -55,7 +60,7 @@ pub fn client(proxy: Option<String>) -> reqwest::Client {
     if let Some(p) = proxy.and_then(|p| reqwest::Proxy::all(p).ok()) {
         b = b.proxy(p);
     }
-    b.build().unwrap_or_default()
+    b
 }
 
 /// The newest build in a GitHub "latest release" answer, with the SHA-256 GitHub computed for

@@ -27,6 +27,7 @@ pub mod mpv_get;
 pub mod retention;
 pub mod rss;
 pub mod search;
+pub mod self_update;
 pub mod store;
 pub mod symbols;
 pub mod updates;

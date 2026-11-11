@@ -51,6 +51,20 @@ Run from a terminal so logs are visible (`CORRENT_LOG=debug corrent --portable`)
 12. **Data paths**: data lives in `~/.local/share/corrent` (Linux) or
     `~/Library/Application Support/Corrent` (macOS); the data dir is mode 0700 and contains
     `corrent.sock` while running.
+13. **Update and restart** (docs/PACKAGING.md "Updates in place"; needs a published release newer
+    than the build under test, or a debug build with `CORRENT_DEV_UPDATE`). None of these has run
+    on a real installation yet except the Windows portable swap.
+    - Windows MSI: install an older MSI, click Update and restart. The app closes, the installer's
+      progress window runs without questions, the new version starts; `%APPDATA%\Corrent` is
+      untouched, `<profile>\update` is gone after that start, the handler registration is as it
+      was. Cancel the installer's window once: a message, and the old version starts again.
+    - AppImage: from a writable folder, update; the file is replaced, the new one starts, the
+      `.old` file goes at the next start. From a read-only folder: "How to update" only.
+    - Linux tarball: unpack into `~/corrent`, update; both programs replaced, the new one starts.
+      Installed under `/usr` (the AUR package): only the package manager's command is shown.
+    - Flatpak, Snap, Scoop, Homebrew: "How to update" with the right command; nothing downloaded.
+    - macOS: the dmg lands in Downloads, opens, and the dialog says to drag it across; run from
+      the mounted image or translocated: told to use the release page.
 
 ## Results
 

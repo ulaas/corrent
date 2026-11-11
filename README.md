@@ -146,7 +146,11 @@ The torrent side is a complete client of its own, also usable without any librar
   is finished at the next start
 - Crash reports and an "engine stopped" banner with a restart that replays queued actions
 - Damaged settings/data files are recovered from backups; backup and restore of all app data
-- Opt-in update check (GitHub releases; nothing is installed automatically)
+- Update check, on by default: once a day Corrent asks GitHub's public release API for the latest
+  release (one anonymous request with the app's version, nothing about you or your torrents; switch
+  it off under Settings › Behavior › Updates). A newer version is announced, and one click downloads
+  it, checks it against the release's checksums, installs it and restarts. Nothing is downloaded
+  before that click; copies installed by a package manager are left to it
 
 ## Keyboard shortcuts (torrent list)
 

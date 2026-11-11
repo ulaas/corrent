@@ -47,7 +47,8 @@ Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_TAB=general|files|peers|trackers|pieces|speed`,
 `CORRENT_DEV_OPEN=settings|remote|appearance|magnet|about|log|stats|streams|diagnostics|creator|import|feeds|rules|remove|remove-undo|mpv|columns|shortcuts|palette`, `CORRENT_DEV_SETTINGS_SEARCH=<query>`,
 `CORRENT_DEV_STREAM_URL=<file>` (writes the first torrent's stream URL prefix; play it with `curl`),
-`CORRENT_DEV_PANIC=ui|engine|torrent` (torrent: a task next to the engine, which the app survives), `CORRENT_DEV_HANG=ipc` (the primary takes forwarded launches but never confirms them) `|ui` (the UI thread sleeps 15 s) `|engine` (the engine is busy 40 s; both write `logs/hang-*.txt`), `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike).
+`CORRENT_DEV_PANIC=ui|engine|torrent` (torrent: a task next to the engine, which the app survives), `CORRENT_DEV_HANG=ipc` (the primary takes forwarded launches but never confirms them) `|ui` (the UI thread sleeps 15 s) `|engine` (the engine is busy 40 s; both write `logs/hang-*.txt`), `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike),
+`CORRENT_DEV_UPDATE=http://127.0.0.1:<port>` (the update check reads `<base>/latest.json` and downloads from `<base>/`; with `CORRENT_DEV_UPDATE_NOW=1` the update starts when found; docs/PACKAGING.md "Updates in place"; no automatic check under `CORRENT_DEV_DEMO`/`CORRENT_DEV_SHOT`).
 Media/server hooks (run without torrents): `CORRENT_DEV_VIEW=media|libraries`, `CORRENT_DEV_PROFILES=1`, `CORRENT_DEV_SERVER_FS=1` (with a paired server), `CORRENT_DEV_ITEM=<id>`, `CORRENT_DEV_PLAY=<id>`,
 `CORRENT_DEV_SHOT=<png>` (+ `CORRENT_DEV_SHOT_DELAY=<s>`, `CORRENT_DEV_EXIT=1`; works on Linux too),
 `CORRENT_DEV_DEMO=1` (made-up torrents, folders and documentation-range peers instead of the engine's: the website's screenshots,
@@ -80,7 +81,9 @@ crates/corrent-core/src/    Everything without UI (the GUI and the server both u
   engine/{creator,stream}.rs Torrent creation; token-protected loopback HTTP streaming
   engine/testkit.rs         Loopback seeder/leecher helpers (feature `testkit` for other crates' tests)
   rss/, search.rs           Feeds + download rules (rss.json); Torznab client (user-configured providers)
-  import.rs, updates.rs     Import from other clients; opt-in GitHub release check
+  import.rs, updates.rs     Import from other clients; daily GitHub release check (on by default)
+  self_update.rs            "Update and restart": install kind, release file by exact name, checksums
+                            (SHA256SUMS.txt + GitHub digest), file swap with rollback; never before a click
   backup.rs, crash.rs, migrate.rs, logbuf.rs
                             Backup/restore, panic hook + crash reports, schema migrations, in-memory log
   store.rs                  Per-torrent data (categories, tags, dates, queue, pause reasons, counters,
@@ -97,9 +100,11 @@ crates/corrent-server/      Media server: v1/ (API v1 + WebSocket events), ident
 crates/correntd/            Headless server binary (docs/SERVER.md)
 assets/webui/               Web interface served by corrent-server's webapi at /
 src/integration/            single_instance (local socket IPC), os_handler(+_windows) magnet/.torrent
-                            registration, macos_events (Apple Events), app_identity, power (when done)
+                            registration, macos_events (Apple Events), app_identity, power (when done),
+                            updater (install-kind facts, restart after an update, the MSI runner)
 src/app/                    eframe App: titlebar/toolbar, sidebar, table, details, dialogs, settings
-                            window, tray, window lifecycle, toasts, extras (about/log/stats)
+                            window, tray, window lifecycle, toasts, extras (about/log/stats),
+                            update_ui (update check, "Update and restart" dialog)
 src/ui/                     theme (palettes, fonts), widgets (progress bar, sparkline, badges…), file tree
 vendor/librqbit-dht/        Patched DHT (keeps running on Windows WSAECONNRESET) — see CORRENT-PATCH.md
 vendor/librqbit-bencode/    librqbit-bencode 9.0.1 with bounded nesting and checked numbers — see CORRENT-PATCH.md
@@ -150,7 +155,8 @@ onboarding, torrent creator (M16), streaming to a media player (M17), RSS feeds 
 search (M19), qBittorrent-compatible API (M20), 5k-torrent perf check + Activity sparklines +
 drag-to-reorder queue (M21), palettes/high contrast/theme editor/accessibility (M22),
 per-torrent speed limits + IP filter (M23), per-file priorities + category limits (M24), import from
-qBittorrent/Transmission/Deluge, when-done actions, opt-in update checks (M25), packaging (M26:
+qBittorrent/Transmission/Deluge, when-done actions, update checks (M25; on by default with one-click
+"Update and restart" since 2026-11-11, docs/PACKAGING.md), packaging (M26:
 MSI/portable zip/winget, AppImage/Flatpak, dmg; release workflow — see docs/PACKAGING.md), Turkish
 translation + language setting, web interface, Mica spike (no-go) (M27).
 Fable reviews of every milestone range and a final roadmap audit were addressed. Default save folder: `Downloads/Corrent`.
