@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-11
+
 ### Added
 
 - **Update and restart.** When a newer version is out, Corrent says so (a notice, About, Settings › Behavior › Updates) and one click downloads it, checks it, installs it and restarts, with progress, Cancel and a plain message if anything fails. The portable zip, the Linux tarball and the AppImage are replaced in place, and the old files are put back if a step fails. The MSI install runs the new installer with its progress window and comes back. On macOS the checked disk image is opened for you to drag across.
@@ -15,6 +17,7 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 - **The update check is on by default**, for existing installations too: it is switched on once when your settings are brought to the new format, and stays off if you switch it off afterwards (Settings › Behavior › Updates). Once a day, also while Corrent stays open, it asks GitHub's public release API for the latest release: one anonymous request that carries Corrent's version and nothing about you, your torrents or your library. Nothing is downloaded until you choose to update.
 - Settings are saved in format 2. Corrent 0.4.1 and older read such a file but don't save changes to it.
+- SQLite is updated (rusqlite 0.42) for a security fix in the bundled library (RUSTSEC-2026-0459).
 
 ## [0.4.1] — 2026-11-05
 
