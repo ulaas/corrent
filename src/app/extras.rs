@@ -10,7 +10,7 @@ use tracing::Level;
 
 use super::CorrentApp;
 use crate::ui::theme::{self, Palette};
-use crate::ui::widgets::{card, secondary_button};
+use crate::ui::widgets::{card, primary_button, secondary_button};
 use crate::util::{fmt_bytes, fmt_duration, fmt_ratio};
 
 #[derive(Default)]
@@ -68,6 +68,38 @@ impl LogIndex {
             .filter_map(|s| lines.get(usize::try_from(s.checked_sub(oldest)?).ok()?).cloned())
             .collect()
     }
+}
+
+/// One line of About: `key` is the English name "Copy info" writes, `label` what the window shows.
+pub(super) struct AboutFact {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub value: String,
+}
+
+/// What About says about this build and where it keeps its data (the version comes first).
+pub(super) fn about_facts(paths: &crate::config::Paths) -> Vec<AboutFact> {
+    let fact = |key, label, value: String| AboutFact { key, label, value };
+    let build = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let mut data = paths.data_dir.display().to_string();
+    if paths.portable {
+        data.push_str(" (portable)");
+    }
+    vec![
+        fact("Version", t!("Version"), env!("CARGO_PKG_VERSION").to_string()),
+        fact("Commit", t!("Commit"), crate::BUILD_SHA.unwrap_or("unknown").to_string()),
+        fact("Build", t!("Build"), build.to_string()),
+        fact("Platform", t!("Platform"), format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH)),
+        fact("Renderer", t!("Renderer"), "OpenGL (glow)".to_string()),
+        fact("Engine", t!("Engine"), "librqbit 9.0.1".to_string()),
+        fact("Data", t!("Data folder"), data),
+    ]
+}
+
+/// The text "Copy info" puts on the clipboard (English, for bug reports).
+pub(super) fn about_copy_text(facts: &[AboutFact]) -> String {
+    let lines: Vec<String> = facts.iter().map(|f| format!("{}: {}", f.key, f.value)).collect();
+    format!("Corrent\n{}", lines.join("\n"))
 }
 
 impl CorrentApp {
@@ -209,38 +241,84 @@ impl CorrentApp {
         if !self.extras.about {
             return;
         }
-        let mut update = false;
+        let facts = about_facts(&self.paths);
+        let (mut update, mut check, mut copy, mut close) = (false, false, false, false);
         let r = egui::Modal::new(Id::new("about")).show(ctx, |ui| {
-            ui.set_width(380.0);
-            ui.vertical_centered(|ui| {
+            ui.set_width(440.0);
+            ui.horizontal(|ui| {
                 let tex = self.app_icon_texture(ctx);
                 ui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(72.0, 72.0)));
                 ui.add_space(8.0);
-                ui.label(RichText::new(t!("Corrent")).font(theme::bold(theme::type_scale::DISPLAY)).color(p.text));
-                ui.label(RichText::new(t!("Version {v}", v = env!("CARGO_PKG_VERSION"))).color(p.text_dim));
-                if let Some(sha) = crate::BUILD_SHA {
-                    ui.label(RichText::new(t!("Build {sha}", sha = sha)).monospace().small().color(p.text_dim))
-                        .on_hover_text(t!("The commit this build was made from (+: with uncommitted changes)"));
-                }
-                if self.update.available.is_some() {
-                    ui.add_space(8.0);
-                    update = self.update_notice(ui, p);
-                }
-                ui.add_space(8.0);
-                ui.label(RichText::new(t!("A beautiful, stable BitTorrent client.")).color(p.text));
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(t!("Built with Rust, egui and librqbit.\nInter and JetBrains Mono fonts (SIL OFL), Phosphor icons (MIT)."))
-                        .small()
-                        .color(p.text_dim),
-                );
-                ui.add_space(12.0);
-                if secondary_button(ui, t!("Close")).clicked() {
-                    self.extras.about = false;
+                ui.vertical(|ui| {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(t!("Corrent")).font(theme::bold(theme::type_scale::DISPLAY)).color(p.text));
+                    ui.label(RichText::new(t!("Version {v}", v = env!("CARGO_PKG_VERSION"))).color(p.text_dim));
+                    ui.label(RichText::new(t!("A beautiful, stable BitTorrent client.")).small().color(p.text_dim));
+                });
+            });
+            ui.add_space(12.0);
+            egui::Grid::new("about_facts").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+                // The version is in the header.
+                for f in facts.iter().skip(1) {
+                    ui.label(RichText::new(f.label).color(p.text_dim));
+                    let value = ui.add(egui::Label::new(RichText::new(&f.value).color(p.text)).truncate());
+                    if f.key == "Commit" {
+                        value.on_hover_text(t!("The commit this build was made from (+: with uncommitted changes)"));
+                    }
+                    ui.end_row();
                 }
             });
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(t!("Free software under the MIT or Apache 2.0 license, at your choice."))
+                    .small()
+                    .color(p.text_dim),
+            );
+            ui.label(
+                RichText::new(t!("Built with Rust, egui and librqbit.\nInter and JetBrains Mono fonts (SIL OFL), Phosphor icons (MIT)."))
+                    .small()
+                    .color(p.text_dim),
+            );
+            ui.add_space(10.0);
+            // A newer release the check has found, or the way to look for one.
+            ui.horizontal(|ui| {
+                if let Some(found) = self.update_found() {
+                    let label = format!("{}  {}", icons::ARROW_CIRCLE_UP, found.action_label());
+                    update = primary_button(ui, p, &label).clicked();
+                    ui.label(
+                        RichText::new(t!("Corrent {new} is available.", new = found.release.version)).color(p.accent),
+                    );
+                } else if self.update_checking() {
+                    ui.add_enabled(false, egui::Button::new(t!("Checking…")).min_size(vec2(84.0, 30.0)));
+                    ui.spinner();
+                } else {
+                    let label = format!("{}  {}", icons::ARROWS_CLOCKWISE, t!("Check for updates"));
+                    check = secondary_button(ui, &label).clicked();
+                    match self.update_checked() {
+                        Some(Ok(())) => {
+                            ui.label(RichText::new(t!("Corrent is up to date.")).color(p.text_dim));
+                        }
+                        Some(Err(e)) => {
+                            let text = t!("Couldn't check for updates: {e}", e = e);
+                            ui.add(egui::Label::new(RichText::new(text).color(p.error)).wrap());
+                        }
+                        None => {}
+                    }
+                }
+            });
+            ui.add_space(12.0);
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                close = secondary_button(ui, t!("Close")).clicked();
+                copy = secondary_button(ui, &format!("{}  {}", icons::COPY, t!("Copy info"))).clicked();
+            });
         });
-        if r.should_close() {
+        if copy {
+            self.copy(about_copy_text(&facts));
+        }
+        if check {
+            self.check_for_updates(true);
+        }
+        if close || r.should_close() {
             self.extras.about = false;
         }
         if update {

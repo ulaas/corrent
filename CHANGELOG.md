@@ -5,6 +5,10 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+### Changed
+
+- **About, from the logo.** Clicking the Corrent logo in the title bar opens About (also still in the menu and the command palette). It now lists the build's facts (commit, build, platform, renderer, engine, data folder) with **Copy info** for bug reports, and carries the update check: **Check for updates** with the answer shown in the window, or the button that starts the update once a newer version is known.
+
 ## [0.5.1] — 2026-11-11
 
 A small release, and the first one Corrent 0.5.0 can install by itself with Update and restart.

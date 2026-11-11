@@ -54,6 +54,8 @@ pub struct UpdateState {
     notified: String,
     /// A release was found while the window was hidden (in the tray): the toast waits for it.
     announce: bool,
+    /// How the last check of this session ended when it found nothing newer, for About.
+    checked: Option<Result<(), String>>,
     dialog: Option<Dialog>,
 }
 
@@ -233,6 +235,13 @@ impl CorrentApp {
         let Some(rx) = &self.update.check_rx else { return };
         let Ok((manual, result)) = rx.try_recv() else { return };
         self.update.check_rx = None;
+        self.update.checked = match &result {
+            Ok(Some(_)) => None,
+            Ok(None) => Some(Ok(())),
+            Err(e) => Some(Err(e.clone())),
+        };
+        // About says itself how a check ended.
+        let toast = manual && !self.extras.about;
         match result {
             Ok(Some(found)) => {
                 let version = found.release.version.clone();
@@ -257,11 +266,11 @@ impl CorrentApp {
             Ok(None) => {
                 self.update.available = None;
                 self.update.announce = false;
-                if manual {
+                if toast {
                     self.toasts.push(ToastKind::Success, t!("Corrent is up to date."));
                 }
             }
-            Err(e) if manual => self.toasts.push(ToastKind::Error, t!("Couldn't check for updates: {e}", e = e)),
+            Err(e) if toast => self.toasts.push(ToastKind::Error, t!("Couldn't check for updates: {e}", e = e)),
             Err(e) => tracing::info!("update check failed: {e}"),
         }
     }
@@ -284,6 +293,21 @@ impl CorrentApp {
     /// The version of the release that was found, for the menu.
     pub(super) fn update_version(&self) -> Option<&str> {
         self.update.available.as_ref().map(|f| f.release.version.as_str())
+    }
+
+    /// The newer release that was found, for About.
+    pub(super) fn update_found(&self) -> Option<&Found> {
+        self.update.available.as_ref()
+    }
+
+    /// A check is on its way.
+    pub(super) fn update_checking(&self) -> bool {
+        self.update.check_rx.is_some()
+    }
+
+    /// How the last check ended, when it found nothing newer (`Err`: it failed).
+    pub(super) fn update_checked(&self) -> Option<&Result<(), String>> {
+        self.update.checked.as_ref()
     }
 
     /// The user asked for the update that was found: starts it where Corrent updates itself (or
@@ -321,7 +345,7 @@ impl CorrentApp {
         d.state = State::Working { rx, progress: None, cancel };
     }
 
-    /// "Corrent x is available" with the button that starts the update, for About and Settings.
+    /// "Corrent x is available" with the button that starts the update, for Settings.
     /// Returns whether the button was clicked.
     pub(super) fn update_notice(&self, ui: &mut egui::Ui, p: &Palette) -> bool {
         let Some(found) = &self.update.available else { return false };

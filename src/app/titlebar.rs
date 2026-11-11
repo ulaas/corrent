@@ -9,6 +9,7 @@ use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
 use crate::ui::theme::Palette;
+use crate::ui::widgets::Labeled;
 
 pub const CUSTOM_DECORATIONS: bool = cfg!(not(target_os = "macos"));
 pub const TITLEBAR_HEIGHT: f32 = 44.0;
@@ -30,13 +31,28 @@ impl CorrentApp {
         }
     }
 
-    /// The app logo at the start of the title bar.
+    /// The app logo at the start of the title bar: a click opens About.
     pub(super) fn titlebar_logo(&mut self, ui: &mut Ui, p: &Palette) {
         ui.add_space(MACOS_INSET);
         let tex = self.app_icon_texture(ui.ctx());
-        ui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(22.0, 22.0)).corner_radius(CornerRadius::same(5)));
-        ui.add_space(2.0);
-        ui.label(egui::RichText::new(t!("Corrent")).font(crate::ui::theme::bold(15.0)).color(p.text));
+        let hover = ui.painter().add(egui::Shape::Noop);
+        let inner = ui.scope(|ui| {
+            ui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(22.0, 22.0)).corner_radius(CornerRadius::same(5)));
+            ui.add_space(2.0);
+            ui.add(
+                egui::Label::new(egui::RichText::new(t!("Corrent")).font(crate::ui::theme::bold(15.0)).color(p.text))
+                    .selectable(false),
+            );
+        });
+        let rect = inner.response.rect.expand2(vec2(5.0, 3.0));
+        let r = ui.interact(rect, Id::new("titlebar_logo"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+        let t = crate::ui::motion::toggle(ui.ctx(), r.id, r.hovered() || r.has_focus(), crate::ui::motion::MICRO);
+        if t > 0.0 {
+            ui.painter().set(hover, egui::Shape::rect_filled(rect, CornerRadius::same(7), p.bg3.gamma_multiply(t)));
+        }
+        if r.labeled(t!("About Corrent")).clicked() {
+            self.extras.about = true;
+        }
     }
 
     pub fn app_icon_texture(&mut self, ctx: &Context) -> egui::TextureHandle {

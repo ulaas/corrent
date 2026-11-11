@@ -2057,6 +2057,41 @@ fn a_newer_release_is_announced_once_with_the_button_for_this_copy() {
 }
 
 #[test]
+fn the_logo_opens_about_with_build_facts_and_the_update_check() {
+    let (_f, app) = app("about", vec![torrent(1, "a", TorrentState::Seeding)]);
+    let mut h = harness(app);
+    h.run_steps(3);
+    h.get_by_label("About Corrent").click();
+    h.run_steps(3);
+    assert!(h.state().extras.about, "the logo opens About");
+    for label in ["Commit", "Build", "Platform", "Renderer", "Data folder"] {
+        h.get_by_label(label);
+    }
+    assert!(h.query_by_label_contains("Check for updates").is_some());
+    assert!(h.query_by_label_contains("Copy info").is_some());
+
+    // How a check ended is said in the window itself (once: no toast on top of it).
+    h.state_mut().update.deliver(true, Ok(None));
+    h.state_mut().poll_updates();
+    h.run_steps(3);
+    h.get_by_label("Corrent is up to date.");
+    h.state_mut().update.deliver(true, Err("offline".into()));
+    h.state_mut().poll_updates();
+    h.run_steps(3);
+    h.get_by_label("Couldn't check for updates: offline");
+    assert!(h.query_by_label("Corrent is up to date.").is_none());
+
+    let facts = super::extras::about_facts(&h.state().paths);
+    let text = super::extras::about_copy_text(&facts);
+    assert!(text.starts_with(&format!("Corrent\nVersion: {}\nCommit: ", env!("CARGO_PKG_VERSION"))), "{text}");
+    assert!(text.contains("\nData: "), "{text}");
+
+    h.get_by_label("Close").click();
+    h.run_steps(3);
+    assert!(!h.state().extras.about);
+}
+
+#[test]
 fn a_package_managed_copy_is_told_how_to_update_and_downloads_nothing() {
     use corrent_core::self_update::{InstallKind, Manager};
     let (_f, mut app) = app("update-managed", vec![torrent(1, "a", TorrentState::Seeding)]);
