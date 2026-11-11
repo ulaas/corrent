@@ -5,9 +5,12 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-11-12
+
 ### Changed
 
 - **About, from the logo.** Clicking the Corrent logo in the title bar opens About (also still in the menu and the command palette). It now lists the build's facts (commit, build, platform, renderer, engine, data folder) with **Copy info** for bug reports, and carries the update check: **Check for updates** with the answer shown in the window, or the button that starts the update once a newer version is known.
+- Releases are published by the release workflow when every installer is built, instead of waiting as a draft; the package manifests are attached right after.
 
 ## [0.5.1] — 2026-11-11
 

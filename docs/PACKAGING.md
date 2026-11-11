@@ -1,7 +1,8 @@
 # Packaging and releases
 
 Releases are built by `.github/workflows/release.yml` when the owner pushes a `v*` tag. The
-workflow uploads all artifacts to a **draft** GitHub release; nothing is published automatically.
+workflow uploads all artifacts to a GitHub release and publishes it when every installer is built
+(a tag with a hyphen as a pre-release).
 
 | Platform | Artifact | Built by |
 |---|---|---|
@@ -149,8 +150,9 @@ the check read `<base>/latest.json` and accept downloads under `<base>/` over pl
 3. Commit, tag `vX.Y.Z`, push the tag (owner). The Release workflow's `ci-gate` job waits until CI has
    passed on the tagged commit before building, and fails if that CI run fails or is cancelled (re-run CI, then the
    release). A manual run can tick `skip_ci_gate` in an emergency.
-4. Check the draft release's artifacts on each platform (`docs/PLATFORM-TESTING.md`), then publish.
-5. Publishing the release runs `.github/workflows/package-manifests.yml`: it fills the winget, Scoop,
+4. The workflow publishes the release when all artifacts are built; check them on each platform
+   (`docs/PLATFORM-TESTING.md`).
+5. When the Release workflow finishes, `.github/workflows/package-manifests.yml` runs: it fills the winget, Scoop,
    Homebrew and AUR templates with the release's version and SHA-256 sums and attaches them to the
    release (`package-manifests.zip` and the single files; re-run it by hand with a tag if needed).
    Submit them by hand (winget-pkgs, a Scoop bucket, a Homebrew tap, the AUR — run
