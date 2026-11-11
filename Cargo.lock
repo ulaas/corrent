@@ -1388,7 +1388,7 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "corrent"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "corrent-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1489,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "corrent-db"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "rusqlite",
  "thiserror 2.0.21",
@@ -1499,11 +1499,11 @@ dependencies = [
 
 [[package]]
 name = "corrent-fuzz"
-version = "0.5.0"
+version = "0.5.1"
 
 [[package]]
 name = "corrent-i18n"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "regex",
  "sys-locale",
@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "corrent-library"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "aws-lc-rs",
  "corrent-db",
@@ -1534,7 +1534,7 @@ dependencies = [
 
 [[package]]
 name = "corrent-mpv"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "eframe",
  "image",
@@ -1546,7 +1546,7 @@ dependencies = [
 
 [[package]]
 name = "corrent-plugins"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -1562,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "corrent-proto"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "corrent-fuzz",
  "corrent-i18n",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "corrent-server"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "corrent-transcode"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bytes",
  "corrent-fuzz",
@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "correntd"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "arc-swap",

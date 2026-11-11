@@ -8,3 +8,4 @@
 /fuzz/artifacts
 /fuzz/corpus
 /fuzz/Cargo.lock
+/.claude/worktrees

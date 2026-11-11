@@ -5,6 +5,14 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-11-11
+
+A small release, and the first one Corrent 0.5.0 can install by itself with Update and restart.
+
+### Changed
+
+- The folder Claude Code keeps its work trees in (`.claude/worktrees`) is ignored by git. Nothing in the app changes.
+
 ## [0.5.0] — 2026-11-11
 
 ### Added
