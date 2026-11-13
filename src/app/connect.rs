@@ -207,19 +207,6 @@ impl CorrentApp {
         self.toasts.push(crate::engine::ToastKind::Info, text);
     }
 
-    /// At exit: a local engine stopped by a switch finishes flushing (bounded).
-    pub(super) fn wait_for_old_engine(&mut self) {
-        if let Some(h) = self.local_stopping.take() {
-            let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
-            while !h.is_finished() && std::time::Instant::now() < until {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            if h.is_finished() {
-                let _ = h.join();
-            }
-        }
-    }
-
     /// The Connect dialog (when open).
     pub(super) fn connect_dialog(&mut self, ctx: &Context, p: &Palette) {
         let Some(mut d) = self.connect.take() else { return };
@@ -484,5 +471,18 @@ impl CorrentApp {
             self.switch_server(None, Some(key));
         }
         ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+    }
+}
+
+/// At exit: a local engine stopped by a switch finishes flushing (bounded).
+pub(super) fn wait_for_old_engine(stopping: Option<std::thread::JoinHandle<()>>) {
+    if let Some(h) = stopping {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !h.is_finished() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if h.is_finished() {
+            let _ = h.join();
+        }
     }
 }

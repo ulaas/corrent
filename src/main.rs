@@ -285,6 +285,8 @@ fn main() -> eframe::Result {
             ))
         }),
     );
+    // The window is gone; now save and stop the engine (see `on_exit`).
+    app::finish_exit();
     // Let blocking hash/IO tasks finish briefly, but never hang on exit.
     rt.shutdown_timeout(std::time::Duration::from_secs(3));
     crash::finish(&log_dir);

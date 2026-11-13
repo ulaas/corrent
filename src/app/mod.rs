@@ -1319,22 +1319,47 @@ impl eframe::App for CorrentApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // The window is hidden by now (`hide_for_exit`); the tray icon goes too, so nothing of
-        // Corrent stays on screen while the engine stops.
+        // The tray icon goes with the window, so nothing of Corrent stays on screen while the
+        // engine stops.
         self.tray = None;
-        // The last settings save is queued on the writer thread.
-        if !corrent_core::writer::global().flush(&self.paths.settings_file(), std::time::Duration::from_secs(2)) {
-            tracing::warn!("the settings were still being saved when Corrent quit");
-        }
+        let settings_file = self.paths.settings_file();
+        let engine = self.engine.clone();
+        let old_engine = self.local_stopping.take();
         let power = self.power_after_exit.take();
-        when_done::exit_steps(
-            || {
-                self.engine.shutdown_blocking(std::time::Duration::from_secs(8));
-                self.wait_for_old_engine();
-            },
-            power,
-            crate::integration::power::perform,
-        );
+        let work = move || {
+            // The last settings save is queued on the writer thread.
+            if !corrent_core::writer::global().flush(&settings_file, std::time::Duration::from_secs(2)) {
+                tracing::warn!("the settings were still being saved when Corrent quit");
+            }
+            when_done::exit_steps(
+                || {
+                    engine.shutdown_blocking(std::time::Duration::from_secs(8));
+                    connect::wait_for_old_engine(old_engine);
+                },
+                power,
+                crate::integration::power::perform,
+            );
+        };
+        // Stopping the engine takes a moment, and the window still exists here (hiding it does
+        // nothing on Wayland): `main` runs this once eframe has destroyed the window. On macOS
+        // the event loop may never return (Cmd-Q), so it runs now.
+        if cfg!(target_os = "macos") {
+            work();
+        } else {
+            *AFTER_WINDOW.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(work));
+        }
+    }
+}
+
+type ExitWork = Box<dyn FnOnce() + Send>;
+static AFTER_WINDOW: std::sync::Mutex<Option<ExitWork>> = std::sync::Mutex::new(None);
+
+/// The rest of quitting (save, stop the engine, the "when done" power action), left by `on_exit`
+/// for when the window is gone. Call after `run_native` returns.
+pub fn finish_exit() {
+    let work = AFTER_WINDOW.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    if let Some(work) = work {
+        work();
     }
 }
 

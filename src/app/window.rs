@@ -28,9 +28,8 @@ impl CorrentApp {
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
     }
 
-    /// The window is closing for good: take it off the screen now. eframe applies this at the end
-    /// of this frame, before `on_exit`, where stopping the engine takes a moment — the window
-    /// would sit there frozen meanwhile.
+    /// The window is closing for good: take it off the screen at the end of this frame, without
+    /// waiting for eframe to destroy it (the engine stops after that, see `on_exit`).
     fn hide_for_exit(&mut self, ctx: &Context) {
         self.quitting = true;
         corrent_core::watchdog::ui_hidden();
