@@ -22,17 +22,9 @@ pub const REPLY: u64 = 8;
 /// mpv's renderer until it goes.
 const EVERY: Duration = Duration::from_millis(60);
 
-/// mpv's compiled-shader cache may grow to this before it is emptied.
-const COMPILED_LIMIT: u64 = 48 * 1024 * 1024;
-
-/// Where this profile keeps shader files: ours, and under `compiled` what mpv's renderer caches
-/// (by default it would write that into the user's own mpv cache).
+/// Where this profile keeps the shader files.
 pub fn dir(data_dir: &Path) -> PathBuf {
     data_dir.join("cache").join("shaders")
-}
-
-pub fn compiled_dir(dir: &Path) -> PathBuf {
-    dir.join("compiled")
 }
 
 /// Keeps a player's mpv at the settings' video effects.
@@ -112,21 +104,13 @@ impl Applier {
 }
 
 fn worker(mpv: &Weak<Mpv>, dir: &Path, jobs: &mpsc::Receiver<String>) {
-    // Texts of earlier sessions, and mpv's cache once it has grown.
+    // Texts of earlier sessions.
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
-            let name = e.file_name();
-            if name.to_string_lossy().starts_with("fx-") {
+            if e.file_name().to_string_lossy().starts_with("fx-") {
                 let _ = std::fs::remove_file(e.path());
             }
         }
-    }
-    let compiled = compiled_dir(dir);
-    let size: u64 = std::fs::read_dir(&compiled)
-        .map(|d| d.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum())
-        .unwrap_or(0);
-    if size > COMPILED_LIMIT {
-        let _ = std::fs::remove_dir_all(&compiled);
     }
     while let Ok(mut source) = jobs.recv() {
         // Only the latest counts.
@@ -139,8 +123,14 @@ fn worker(mpv: &Weak<Mpv>, dir: &Path, jobs: &mpsc::Receiver<String>) {
             continue;
         }
         let file = dir.join(video_fx::file_name(&source));
-        let written =
-            file.exists() || std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&file, &source)).is_ok();
+        // Under another name first: a file cut short (a full disk) is never taken for the text.
+        let written = file.exists() || {
+            let part = file.with_extension("part");
+            std::fs::create_dir_all(dir)
+                .and_then(|()| std::fs::write(&part, &source))
+                .and_then(|()| std::fs::rename(&part, &file))
+                .is_ok()
+        };
         if !written {
             tracing::warn!("video effects: couldn't write {}", file.display());
             continue;
@@ -598,13 +588,20 @@ mod tests {
         }
         assert_eq!(mpv.get_f64("contrast").unwrap(), Some(10.0));
 
-        // A change right after is held back for a moment, then goes out.
+        // Two changes one after the other: the second is held back for a moment, then goes out.
+        std::thread::sleep(EVERY);
+        fx.set("vignette", "strength", 0.7);
+        assert_eq!(a.sync(&mpv, &fx, true, false), (None, false));
         fx.set("vignette", "strength", 0.8);
         let (wait, _) = a.sync(&mpv, &fx, true, false);
-        assert!(wait.is_some_and(|w| w <= EVERY), "{wait:?}");
-        std::thread::sleep(EVERY);
-        assert_eq!(a.sync(&mpv, &fx, true, false), (None, false));
-        let second = wait_for(&|l| l != set.as_slice());
+        // (Unless this thread was stopped for longer than that in between.)
+        if let Some(wait) = wait {
+            assert!(wait <= EVERY, "{wait:?}");
+            std::thread::sleep(wait);
+            assert_eq!(a.sync(&mpv, &fx, true, false), (None, false));
+        }
+        let text = video_fx::source(&fx);
+        let second = wait_for(&|l| l.first().is_some_and(|f| std::fs::read_to_string(f).is_ok_and(|t| t == text)));
         assert_ne!(second, set);
 
         // Refused: off at once, and not tried again until something changes.

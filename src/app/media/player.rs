@@ -651,10 +651,9 @@ impl Player {
         }
         let mpv = Arc::new(Mpv::new(lib, &opts).map_err(|e| e.to_string())?);
         let looks = (!audio_only).then(|| {
-            // What mpv's renderer compiles stays in this profile (by default: the user's own mpv
-            // cache). Not an option of older mpv, and one before the renderer starts.
-            let compiled = super::picture::compiled_dir(shader_dir);
-            let _ = mpv.set_property("gpu-shader-cache-dir", &compiled.to_string_lossy());
+            // mpv would keep every compiled shader on disk, in the user's own mpv cache: one per
+            // step of a dragged slider, written while a frame is drawn. Not an option of older mpv.
+            let _ = mpv.set_property("gpu-shader-cache", "no");
             // A shader the graphics card refuses is only said in the log.
             let _ = mpv.request_log_messages("error");
             super::picture::Applier::new(&mpv, shader_dir.to_path_buf())

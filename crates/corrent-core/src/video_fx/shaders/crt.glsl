@@ -10,7 +10,8 @@ vec4 hook() {
     vec4 c = HOOKED_tex(p);
     vec2 inside = step(vec2(0.0), p) * step(p, vec2(1.0));
     vec3 o = c.rgb * inside.x * inside.y;
-    float unit = max(PX, 1.0);
+    // Whole pixels, or the columns of the mask come out in uneven widths.
+    float unit = max(floor(PX + 0.5), 1.0);
     float line = p.y * HOOKED_size.y / (3.0 * unit);
     o *= 1.0 - CRT_SCANLINES * 0.7 * (0.5 - 0.5 * cos(6.2831853 * line));
     float column = mod(floor(HOOKED_pos.x * HOOKED_size.x / unit), 3.0);

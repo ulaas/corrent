@@ -3,7 +3,8 @@ float fx_halftone_m2(vec2 p) {
     return 2.0 * p.x + 3.0 * p.y - 4.0 * p.x * p.y;
 }
 vec3 fx_halftone(vec3 c, vec2 pos) {
-    vec2 cell = floor(pos * HOOKED_size / (HALFTONE_CELL * PX));
+    // Whole pixels: a cell of one and a third would make the pattern uneven.
+    vec2 cell = floor(pos * HOOKED_size / max(floor(HALFTONE_CELL * PX + 0.5), 1.0));
     // 4x4 Bayer from two levels of 2x2.
     float t = (4.0 * fx_halftone_m2(mod(cell, 2.0)) + fx_halftone_m2(mod(floor(cell / 2.0), 2.0)) + 0.5) / 16.0;
     float n = HALFTONE_LEVELS - 1.0;

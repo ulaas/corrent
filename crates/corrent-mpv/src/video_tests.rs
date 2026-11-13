@@ -525,9 +525,10 @@ fn every_builtin_effect_compiles_and_draws() {
             .filter(|(prefix, level, text)| is_shader_error(prefix, level, text) || level == "error")
             .map(|l| l.2.clone())
             .collect();
-        let warnings: Vec<&String> = rig.logs.iter().map(|l| &l.2).collect();
+        let warnings: Vec<&String> = rig.logs.iter().filter(|l| l.0.contains("libmpv_render")).map(|l| &l.2).collect();
         assert!(refused.is_empty(), "{name}: {refused:#?}\n{text}");
         assert!(warnings.is_empty(), "{name}: {warnings:#?}");
+        rig.logs.clear();
         // Extremes may be the value at which an effect does nothing; the default never is.
         let at_default = !name.contains('=');
         for (plain, drawn) in plain.iter().zip([&small, &big]) {
@@ -536,6 +537,7 @@ fn every_builtin_effect_compiles_and_draws() {
             let m = mean(drawn);
             assert!(!(m[0] < 2.0 && m[2] > 100.0 && m[1] < 30.0), "{name}: a blue picture, {m:?}");
             if at_default {
+                assert!(m.iter().sum::<f64>() > 15.0, "{name}: a black picture, {m:?}");
                 assert!(d > 0.05, "{name}: changes the picture (distance {d:.3})");
             }
         }

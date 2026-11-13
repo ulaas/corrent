@@ -259,7 +259,8 @@ impl Playback {
     /// Takes a saved look's effects.
     pub fn use_look(&mut self, name: &str) {
         if let Some(p) = self.looks.iter().find(|p| p.name == name) {
-            self.picture = crate::video_fx::VideoFx { preset: Some(p.name.clone()), ..p.fx.clone() };
+            // On, even if it was saved while comparing with the original: picking a look shows it.
+            self.picture = crate::video_fx::VideoFx { preset: Some(p.name.clone()), enabled: true, ..p.fx.clone() };
         }
     }
 
@@ -1165,6 +1166,10 @@ mod tests {
         p.picture.flatten();
         p.use_look("Evening");
         assert!(p.picture.is_on("cinema") && p.picture.enabled);
+        p.picture.enabled = false;
+        p.save_look("Evening");
+        p.use_look("Evening");
+        assert!(p.picture.enabled, "a look saved while switched off still shows when picked");
         assert_eq!(p.picture.preset.as_deref(), Some("Evening"));
         p.rename_look("Evening", "Late");
         assert_eq!((p.picture.preset.as_deref(), p.looks[0].name.as_str()), (Some("Late"), "Late"));

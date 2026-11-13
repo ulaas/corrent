@@ -12,7 +12,8 @@ vec4 hook() {
     vec3 lo = min(c.rgb, min(min(n, w), min(e, s)));
     vec3 hi = max(c.rgb, max(max(n, w), max(e, s)));
     vec3 room = sqrt(clamp(min(lo, 1.0 - hi) / max(hi, 0.0001), 0.0, 1.0));
-    vec3 weight = room * (-1.0 / mix(8.0, 5.0, SHARPEN_AMOUNT));
+    // From nothing at 0 to the strongest that doesn't ring at 1.
+    vec3 weight = room * (-SHARPEN_AMOUNT / 5.0);
     vec3 o = (c.rgb + (n + w + e + s) * weight) / (1.0 + 4.0 * weight);
     return vec4(clamp(o, 0.0, 1.0), c.a);
 }
