@@ -10,6 +10,10 @@ pub mod encode;
 mod ffi;
 pub mod probe;
 pub mod render;
+#[cfg(test)]
+mod test_gl;
+#[cfg(test)]
+mod video_tests;
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -294,8 +298,20 @@ pub enum EndReason {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Shutdown,
-    Log { prefix: String, level: String, text: String },
-    CommandReply { userdata: u64, error: i32 },
+    Log {
+        prefix: String,
+        level: String,
+        text: String,
+    },
+    CommandReply {
+        userdata: u64,
+        error: i32,
+    },
+    /// The answer to an asynchronous property set (`set_string_list_async`).
+    SetReply {
+        userdata: u64,
+        error: i32,
+    },
     StartFile,
     EndFile(EndReason),
     FileLoaded,
@@ -303,7 +319,11 @@ pub enum Event {
     AudioReconfig,
     Seek,
     PlaybackRestart,
-    PropertyChange { userdata: u64, name: String, value: Node },
+    PropertyChange {
+        userdata: u64,
+        name: String,
+        value: Node,
+    },
     QueueOverflow,
     Other(i32),
 }
@@ -443,6 +463,48 @@ impl Mpv {
         self.check(&format!("set {name}"), rc)
     }
 
+    /// Sets a list property (`glsl-shaders`) as a node array of strings. Unlike a string, this
+    /// goes around the option parser: its separator differs between mpv versions (`:`/`;` paths
+    /// before 0.39, `,` after) and an item may hold any of them.
+    pub fn set_string_list(&self, name: &str, items: &[&str]) -> Result<()> {
+        self.with_string_list(name, items, |n, node| {
+            // SAFETY: valid handle; NODE takes a pointer to an mpv_node, which mpv copies.
+            unsafe { (self.lib.api.set_property)(self.handle, n, ffi::MPV_FORMAT_NODE, node) }
+        })
+    }
+
+    /// [`Mpv::set_string_list`] without waiting for mpv's core: the answer arrives as
+    /// [`Event::SetReply`] with `userdata`.
+    pub fn set_string_list_async(&self, userdata: u64, name: &str, items: &[&str]) -> Result<()> {
+        self.with_string_list(name, items, |n, node| {
+            // SAFETY: valid handle; mpv copies the node before returning.
+            unsafe { (self.lib.api.set_property_async)(self.handle, userdata, n, ffi::MPV_FORMAT_NODE, node) }
+        })
+    }
+
+    fn with_string_list(
+        &self,
+        name: &str,
+        items: &[&str],
+        set: impl FnOnce(*const c_char, *mut c_void) -> c_int,
+    ) -> Result<()> {
+        let n = cstring(name)?;
+        let owned = items.iter().map(|i| cstring(i)).collect::<Result<Vec<_>>>()?;
+        let mut values: Vec<ffi::mpv_node> = owned
+            .iter()
+            .map(|c| ffi::mpv_node {
+                u: ffi::mpv_node_u { string: c.as_ptr() as *mut c_char },
+                format: ffi::MPV_FORMAT_STRING,
+            })
+            .collect();
+        let mut list =
+            ffi::mpv_node_list { num: values.len() as c_int, values: values.as_mut_ptr(), keys: std::ptr::null_mut() };
+        let mut node = ffi::mpv_node { u: ffi::mpv_node_u { list: &mut list }, format: ffi::MPV_FORMAT_NODE_ARRAY };
+        // `owned`, `values` and `list` outlive the call, and mpv only reads them.
+        let rc = set(n.as_ptr(), &mut node as *mut ffi::mpv_node as *mut c_void);
+        self.check(&format!("set {name}"), rc)
+    }
+
     /// Reads a property as a node (every type can be read this way).
     pub fn get(&self, name: &str) -> Result<Node> {
         let n = cstring(name)?;
@@ -554,6 +616,7 @@ impl Mpv {
                     }
                 }
                 ffi::MPV_EVENT_COMMAND_REPLY => Event::CommandReply { userdata: ev.reply_userdata, error: ev.error },
+                ffi::MPV_EVENT_SET_PROPERTY_REPLY => Event::SetReply { userdata: ev.reply_userdata, error: ev.error },
                 ffi::MPV_EVENT_START_FILE => Event::StartFile,
                 ffi::MPV_EVENT_END_FILE => {
                     let e = &*(ev.data as *const ffi::mpv_event_end_file);
