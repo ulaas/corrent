@@ -16,6 +16,7 @@ mod item_menu;
 pub mod libraries;
 pub mod lists;
 pub mod offline;
+pub mod picture;
 pub mod player;
 pub mod profiles;
 pub mod providers;
@@ -644,6 +645,7 @@ impl CorrentApp {
             queue,
             audio_only,
             &self.settings.playback,
+            &picture::dir(&self.paths.data_dir),
         ) {
             Ok(mut p) => {
                 p.offline = offline.map(|s| (s, client.base().to_string()));

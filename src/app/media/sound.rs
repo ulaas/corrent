@@ -558,7 +558,7 @@ fn profile_switch(ui: &mut Ui, tone: &Tone, pb: &mut Playback) {
     ui.add_space(4.0);
 }
 
-enum Named<'a> {
+pub(super) enum Named<'a> {
     Save,
     Rename(&'a str),
     Delete,
@@ -566,7 +566,7 @@ enum Named<'a> {
 
 /// A list of saved things, by name: a box for a name with Save, and on each row the same name for a
 /// rename, and delete. Closed until asked for.
-fn named_section(
+pub(super) fn named_section(
     ui: &mut Ui,
     tone: &Tone,
     title: &str,

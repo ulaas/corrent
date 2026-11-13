@@ -5,6 +5,11 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+### Added
+
+- **Video effects.** The player has a new panel (the wand button, also Settings › Playback) with 26 effects that run on the graphics card inside the video renderer: sharpen, clarity, noise reduction, soften, levels, colour temperature, shadows and highlights, vibrance, black and white, sepia, teal and orange, cross-process, posterize, invert, night vision, pixelate, colour fringes, glow, outlines, tube television, dither, vignette, film grain, zebra stripes, and a correction and a preview for colour-blind viewers. Each has its own sliders; brightness, contrast, saturation, gamma, hue and debanding sit above them. Eight looks to start from (Vivid, Cinema, Warm, Old film, Black and white, Retro TV, Comic, Night), your own looks saved by name, and a switch to compare with the original. With everything off nothing is loaded and playback costs what it did before. Subtitles stay untouched; screenshots and thumbnails are taken from the original picture. Needs OpenGL video (not the software fallback).
+- What mpv's renderer compiles is cached in Corrent's own data folder instead of the user's mpv cache.
+
 ## [0.5.2] — 2026-11-12
 
 ### Changed

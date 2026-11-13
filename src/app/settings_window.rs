@@ -1697,6 +1697,11 @@ impl CorrentApp {
                     heading(ui, p, t!("Sound processing"));
                     super::media::sound::sheet(ui, &super::media::glass::Tone::theme(p), pb);
                     ui.add_space(8.0);
+                    heading(ui, p, t!("Video effects"));
+                    // Whether the graphics card takes them shows in the player.
+                    let caps = corrent_core::video_fx::Caps { gpu: true };
+                    super::media::picture::sheet(ui, &super::media::glass::Tone::theme(p), pb, caps, false);
+                    ui.add_space(8.0);
                     row(ui, p, t!("ReplayGain"), t!("Uses the volume levels stored in music files."), |ui| {
                         let opts = [("album", t!("By album")), ("track", t!("By track")), ("off", t!("Off"))];
                         let shown =

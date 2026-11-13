@@ -17,6 +17,7 @@ vec4 hook() {
     float br = fx_outline_at(1.0, 1.0);
     float gx = (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl);
     float gy = (bl + 2.0 * bc + br) - (tl + 2.0 * tc + tr);
-    float edge = clamp(length(vec2(gx, gy)) * 2.0, 0.0, 1.0);
+    // Not every ripple of a texture: only what stands out.
+    float edge = smoothstep(0.15, 0.7, length(vec2(gx, gy)));
     return vec4(c.rgb * (1.0 - OUTLINE_AMOUNT * edge), c.a);
 }

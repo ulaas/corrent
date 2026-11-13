@@ -54,7 +54,7 @@ Media/server hooks (run without torrents): `CORRENT_DEV_VIEW=media|libraries`, `
 `CORRENT_DEV_DEMO=1` (made-up torrents, folders and documentation-range peers instead of the engine's: the website's screenshots,
 `scripts/site-shots.ps1` then `python scripts/site-images.py`; media screenshots: `scripts/site-media/` with Blender open movies only),
 `CORRENT_DEV_LIBRARY=<folder>[;kind[;name]]|…` (adds those libraries to the profile; make test media with
-`powershell -File scripts/dev-media.ps1 -Out <scratch>`), `CORRENT_DEV_PAGE=library:<id>|row:<id>|agent`, `CORRENT_DEV_PAUSE=<s>` (pauses the hooked playback so the controls stay up), `CORRENT_DEV_QUEUE=<id>,<id>` (music in the mini player), `CORRENT_DEV_SOUND=1` or `CORRENT_DEV_PANEL=settings|sound|tracks|cast|room` (that panel up), `CORRENT_DEV_CAST=<device name>` (with the cast panel: chooses that device; add a test device under `[cast] devices` in the profile's `server.toml`), `CORRENT_DEV_METERS=1` (both stat pages up), `CORRENT_DEV_WINDOW=<w>x<h>|pip` (the player's layout), `CORRENT_DEV_CONNECT=<pairing link>` (fills the Connect dialog), `CORRENT_DEV_FOUND=<name>[;<ip>]|…` (servers announced as if on the network: the notice), `CORRENT_DEV_PAIR=<pairing link>` (pairs and switches —
+`powershell -File scripts/dev-media.ps1 -Out <scratch>`), `CORRENT_DEV_PAGE=library:<id>|row:<id>|agent`, `CORRENT_DEV_PAUSE=<s>` (pauses the hooked playback so the controls stay up), `CORRENT_DEV_QUEUE=<id>,<id>` (music in the mini player), `CORRENT_DEV_SOUND=1` or `CORRENT_DEV_PANEL=settings|sound|picture|tracks|cast|room` (that panel up), `CORRENT_DEV_PICTURE=<look>|<effect id>[,<id>…]|all` (those video effects in the hooked player; looks and ids in `crates/corrent-core/src/video_fx.rs`), `CORRENT_DEV_CAST=<device name>` (with the cast panel: chooses that device; add a test device under `[cast] devices` in the profile's `server.toml`), `CORRENT_DEV_METERS=1` (both stat pages up), `CORRENT_DEV_WINDOW=<w>x<h>|pip` (the player's layout), `CORRENT_DEV_CONNECT=<pairing link>` (fills the Connect dialog), `CORRENT_DEV_FOUND=<name>[;<ip>]|…` (servers announced as if on the network: the notice), `CORRENT_DEV_PAIR=<pairing link>` (pairs and switches —
 writes `servers.toml` into the test profile; delete it afterwards). `CORRENT_DEV_OPEN` also takes `connect`. TV mode: `--tv`, and `CORRENT_DEV_KEYS=ArrowDown,ArrowRight,Enter` presses keys
 (one per 300 ms from 3 s) like a remote.
 To pre-configure the test profile, write `target/debug/corrent-data/settings.toml`
@@ -79,6 +79,8 @@ crates/corrent-core/src/    Everything without UI (the GUI and the server both u
                             SessionOptions from Settings; view types; watch folders & run-on-complete;
                             recovery of torrents the engine failed to load at startup
   engine/{creator,stream}.rs Torrent creation; token-protected loopback HTTP streaming
+  audio_fx.rs, video_fx.rs  Sound processing (mpv filter chain) and video effects (26 built-in GLSL shaders in
+                            video_fx/shaders/, made into one mpv hook shader); sheets in src/app/media/{sound,picture}.rs
   engine/testkit.rs         Loopback seeder/leecher helpers (feature `testkit` for other crates' tests)
   rss/, search.rs           Feeds + download rules (rss.json); Torznab client (user-configured providers)
   import.rs, updates.rs     Import from other clients; daily GitHub release check (on by default)
@@ -129,6 +131,9 @@ Key invariants:
   first sign: a torrent is listed before its add finishes (category, tags), session stats come with
   the next tick. Players under `untimed` start paused. CI runners are slow; after changing such
   tests run `scripts/stress-tests.ps1` (or `gate.ps1 -Stress`).
+- Video effects: only clamped numbers from settings reach GLSL, never text. A new or changed shader must pass
+  `cargo test -p corrent-mpv video_tests` on a machine with a GPU (the render tests skip on software OpenGL, so CI
+  doesn't run them; `CORRENT_TEST_SOFTWARE_GL=1` with Mesa checks stricter GLSL). Findings: `docs/spikes/mpv-shaders.md`.
 - mpv tests also run on Ubuntu's older libmpv in CI (not reproducible here): react to an event once
   (it may repeat, e.g. `PlaybackRestart` at HLS segment switches), and make audio fixtures without a
   video track (its A/V sync drops samples there). Check `gh run list` / `gh run view <id> --log-failed`.

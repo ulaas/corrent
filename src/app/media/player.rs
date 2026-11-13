@@ -49,6 +49,8 @@ pub struct Track {
 
 #[derive(Default)]
 struct Status {
+    /// mpv's renderer refused a shader (it says so in its log, and draws blue until it is gone).
+    shader_refused: bool,
     pos: f64,
     duration: f64,
     paused: bool,
@@ -353,12 +355,18 @@ impl Drop for GlVideo {
 enum Panel {
     Settings,
     Sound,
+    Picture,
     Tracks,
     Cast,
     Room,
 }
 
 impl Panel {
+    /// Stays up on a click away: to hear, or see, what its knobs do while the film plays.
+    fn stays(self) -> bool {
+        matches!(self, Self::Sound | Self::Picture)
+    }
+
     /// CORRENT_DEV_SOUND or CORRENT_DEV_PANEL: up from the start, to look at.
     fn from_dev_hook() -> Option<Self> {
         if !cfg!(debug_assertions) {
@@ -370,6 +378,7 @@ impl Panel {
         match std::env::var("CORRENT_DEV_PANEL").ok()?.as_str() {
             "settings" => Some(Self::Settings),
             "sound" => Some(Self::Sound),
+            "picture" => Some(Self::Picture),
             "tracks" => Some(Self::Tracks),
             "cast" => Some(Self::Cast),
             "room" => Some(Self::Room),
@@ -462,8 +471,10 @@ pub struct Player {
     thumb_job: Option<super::client::Slot<serde_json::Value>>,
     /// A message for the app's toasts (taken by the media view).
     pub notice: Option<(crate::engine::ToastKind, String)>,
-    /// The sound settings mpv has, to send only what changes.
+    /// The sound and video effects settings mpv has, to send only what changes.
     audio: Mutex<corrent_core::config::Playback>,
+    /// Brings mpv to the video effects (players with a picture).
+    looks: Option<super::picture::Applier>,
     /// The filters running in mpv, what they were made from, and when `af` was last set.
     fx_applied: Vec<corrent_core::audio_fx::Stage>,
     fx_from: Option<FxInputs>,
@@ -598,8 +609,15 @@ impl Player {
         queue: Vec<QueueEntry>,
         audio_only: bool,
         audio: &corrent_core::config::Playback,
+        shader_dir: &std::path::Path,
     ) -> Result<Player, String> {
         let lib = corrent_mpv::Library::get().map_err(|e| e.to_string())?;
+        #[cfg(debug_assertions)]
+        let audio = &{
+            let mut hooked = audio.clone();
+            super::picture::dev_hook(&mut hooked);
+            hooked
+        };
         let header = client.auth_header();
         let ca = client.ca_file().map(|p| p.display().to_string());
         let mut opts: Vec<(&str, &str)> = corrent_mpv::HEADLESS.to_vec();
@@ -632,6 +650,15 @@ impl Player {
             opts.push(("tls-ca-file", ca.as_str()));
         }
         let mpv = Arc::new(Mpv::new(lib, &opts).map_err(|e| e.to_string())?);
+        let looks = (!audio_only).then(|| {
+            // What mpv's renderer compiles stays in this profile (by default: the user's own mpv
+            // cache). Not an option of older mpv, and one before the renderer starts.
+            let compiled = super::picture::compiled_dir(shader_dir);
+            let _ = mpv.set_property("gpu-shader-cache-dir", &compiled.to_string_lossy());
+            // A shader the graphics card refuses is only said in the log.
+            let _ = mpv.request_log_messages("error");
+            super::picture::Applier::new(&mpv, shader_dir.to_path_buf())
+        });
         let force_sw = std::env::var_os("CORRENT_SW_VIDEO").is_some();
         let video = if audio_only {
             Video::None
@@ -875,6 +902,18 @@ impl Player {
                         Event::CommandReply { userdata: FX_REPLY, error } if error < 0 => {
                             tracing::warn!("sound filter change: {}", m.library().error_text(error))
                         }
+                        Event::SetReply { userdata: super::picture::REPLY, error } if error < 0 => {
+                            tracing::warn!("video effects change: {}", m.library().error_text(error))
+                        }
+                        Event::Log { prefix, level, text } => {
+                            if corrent_core::video_fx::is_shader_error(&prefix, &level, &text) {
+                                s.shader_refused = true;
+                                repaint = true;
+                            } else {
+                                tracing::debug!("mpv [{prefix}] {text}");
+                                repaint = false;
+                            }
+                        }
                         Event::EndFile(EndReason::Eof) => s.entry_ended = true,
                         Event::EndFile(EndReason::Error(code)) => {
                             s.error = Some(t!("Playback failed: {why}", why = m.library().error_text(code)))
@@ -915,6 +954,7 @@ impl Player {
             observing_meters: false,
             observing_stats: false,
             panel: Panel::from_dev_hook(),
+            looks,
             picture: 0,
             #[cfg(debug_assertions)]
             dev_window: std::env::var("CORRENT_DEV_WINDOW").ok(),
@@ -1471,6 +1511,7 @@ impl Player {
         self.save_volume(false);
         self.save_fx(false);
         self.sync_fx();
+        self.sync_picture();
         if self.last_report.elapsed() > Duration::from_secs(10) {
             // A film left paused overnight has nothing new to say every 10 s.
             let (pos, paused) = crate::util::with_lock(&self.status, |s| (s.pos, s.paused));
@@ -1509,6 +1550,7 @@ impl Player {
         let title = match panel {
             Panel::Settings => t!("Playback settings"),
             Panel::Sound => t!("Sound"),
+            Panel::Picture => t!("Video effects"),
             Panel::Tracks => t!("Audio and subtitles"),
             Panel::Cast => t!("Cast to"),
             Panel::Room => t!("Watch together"),
@@ -1528,6 +1570,7 @@ impl Player {
                     .show(ui, |ui| match panel {
                         Panel::Settings => self.settings_panel(ui, &tone),
                         Panel::Sound => self.sound_sheet(ui, &tone),
+                        Panel::Picture => self.picture_sheet(ui, &tone),
                         Panel::Tracks => pick = self.tracks_panel(ui, &tone),
                         Panel::Cast => self.cast_panel(ui, &tone, pos),
                         Panel::Room => self.room_panel(ui, &tone, paused, pos),
@@ -1535,7 +1578,7 @@ impl Player {
             });
         let click = ctx.input(|i| i.pointer.any_click().then(|| i.pointer.interact_pos()).flatten());
         let buttons = Rect::from_min_max(pos2(rect.left(), rect.bottom() - BUTTON_ROW), rect.max);
-        if close || glass::clicked_away(click, area, buttons, panel == Panel::Sound) {
+        if close || glass::clicked_away(click, area, buttons, panel.stays()) {
             self.panel = None;
         }
         if pick { PlayerAction::PickSubtitle } else { PlayerAction::None }
@@ -1563,6 +1606,36 @@ impl Player {
         match &self.video {
             Video::Gl(v, _, blur) => blur.is_some() && crate::util::with_lock(v, |g| g.blur.is_some() && !g.blur_ready),
             _ => false,
+        }
+    }
+
+    /// Brings mpv to the video effects of the settings: only what changed, and nothing while
+    /// nothing did.
+    fn sync_picture(&mut self) {
+        let Some(looks) = &mut self.looks else { return };
+        let gpu = matches!(self.video, Video::Gl(..));
+        let error = crate::util::with_lock(&self.status, |s| std::mem::take(&mut s.shader_refused));
+        let (wait, turned_off) = crate::util::with_lock(&self.audio, |a| looks.sync(&self.mpv, &a.picture, gpu, error));
+        if let Some(wait) = wait {
+            self.ctx.request_repaint_after(wait);
+        }
+        if turned_off {
+            self.notice = Some((
+                crate::engine::ToastKind::Warning,
+                t!("This graphics card didn't take the video effects, so they are off.").to_string(),
+            ));
+        }
+    }
+
+    /// The video effects sheet's contents, for the player.
+    fn picture_sheet(&mut self, ui: &mut Ui, tone: &Tone) {
+        let mut pb = crate::util::with_lock(&self.audio, |a| a.clone());
+        let caps = corrent_core::video_fx::Caps { gpu: matches!(self.video, Video::Gl(..)) };
+        let refused = self.looks.as_ref().is_some_and(super::picture::Applier::refused);
+        if super::picture::sheet(ui, tone, &mut pb, caps, refused) {
+            crate::util::with_lock(&self.audio, |a| *a = pb);
+            // `sync_picture` runs next frame, and a released slider may not ask for one.
+            ui.ctx().request_repaint();
         }
     }
 
@@ -2238,6 +2311,9 @@ impl Player {
         }
         self.panel_button(ui, slot(), white, pr::SUBTITLES, t!("Audio and subtitles"), Panel::Tracks);
         self.panel_button(ui, slot(), white, pr::SLIDERS, t!("Sound"), Panel::Sound);
+        if self.looks.is_some() && !tiny {
+            self.panel_button(ui, slot(), white, pr::MAGIC_WAND, t!("Video effects"), Panel::Picture);
+        }
         self.panel_button(ui, slot(), white, pr::GEAR_SIX, t!("Playback settings"), Panel::Settings);
         if !tiny {
             let icon = if self.room.is_some() { pr::USERS_THREE } else { pr::USERS };

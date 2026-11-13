@@ -17,3 +17,11 @@
   are permissive (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode, MPL-2.0, …) plus OFL-1.1 for fonts.
 - **Gates:** `cargo fmt --check`, `cargo clippy --all-targets` with `-D warnings`, `cargo test` on
   Windows, Linux and macOS.
+
+## Video effect algorithms
+
+The built-in video effects (`crates/corrent-core/src/video_fx/shaders/`) are written for Corrent; no shader
+code is taken from elsewhere (not from Anime4K, FSRCNNX, CRT-Geom/royale or Shadertoy). Published methods they
+implement: contrast-adaptive sharpening after AMD FidelityFX CAS (MIT); the bilateral filter (Tomasi and
+Manduchi, 1998); colour vision deficiency matrices from Machado, Oliveira and Fernandes (2009) and
+daltonization by error redistribution; Bayer ordered dithering; the common sepia matrix.

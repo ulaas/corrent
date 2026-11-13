@@ -479,7 +479,7 @@ impl VideoFx {
             "black_white" => &[("mono", &[("amount", 1.0)]), ("levels", &[("black", 0.04), ("white", 0.94)])],
             "retro_tv" => &[("crt", &[]), ("bloom", &[("intensity", 0.3)])],
             "comic" => {
-                &[("posterize", &[("levels", 6.0)]), ("outline", &[("amount", 0.8)]), ("vibrance", &[("amount", 0.4)])]
+                &[("posterize", &[("levels", 8.0)]), ("outline", &[("amount", 0.8)]), ("vibrance", &[("amount", 0.4)])]
             }
             "night" => &[("temperature", &[("warmth", 0.6)]), ("tone", &[("shadows", 0.0), ("highlights", -0.5)])],
             _ => return,
