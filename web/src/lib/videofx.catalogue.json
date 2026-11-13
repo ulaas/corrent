@@ -1,0 +1,619 @@
+{
+  "adjust": [
+    "brightness",
+    "contrast",
+    "saturation",
+    "gamma",
+    "hue"
+  ],
+  "effects": [
+    {
+      "group": "detail",
+      "id": "denoise",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.5,
+          "key": "strength",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        },
+        {
+          "choice": false,
+          "default": 0.1,
+          "key": "edges",
+          "max": 0.3,
+          "min": 0.02,
+          "step": 0.01
+        }
+      ]
+    },
+    {
+      "group": "detail",
+      "id": "sharpen",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.5,
+          "key": "amount",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "detail",
+      "id": "clarity",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.4,
+          "key": "amount",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        },
+        {
+          "choice": false,
+          "default": 6.0,
+          "key": "radius",
+          "max": 12.0,
+          "min": 2.0,
+          "step": 1.0
+        }
+      ]
+    },
+    {
+      "group": "detail",
+      "id": "soften",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.5,
+          "key": "amount",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "colour",
+      "id": "levels",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.05,
+          "key": "black",
+          "max": 0.3,
+          "min": 0.0,
+          "step": 0.01
+        },
+        {
+          "choice": false,
+          "default": 0.95,
+          "key": "white",
+          "max": 1.0,
+          "min": 0.7,
+          "step": 0.01
+        },
+        {
+          "choice": false,
+          "default": 1.0,
+          "key": "midtones",
+          "max": 2.0,
+          "min": 0.5,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "colour",
+      "id": "temperature",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.3,
+          "key": "warmth",
+          "max": 1.0,
+          "min": -1.0,
+          "step": 0.05
+        },
+        {
+          "choice": false,
+          "default": 0.0,
+          "key": "tint",
+          "max": 1.0,
+          "min": -1.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "colour",
+      "id": "tone",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.4,
+          "key": "shadows",
+          "max": 1.0,
+          "min": -1.0,
+          "step": 0.05
+        },
+        {
+          "choice": false,
+          "default": -0.2,
+          "key": "highlights",
+          "max": 1.0,
+          "min": -1.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "colour",
+      "id": "vibrance",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.4,
+          "key": "amount",
+          "max": 1.0,
+          "min": -1.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "cinema",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.6,
+          "key": "amount",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "cross_process",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.6,
+          "key": "amount",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "colour",
+      "id": "mono",
+      "params": [
+        {
+          "choice": false,
+          "default": 1.0,
+          "key": "amount",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "sepia",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.8,
+          "key": "amount",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "accessibility",
+      "id": "daltonize",
+      "params": [
+        {
+          "choice": true,
+          "default": 1.0,
+          "key": "kind",
+          "max": 2.0,
+          "min": 0.0,
+          "step": 1.0
+        },
+        {
+          "choice": false,
+          "default": 1.0,
+          "key": "strength",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "accessibility",
+      "id": "colour_blind",
+      "params": [
+        {
+          "choice": true,
+          "default": 1.0,
+          "key": "kind",
+          "max": 2.0,
+          "min": 0.0,
+          "step": 1.0
+        },
+        {
+          "choice": false,
+          "default": 1.0,
+          "key": "severity",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "posterize",
+      "params": [
+        {
+          "choice": false,
+          "default": 5.0,
+          "key": "levels",
+          "max": 16.0,
+          "min": 2.0,
+          "step": 1.0
+        }
+      ]
+    },
+    {
+      "group": "colour",
+      "id": "invert",
+      "params": []
+    },
+    {
+      "group": "style",
+      "id": "night_vision",
+      "params": [
+        {
+          "choice": false,
+          "default": 2.0,
+          "key": "gain",
+          "max": 4.0,
+          "min": 1.0,
+          "step": 0.1
+        },
+        {
+          "choice": false,
+          "default": 0.1,
+          "key": "noise",
+          "max": 0.3,
+          "min": 0.0,
+          "step": 0.01
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "pixelate",
+      "params": [
+        {
+          "choice": false,
+          "default": 8.0,
+          "key": "block",
+          "max": 48.0,
+          "min": 2.0,
+          "step": 1.0
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "chromatic",
+      "params": [
+        {
+          "choice": false,
+          "default": 3.0,
+          "key": "amount",
+          "max": 8.0,
+          "min": 0.0,
+          "step": 0.5
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "bloom",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.7,
+          "key": "threshold",
+          "max": 1.0,
+          "min": 0.4,
+          "step": 0.05
+        },
+        {
+          "choice": false,
+          "default": 0.5,
+          "key": "intensity",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "outline",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.7,
+          "key": "amount",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "crt",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.1,
+          "key": "curvature",
+          "max": 0.3,
+          "min": 0.0,
+          "step": 0.01
+        },
+        {
+          "choice": false,
+          "default": 0.5,
+          "key": "scanlines",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        },
+        {
+          "choice": false,
+          "default": 0.3,
+          "key": "mask",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "halftone",
+      "params": [
+        {
+          "choice": false,
+          "default": 2.0,
+          "key": "levels",
+          "max": 8.0,
+          "min": 2.0,
+          "step": 1.0
+        },
+        {
+          "choice": false,
+          "default": 2.0,
+          "key": "cell",
+          "max": 6.0,
+          "min": 1.0,
+          "step": 1.0
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "vignette",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.5,
+          "key": "strength",
+          "max": 1.0,
+          "min": 0.0,
+          "step": 0.05
+        },
+        {
+          "choice": false,
+          "default": 0.75,
+          "key": "radius",
+          "max": 1.0,
+          "min": 0.3,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "group": "style",
+      "id": "grain",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.08,
+          "key": "amount",
+          "max": 0.3,
+          "min": 0.0,
+          "step": 0.01
+        },
+        {
+          "choice": false,
+          "default": 1.5,
+          "key": "size",
+          "max": 4.0,
+          "min": 1.0,
+          "step": 0.5
+        }
+      ]
+    },
+    {
+      "group": "tools",
+      "id": "zebra",
+      "params": [
+        {
+          "choice": false,
+          "default": 0.95,
+          "key": "threshold",
+          "max": 1.0,
+          "min": 0.8,
+          "step": 0.01
+        }
+      ]
+    }
+  ],
+  "groups": [
+    "colour",
+    "detail",
+    "style",
+    "accessibility",
+    "tools"
+  ],
+  "presets": [
+    {
+      "adjust": {},
+      "deband": false,
+      "effects": {
+        "clarity": {
+          "amount": 0.3
+        },
+        "sharpen": {
+          "amount": 0.4
+        },
+        "vibrance": {
+          "amount": 0.5
+        }
+      },
+      "name": "vivid"
+    },
+    {
+      "adjust": {},
+      "deband": false,
+      "effects": {
+        "cinema": {
+          "amount": 0.6
+        },
+        "grain": {
+          "amount": 0.04
+        },
+        "vignette": {
+          "strength": 0.35
+        }
+      },
+      "name": "cinema"
+    },
+    {
+      "adjust": {},
+      "deband": false,
+      "effects": {
+        "temperature": {
+          "warmth": 0.35
+        },
+        "tone": {
+          "highlights": -0.1,
+          "shadows": 0.2
+        }
+      },
+      "name": "warm"
+    },
+    {
+      "adjust": {},
+      "deband": false,
+      "effects": {
+        "grain": {
+          "amount": 0.14,
+          "size": 2.0
+        },
+        "sepia": {
+          "amount": 0.7
+        },
+        "soften": {
+          "amount": 0.3
+        },
+        "vignette": {
+          "radius": 0.65,
+          "strength": 0.6
+        }
+      },
+      "name": "old_film"
+    },
+    {
+      "adjust": {},
+      "deband": false,
+      "effects": {
+        "levels": {
+          "black": 0.04,
+          "white": 0.94
+        },
+        "mono": {
+          "amount": 1.0
+        }
+      },
+      "name": "black_white"
+    },
+    {
+      "adjust": {},
+      "deband": false,
+      "effects": {
+        "bloom": {
+          "intensity": 0.3
+        },
+        "crt": {}
+      },
+      "name": "retro_tv"
+    },
+    {
+      "adjust": {},
+      "deband": false,
+      "effects": {
+        "outline": {
+          "amount": 0.8
+        },
+        "posterize": {
+          "levels": 8.0
+        },
+        "vibrance": {
+          "amount": 0.4
+        }
+      },
+      "name": "comic"
+    },
+    {
+      "adjust": {
+        "brightness": -8.0
+      },
+      "deband": false,
+      "effects": {
+        "temperature": {
+          "warmth": 0.6
+        },
+        "tone": {
+          "highlights": -0.5,
+          "shadows": 0.0
+        }
+      },
+      "name": "night"
+    }
+  ]
+}

@@ -679,3 +679,8 @@
 "Spectrum" = "Spektrum"
 "Peak {hz} Hz" = "Tepe {hz} Hz"
 "Off by default. Processing starts with the next thing you play, and only in browsers that allow it for that source." = "Varsayılan olarak kapalıdır. İşleme, çaldığınız bir sonraki şeyle başlar ve yalnızca o kaynağa izin veren tarayıcılarda çalışır."
+"Only in the desktop app" = "Yalnızca masaüstü uygulamasında"
+"Looks" = "Görünümler"
+"Look name" = "Görünüm adı"
+"Rename look {name}" = "{name} görünümünü yeniden adlandır"
+"Remove look {name}" = "{name} görünümünü kaldır"

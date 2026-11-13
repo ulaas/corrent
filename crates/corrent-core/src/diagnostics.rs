@@ -138,6 +138,11 @@ pub const SETTINGS_FIELDS: &[(&str, Rule)] = {
         ("playback.active_profile", Drop),
         ("playback.fx.preset", Drop), // may be the name of a user preset
         ("playback.fx.*", Keep),
+        ("playback.looks[].fx.preset", Drop),
+        ("playback.looks[].fx.*", Keep),
+        ("playback.looks[].name", Drop),
+        ("playback.picture.preset", Drop), // may be the name of a saved look
+        ("playback.picture.*", Keep),
         ("playback.profiles[].audio_device", Keep),
         ("playback.profiles[].channels", Keep),
         ("playback.profiles[].exclusive", Keep),
@@ -517,6 +522,8 @@ mod tests {
         });
         s.search.providers.push(crate::search::TorznabProvider::default());
         s.playback.fx.preset = Some("mine".into());
+        s.playback.picture.apply_preset("cinema");
+        s.playback.save_look("mine");
         s.playback.fx.night = Some(Default::default());
         s.playback.fx.crossfeed = Some(Default::default());
         s.playback.active_profile = Some("mine".into());

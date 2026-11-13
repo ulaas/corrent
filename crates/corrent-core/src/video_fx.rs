@@ -864,6 +864,72 @@ mod tests {
         assert_eq!(fx, VideoFx::default());
     }
 
+    /// The web client's model reads `web/src/lib/videofx.catalogue.json` (the effects with their
+    /// values, the looks): a change here without that file, or the other way round, fails. The
+    /// file is the text this prints.
+    #[test]
+    fn the_web_catalogue_matches() {
+        use serde_json::{Map, Value, json};
+        // An f32 as it was written (0.05, not 0.05000000074505806).
+        let n = |v: f32| (f64::from(v) * 1e4).round() / 1e4;
+        let group = |g: Group| match g {
+            Group::Detail => "detail",
+            Group::Colour => "colour",
+            Group::Style => "style",
+            Group::Accessibility => "accessibility",
+            Group::Tools => "tools",
+        };
+        let effects: Vec<Value> = CATALOGUE
+            .iter()
+            .map(|s| {
+                let params: Vec<Value> = s
+                    .params
+                    .iter()
+                    .map(|p| {
+                        json!({
+                            "key": p.key,
+                            "min": n(p.min),
+                            "max": n(p.max),
+                            "default": n(p.default),
+                            "step": n(p.step),
+                            "choice": p.choice,
+                        })
+                    })
+                    .collect();
+                json!({ "id": s.id, "group": group(s.group), "params": params })
+            })
+            .collect();
+        let presets: Vec<Value> = PRESETS
+            .iter()
+            .map(|name| {
+                let mut fx = VideoFx::default();
+                fx.apply_preset(name);
+                let adjust: Map<String, Value> = ADJUST
+                    .iter()
+                    .filter(|k| fx.adjust.get(k) != 0.0)
+                    .map(|k| (k.to_string(), json!(n(fx.adjust.get(k)))))
+                    .collect();
+                let effects: Map<String, Value> = fx
+                    .effects
+                    .iter()
+                    .map(|(id, e)| {
+                        assert!(e.on, "{name}: a look only lists effects that are on");
+                        (id.clone(), Value::Object(e.params.iter().map(|(k, v)| (k.clone(), json!(n(*v)))).collect()))
+                    })
+                    .collect();
+                json!({ "name": name, "adjust": adjust, "deband": fx.deband, "effects": effects })
+            })
+            .collect();
+        let ours = json!({ "adjust": ADJUST, "groups": GROUPS.map(group), "effects": effects, "presets": presets });
+        let theirs: Value = serde_json::from_str(include_str!("../../../web/src/lib/videofx.catalogue.json"))
+            .expect("videofx.catalogue.json is JSON");
+        assert!(
+            theirs == ours,
+            "web/src/lib/videofx.catalogue.json should be:\n{}",
+            serde_json::to_string_pretty(&ours).unwrap()
+        );
+    }
+
     #[test]
     fn off_keeps_the_values_and_draws_nothing() {
         let mut fx = VideoFx::default();

@@ -523,6 +523,8 @@ proptest! {
         use crate::migrate::{SETTINGS_VERSION, migrate_settings};
         let Some(mut s) = arbitrary_settings(seed) else { return Ok(()) };
         s.schema_version = SETTINGS_VERSION;
+        // As loading does: the video effects' numbers are brought into range.
+        s.playback.normalize_picture();
         let text = toml::to_string_pretty(&s);
         prop_assert!(text.is_ok(), "settings that load can't be saved: {:?}", text.err());
         let back = crate::config::Settings::parse(&text.unwrap());

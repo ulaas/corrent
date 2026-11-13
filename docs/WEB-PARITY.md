@@ -166,3 +166,69 @@ meaning (`crates/corrent-core/src/audio_fx.rs`). What only the desktop has, and 
   but don't sound the same.
 - Metering runs FFmpeg's `ebur128`/`astats`/`aphasemeter` here. There is no spectrum on the desktop,
   because no filter reports its bands as numbers.
+
+## Video effects (2026-11-13)
+
+The desktop's Video effects sheet (the wand button in the player, Settings → Playback;
+`src/app/media/picture.rs`, model `crates/corrent-core/src/video_fx.rs`) has a web counterpart with
+the same `VideoFx` shape, the same labels and the same looks: the wand button in the web player
+opens `PicturePanel.svelte` (loaded when first opened); the settings are `prefs.videoFx` and
+`prefs.videoLooks` (per user, on the server like the sound settings; not shared with the desktop's
+`playback.picture`). The catalogue and the looks are one file, `web/src/lib/videofx.catalogue.json`,
+which the web model imports and the Rust test `the_web_catalogue_matches` compares with
+`CATALOGUE`/`PRESETS`: a change on one side fails a test.
+
+How the web draws them (`web/src/lib/videofxlook.ts`, `videoLook`; the settings half is
+`videofxmodel.ts`): the picture is a `<video>`
+element the browser draws, and the web does not draw it itself (no canvas or WebGL: that would
+take away native fullscreen, picture in picture and AirPlay, and cost battery). So the settings
+become a CSS `filter` on the element — the browser's own functions where they are the same sum
+(`saturate`, `brightness` for mpv's contrast, `grayscale`, `sepia`, `invert`, `blur`), inline SVG
+colour filters for the rest (`feColorMatrix`, `feComponentTransfer`, `feComposite`) — and up to
+three layers over the picture (scanlines, vignette, grain). Off, or at neutral values, there is no
+`filter` style, no `<svg>` and no layer.
+
+Both have:
+
+- The on-switch (off to compare), Original, the built-in looks, saved looks (save, rename, remove),
+  "a change by hand leaves the look and turns the effects on".
+- Adjust: brightness, contrast, saturation, gamma, hue, with mpv's meaning (measured against mpv:
+  brightness is added, contrast is a gain from black, gamma +100 is a power of 1/8, hue turns Cb/Cr
+  by 180° per 100 — the other way round than CSS `hue-rotate`, which is why it is a matrix).
+- Colour: Levels, Colour temperature, Shadows and highlights, Black and white, Invert colours.
+  Style: Teal and orange, Cross-process, Sepia, Posterize, Vignette, Film grain, and Tube
+  television's scanlines. Detail: Soften. Colour vision: correction and preview, with the same
+  Machado (2009) matrices on linear light.
+
+Only the desktop has (listed in the web panel, switched off, "Only in the desktop app"):
+
+- Reduce noise, Sharpen, Clarity, Pixelate, Colour fringes, Glow, Outlines, Dither, Night vision,
+  Zebra stripes, Tube television's curved glass and shadow mask: they read neighbouring pixels or
+  move them, or write a pattern per pixel. A CSS filter can't do that cheaply or at all, and a
+  renderer of our own is what the web client avoids.
+- Vibrance: it needs the largest and smallest channel of a pixel, which no colour filter gives.
+- Smooth gradients (mpv's debanding).
+- So the look Vivid (sharpen, clarity, vibrance) can't be chosen on the web; Retro TV shows only
+  scanlines and Comic only the posterizing.
+
+What differs where both have it:
+
+- The desktop's shaders run inside mpv's renderer, under the subtitles. A browser filters the
+  `<video>` element as it draws it: text subtitles the browser draws into the element and
+  subtitles burnt into a transcode are filtered with the picture, and the layers lie over them.
+- Values are close, not equal. Checked in headless Chrome against the shaders' sums over 256
+  colours: within about three 8-bit steps for the picture controls, levels, shadows and highlights,
+  teal and orange, cross-process, black and white, sepia, posterize and invert. Colour temperature
+  keeps the brightness of greys where the shader keeps every pixel's (strong colours drift, by up
+  to 34 steps at the corners of the cube at twice the default). The colour vision effects use the
+  sRGB curve where the shader uses a power of 2.2 (up to 15 steps on dark saturated colours).
+  Soften is a Gaussian of the shader's spread. Grain is a tiled noise picture moved 25 times a
+  second, lighter over bright parts like the shader's, not the same noise; it stands still while
+  paused and when motion is off.
+- The filter is the browser's: nothing reaches the picture in picture window, an AirPlay or cast
+  target, or an iPhone's own fullscreen player. Not checked in Safari or Firefox yet (SVG filters
+  on `<video>` are the part to look at; `PLATFORM-TESTING.md` style check: every web-supported
+  effect on, in each browser).
+
+Unaffected on both: screenshots and thumbnails. The desktop takes them from the original picture;
+the web's "Use this frame as the thumbnail" is made on the server from the file.

@@ -20,6 +20,8 @@
   import { imageUrl } from '../lib/api';
   import { ms, prefs } from '../lib/prefs.svelte';
   import { FxHost } from '../lib/fxhost.svelte';
+  import { lazy } from '../lib/lazy.svelte';
+  import { GRAIN_IMAGE, pictureRect, videoLook } from '../lib/videofxlook';
   import { browserProfile, type HlsStats } from '../lib/player.svelte';
   import SoundPanel from '../components/SoundPanel.svelte';
   import PlayerStats from '../components/PlayerStats.svelte';
@@ -48,7 +50,7 @@
   let trick = $state<TrickCue[]>([]);
   let nextUp = $state<Item | null>(null);
   let countdown = $state(0);
-  let menu = $state<'' | 'speed' | 'subs' | 'audio' | 'cast' | 'settings' | 'sound'>('');
+  let menu = $state<'' | 'speed' | 'subs' | 'audio' | 'cast' | 'settings' | 'sound' | 'picture'>('');
 
   // ---- playback settings (as the desktop's, src/app/media/player.rs; browsers can't delay
   // audio or take mpv's screenshots) ----
@@ -307,6 +309,32 @@
     return () => {
       h.dispose();
       fx = null;
+    };
+  });
+
+  // Video effects (lib/videofxlook.ts): a CSS filter on the element and layers over the picture,
+  // nothing when they are off. The layers need to know where the picture is inside the element.
+  const PicturePanel = $derived(menu === 'picture' ? lazy('picture-panel', () => import('../components/PicturePanel.svelte')) : undefined);
+  let frame = $state({ x: 0, y: 0, w: 0, h: 0 });
+  const look = $derived(videoLook(prefs.videoFx, { height: frame.h }));
+  $effect(() => {
+    if (!video) return;
+    const el = video;
+    const contain = aspect === '';
+    const measure = () => {
+      const r = pictureRect({ w: el.clientWidth, h: el.clientHeight }, { w: el.videoWidth, h: el.videoHeight }, contain);
+      const next = { x: el.offsetLeft + r.x, y: el.offsetTop + r.y, w: r.w, h: r.h };
+      if (next.x !== frame.x || next.y !== frame.y || next.w !== frame.w || next.h !== frame.h) frame = next;
+    };
+    const sizes = new ResizeObserver(measure);
+    sizes.observe(el);
+    el.addEventListener('loadedmetadata', measure);
+    el.addEventListener('resize', measure);
+    untrack(measure);
+    return () => {
+      sizes.disconnect();
+      el.removeEventListener('loadedmetadata', measure);
+      el.removeEventListener('resize', measure);
     };
   });
 
@@ -912,6 +940,7 @@
     class:forced={!!RATIO[aspect]}
     style:--ratio={RATIO[aspect] ?? null}
     style:--sub-scale={subScale}
+    style:filter={look.filter || null}
     playsinline
     onclick={onVideoClick}
     ondblclick={() => lastPointer !== 'touch' && void toggleFullscreen()}
@@ -930,6 +959,17 @@
       <track id="sub-{s.index}" kind="subtitles" src={s.url} srclang={s.lang ?? undefined} label={subLabel(s)} onload={shiftCues} />
     {/each}
   </video>
+  {#if look.defs}
+    <!-- Numbers only, made by videoLook. -->
+    <svg class="fxdefs" width="0" height="0" aria-hidden="true"><defs>{@html look.defs}</defs></svg>
+  {/if}
+  {#if look.overlays.length}
+    <div class="fxlayers" aria-hidden="true" style:left="{frame.x}px" style:top="{frame.y}px" style:width="{frame.w}px" style:height="{frame.h}px">
+      {#each look.overlays as o (o.kind)}
+        <div class="fxlayer {o.kind}" class:still={!playing} style="{o.style}{o.kind === 'grain' ? `;background-image:${GRAIN_IMAGE}` : ''}"></div>
+      {/each}
+    </div>
+  {/if}
 
   {#if stats || prefs.audioFx.meters}
     <div class="statsbox"><PlayerStats {video} {info} {fx} av={stats} audio={prefs.audioFx.meters} hls={hlsStats} /></div>
@@ -1035,6 +1075,16 @@
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <div class="menu sound" role="dialog" aria-label={t('Sound')} tabindex="-1" transition:fly={{ y: 8, duration: ms(140) }} onkeydown={(e) => e.key === 'Escape' && (e.stopPropagation(), closePop(true))} {@attach (el) => el.querySelector<HTMLElement>('input')?.focus({ preventScroll: true })}>
             <SoundPanel />
+          </div>
+        {/if}
+      </div>
+
+      <div class="pop">
+        <button class="btn ghost icon" class:on={!!look.filter || look.overlays.length > 0} aria-haspopup="dialog" aria-expanded={menu === 'picture'} aria-label={t('Video effects')} title={t('Video effects')} onclick={clickPop('picture')}><Icon name="magic-wand" size={20} /></button>
+        {#if menu === 'picture' && PicturePanel}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div class="menu sound" role="dialog" aria-label={t('Video effects')} tabindex="-1" transition:fly={{ y: 8, duration: ms(140) }} onkeydown={(e) => e.key === 'Escape' && (e.stopPropagation(), closePop(true))} {@attach (el) => el.querySelector<HTMLElement>('input')?.focus({ preventScroll: true })}>
+            <PicturePanel />
           </div>
         {/if}
       </div>
@@ -1184,6 +1234,61 @@
     font-family: var(--font-sans);
     background: rgba(0, 0, 0, 0.6);
     font-size: calc(1.1em * var(--sub-scale, 1));
+  }
+  /* Video effects: the filters' definitions, and the layers over the picture (under everything
+     else on the stage). */
+  .fxdefs {
+    position: absolute;
+  }
+  .fxlayers {
+    position: absolute;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .fxlayer {
+    position: absolute;
+    inset: 0;
+  }
+  /* Larger than the picture and moved about, so the grain is new every moment. */
+  .fxlayer.grain {
+    inset: -128px;
+    animation: fxgrain 0.4s steps(1) infinite;
+  }
+  .fxlayer.grain.still,
+  :global([data-motion='off']) .fxlayer.grain {
+    animation: none;
+  }
+  @keyframes fxgrain {
+    0% {
+      transform: translate(0, 0);
+    }
+    10% {
+      transform: translate(-53px, 71px);
+    }
+    20% {
+      transform: translate(88px, -37px);
+    }
+    30% {
+      transform: translate(-19px, -102px);
+    }
+    40% {
+      transform: translate(64px, 45px);
+    }
+    50% {
+      transform: translate(-97px, 13px);
+    }
+    60% {
+      transform: translate(31px, 109px);
+    }
+    70% {
+      transform: translate(-71px, -58px);
+    }
+    80% {
+      transform: translate(113px, 82px);
+    }
+    90% {
+      transform: translate(7px, -79px);
+    }
   }
   .statsbox {
     position: absolute;

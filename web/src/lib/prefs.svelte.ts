@@ -5,6 +5,7 @@ import { accents, fixedAccentPresets } from 'virtual:tokens';
 import { api } from './api';
 import { onColor } from './color';
 import { defaultFx, normalizeFx, normalizePresets, type AudioFx, type UserPreset } from './audiofxmodel';
+import { defaultVideoFx, normalizeLooks, normalizeVideoFx, type VideoFx, type VideoPreset } from './videofxmodel';
 
 export type ThemeMode = 'system' | 'dark' | 'light';
 export type Density = 'compact' | 'comfortable' | 'spacious';
@@ -30,6 +31,9 @@ export interface Prefs {
   /** Sound processing (see lib/audiofxmodel.ts): off by default, and then no Web Audio at all. */
   audioFx: AudioFx;
   audioPresets: UserPreset[];
+  /** Video effects (see lib/videofxmodel.ts): off by default, and then the picture isn't touched. */
+  videoFx: VideoFx;
+  videoLooks: VideoPreset[];
 }
 
 const DEFAULTS: Prefs = {
@@ -49,6 +53,8 @@ const DEFAULTS: Prefs = {
   volume: 1,
   audioFx: defaultFx(),
   audioPresets: [],
+  videoFx: defaultVideoFx(),
+  videoLooks: [],
 };
 
 const KEY = 'corrent.prefs';
@@ -75,6 +81,8 @@ export async function syncPrefs(): Promise<void> {
         ...remote,
         audioFx: normalizeFx(remote.audioFx),
         audioPresets: normalizePresets(remote.audioPresets),
+        videoFx: normalizeVideoFx(remote.videoFx),
+        videoLooks: normalizeLooks(remote.videoLooks),
         volume: prefs.volume,
         sidebarCollapsed: prefs.sidebarCollapsed,
       });
@@ -94,12 +102,19 @@ function load(): Prefs {
     hadLocal = !!raw;
     if (raw) {
       const p = JSON.parse(raw);
-      return { ...DEFAULTS, ...p, audioFx: normalizeFx(p.audioFx), audioPresets: normalizePresets(p.audioPresets) };
+      return {
+        ...DEFAULTS,
+        ...p,
+        audioFx: normalizeFx(p.audioFx),
+        audioPresets: normalizePresets(p.audioPresets),
+        videoFx: normalizeVideoFx(p.videoFx),
+        videoLooks: normalizeLooks(p.videoLooks),
+      };
     }
   } catch {
     /* ignore */
   }
-  return { ...DEFAULTS, audioFx: defaultFx() };
+  return { ...DEFAULTS, audioFx: defaultFx(), videoFx: defaultVideoFx() };
 }
 
 export const prefs = $state<Prefs>(load());
@@ -134,7 +149,7 @@ export function ms(base: number): number {
 }
 
 export function resetPrefs() {
-  Object.assign(prefs, { ...DEFAULTS, homeOrder: [], homeHidden: [], audioFx: prefs.audioFx, audioPresets: prefs.audioPresets });
+  Object.assign(prefs, { ...DEFAULTS, homeOrder: [], homeHidden: [], audioFx: prefs.audioFx, audioPresets: prefs.audioPresets, videoFx: prefs.videoFx, videoLooks: prefs.videoLooks });
 }
 
 /** Keeps <html> attributes and CSS variables in sync with the preferences. */
