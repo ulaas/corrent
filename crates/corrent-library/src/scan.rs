@@ -751,6 +751,23 @@ fn set_image(t: &Transaction, owner: i64, kind: &str, s: &artwork::Stored, sourc
     Ok(())
 }
 
+/// The stream numbers (1000 and up) for a file's external subtitles: one that was known keeps its
+/// number, as the subtitle chosen for an item is remembered by it; a new one gets a number after
+/// all of those, whatever its place in the folder.
+fn external_sub_numbers(known: &[(String, i64)], paths: &[String]) -> Vec<i64> {
+    let kept = |p: &String| known.iter().find(|(k, _)| k == p).map(|(_, i)| *i);
+    let mut next = paths.iter().filter_map(kept).max().map_or(1000, |m| m + 1);
+    paths
+        .iter()
+        .map(|p| {
+            kept(p).unwrap_or_else(|| {
+                next += 1;
+                next - 1
+            })
+        })
+        .collect()
+}
+
 /// Writes a file row with its streams and chapters; returns the file id.
 fn upsert_file(t: &Transaction, library_id: i64, a: &Analyzed) -> rusqlite::Result<i64> {
     let path = a.path.display().to_string();
@@ -765,6 +782,11 @@ fn upsert_file(t: &Transaction, library_id: i64, a: &Analyzed) -> rusqlite::Resu
         params![library_id, path, a.size as i64, a.mtime, a.quick_hash, probe, a.probe.as_ref().map(|_| now)],
     )?;
     let file_id: i64 = t.query_row("SELECT id FROM files WHERE path = ?1", [&path], |r| r.get(0))?;
+    // The numbers the external subtitles have now: a remembered choice names one of them.
+    let known: Vec<(String, i64)> = t
+        .prepare("SELECT external_path, idx FROM streams WHERE file_id = ?1 AND external_path IS NOT NULL")?
+        .query_map([file_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
     if let Some(p) = &a.probe {
         t.execute("DELETE FROM streams WHERE file_id = ?1", [file_id])?;
         t.execute("DELETE FROM chapters WHERE file_id = ?1", [file_id])?;
@@ -794,11 +816,13 @@ fn upsert_file(t: &Transaction, library_id: i64, a: &Analyzed) -> rusqlite::Resu
     }
     // External subtitles: numbered after the embedded ones.
     t.execute("DELETE FROM streams WHERE file_id = ?1 AND external_path IS NOT NULL", [file_id])?;
-    for (i, (p, lang, forced)) in a.external_subs.iter().enumerate() {
+    let paths: Vec<String> = a.external_subs.iter().map(|(p, ..)| p.display().to_string()).collect();
+    let numbers = external_sub_numbers(&known, &paths);
+    for ((p, lang, forced), (path, idx)) in a.external_subs.iter().zip(paths.iter().zip(numbers)) {
         let codec = p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
         t.execute(
             "INSERT OR REPLACE INTO streams(file_id, idx, kind, codec, lang, forced, external_path) VALUES (?1, ?2, 'subtitle', ?3, ?4, ?5, ?6)",
-            params![file_id, 1000 + i as i64, codec, lang, forced, p.display().to_string()],
+            params![file_id, idx, codec, lang, forced, path],
         )?;
     }
     Ok(file_id)
@@ -1860,6 +1884,18 @@ mod tests {
 
     const ONE: Context = Context { alone: true, legacy: false };
     const MANY: Context = Context { alone: false, legacy: false };
+
+    /// A subtitle saved from a provider got the next number; a scan lists the folder by name.
+    #[test]
+    fn external_subtitles_keep_their_numbers() {
+        let p = |s: &str| s.to_string();
+        assert_eq!(external_sub_numbers(&[], &[p("m.en.srt"), p("m.tr.srt")]), [1000, 1001]);
+        // `m.tr.srt` was downloaded first, `m.en.srt` after it.
+        let known = [(p("m.tr.srt"), 1000), (p("m.en.srt"), 1001)];
+        assert_eq!(external_sub_numbers(&known, &[p("m.en.srt"), p("m.tr.srt")]), [1001, 1000]);
+        // A new one goes after them, and one that is gone doesn't hand its number on.
+        assert_eq!(external_sub_numbers(&known, &[p("m.de.srt"), p("m.en.srt")]), [1002, 1001]);
+    }
 
     fn movie(f: &str, cx: Context) -> (String, Option<i32>) {
         match place(LibraryKind::Movies, &[PathBuf::from("/m")], Path::new(f), None, None, cx) {

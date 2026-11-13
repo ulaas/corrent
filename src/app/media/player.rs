@@ -80,6 +80,10 @@ struct Status {
     loaded: bool,
     /// The server's external subtitles added to mpv: (URL, `Stream::index`).
     ext_subs: Vec<(String, i64)>,
+    /// The server's external subtitles for the file being opened, to add once it has loaded.
+    sub_queue: Vec<ExtSub>,
+    /// mpv started on a file after `sub_queue` was filled: the next `FileLoaded` is that file's.
+    sub_queue_armed: bool,
     /// What the filter chain needs to know about the source (kept between files).
     source: corrent_core::audio_fx::Source,
     meters: super::sound::Meters,
@@ -94,7 +98,33 @@ struct Status {
     meter_read: Option<Instant>,
 }
 
+/// A subtitle file the server has for the item.
+struct ExtSub {
+    url: String,
+    /// `Stream::index` (1000 and up).
+    index: i64,
+    title: String,
+    lang: String,
+    /// The one chosen last time.
+    select: bool,
+}
+
 impl Status {
+    /// Adds the server's subtitle files to the file that has just loaded, selecting the remembered
+    /// one. Not earlier: mpv refuses `sub-add` until it has started on the file, and a subtitle
+    /// added before the file's own tracks are known would take the first of their numbers.
+    fn add_ext_subs(&mut self, mpv: &Mpv) {
+        if !std::mem::take(&mut self.sub_queue_armed) {
+            return;
+        }
+        for s in std::mem::take(&mut self.sub_queue) {
+            // mpv opens the URL during `sub-add`: asynchronous, so that nothing waits for it.
+            let how = if s.select { "select" } else { "auto" };
+            let _ = mpv.command_async(0, &["sub-add", &s.url, how, &s.title, &s.lang]);
+            self.ext_subs.push((s.url, s.index));
+        }
+    }
+
     /// Selects the remembered tracks when the file's tracks are known (those it still has).
     /// External subtitles are selected as they are added.
     fn apply_wanted(&mut self, mpv: &Mpv) {
@@ -897,7 +927,9 @@ impl Player {
                             s.error = None;
                             s.loaded = true;
                             s.apply_wanted(&m);
+                            s.add_ext_subs(&m);
                         }
+                        Event::StartFile => s.sub_queue_armed = !s.sub_queue.is_empty(),
                         Event::CommandReply { userdata: FX_REPLY, error } if error < 0 => {
                             tracing::warn!("sound filter change: {}", m.library().error_text(error))
                         }
@@ -1008,6 +1040,8 @@ impl Player {
             s.entry_ended = false;
             s.tracks.clear();
             s.ext_subs.clear();
+            s.sub_queue.clear();
+            s.sub_queue_armed = false;
             s.loaded = false;
             // External subtitles (1000 and up) only come from the server, selected as added.
             let sid = e.subtitle_track.filter(|i| *i < 1000);
@@ -1057,6 +1091,8 @@ impl Player {
             s.segments.clear();
         }
         self.sheets.clear();
+        let generation = self.playlist_generation.clone();
+        let at = generation.load(Ordering::Relaxed);
         self.rt.spawn(async move {
             let info: Result<corrent_proto::library::PlaybackInfo, String> = client
                 .send(
@@ -1094,22 +1130,28 @@ impl Player {
                     let start = format!("start={}", e.resume_ms as f64 / 1000.0);
                     let title = format!("force-media-title=%{}%{}", e.title.len(), e.title);
                     let args = mpv.loadfile_args(&url, &format!("{start},{title}"));
-                    let _ = mpv.command(&args.iter().map(String::as_str).collect::<Vec<_>>());
-                    for s in info.subtitles.iter().filter_map(|s| s.url.as_ref().map(|u| (u, s))) {
-                        let url = client.url(s.0);
-                        crate::util::lock(&status).ext_subs.push((url.clone(), s.1.index));
-                        // mpv opens the URL during `sub-add`: don't hold a runtime worker for it.
-                        let _ = mpv.command_async(
-                            0,
-                            &[
-                                "sub-add",
-                                &url,
-                                if e.subtitle_track == Some(s.1.index) { "select" } else { "auto" },
-                                s.1.title.as_deref().unwrap_or(""),
-                                s.1.lang.as_deref().unwrap_or(""),
-                            ],
-                        );
+                    // Another entry was asked for while the server answered: that one loads.
+                    if generation.load(Ordering::Relaxed) != at {
+                        return;
                     }
+                    // The subtitle files wait for mpv to load the file (`Status::add_ext_subs`).
+                    crate::util::with_lock(&status, |st| {
+                        st.sub_queue_armed = false;
+                        st.sub_queue = info
+                            .subtitles
+                            .iter()
+                            .filter_map(|s| {
+                                Some(ExtSub {
+                                    url: client.url(s.url.as_ref()?),
+                                    index: s.index,
+                                    title: s.title.clone().unwrap_or_default(),
+                                    lang: s.lang.clone().unwrap_or_default(),
+                                    select: e.subtitle_track == Some(s.index),
+                                })
+                            })
+                            .collect();
+                    });
+                    let _ = mpv.command(&args.iter().map(String::as_str).collect::<Vec<_>>());
                 }
                 Err(e) => tracing::warn!("playback: {e}"),
             }
