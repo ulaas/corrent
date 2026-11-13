@@ -28,6 +28,15 @@ impl CorrentApp {
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
     }
 
+    /// The window is closing for good: take it off the screen now. eframe applies this at the end
+    /// of this frame, before `on_exit`, where stopping the engine takes a moment — the window
+    /// would sit there frozen meanwhile.
+    fn hide_for_exit(&mut self, ctx: &Context) {
+        self.quitting = true;
+        corrent_core::watchdog::ui_hidden();
+        ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+    }
+
     pub(super) fn window_logic(&mut self, ctx: &Context) {
         // Tray toggled in settings.
         if self.settings.behavior.show_tray_icon && self.tray.is_none() && !self.tray_failed {
@@ -86,8 +95,10 @@ impl CorrentApp {
         }
 
         // Close button.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
-            if self.settings.behavior.close_to_tray && self.tray.is_some() {
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.quitting {
+                self.hide_for_exit(ctx);
+            } else if self.settings.behavior.close_to_tray && self.tray.is_some() {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
                 self.hide_to_tray(ctx);
             } else if self.settings.behavior.confirm_exit_while_active
@@ -95,6 +106,8 @@ impl CorrentApp {
             {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
                 self.modal = Some(Modal::ConfirmExit);
+            } else {
+                self.hide_for_exit(ctx);
             }
         }
     }

@@ -1319,6 +1319,9 @@ impl eframe::App for CorrentApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // The window is hidden by now (`hide_for_exit`); the tray icon goes too, so nothing of
+        // Corrent stays on screen while the engine stops.
+        self.tray = None;
         // The last settings save is queued on the writer thread.
         if !corrent_core::writer::global().flush(&self.paths.settings_file(), std::time::Duration::from_secs(2)) {
             tracing::warn!("the settings were still being saved when Corrent quit");
