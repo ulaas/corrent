@@ -160,6 +160,10 @@ pub struct Playback {
     pub profiles: Vec<crate::audio_fx::AudioProfile>,
     /// The profile last switched to.
     pub active_profile: Option<String>,
+    /// Video effects: off by default, then mpv is given no shader at all.
+    pub picture: crate::video_fx::VideoFx,
+    /// Video effects saved under a name.
+    pub looks: Vec<crate::video_fx::VideoPreset>,
 }
 
 impl Default for Playback {
@@ -179,6 +183,8 @@ impl Default for Playback {
             user_presets: Vec::new(),
             profiles: Vec::new(),
             active_profile: None,
+            picture: crate::video_fx::VideoFx::default(),
+            looks: Vec::new(),
         }
     }
 }
@@ -237,6 +243,52 @@ impl Playback {
         self.user_presets.retain(|p| p.name != name);
         if self.fx.preset.as_deref() == Some(name) {
             self.fx.preset = None;
+        }
+    }
+
+    /// Saves the current video effects under `name` (replacing a look of that name).
+    pub fn save_look(&mut self, name: &str) {
+        let fx = crate::video_fx::VideoFx { preset: Some(name.to_string()), ..self.picture.clone() };
+        match self.looks.iter_mut().find(|p| p.name == name) {
+            Some(p) => p.fx = fx.clone(),
+            None => self.looks.push(crate::video_fx::VideoPreset { name: name.to_string(), fx: fx.clone() }),
+        }
+        self.picture = fx;
+    }
+
+    /// Takes a saved look's effects.
+    pub fn use_look(&mut self, name: &str) {
+        if let Some(p) = self.looks.iter().find(|p| p.name == name) {
+            self.picture = crate::video_fx::VideoFx { preset: Some(p.name.clone()), ..p.fx.clone() };
+        }
+    }
+
+    /// Renames a saved look, unless the new name is taken.
+    pub fn rename_look(&mut self, from: &str, to: &str) {
+        if self.looks.iter().any(|p| p.name == to) {
+            return;
+        }
+        for p in self.looks.iter_mut().filter(|p| p.name == from) {
+            p.name = to.to_string();
+            p.fx.preset = Some(to.to_string());
+        }
+        if self.picture.preset.as_deref() == Some(from) {
+            self.picture.preset = Some(to.to_string());
+        }
+    }
+
+    pub fn delete_look(&mut self, name: &str) {
+        self.looks.retain(|p| p.name != name);
+        if self.picture.preset.as_deref() == Some(name) {
+            self.picture.preset = None;
+        }
+    }
+
+    /// What a settings file may hold for the video effects made harmless (`VideoFx::normalize`).
+    pub fn normalize_picture(&mut self) {
+        self.picture.normalize();
+        for look in &mut self.looks {
+            look.fx.normalize();
         }
     }
 
@@ -905,6 +957,7 @@ impl Settings {
         }
         let mut s: Settings = toml::from_str(text).map_err(|e| e.to_string())?;
         s.playback.adopt_legacy();
+        s.playback.normalize_picture();
         Ok(s)
     }
 
@@ -941,6 +994,7 @@ impl Settings {
         section!("advanced", advanced);
         section!("playback", playback);
         s.playback.adopt_legacy();
+        s.playback.normalize_picture();
         (s, lost)
     }
 
@@ -1101,6 +1155,38 @@ mod tests {
         s.playback.muted = true;
         let back: Settings = toml::from_str(&toml::to_string_pretty(&s).unwrap()).unwrap();
         assert_eq!((back.playback.volume, back.playback.muted), (35.0, true));
+    }
+
+    #[test]
+    fn looks_are_saved_and_a_damaged_one_is_made_harmless() {
+        let mut p = Playback::default();
+        p.picture.apply_preset("cinema");
+        p.save_look("Evening");
+        p.picture.flatten();
+        p.use_look("Evening");
+        assert!(p.picture.is_on("cinema") && p.picture.enabled);
+        assert_eq!(p.picture.preset.as_deref(), Some("Evening"));
+        p.rename_look("Evening", "Late");
+        assert_eq!((p.picture.preset.as_deref(), p.looks[0].name.as_str()), (Some("Late"), "Late"));
+        p.save_look("Other");
+        p.rename_look("Late", "Other");
+        assert_eq!(p.looks.len(), 2, "a name that is taken stays taken");
+        assert!(p.changed_options(&Playback::default()).is_empty(), "the picture is no audio option");
+        p.delete_look("Other");
+        assert_eq!(p.picture.preset, None);
+
+        // An older file has neither key; a hand-edited one can hold anything.
+        let old = Settings::parse("schema_version = 1\n[playback]\ngapless = false\n").unwrap();
+        assert_eq!(old.playback.picture, crate::video_fx::VideoFx::default());
+        let text = "schema_version = 1\n[playback.picture]\nenabled = true\n[playback.picture.adjust]\ngamma = nan\n\
+                    [playback.picture.effects.grain]\non = true\n[playback.picture.effects.grain.params]\namount = nan\nbogus = 1.0\n\
+                    [playback.picture.effects.bogus]\non = true\n";
+        let s = Settings::parse(text).unwrap();
+        let picture = &s.playback.picture;
+        assert_eq!(picture, &picture.clone(), "no NaN is left: the settings compare equal to themselves");
+        assert_eq!(picture.effects.keys().collect::<Vec<_>>(), ["grain"]);
+        assert_eq!(picture.value("grain", "amount"), 0.08);
+        assert_eq!(picture.adjust.gamma, 0.0);
     }
 
     #[test]

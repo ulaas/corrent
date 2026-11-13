@@ -32,6 +32,7 @@ pub mod store;
 pub mod symbols;
 pub mod updates;
 pub mod util;
+pub mod video_fx;
 pub mod watchdog;
 pub mod writer;
 

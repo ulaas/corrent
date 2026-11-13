@@ -24,6 +24,7 @@ struct Rig {
     gl: Offscreen,
     logs: Vec<(String, String, String)>,
     dir: std::path::PathBuf,
+    changed: bool,
 }
 
 impl Drop for Rig {
@@ -33,7 +34,7 @@ impl Drop for Rig {
 }
 
 impl Rig {
-    /// A paused test picture with its first frame ready.
+    /// A test picture that stands still, with its first frame ready.
     fn new() -> Option<Rig> {
         let Ok(lib) = Library::get() else {
             eprintln!("libmpv not found; skipping");
@@ -43,8 +44,19 @@ impl Rig {
             eprintln!("no offscreen OpenGL context; skipping");
             return None;
         };
+        // On a software renderer (Mesa's llvmpipe, which is what CI has) mpv's picture sometimes
+        // stays black for a whole run, with or without shaders: about 1 start in 8 here. The
+        // shaders do compile and draw there, so it can be asked for, but not by default.
+        let software = ["llvmpipe", "softpipe", "SwiftShader"].iter().any(|s| gl.describe().contains(s));
+        if software && std::env::var_os("CORRENT_TEST_SOFTWARE_GL").is_none() {
+            eprintln!(
+                "only a software OpenGL renderer ({}); skipping (CORRENT_TEST_SOFTWARE_GL=1 runs it)",
+                gl.describe()
+            );
+            return None;
+        }
         let mut opts: Vec<(&str, &str)> = crate::HEADLESS.to_vec();
-        opts.extend([("vo", "libmpv"), ("ao", "null"), ("pause", "yes"), ("hwdec", "no")]);
+        opts.extend([("vo", "libmpv"), ("ao", "null"), ("hwdec", "no")]);
         let mpv = Arc::new(Mpv::new(lib, &opts).unwrap());
         // Compiled programs would otherwise be written to the user's ~/.cache/mpv. Older mpv
         // has no such option.
@@ -55,15 +67,34 @@ impl Rig {
         let dir = std::env::temp_dir().join(format!("corrent-shader-test-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let rc = RenderContext::new_gl(mpv.clone(), gl.resolver(), false).unwrap();
-        mpv.command(&["loadfile", "av://lavfi:testsrc2=size=320x240:rate=30:duration=600"]).unwrap();
-        let mut rig = Rig { rc, mpv, gl, logs: Vec::new(), dir };
+        // One frame of the test picture, played over and over: frames keep coming (a paused
+        // picture sometimes never reaches a software renderer at all, shaders or not), and two
+        // renders can still be compared.
+        mpv.command(&["loadfile", "av://lavfi:testsrc2=size=320x240:rate=30,trim=end_frame=1,loop=loop=-1:size=1"])
+            .unwrap();
+        let mut rig = Rig { rc, mpv, gl, logs: Vec::new(), dir, changed: false };
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut started = false;
         while Instant::now() < deadline && !started {
             started = rig.pump(0.1);
         }
         assert!(started, "playback started");
-        rig.frame();
+        // The first frame can take a moment to reach the renderer (longer on a software one).
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while mean(&rig.frame())[1] < 10.0 {
+            assert!(
+                Instant::now() < deadline,
+                "the test picture never came: time-pos {:?}, core-idle {:?}, vo-configured {:?}, video-params {:?}, logs {:?}",
+                rig.mpv.get("time-pos"),
+                rig.mpv.get("core-idle"),
+                rig.mpv.get("vo-configured"),
+                rig.mpv.get("video-params/w"),
+                rig.logs
+            );
+        }
+        // What the renderer says about itself at its start ("Suspected software renderer…").
+        rig.pump(0.05);
+        rig.logs.clear();
         Some(rig)
     }
 
@@ -82,13 +113,18 @@ impl Rig {
         started
     }
 
-    /// The picture as mpv draws it now.
+    /// The picture as mpv draws it now. After a change of shaders mpv resets its renderer and then
+    /// draws the frame again, and a render in between can come out black: so after a change this
+    /// lets three frames go by first.
     fn frame(&mut self) -> Vec<u8> {
-        // A changed option only asks for a redraw; give mpv a moment to say so.
-        for _ in 0..20 {
-            self.pump(0.01);
+        let frames = if std::mem::take(&mut self.changed) { 3 } else { 1 };
+        let until = Instant::now() + Duration::from_secs(2);
+        let mut seen = 0;
+        while seen < frames && Instant::now() < until {
+            self.pump(0.005);
             if self.rc.update() {
-                break;
+                self.gl.render_rgba(&mut self.rc, W, H).unwrap();
+                seen += 1;
             }
         }
         self.gl.render_rgba(&mut self.rc, W, H).unwrap()
@@ -112,7 +148,10 @@ impl Rig {
     fn shaders(&mut self, texts: &[&str]) {
         let files = self.files(texts);
         let files: Vec<&str> = files.iter().map(String::as_str).collect();
+        // Forget a frame asked for earlier: the next one `frame` waits for is this change's.
+        self.rc.update();
         self.mpv.set_string_list("glsl-shaders", &files).unwrap();
+        self.changed = true;
     }
 
     fn errors(&mut self) -> Vec<String> {
@@ -166,7 +205,6 @@ fn a_hook_changes_the_picture() {
     let Some(mut rig) = Rig::new() else { return };
     eprintln!("GL: {}", rig.gl.describe());
     let plain = rig.frame();
-    assert!(distance(&plain, &vec![0u8; plain.len()]) > 10.0, "the test picture isn't black");
     rig.shaders(&[INVERT]);
     let inverted = rig.frame();
     assert_eq!(rig.errors(), Vec::<String>::new());
@@ -183,7 +221,10 @@ fn a_hook_changes_the_picture() {
 #[ignore]
 fn a_change_while_paused_asks_for_a_frame() {
     let Some(mut rig) = Rig::new() else { return };
-    rig.frame();
+    rig.mpv.set_flag("pause", true).unwrap();
+    for _ in 0..10 {
+        rig.frame();
+    }
     println!("update() with nothing changed: {}", rig.rc.update());
     rig.shaders(&[INVERT]);
     let t = Instant::now();
@@ -265,6 +306,7 @@ fn recompiling() {
     for i in 0..500 {
         let t = Instant::now();
         rig.shaders(&[&text(i as f32 / 500.0)]);
+        rig.changed = false;
         let set = t.elapsed();
         let t = Instant::now();
         rig.gl.render_rgba(&mut rig.rc, W, H).unwrap();
@@ -436,4 +478,119 @@ fn an_asynchronous_set_answers() {
     }
     assert_eq!(answer, Some(0));
     assert!(distance(&plain, &rig.frame()) > 20.0);
+}
+
+/// Every built-in effect of `corrent_core::video_fx` compiles in mpv's renderer and changes the
+/// picture, alone, in the built-in looks and all at once; at the source's size and scaled up.
+#[test]
+fn every_builtin_effect_compiles_and_draws() {
+    use corrent_core::video_fx::{CATALOGUE, PRESETS, VideoFx, is_shader_error, source};
+    let Some(mut rig) = Rig::new() else { return };
+    let plain = [rig.frame(), rig.gl.render_rgba(&mut rig.rc, 2 * W, 2 * H).unwrap()];
+    let mut cases: Vec<(String, VideoFx)> = Vec::new();
+    for s in CATALOGUE {
+        let mut fx = VideoFx { enabled: true, ..Default::default() };
+        fx.toggle(s.id, true);
+        cases.push((s.id.to_string(), fx.clone()));
+        // And at both ends of every value.
+        for p in s.params {
+            for v in [p.min, p.max] {
+                let mut fx = fx.clone();
+                fx.set(s.id, p.key, v);
+                cases.push((format!("{} {}={v}", s.id, p.key), fx));
+            }
+        }
+    }
+    for name in PRESETS {
+        let mut fx = VideoFx::default();
+        fx.apply_preset(name);
+        cases.push((format!("look {name}"), fx));
+    }
+    let mut all = VideoFx { enabled: true, ..Default::default() };
+    for s in CATALOGUE {
+        all.toggle(s.id, true);
+    }
+    cases.push(("everything".into(), all));
+
+    for (name, fx) in cases {
+        let text = source(&fx);
+        assert!(!text.is_empty(), "{name}");
+        rig.shaders(&[&text]);
+        let small = rig.frame();
+        let big = rig.gl.render_rgba(&mut rig.rc, 2 * W, 2 * H).unwrap();
+        rig.pump(0.0);
+        let refused: Vec<String> = rig
+            .logs
+            .iter()
+            .filter(|(prefix, level, text)| is_shader_error(prefix, level, text) || level == "error")
+            .map(|l| l.2.clone())
+            .collect();
+        let warnings: Vec<&String> = rig.logs.iter().map(|l| &l.2).collect();
+        assert!(refused.is_empty(), "{name}: {refused:#?}\n{text}");
+        assert!(warnings.is_empty(), "{name}: {warnings:#?}");
+        // Extremes may be the value at which an effect does nothing; the default never is.
+        let at_default = !name.contains('=');
+        for (plain, drawn) in plain.iter().zip([&small, &big]) {
+            let d = distance(plain, drawn);
+            // A refused shader gives mpv's blue picture.
+            let m = mean(drawn);
+            assert!(!(m[0] < 2.0 && m[2] > 100.0 && m[1] < 30.0), "{name}: a blue picture, {m:?}");
+            if at_default {
+                assert!(d > 0.05, "{name}: changes the picture (distance {d:.3})");
+            }
+        }
+    }
+    rig.shaders(&[]);
+    assert!(distance(&plain[0], &rig.frame()) < 1.0, "and none leaves a trace");
+}
+
+/// A measurement: how often does the first change leave a black picture, and what
+/// brings it back?
+#[test]
+#[ignore]
+fn black_after_a_change() {
+    let (mut black, mut stayed, mut by_update, mut by_seek, mut later) = (0, 0, 0, 0, 0);
+    let runs = 40;
+    for i in 0..runs {
+        let Some(mut rig) = Rig::new() else { return };
+        if i == 0 {
+            println!("GL: {}", rig.gl.describe());
+        }
+        rig.shaders(&[INVERT]);
+        let mut back = mean(&rig.frame())[1] > 10.0;
+        if !back {
+            black += 1;
+            println!("black: update() now {}, logs {:?}", rig.rc.update(), rig.logs);
+            let until = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < until && !back {
+                back = mean(&rig.frame())[1] > 10.0;
+            }
+            if !back {
+                stayed += 1;
+                // The same list again, as a new set.
+                rig.shaders(&[INVERT]);
+                back = mean(&rig.frame())[1] > 10.0;
+                by_update += usize::from(back);
+            }
+            if !back {
+                rig.mpv.command(&["seek", "0", "relative+exact"]).unwrap();
+                let until = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < until && !back {
+                    back = mean(&rig.frame())[1] > 10.0;
+                }
+                by_seek += usize::from(back);
+            }
+        }
+        // And the changes after the first.
+        for n in 0..5 {
+            let text = format!("{INVERT}// {n}\n");
+            rig.shaders(&[&text]);
+            later += usize::from(mean(&rig.frame())[1] <= 10.0);
+        }
+    }
+    println!(
+        "of {runs} first changes: {black} black, {stayed} still black after 2 s; back by setting again {by_update}, \
+         by a seek in place {by_seek}. Black after later changes: {later} of {}",
+        runs * 5
+    );
 }

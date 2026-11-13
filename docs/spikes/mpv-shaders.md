@@ -25,5 +25,10 @@ context (NVIDIA; `crates/corrent-mpv/src/test_gl.rs`). Code: `crates/corrent-mpv
 | mpv's `brightness`, `contrast`, `saturation`, `gamma`, `hue`, `deband` | Work with OpenGL. |
 | The software renderer | Neither the shaders nor those properties do anything. |
 
+On Mesa's software renderer (llvmpipe, forced with `__EGL_VENDOR_LIBRARY_FILENAMES`) every built-in
+effect compiles and draws too, but there mpv's picture sometimes stays black for a whole run, with
+or without shaders (about 1 start in 8; never in 240 changes on the GPU). The render tests
+therefore skip on a software renderer unless `CORRENT_TEST_SOFTWARE_GL=1`.
+
 Not answered here: older libmpv (CI's Ubuntu) and the owner's Windows GPU; the tests that aren't
-`#[ignore]` run there.
+`#[ignore]` run wherever there is a GPU.
