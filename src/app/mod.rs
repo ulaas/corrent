@@ -1261,6 +1261,10 @@ impl eframe::App for CorrentApp {
             crate::integration::macos_events::reinstall();
         }
         self.frame_seen = true;
+        // Not with the Mica spike: its window is transparent, and the backdrop shows there.
+        if !self.mica {
+            win_chrome::background(frame, ctx.global_style().visuals.panel_fill);
+        }
         // The watchdog's heartbeat (O6): frames stop while the window is hidden or minimized.
         let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
         corrent_core::watchdog::ui_frame(!self.window_hidden && !minimized);

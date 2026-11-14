@@ -64,6 +64,57 @@ pub fn fullscreen(window: &impl raw_window_handle::HasWindowHandle, on: bool) {
 #[cfg(not(windows))]
 pub fn fullscreen<W>(_window: &W, _on: bool) {}
 
+/// What Windows paints where a resize uncovers the window, until the next frame is there: the
+/// window class comes without a background brush, and the unpainted part shows white. Cheap to
+/// call every frame (it does something only when the colour changes). The class is shared by all
+/// of the app's windows.
+#[cfg(windows)]
+pub fn background(window: &impl raw_window_handle::HasWindowHandle, color: egui::Color32) {
+    use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
+
+    use raw_window_handle::RawWindowHandle;
+
+    #[link(name = "gdi32")]
+    unsafe extern "system" {
+        fn CreateSolidBrush(color: u32) -> *mut core::ffi::c_void;
+        fn DeleteObject(object: *mut core::ffi::c_void) -> i32;
+    }
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn SetClassLongPtrW(hwnd: *mut core::ffi::c_void, index: i32, value: isize) -> usize;
+    }
+    const GCLP_HBRBACKGROUND: i32 = -10;
+    /// The colour the class has now (`u32::MAX`: none set), and its brush.
+    static COLOR: AtomicU32 = AtomicU32::new(u32::MAX);
+    static BRUSH: AtomicIsize = AtomicIsize::new(0);
+
+    // COLORREF is 0x00BBGGRR.
+    let colorref = u32::from(color.r()) | u32::from(color.g()) << 8 | u32::from(color.b()) << 16;
+    if COLOR.load(Ordering::Relaxed) == colorref {
+        return;
+    }
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::Win32(win) = handle.as_raw() else { return };
+    let hwnd = win.hwnd.get() as *mut core::ffi::c_void;
+    // SAFETY: valid HWND owned by this process; the brush belongs to the class from here on,
+    // and the one it replaces is ours and no longer used.
+    unsafe {
+        let brush = CreateSolidBrush(colorref);
+        if brush.is_null() {
+            return;
+        }
+        SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, brush as isize);
+        let old = BRUSH.swap(brush as isize, Ordering::Relaxed);
+        if old != 0 {
+            DeleteObject(old as *mut core::ffi::c_void);
+        }
+    }
+    COLOR.store(colorref, Ordering::Relaxed);
+}
+
+#[cfg(not(windows))]
+pub fn background<W>(_window: &W, _color: egui::Color32) {}
+
 /// Mica spike (roadmap B5b, debug builds only, `CORRENT_DEV_MICA=1`): ask DWM for the Mica
 /// backdrop and extend it into the client area. Needs a transparent window and clear color.
 #[cfg(all(windows, debug_assertions))]
