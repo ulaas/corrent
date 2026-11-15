@@ -387,7 +387,7 @@ impl CorrentApp {
                         ui.add_space(2.0);
                         egui::Grid::new(("shortcuts", i)).num_columns(2).spacing(vec2(16.0, 5.0)).show(ui, |ui| {
                             for (key, what) in keys.iter() {
-                                ui.label(RichText::new(*key).monospace().small().color(p.accent));
+                                ui.label(RichText::new(corrent_i18n::keys(key)).monospace().small().color(p.accent));
                                 ui.label(RichText::new(*what).color(p.text_dim));
                                 ui.end_row();
                             }

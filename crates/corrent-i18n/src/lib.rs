@@ -87,7 +87,39 @@ pub fn tr_in(lang: Lang, s: &'static str) -> &'static str {
 }
 
 pub fn tr(s: &'static str) -> &'static str {
-    tr_in(current(), s)
+    keys(tr_in(current(), s))
+}
+
+/// Shortcut text as this platform names the keys: unchanged except on macOS (see `mac_keys`).
+pub fn keys(t: &'static str) -> &'static str {
+    #[cfg(target_os = "macos")]
+    let t = mac_keys(t);
+    t
+}
+
+/// macOS: the shortcuts egui calls `COMMAND` are Cmd there, so the texts say "Cmd+" instead of
+/// "Ctrl+". Ctrl+Space stays (Cmd+Space is Spotlight; the list takes Ctrl+Space on macOS).
+#[cfg(target_os = "macos")]
+fn mac_keys(t: &'static str) -> &'static str {
+    use std::sync::Mutex;
+    if !t.contains("Ctrl+") {
+        return t;
+    }
+    static DONE: OnceLock<Mutex<HashMap<&'static str, &'static str>>> = OnceLock::new();
+    let mut done = DONE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    done.entry(t).or_insert_with(|| {
+        let mut out = String::with_capacity(t.len());
+        let mut rest = t;
+        while let Some(i) = rest.find("Ctrl+") {
+            let (head, tail) = rest.split_at(i);
+            out.push_str(head);
+            let after = &tail["Ctrl+".len()..];
+            out.push_str(if after.starts_with("Space") || after.starts_with("Boşluk") { "Ctrl+" } else { "Cmd+" });
+            rest = after;
+        }
+        out.push_str(rest);
+        Box::leak(out.into_boxed_str())
+    })
 }
 
 /// Translate and fill `{name}` placeholders.

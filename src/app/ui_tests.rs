@@ -551,9 +551,10 @@ fn moving_through_the_list_with_the_keyboard() {
     press(&mut h, M::COMMAND, Key::ArrowDown);
     assert_eq!(h.state().focus, Some(three));
     assert_eq!(sel(&h), [1, 2]);
-    press(&mut h, M::COMMAND, Key::Space);
+    let toggle = if cfg!(target_os = "macos") { M::CTRL } else { M::COMMAND };
+    press(&mut h, toggle, Key::Space);
     assert_eq!(sel(&h), [1, 2, 3]);
-    press(&mut h, M::COMMAND, Key::Space);
+    press(&mut h, toggle, Key::Space);
     assert_eq!(sel(&h), [1, 2]);
     let _ = two;
     // / goes to the search box.

@@ -407,7 +407,9 @@ impl CorrentApp {
             // The key comes with its text, which the box (focused from this frame on) would type.
             ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "/")));
         }
-        if consume(sc(Modifiers::COMMAND, Key::Space)) {
+        // Cmd+Space is Spotlight on macOS: Ctrl+Space there (the shortcut list says so).
+        let toggle = if cfg!(target_os = "macos") { Modifiers::CTRL } else { Modifiers::COMMAND };
+        if consume(sc(toggle, Key::Space)) {
             self.toggle_focused();
         }
         // Moving through the list. Ctrl moves only the focus; Shift selects from the anchor.
