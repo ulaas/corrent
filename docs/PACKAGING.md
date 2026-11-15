@@ -106,8 +106,11 @@ Open (or `xattr -dr com.apple.quarantine /Applications/Corrent.app`). With the o
 locally set `MACOS_SIGN_IDENTITY` (or `CODESIGN_IDENTITY`), `MACOS_INSTALLER_IDENTITY` for the pkg and
 `MACOS_NOTARY_PROFILE` (a `notarytool store-credentials` profile); in CI add the secrets
 `MACOS_CERTIFICATE_P12` (base64), `MACOS_CERTIFICATE_PASSWORD`, `MACOS_CODESIGN_IDENTITY`,
+`MACOS_INSTALLER_CERTIFICATE_P12` (base64 of the Developer ID Installer `.p12`, same password),
 `MACOS_INSTALLER_IDENTITY` and an App Store Connect API key (`MACOS_NOTARY_KEY_P8`,
-`MACOS_NOTARY_KEY_ID`, `MACOS_NOTARY_ISSUER`).
+`MACOS_NOTARY_KEY_ID`, `MACOS_NOTARY_ISSUER`). The release job imports them into a temporary
+keychain (the API key as the `notarytool` profile `ci-notary`), checks the dmg and the pkg with
+`spctl` and deletes the keychain.
 
 ## Updates in place
 
