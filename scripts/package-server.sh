@@ -18,7 +18,7 @@ install -m755 target/release/correntd target/release/corrent-mpvw "$stage/"
 install -m644 docs/SERVER.md "$stage/README.md"
 case "$os" in
   linux) cp packaging/server/linux/* "$stage/" ;;
-  darwin) cp packaging/server/macos/* "$stage/" ;;
+  darwin) cp packaging/server/macos/*.plist "$stage/" ;;
 esac
 mkdir -p dist
 tar -C target/server -czf "dist/$name.tar.gz" "$name"
