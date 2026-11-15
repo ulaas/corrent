@@ -97,7 +97,7 @@ rewritten to `@loader_path/` by `dylibbundler`; the script fails if anything sti
 `/opt/homebrew`. These are GPL builds of mpv and FFmpeg, so the packages carry their license files
 (`Contents/Resources/licenses`). Homebrew's bottles are built for the macOS they were poured on, so
 `LSMinimumSystemVersion` (and the pkg's minimum) is the newest `minos` among the bundled files: build
-on the oldest macOS you want to support (the release workflow uses `macos-14`).
+on the oldest macOS you want to support (the release workflow uses `macos-15`, the oldest Apple silicon runner image GitHub still offers, so the release needs macOS 15 or later).
 
 **Signing.** Without an identity everything is signed ad hoc (hardened runtime, inside out:
 libraries, `corrent-mpvw`, the app) with `packaging/macos/Corrent.entitlements` (JIT for mpv's

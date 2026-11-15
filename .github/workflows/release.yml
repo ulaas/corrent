@@ -136,7 +136,7 @@ jobs:
   macos:
     needs: ci-gate
     # Apple silicon only (the packages are arm64).
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       # `secrets` can't be used in step conditions directly.
       HAS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
