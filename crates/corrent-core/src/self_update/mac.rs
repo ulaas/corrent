@@ -6,13 +6,13 @@
 //! the running app's signature, so a fork signed by another team keeps updating itself) and be
 //! accepted by Gatekeeper as notarized. Only then is it copied (`ditto`) to a hidden folder beside
 //! the installed app, checked once more there, and the two are swapped by renaming on that one
-//! volume: installed → `.Corrent.app.old-<pid>`, new → `Corrent.app`. Any failure renames the old
-//! app back and deletes the copy; the installed path never holds a half-copied app. The old app
-//! stays (the running process may still load libmpv or start `corrent-mpvw` from it) until the
-//! new version's first start deletes it (`cleanup`); the app quits, and a small `sh` waits for it
-//! and runs `open -n`. The two renames are not one atomic step: a power cut exactly between them
-//! leaves the old app as `.Corrent.app.old-<pid>` and no `Corrent.app` (renaming it back by hand
-//! restores it).
+//! volume in one step (`renamex_np(RENAME_SWAP)`), after which the old app is renamed to
+//! `.Corrent.app.old-<pid>`; where the volume can't swap, two renames do it (installed → old, new
+//! → `Corrent.app`). Any failure puts the old app back and deletes the copy; the installed path
+//! never holds a half-copied app. The old app stays (the running process may still load libmpv
+//! or start `corrent-mpvw` from it) until the new version's first start deletes it (`cleanup`);
+//! the app quits, and a small `sh` waits for it and runs `open -n`. Only the two-rename fallback has a moment without `Corrent.app`: a power
+//! cut exactly then leaves the old app as `.Corrent.app.old-<pid>` (renaming it back restores it).
 //!
 //! The parts that decide (requirement, parsing, the swap) are plain functions that the tests run
 //! on any platform; the parts that run Apple's tools are macOS only.
@@ -142,25 +142,69 @@ pub fn check_identity(
     ))
 }
 
+/// Exchanges two paths in one step (`renamex_np(RENAME_SWAP)`): each takes the other's name, and
+/// at no moment is either name free. Both must be on one volume, and the volume must support it
+/// (APFS and HFS+ do); `Err` otherwise, and on other systems.
+pub fn rename_swap(a: &Path, b: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c = |p: &Path| {
+            std::ffi::CString::new(p.as_os_str().as_bytes())
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+        };
+        let (a, b) = (c(a)?, c(b)?);
+        // SAFETY: two NUL-terminated strings that live until the call returns; the call keeps no
+        // pointer to them.
+        let r = unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_SWAP) };
+        if r == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (a, b);
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
+type SwapFn = fn(&Path, &Path) -> std::io::Result<()>;
+
 /// An installed app that was swapped for a new one, until the new one is known to start.
 #[derive(Debug)]
 pub struct BundleSwap {
     installed: PathBuf,
-    backup: PathBuf,
+    /// Where the previous app is now (the backup name, or the staging name when renaming it
+    /// there failed; the next start's `cleanup` deletes either).
+    old: PathBuf,
+    /// The other hidden name beside the app, for the two-rename way back.
+    spare: PathBuf,
 }
 
 impl BundleSwap {
-    /// Puts the previous app back; the new one is deleted.
+    /// Where the previous app is now.
+    pub fn old(&self) -> &Path {
+        &self.old
+    }
+
+    /// Puts the previous app back (in one step where the volume can); the new one is deleted.
     pub fn rollback(self) -> Result<(), String> {
-        let aside = staging_path(&self.installed, std::process::id());
-        let _ = std::fs::remove_dir_all(&aside);
-        let r = std::fs::rename(&self.installed, &aside).and_then(|()| {
-            std::fs::rename(&self.backup, &self.installed).inspect_err(|_| {
+        self.rollback_with(rename_swap)
+    }
+
+    fn rollback_with(self, swap: SwapFn) -> Result<(), String> {
+        if swap(&self.old, &self.installed).is_ok() {
+            // The new version now sits where the old one was.
+            let _ = std::fs::remove_dir_all(&self.old);
+            return Ok(());
+        }
+        let aside = &self.spare;
+        let _ = std::fs::remove_dir_all(aside);
+        let r = std::fs::rename(&self.installed, aside).and_then(|()| {
+            std::fs::rename(&self.old, &self.installed).inspect_err(|_| {
                 // Something stays under the name: the new version, then.
-                let _ = std::fs::rename(&aside, &self.installed);
+                let _ = std::fs::rename(aside, &self.installed);
             })
         });
-        let _ = std::fs::remove_dir_all(&aside);
+        let _ = std::fs::remove_dir_all(aside);
         r.map_err(|e| {
             t!(
                 "Couldn't put the previous version back ({path}: {e}). Download Corrent again from the release page.",
@@ -172,22 +216,25 @@ impl BundleSwap {
 
     /// The new version stays: the previous one is deleted (what can't be goes at the next start).
     pub fn finish(self) -> bool {
-        std::fs::remove_dir_all(&self.backup).is_ok()
+        std::fs::remove_dir_all(&self.old).is_ok()
     }
 }
 
-/// Swaps the installed app for `staged` (a complete, checked copy in the same folder): the
-/// installed one is renamed to `backup`, the staged one takes its name. If the second step fails,
-/// the installed app is renamed back. `staged` is the caller's to delete on an error.
+/// Swaps the installed app for `staged` (a complete, checked copy in the same folder) in one step
+/// (`rename_swap`); the previous app then sits at `staged` and is renamed to `backup`. Where the
+/// volume can't swap, two renames: installed → `backup`, `staged` → installed, and the first is
+/// undone if the second fails. `staged` is the caller's to delete on an error.
 pub fn swap_bundle(installed: &Path, staged: &Path, backup: &Path) -> Result<BundleSwap, String> {
-    swap_bundle_with(installed, staged, backup, || Ok(()))
+    swap_bundle_with(installed, staged, backup, rename_swap, || Ok(()))
 }
 
-/// `swap_bundle` with a step before the new app is put in place (tests make it fail).
+/// `swap_bundle` with the swap call and a step before the two-rename fallback puts the new app in
+/// place (tests replace them).
 fn swap_bundle_with(
     installed: &Path,
     staged: &Path,
     backup: &Path,
+    swap: SwapFn,
     before_put: impl FnOnce() -> std::io::Result<()>,
 ) -> Result<BundleSwap, String> {
     let failed = |e: std::io::Error| {
@@ -204,6 +251,22 @@ fn swap_bundle_with(
     if std::fs::symlink_metadata(backup).is_ok() {
         std::fs::remove_dir_all(backup).map_err(failed)?;
     }
+    let done = |old: &Path, spare: &Path| BundleSwap {
+        installed: installed.to_path_buf(),
+        old: old.to_path_buf(),
+        spare: spare.to_path_buf(),
+    };
+    match swap(staged, installed) {
+        Ok(()) => {
+            // The previous app is at `staged` now; under the backup name it is plainly that. If
+            // the rename fails it stays where it is (cleanup knows both names).
+            return Ok(match std::fs::rename(staged, backup) {
+                Ok(()) => done(backup, staged),
+                Err(_) => done(staged, backup),
+            });
+        }
+        Err(e) => tracing::info!("one-step swap of {} not possible ({e}); renaming twice", installed.display()),
+    }
     std::fs::rename(installed, backup).map_err(failed)?;
     if let Err(e) = before_put().and_then(|()| std::fs::rename(staged, installed)) {
         return Err(match std::fs::rename(backup, installed) {
@@ -215,7 +278,7 @@ fn swap_bundle_with(
             ),
         });
     }
-    Ok(BundleSwap { installed: installed.to_path_buf(), backup: backup.to_path_buf() })
+    Ok(done(backup, staged))
 }
 
 // ------------------------------------------------------------------------------- Apple's tools
@@ -493,44 +556,96 @@ mod tests {
         assert!(check_identity(Some(id), None, id, "2.0.0").is_err());
     }
 
+    fn unsupported(_: &Path, _: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::from_raw_os_error(45)) // ENOTSUP on macOS
+    }
+
+    fn no_step() -> std::io::Result<()> {
+        Ok(())
+    }
+
+    /// `rename_swap` where this system has it, as the fallback sees it otherwise.
+    fn real_swap(a: &Path, b: &Path) -> std::io::Result<()> {
+        rename_swap(a, b)
+    }
+
     #[test]
-    fn the_app_is_swapped_whole_and_put_back_on_any_failure() {
-        let dir = scratch("swap");
+    fn the_app_is_swapped_in_one_step_and_the_swap_can_be_undone() {
+        let dir = scratch("swap-atomic");
         let installed = dir.join("Corrent.app");
         let (staged, backup) = (staging_path(&installed, 7), backup_path(&installed, 7));
         assert_eq!(staged, dir.join(".Corrent.app.update-7"));
         assert_eq!(backup, dir.join(".Corrent.app.old-7"));
+        fake_app(&installed, "1.0.0");
+        fake_app(&staged, "2.0.0");
+
+        // The step before the two-rename fallback fails: with a real one-step swap it is never
+        // reached; without one the old app is back under its name.
+        let swap = swap_bundle_with(&installed, &staged, &backup, real_swap, || Err(std::io::ErrorKind::Other.into()));
+        if cfg!(target_os = "macos") {
+            let swap = swap.unwrap();
+            assert_eq!(version_of(&installed), "2.0.0");
+            assert_eq!(swap.old(), backup, "the previous app is renamed to the backup name");
+            assert_eq!(version_of(&backup), "1.0.0");
+            assert!(!staged.exists());
+            // The relaunch helper couldn't start: swapped back in one step, the new one deleted.
+            swap.rollback().unwrap();
+            assert_eq!(version_of(&installed), "1.0.0");
+            assert_eq!(names(&dir), ["Corrent.app"]);
+            // A swap that stays: the old app waits under the backup name for the next start.
+            fake_app(&staged, "2.0.0");
+            let swap = swap_bundle(&installed, &staged, &backup).unwrap();
+            assert_eq!(version_of(&installed), "2.0.0");
+            assert_eq!(
+                std::fs::read_to_string(installed.join("Contents/Frameworks/libmpv.2.dylib")).unwrap(),
+                "mpv 2.0.0"
+            );
+            assert_eq!(names(&dir), [".Corrent.app.old-7", "Corrent.app"]);
+            assert!(swap.finish());
+            assert_eq!(names(&dir), ["Corrent.app"]);
+        } else {
+            assert!(swap.is_err());
+            assert_eq!(version_of(&installed), "1.0.0");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn without_a_one_step_swap_two_renames_do_it_and_put_everything_back_on_failure() {
+        let dir = scratch("swap-fallback");
+        let installed = dir.join("Corrent.app");
+        let (staged, backup) = (staging_path(&installed, 7), backup_path(&installed, 7));
 
         // Putting the new one in place fails: the old one is back under its name, untouched.
         fake_app(&installed, "1.0.0");
         fake_app(&staged, "2.0.0");
-        let e = swap_bundle_with(&installed, &staged, &backup, || Err(std::io::ErrorKind::Other.into())).unwrap_err();
+        let e = swap_bundle_with(&installed, &staged, &backup, unsupported, || Err(std::io::ErrorKind::Other.into()))
+            .unwrap_err();
         assert!(e.contains("still there"), "{e}");
         assert_eq!(version_of(&installed), "1.0.0");
         assert!(!backup.exists());
         assert_eq!(version_of(&staged), "2.0.0", "the caller deletes the copy");
 
-        // It works; the backup holds the old one until `finish`.
-        let swap = swap_bundle(&installed, &staged, &backup).unwrap();
+        // It works; the backup holds the old one. Undone without a one-step swap either.
+        let swap = swap_bundle_with(&installed, &staged, &backup, unsupported, no_step).unwrap();
         assert_eq!(version_of(&installed), "2.0.0");
         assert_eq!(version_of(&backup), "1.0.0");
         assert!(!staged.exists());
-        // The new version couldn't be started: everything as before.
-        swap.rollback().unwrap();
+        swap.rollback_with(unsupported).unwrap();
         assert_eq!(version_of(&installed), "1.0.0");
         assert_eq!(names(&dir), ["Corrent.app"]);
 
         // Again, and this time it stays.
         fake_app(&staged, "2.0.0");
-        let swap = swap_bundle(&installed, &staged, &backup).unwrap();
+        let swap = swap_bundle_with(&installed, &staged, &backup, unsupported, no_step).unwrap();
         assert!(swap.finish());
         assert_eq!(version_of(&installed), "2.0.0");
-        assert_eq!(std::fs::read_to_string(installed.join("Contents/Frameworks/libmpv.2.dylib")).unwrap(), "mpv 2.0.0");
         assert_eq!(names(&dir), ["Corrent.app"]);
 
-        // A half-made copy (no Contents) is never put in place.
+        // A half-made copy (no Contents) is never put in place, either way.
         std::fs::create_dir_all(&staged).unwrap();
         assert!(swap_bundle(&installed, &staged, &backup).is_err());
+        assert!(swap_bundle_with(&installed, &staged, &backup, unsupported, no_step).is_err());
         assert_eq!(version_of(&installed), "2.0.0");
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -59,6 +59,10 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # Raw frame addresses for crash reports and resolving them later (symbols.rs).
 backtrace = "0.3"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# renamex_np(RENAME_SWAP): the app bundle is swapped in one step by "Update and restart".
+libc = "0.2"
+
 [target."cfg(windows)".dependencies]
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 

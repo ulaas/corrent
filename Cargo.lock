@@ -1466,6 +1466,7 @@ dependencies = [
  "feed-rs",
  "flate2",
  "fs4",
+ "libc",
  "librqbit",
  "librqbit-bencode",
  "librqbit-core",
