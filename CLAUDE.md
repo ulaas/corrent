@@ -86,6 +86,8 @@ crates/corrent-core/src/    Everything without UI (the GUI and the server both u
   import.rs, updates.rs     Import from other clients; daily GitHub release check (on by default)
   self_update.rs            "Update and restart": install kind, release file by exact name, checksums
                             (SHA256SUMS.txt + GitHub digest), file swap with rollback; never before a click
+  self_update/mac.rs        macOS: mount the dmg, check the app (bundle id, version, team-pinned Developer ID,
+                            notarized), ditto beside the installed app, swap by renaming, roll back
   backup.rs, crash.rs, migrate.rs, logbuf.rs
                             Backup/restore, panic hook + crash reports, schema migrations, in-memory log
   store.rs                  Per-torrent data (categories, tags, dates, queue, pause reasons, counters,

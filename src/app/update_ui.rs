@@ -141,7 +141,7 @@ async fn run(
 ) -> Result<Outcome, String> {
     let plan = self_update::plan(&found.release, &found.kind)?;
     let client = if plain_http { corrent_core::mpv_get::client(proxy) } else { self_update::client(proxy)? };
-    if let InstallKind::MacApp { .. } = found.kind {
+    if let InstallKind::MacDiskImage(_) = found.kind {
         // Not replaced in place (see docs/PACKAGING.md): the checked image is opened instead.
         let folder = crate::config::os_download_dir();
         let cant_write = |e: std::io::Error| t!("Can't write to {folder}: {e}", folder = folder.display(), e = e);
@@ -175,7 +175,23 @@ async fn install(
     }
     progress(Progress::Install);
     let (kind, work, data_dir) = (kind.clone(), work.to_path_buf(), data_dir.to_path_buf());
+    #[cfg(target_os = "macos")]
+    let version = plan.version.clone();
     let installed = tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        if let InstallKind::MacApp { bundle, team } = &kind {
+            let swap = self_update::mac::install(bundle, team, &file, &version, &work)?;
+            if let Err(e) = updater::relaunch_when_gone(bundle) {
+                return Err(match swap.rollback() {
+                    Ok(()) => t!("The new version couldn't be started ({e}), so the one you had was put back.", e = e),
+                    Err(worse) => worse,
+                });
+            }
+            if !swap.finish() {
+                tracing::warn!("the previous version couldn't be deleted; the next start tries again");
+            }
+            return Ok(());
+        }
         if let InstallKind::WindowsMsi { .. } = kind {
             return updater::start_installer(&file, &work, &data_dir)
                 .map_err(|e| t!("The installer couldn't be started: {e}", e = e));
@@ -485,6 +501,10 @@ impl CorrentApp {
                     );
                 }
                 State::Opened(file) => {
+                    if let InstallKind::MacDiskImage(why) = &d.found.kind {
+                        ui.label(RichText::new(why.advice()).color(p.text));
+                        ui.add_space(4.0);
+                    }
                     ui.label(
                         RichText::new(t!(
                             "The new version is downloaded and checked, and its disk image is open. Quit Corrent, then drag Corrent into Applications and replace the one that is there."

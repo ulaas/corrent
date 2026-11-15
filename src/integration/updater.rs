@@ -13,6 +13,9 @@
 //!   `--run-installer …` and quits. The copy waits for the lock, runs
 //!   `msiexec /i <msi> /passive /norestart`, then starts the installed program. It never registers
 //!   anything: the installer's own actions decide that, as they do for an upgrade by hand.
+//! - macOS: once the new `Corrent.app` is in place, a detached `sh` waits for this process to be
+//!   gone and starts the app with `open -n … --args --after-update` (through LaunchServices, as
+//!   the Finder would; no Terminal).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -47,12 +50,45 @@ fn env_set(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|v| !v.is_empty())
 }
 
+/// The app bundle this program runs from, with links resolved (`None`: not in a bundle).
+#[cfg(target_os = "macos")]
+fn running_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    self_update::mac::bundle_of(&std::fs::canonicalize(&exe).unwrap_or(exe))
+}
+
+/// Whether `path` belongs to the user this process runs as (a file made in the temporary folder
+/// tells which user that is).
+#[cfg(target_os = "macos")]
+fn owned_by_me(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let probe = std::env::temp_dir().join(format!(".corrent-owner-{}", std::process::id()));
+    let me = std::fs::write(&probe, b"").and_then(|()| std::fs::metadata(&probe)).map(|m| m.uid());
+    let _ = std::fs::remove_file(&probe);
+    matches!((me, std::fs::metadata(path)), (Ok(me), Ok(m)) if m.uid() == me)
+}
+
 /// What is known about the running copy.
 pub fn facts() -> Facts {
-    // As started, not resolved: the MSI's folder is compared with the registry's spelling.
+    // As started, not resolved: the MSI's folder is compared with the registry's spelling. On
+    // macOS resolved: the app that is replaced is the real one, wherever links point.
     let exe = std::env::current_exe().unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    let portable_marker = exe.parent().is_some_and(|d| d.join("portable").exists());
+    #[cfg(target_os = "macos")]
+    let bundle = self_update::mac::bundle_of(&exe);
     Facts {
-        portable_marker: exe.parent().is_some_and(|d| d.join("portable").exists()),
+        portable_marker,
+        portable_data: portable_marker || std::env::args().skip(1).any(|a| a == "--portable"),
+        #[cfg(target_os = "macos")]
+        mac_team: bundle.as_deref().and_then(self_update::mac::team_of),
+        #[cfg(target_os = "macos")]
+        mac_bundle_mine: bundle.as_deref().is_some_and(owned_by_me),
+        #[cfg(not(target_os = "macos"))]
+        mac_team: None,
+        #[cfg(not(target_os = "macos"))]
+        mac_bundle_mine: false,
         x86_64: cfg!(target_arch = "x86_64"),
         msi_dir: msi_dir(),
         appimage: std::env::var_os("APPIMAGE").filter(|p| !p.is_empty()).map(PathBuf::from),
@@ -76,7 +112,12 @@ pub fn cleanup(data_dir: &Path) {
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
     let appimage = std::env::var_os("APPIMAGE").filter(|p| !p.is_empty()).map(PathBuf::from);
     let folders: Vec<PathBuf> = exe_dir.into_iter().collect();
-    let gone = self_update::cleanup(&folders, appimage.as_deref(), data_dir);
+    #[allow(unused_mut, reason = "macOS adds to it")]
+    let mut gone = self_update::cleanup(&folders, appimage.as_deref(), data_dir);
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = running_bundle() {
+        gone += self_update::mac::cleanup(&bundle);
+    }
     if gone > 0 {
         tracing::info!("removed {gone} leftover(s) of the last update");
     }
@@ -131,6 +172,35 @@ pub fn start_new_version(program: &Path) -> std::io::Result<()> {
     if let Some(dir) = program.parent() {
         c.current_dir(dir);
     }
+    c.spawn().map(|_| ())
+}
+
+/// macOS: starts `bundle` again once this process is gone, through LaunchServices
+/// (`open -n <bundle> --args --after-update …`), from a detached `sh` in its own process group
+/// with no terminal. Debug builds pass on the test hooks' environment (`open` starts apps with
+/// the session's own).
+#[cfg(target_os = "macos")]
+pub fn relaunch_when_gone(bundle: &Path) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    // A process that ended but wasn't reaped yet (a zombie) counts as gone.
+    const WAIT_THEN_OPEN: &str = r#"pid=$1; shift
+while kill -0 "$pid" 2>/dev/null; do
+  case $(/bin/ps -o stat= -p "$pid" 2>/dev/null) in Z*) break ;; esac
+  sleep 0.2
+done
+exec /usr/bin/open "$@""#;
+    let mut c = detached(Path::new("/bin/sh"));
+    c.arg("-c").arg(WAIT_THEN_OPEN).arg("sh").arg(std::process::id().to_string()).arg("-n");
+    #[cfg(debug_assertions)]
+    for var in ["HOME", "CORRENT_DEV_UPDATE"] {
+        if let Some(value) = std::env::var_os(var) {
+            let mut pair = std::ffi::OsString::from(format!("{var}="));
+            pair.push(value);
+            c.arg("--env").arg(pair);
+        }
+    }
+    c.arg(bundle).arg("--args").arg(AFTER_UPDATE).args(kept_options());
+    c.current_dir("/").process_group(0);
     c.spawn().map(|_| ())
 }
 

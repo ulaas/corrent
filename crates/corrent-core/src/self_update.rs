@@ -16,7 +16,11 @@
 //! - AppImage: the new file is renamed over the old one, which is kept as `*.old` until the next start.
 //! - Windows MSI: the installer is downloaded and checked here; the app hands it to a copy of
 //!   itself that waits for the app to quit, runs `msiexec /i … /passive` and starts the new version.
-//! - macOS: the disk image is downloaded and checked, then opened for the user to drag across.
+//! - macOS: a Developer ID signed `Corrent.app` in a folder the user can write to is replaced as a
+//!   whole: the disk image is mounted, the app in it must be the same app, the new version, signed
+//!   by the running app's own team and accepted by Gatekeeper; it is copied beside the installed
+//!   one and the two are swapped by renaming (`mac`). Anything else gets the checked disk image
+//!   opened for the user to drag across, with the reason (`MacManual`).
 //! - Scoop, Homebrew, system packages, Flatpak, Snap, read-only folders: never touched; the app
 //!   says which command updates it.
 
@@ -28,6 +32,8 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
 use crate::updates::{Asset, Release};
+
+pub mod mac;
 
 /// Corrent's packages are 30–80 MiB; anything far bigger is not one.
 pub const MAX_DOWNLOAD: u64 = 600 << 20;
@@ -102,6 +108,42 @@ impl Manager {
     }
 }
 
+/// Why a `Corrent.app` isn't replaced in place (the checked disk image is opened instead).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MacManual {
+    /// Started from where Gatekeeper moved a quarantined app (App Translocation): run straight
+    /// from Downloads, for example.
+    Translocated,
+    /// The folder it is in can't be written by this user (a read-only volume such as the disk
+    /// image itself, or a folder or app that belongs to another user).
+    NotWritable,
+    /// Signed ad hoc or not at all: there is no Developer ID team to hold the new version to.
+    NotDeveloperId,
+    /// The profile is inside the app (`--portable`) and would go with the old version.
+    PortableData,
+}
+
+impl MacManual {
+    /// One sentence for the user.
+    pub fn advice(self) -> String {
+        match self {
+            MacManual::Translocated => t!(
+                "macOS runs this copy from a temporary place because it was opened where it was downloaded, so Corrent can't replace it. Move Corrent into Applications first."
+            ),
+            MacManual::NotWritable => t!(
+                "Corrent can't replace itself where it is: the folder is read-only or belongs to another user, and Corrent doesn't ask for an administrator's password."
+            ),
+            MacManual::NotDeveloperId => {
+                t!("This copy isn't signed with a Developer ID (it may be a build made from the source), so Corrent doesn't replace it.")
+            }
+            MacManual::PortableData => {
+                t!("This copy keeps its data inside the app (portable mode), so Corrent doesn't replace the app.")
+            }
+        }
+        .to_string()
+    }
+}
+
 /// How the running copy of Corrent got onto this computer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstallKind {
@@ -113,8 +155,11 @@ pub enum InstallKind {
     AppImage { file: PathBuf },
     /// The Linux tarball's two programs in a folder the user can write to.
     LinuxTarball { dir: PathBuf },
-    /// `Corrent.app` from the disk image.
-    MacApp { bundle: PathBuf },
+    /// `Corrent.app` from the disk image, signed with Developer ID `team`, in a folder the user
+    /// can write to: replaced in place.
+    MacApp { bundle: PathBuf, team: String },
+    /// `Corrent.app` that isn't replaced in place: the checked disk image is opened instead.
+    MacDiskImage(MacManual),
     /// A package manager owns this copy.
     Managed(Manager),
     /// A known kind in a place Corrent can't write to.
@@ -132,12 +177,13 @@ impl InstallKind {
                 | InstallKind::WindowsMsi { .. }
                 | InstallKind::AppImage { .. }
                 | InstallKind::LinuxTarball { .. }
+                | InstallKind::MacApp { .. }
         )
     }
 
     /// Whether Corrent downloads anything for this copy.
     pub fn downloads(&self) -> bool {
-        self.installs_itself() || matches!(self, InstallKind::MacApp { .. })
+        self.installs_itself() || matches!(self, InstallKind::MacDiskImage(_))
     }
 
     /// The exact name of the release file for this copy.
@@ -147,7 +193,7 @@ impl InstallKind {
             InstallKind::WindowsMsi { .. } => format!("Corrent-{version}-x86_64.msi"),
             InstallKind::AppImage { .. } => format!("Corrent-{version}-x86_64.AppImage"),
             InstallKind::LinuxTarball { .. } => format!("Corrent-{version}-linux-x86_64.tar.gz"),
-            InstallKind::MacApp { .. } => format!("Corrent-{version}-macos.dmg"),
+            InstallKind::MacApp { .. } | InstallKind::MacDiskImage(_) => format!("Corrent-{version}-macos.dmg"),
             InstallKind::Managed(_) | InstallKind::ReadOnly | InstallKind::Unknown => return None,
         })
     }
@@ -170,6 +216,12 @@ pub struct Facts {
     pub snap: bool,
     /// Homebrew has a `corrent` cask installed.
     pub homebrew_cask: bool,
+    /// The profile lives beside the program (`--portable`, or the `portable` marker).
+    pub portable_data: bool,
+    /// macOS: the Developer ID team the running app is signed with (`None`: ad hoc, unsigned).
+    pub mac_team: Option<String>,
+    /// macOS: the app bundle belongs to this user (so its old version can be deleted).
+    pub mac_bundle_mine: bool,
 }
 
 /// Lower case with forward slashes and no trailing one, to compare folders.
@@ -232,21 +284,29 @@ pub fn classify(os: Os, f: &Facts, exists: &dyn Fn(&Path) -> bool, writable: &dy
             if writable(&dir) { InstallKind::LinuxTarball { dir } } else { InstallKind::ReadOnly }
         }
         Os::Mac => {
-            if !exe.contains(".app/contents/macos/") {
-                return InstallKind::Unknown;
-            }
-            if f.homebrew_cask {
+            // `exe` is resolved (`/Applications/Corrent.app` may be a link into the Caskroom).
+            let Some(bundle) = mac::bundle_of(&f.exe) else { return InstallKind::Unknown };
+            if f.homebrew_cask || exe.contains("/caskroom/") {
                 return InstallKind::Managed(Manager::Homebrew);
             }
-            // Run from the mounted disk image, or from wherever Gatekeeper moved a quarantined
-            // app: there is no installed copy to speak of yet.
-            if exe.starts_with("/volumes/") || exe.contains("/apptranslocation/") {
-                return InstallKind::ReadOnly;
+            // Gatekeeper moved a quarantined app somewhere temporary: there is no installed copy
+            // to replace yet.
+            if exe.contains("/apptranslocation/") {
+                return InstallKind::MacDiskImage(MacManual::Translocated);
             }
-            match f.exe.ancestors().nth(3) {
-                Some(bundle) => InstallKind::MacApp { bundle: bundle.to_path_buf() },
-                None => InstallKind::Unknown,
+            if f.portable_data {
+                return InstallKind::MacDiskImage(MacManual::PortableData);
             }
+            let Some(team) = f.mac_team.clone().filter(|t| mac::valid_team(t)) else {
+                return InstallKind::MacDiskImage(MacManual::NotDeveloperId);
+            };
+            // The new version is renamed into the folder and the old one deleted from it, without
+            // asking for an administrator (the mounted disk image is read-only too).
+            let folder = bundle.parent().map(Path::to_path_buf).unwrap_or_default();
+            if !f.mac_bundle_mine || !writable(&folder) {
+                return InstallKind::MacDiskImage(MacManual::NotWritable);
+            }
+            InstallKind::MacApp { bundle, team }
         }
         Os::Other => InstallKind::Unknown,
     }
@@ -939,17 +999,49 @@ mod tests {
 
     #[test]
     fn mac_installations_are_told_apart() {
-        let app = facts("/Applications/Corrent.app/Contents/MacOS/corrent");
-        assert_eq!(
-            kind_of(Os::Mac, &app, &[], false),
-            InstallKind::MacApp { bundle: "/Applications/Corrent.app".into() }
-        );
-        let brewed = Facts { homebrew_cask: true, ..app };
+        let exe = "/Applications/Corrent.app/Contents/MacOS/corrent";
+        let team = Some("N6FA79GV97".to_string());
+        let app = Facts { mac_team: team.clone(), mac_bundle_mine: true, ..facts(exe) };
+        let in_place = InstallKind::MacApp { bundle: "/Applications/Corrent.app".into(), team: "N6FA79GV97".into() };
+        assert_eq!(kind_of(Os::Mac, &app, &[], false), in_place);
+        assert!(in_place.installs_itself() && in_place.downloads());
+
+        let manual = |why| InstallKind::MacDiskImage(why);
+        // /Applications belongs to an administrator and this user isn't one; the mounted disk
+        // image is read-only.
+        assert_eq!(kind_of(Os::Mac, &app, &[], true), manual(MacManual::NotWritable));
+        let mounted = Facts { exe: "/Volumes/Corrent/Corrent.app/Contents/MacOS/corrent".into(), ..app.clone() };
+        assert_eq!(kind_of(Os::Mac, &mounted, &[], true), manual(MacManual::NotWritable));
+        // The app was copied in by another user: its old version couldn't be deleted.
+        let foreign = Facts { mac_bundle_mine: false, ..app.clone() };
+        assert_eq!(kind_of(Os::Mac, &foreign, &[], false), manual(MacManual::NotWritable));
+        // Signed ad hoc (a build made with the packaging script and no identity), or not at all.
+        for t in [None, Some("not set".to_string()), Some("".to_string())] {
+            let adhoc = Facts { mac_team: t, ..app.clone() };
+            assert_eq!(kind_of(Os::Mac, &adhoc, &[], false), manual(MacManual::NotDeveloperId));
+        }
+        let portable = Facts { portable_data: true, ..app.clone() };
+        assert_eq!(kind_of(Os::Mac, &portable, &[], false), manual(MacManual::PortableData));
+        let moved = Facts {
+            exe: "/private/var/folders/x/T/AppTranslocation/ABC/d/Corrent.app/Contents/MacOS/corrent".into(),
+            ..app.clone()
+        };
+        assert_eq!(kind_of(Os::Mac, &moved, &[], false), manual(MacManual::Translocated));
+        for why in [MacManual::NotWritable, MacManual::NotDeveloperId, MacManual::PortableData, MacManual::Translocated]
+        {
+            let k = manual(why);
+            assert!(!k.installs_itself() && k.downloads(), "{k:?}");
+            assert!(!why.advice().is_empty());
+        }
+
+        // Homebrew: a cask is installed, or this copy lives in the Caskroom (a link resolved).
+        let brewed = Facts { homebrew_cask: true, ..app.clone() };
         assert_eq!(kind_of(Os::Mac, &brewed, &[], false), InstallKind::Managed(Manager::Homebrew));
-        let mounted = facts("/Volumes/Corrent/Corrent.app/Contents/MacOS/corrent");
-        assert_eq!(kind_of(Os::Mac, &mounted, &[], false), InstallKind::ReadOnly);
-        let moved = facts("/private/var/folders/x/AppTranslocation/ABC/d/Corrent.app/Contents/MacOS/corrent");
-        assert_eq!(kind_of(Os::Mac, &moved, &[], false), InstallKind::ReadOnly);
+        let cellar =
+            Facts { exe: "/opt/homebrew/Caskroom/corrent/1.0/Corrent.app/Contents/MacOS/corrent".into(), ..app };
+        assert_eq!(kind_of(Os::Mac, &cellar, &[], false), InstallKind::Managed(Manager::Homebrew));
+
+        // Not an app at all.
         assert_eq!(
             kind_of(Os::Mac, &facts("/Users/u/corrent/target/release/corrent"), &[], false),
             InstallKind::Unknown
@@ -993,7 +1085,8 @@ mod tests {
             (InstallKind::WindowsMsi { dir: "d".into() }, "Corrent-1.2.3-x86_64.msi"),
             (InstallKind::AppImage { file: "f".into() }, "Corrent-1.2.3-x86_64.AppImage"),
             (InstallKind::LinuxTarball { dir: "d".into() }, "Corrent-1.2.3-linux-x86_64.tar.gz"),
-            (InstallKind::MacApp { bundle: "b".into() }, "Corrent-1.2.3-macos.dmg"),
+            (InstallKind::MacApp { bundle: "b".into(), team: "N6FA79GV97".into() }, "Corrent-1.2.3-macos.dmg"),
+            (InstallKind::MacDiskImage(MacManual::NotDeveloperId), "Corrent-1.2.3-macos.dmg"),
         ];
         for (kind, name) in cases {
             let p = plan(&r, &kind).unwrap();
@@ -1001,7 +1094,7 @@ mod tests {
             assert!(p.asset.url.ends_with(name));
             assert_eq!(p.sums.as_ref().map(|s| s.name.as_str()), Some(SUMS));
             assert!(kind.downloads());
-            assert_eq!(kind.installs_itself(), !matches!(kind, InstallKind::MacApp { .. }));
+            assert_eq!(kind.installs_itself(), !matches!(kind, InstallKind::MacDiskImage(_)));
         }
         // A release without that file (or with a near miss) gives nothing rather than a guess.
         let other =
@@ -1038,7 +1131,8 @@ mod tests {
         let work = scratch("refuse-msi");
         std::fs::write(work.join("x"), b"MZ").unwrap();
         assert!(stage(&InstallKind::WindowsMsi { dir: work.clone() }, &work.join("x"), &work).is_err());
-        assert!(stage(&InstallKind::MacApp { bundle: work.clone() }, &work.join("x"), &work).is_err());
+        let app = InstallKind::MacApp { bundle: work.clone(), team: "N6FA79GV97".into() };
+        assert!(stage(&app, &work.join("x"), &work).is_err());
         let _ = std::fs::remove_dir_all(work);
     }
 

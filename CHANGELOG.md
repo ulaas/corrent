@@ -5,6 +5,10 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+### Changed
+
+- **macOS: Update and restart.** A Developer ID signed Corrent.app in a folder you can write to is now replaced in place like the other platforms' packages: the disk image is downloaded and checked against the release's checksums, mounted hidden, and the app in it must be the same app in the new version, signed by the same developer team and notarized; it is copied beside the installed app and swapped in one rename, and Corrent restarts. Anything that goes wrong leaves the version you had. A copy run from Downloads (move it into Applications first), from the disk image, from a folder that belongs to another user, signed ad hoc or in portable mode still gets the disk image opened, now with the reason.
+
 ## [0.6.0] — 2026-11-15
 
 ### Added

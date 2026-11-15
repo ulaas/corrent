@@ -138,8 +138,9 @@ swapped download, not against someone who can publish a release.
 | Windows MSI | `HKCU\Software\Corrent\Installer` `InstallDir` is the program's folder | `Corrent-<v>-x86_64.msi` | Downloaded into `<profile>\update\`. The app copies itself there as `corrent-update.exe`, starts it with `--run-installer` and quits. The copy waits until the app is gone, checks the MSI's SHA-256 once more, runs `msiexec /i <msi> /passive /norestart` (progress window, no questions, no UAC: the MSI is per-user) and starts the installed `corrent.exe`. Exit codes 0, 3010 and 1641 count as installed; anything else shows a message and starts the version that is there (the installer rolls a failed upgrade back). |
 | AppImage | `$APPIMAGE` names a file in a writable folder | `Corrent-<v>-x86_64.AppImage` | Downloaded beside it, made executable, the old file is linked to `*.old`, the new one is renamed over it (one step), then started. |
 | Linux tarball | `corrent` and `corrent-mpvw` in a writable folder outside `/usr`, `/opt`… | `Corrent-<v>-linux-x86_64.tar.gz` | The two programs are unpacked and swapped like the portable zip (old files linked to `*.old`, new ones renamed over). |
-| macOS app | runs from `*.app/Contents/MacOS` | `Corrent-<v>-macos.dmg` | **Not replaced in place.** The disk image is downloaded to Downloads, checked and opened; the dialog says to quit and drag Corrent into Applications. Replacing a bundle safely needs things nobody has run yet on a real Mac (ad-hoc or Developer ID signatures surviving the copy, App Translocation, `/Applications` owned by another user). |
-| Scoop, Homebrew, `/usr`·`/opt`·`/nix` (AUR and other packages), Flatpak, Snap | the path (`\scoop\apps\`), a `corrent` cask in the Caskroom, `$FLATPAK_ID`, `$SNAP` | none | Never touched. The dialog shows the command (`scoop update corrent`, `brew upgrade --cask corrent`, `yay -S corrent-bin`, `flatpak update io.github.ulaas.Corrent`, `snap refresh corrent`) and the release page. |
+| macOS app | runs from `*.app/Contents/MacOS`, signed with a Developer ID, folder and app writable by the user | `Corrent-<v>-macos.dmg` | Downloaded into `<profile>/update/` and mounted read-only and hidden (`hdiutil attach -nobrowse -readonly -noautoopen -mountrandom`). The app at the image's root must be the only one, carry the running app's `CFBundleIdentifier` and the release's version, pass `codesign --verify --deep --strict`, satisfy a requirement pinned to the **running app's own team** (Developer ID chain, Developer ID Application leaf, `subject.OU` = the `TeamIdentifier` of the running app's signature, so a fork signed by another team updates itself) and pass `spctl --assess --type execute` (notarized). Then `ditto --noqtn` copies it to `.Corrent.app.update-<pid>` beside the installed app, the signature is checked again there, and the installed app is renamed to `.Corrent.app.old-<pid>` and the copy to `Corrent.app` (one volume; if that fails the old name comes back). The image is always detached (`-force` if need be). The app quits as usual; a detached `/bin/sh` (own process group, no terminal) waits for it to be gone and runs `/usr/bin/open -n Corrent.app --args --after-update`. If the new version can't be started the old app is renamed back; otherwise it is deleted, and leftovers of a crash go at the next start. Any failure leaves the version that was there, running. |
+| macOS app it doesn't replace | run from where it was downloaded (App Translocation), a read-only volume (the mounted image), a folder or app that belongs to another user (no administrator password is asked for), signed ad hoc or unsigned, `--portable` (the profile is inside the app) | `Corrent-<v>-macos.dmg` | The disk image is downloaded to Downloads, checked and opened; the dialog says why the app wasn't replaced (for App Translocation: move Corrent into Applications first) and to quit and drag Corrent into Applications. |
+| Scoop, Homebrew, `/usr`·`/opt`·`/nix` (AUR and other packages), Flatpak, Snap | the path (`\scoop\apps\`), a `corrent` cask in the Caskroom or an app that resolves into one, `$FLATPAK_ID`, `$SNAP` | none | Never touched. The dialog shows the command (`scoop update corrent`, `brew upgrade --cask corrent`, `yay -S corrent-bin`, `flatpak update io.github.ulaas.Corrent`, `snap refresh corrent`) and the release page. |
 | Read-only folder, a build from source, a copy moved out of its package, not x86-64 | — | none | Told so, with the release page. |
 
 **Coming back.** A process holds the data-folder lock (`corrent.lock`) for its whole life. The
@@ -160,14 +161,21 @@ Windows then replaces it at the next restart (3010).
 - the asset names in the table above, and `SHA256SUMS.txt` in `sha256sum` format listing them;
 - the portable zip's top folder `Corrent/`, the tarball's flat `corrent` and `corrent-mpvw`;
 - `--after-update` (wait for the previous version, then start normally) and the MSI's
-  `UpgradeCode`, per-user scope and `InstallDir` registry value.
+  `UpgradeCode`, per-user scope and `InstallDir` registry value;
+- the disk image: one `.app` at its root (an `Applications` link beside it is fine), the same
+  `CFBundleIdentifier`, `CFBundleShortVersionString` = the release's version, signed with a
+  Developer ID of the same team and notarized.
 
-Not covered: `correntd` and the web client (docs/WEB-PARITY.md), pre-releases, delta updates,
+Not covered: `correntd` (its macOS `.pkg` is installed by the installer and isn't the app's to
+replace) and the web client (docs/WEB-PARITY.md), pre-releases, delta updates,
 going back to an older version after an update that worked.
 
 Testing without GitHub (debug builds only): `CORRENT_DEV_UPDATE=http://127.0.0.1:<port>` makes
 the check read `<base>/latest.json` and accept downloads under `<base>/` over plain HTTP;
-`CORRENT_DEV_UPDATE_NOW=1` starts the update as soon as it is found.
+`CORRENT_DEV_UPDATE_NOW=1` starts the update as soon as it is found. On macOS, a release-like
+build that honours the hooks is `CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true
+scripts/package-macos.sh`; the relaunch passes `HOME` and `CORRENT_DEV_UPDATE` on (debug builds
+only), so a test can keep its profile out of the real one with `HOME=<scratch>`.
 
 ## Checklist for a release
 

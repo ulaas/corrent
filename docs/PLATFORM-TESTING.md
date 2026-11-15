@@ -63,8 +63,11 @@ Run from a terminal so logs are visible (`CORRENT_LOG=debug corrent --portable`)
     - Linux tarball: unpack into `~/corrent`, update; both programs replaced, the new one starts.
       Installed under `/usr` (the AUR package): only the package manager's command is shown.
     - Flatpak, Snap, Scoop, Homebrew: "How to update" with the right command; nothing downloaded.
-    - macOS: the dmg lands in Downloads, opens, and the dialog says to drag it across; run from
-      the mounted image or translocated: told to use the release page.
+    - macOS (Developer ID build in a folder the user owns): Update and restart replaces the app;
+      the new one starts by itself, `codesign --verify --deep --strict` and `spctl --assess` pass on
+      it, no `.Corrent.app.*` folder is left, `hdiutil info` shows no image. Run from the mounted
+      image, translocated, ad hoc signed or from an admin's `/Applications` as a standard user:
+      the dmg lands in Downloads, opens, and the dialog says why and to drag it across.
 
 ## Results
 
