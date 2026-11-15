@@ -240,6 +240,7 @@ mod tools {
     /// Runs a tool; `Ok` with its output (stdout, then stderr) when it exits with 0, `Err` with
     /// the last lines it printed otherwise.
     fn run(program: &str, args: &[&std::ffi::OsStr]) -> Result<String, String> {
+        // NO_WINDOW_OK: macOS only.
         let out =
             Command::new(program).args(args).stdin(Stdio::null()).output().map_err(|e| format!("{program}: {e}"))?;
         let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
