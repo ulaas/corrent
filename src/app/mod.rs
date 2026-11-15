@@ -1346,9 +1346,11 @@ impl eframe::App for CorrentApp {
         };
         // Stopping the engine takes a moment, and the window still exists here (hiding it does
         // nothing on Wayland): `main` runs this once eframe has destroyed the window. On macOS
-        // the event loop may never return (Cmd-Q), so it runs now.
+        // the event loop may never return (Cmd-Q), so it runs now, and so does the clean-exit note
+        // `main` would write after it (without it the next start reports a crash).
         if cfg!(target_os = "macos") {
             work();
+            corrent_core::crash::finish(&self.paths.log_dir());
         } else {
             *AFTER_WINDOW.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(work));
         }
