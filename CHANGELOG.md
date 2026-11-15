@@ -5,9 +5,24 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-11-16
+
+Corrent for the Mac.
+
+### Added
+
+- **A Mac app for Apple silicon**, `Corrent-0.6.1-macos.dmg`: Corrent.app with libmpv and its libraries inside, so nothing else needs installing. It is signed with a Developer ID and notarized by Apple, so it opens without a warning, and needs macOS 15 or later.
+- **The server as a Mac installer**, `Corrent-Server-0.6.1-macos-arm64.pkg`, signed and notarized: `correntd` in `/usr/local/bin`, started for the signed-in user as a launch agent. `enable-agent.sh` sets it up for other users, and `uninstall.sh` removes it.
+
 ### Changed
 
 - **macOS: Update and restart.** A Developer ID signed Corrent.app in a folder you can write to is now replaced in place like the other platforms' packages: the disk image is downloaded and checked against the release's checksums, mounted hidden, and the app in it must be the same app in the new version, signed by the same developer team and notarized; it is copied beside the installed app and swapped in one rename, and Corrent restarts. Anything that goes wrong leaves the version you had. A copy run from Downloads (move it into Applications first), from the disk image, from a folder that belongs to another user, signed ad hoc or in portable mode still gets the disk image opened, now with the reason.
+- macOS: shortcut texts say Cmd. Selecting a row with the keyboard is Ctrl+Space, because Cmd+Space opens Spotlight.
+- macOS: started from Finder, the Dock or launchd, Corrent finds ffprobe, plugin interpreters and run-on-complete programs from Homebrew.
+
+### Fixed
+
+- macOS: quitting with Cmd+Q no longer looks like a crash at the next start.
 
 ## [0.6.0] — 2026-11-15
 
