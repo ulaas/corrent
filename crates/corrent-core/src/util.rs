@@ -11,6 +11,30 @@ use crate::config::SpeedUnits;
 /// further back.
 const BAK_MAX_AGE: Duration = Duration::from_secs(3600);
 
+/// macOS: a program started from Finder, the Dock or launchd gets only
+/// `/usr/bin:/bin:/usr/sbin:/sbin` as `PATH`, so tools a user installed with Homebrew (ffprobe,
+/// the interpreters plugins and run-on-complete programs name) aren't found as they are from a
+/// terminal. This appends Homebrew's folders that exist and aren't listed yet. Call it first
+/// thing in `main`, before any other thread starts (it changes the environment).
+#[cfg(target_os = "macos")]
+pub fn macos_extend_path() {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::split_paths(&current).collect();
+    let before = dirs.len();
+    for extra in ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"] {
+        let extra = PathBuf::from(extra);
+        if extra.is_dir() && !dirs.contains(&extra) {
+            dirs.push(extra);
+        }
+    }
+    if dirs.len() != before
+        && let Ok(joined) = std::env::join_paths(dirs)
+    {
+        // SAFETY: called at the start of `main`, before any other thread exists.
+        unsafe { std::env::set_var("PATH", joined) };
+    }
+}
+
 /// Write a file atomically: write to a temp sibling, fsync, then rename over the target.
 /// The previous version is kept as `<name>.bak` (refreshed at most once an hour) so a crash
 /// mid-write never loses data. A rename refused because another program (antivirus, indexer,

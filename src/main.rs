@@ -53,6 +53,9 @@ fn split_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
 }
 
 fn main() -> eframe::Result {
+    // Before any thread starts: Finder and launchd give a minimal PATH (Homebrew tools).
+    #[cfg(target_os = "macos")]
+    corrent_core::util::macos_extend_path();
     // A copy of this program started to run the MSI of an update once the app has quit
     // (integration/updater.rs). Nothing else of Corrent starts in that mode.
     let raw: Vec<String> = std::env::args().skip(1).collect();

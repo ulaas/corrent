@@ -350,6 +350,9 @@ fn serde_json_line(fields: &[(&str, &str)]) -> String {
 }
 
 fn main() {
+    // Before any thread starts: Finder and launchd give a minimal PATH (Homebrew tools).
+    #[cfg(target_os = "macos")]
+    corrent_core::util::macos_extend_path();
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if raw.first().map(String::as_str) == Some("admin") {
         if let Err(e) = admin_tool(&raw[1..]) {
