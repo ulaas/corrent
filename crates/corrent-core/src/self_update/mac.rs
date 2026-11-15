@@ -8,8 +8,11 @@
 //! the installed app, checked once more there, and the two are swapped by renaming on that one
 //! volume: installed → `.Corrent.app.old-<pid>`, new → `Corrent.app`. Any failure renames the old
 //! app back and deletes the copy; the installed path never holds a half-copied app. The old app
-//! is deleted once the new one is set to start (the app quits, a small `sh` waits for it and runs
-//! `open -n`); what a crash leaves behind goes at the next start (`cleanup`).
+//! stays (the running process may still load libmpv or start `corrent-mpvw` from it) until the
+//! new version's first start deletes it (`cleanup`); the app quits, and a small `sh` waits for it
+//! and runs `open -n`. The two renames are not one atomic step: a power cut exactly between them
+//! leaves the old app as `.Corrent.app.old-<pid>` and no `Corrent.app` (renaming it back by hand
+//! restores it).
 //!
 //! The parts that decide (requirement, parsing, the swap) are plain functions that the tests run
 //! on any platform; the parts that run Apple's tools are macOS only.
@@ -218,7 +221,7 @@ fn swap_bundle_with(
 // ------------------------------------------------------------------------------- Apple's tools
 
 #[cfg(target_os = "macos")]
-pub use tools::{install, team_of};
+pub use tools::{developer_id_team, install, team_of};
 
 #[cfg(target_os = "macos")]
 mod tools {
@@ -260,6 +263,14 @@ mod tools {
         super::parse_team(&out)
     }
 
+    /// The team of `bundle`'s signature when that is a Developer ID one (an Apple Development
+    /// build has a team too, but its updates would never pass `requirement`).
+    pub fn developer_id_team(bundle: &Path) -> Option<String> {
+        let team = team_of(bundle)?;
+        let requirement = format!("-R={}", super::requirement(&team));
+        run(CODESIGN, &[os("--verify"), os(&requirement), bundle.as_os_str()]).ok().map(|_| team)
+    }
+
     /// A string from the bundle's Info.plist.
     fn info(bundle: &Path, key: &str) -> Option<String> {
         let plist = bundle.join("Contents/Info.plist");
@@ -283,9 +294,14 @@ mod tools {
                 dmg.as_os_str(),
             ];
             let out = run(HDIUTIL, &args).map_err(|e| t!("The disk image couldn't be opened: {e}", e = e))?;
+            // Where it was asked to go (`under` may be reached through /var → /private/var).
+            let inside = |p: &Path| {
+                let canon = |x: &Path| std::fs::canonicalize(x).unwrap_or_else(|_| x.to_path_buf());
+                p.parent().is_some_and(|parent| canon(parent) == canon(under))
+            };
             match super::parse_mount_point(&out) {
-                Some(p) => Ok(Mount(p)),
-                None => {
+                Some(p) if inside(&p) => Ok(Mount(p)),
+                _ => {
                     // Mounted somewhere unexpected, or not at all: whatever it attached goes.
                     for line in out.lines() {
                         if let Some(dev) = line.trim().strip_prefix("<string>/dev/disk") {
@@ -311,6 +327,9 @@ mod tools {
 
     /// The signature is complete and intact, and from a Developer ID of `team`.
     fn check_signature(app: &Path, team: &str) -> Result<(), String> {
+        if !super::valid_team(team) {
+            return Err(t!("This copy of Corrent can't update itself.").into());
+        }
         let not_signed = |e: String| {
             t!(
                 "The app in the update isn't signed by the same developer as this one ({e}). Nothing was installed.",
@@ -348,7 +367,10 @@ mod tools {
         // Beside the installed app, so the swap is a rename on one volume.
         let staged = super::staging_path(bundle, std::process::id());
         let backup = super::backup_path(bundle, std::process::id());
-        let _ = std::fs::remove_dir_all(&staged);
+        if std::fs::symlink_metadata(&staged).is_ok() {
+            std::fs::remove_dir_all(&staged)
+                .map_err(|e| t!("Couldn't copy the new version next to the installed one: {e}", e = e))?;
+        }
         let copied = run(DITTO, &[os("--noqtn"), app.as_os_str(), staged.as_os_str()])
             .map_err(|e| t!("Couldn't copy the new version next to the installed one: {e}", e = e))
             // The copy is what runs: the same checks again (a full disk shows up here).

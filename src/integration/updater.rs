@@ -82,7 +82,7 @@ pub fn facts() -> Facts {
         portable_marker,
         portable_data: portable_marker || std::env::args().skip(1).any(|a| a == "--portable"),
         #[cfg(target_os = "macos")]
-        mac_team: bundle.as_deref().and_then(self_update::mac::team_of),
+        mac_team: bundle.as_deref().and_then(self_update::mac::developer_id_team),
         #[cfg(target_os = "macos")]
         mac_bundle_mine: bundle.as_deref().is_some_and(owned_by_me),
         #[cfg(not(target_os = "macos"))]
@@ -182,11 +182,13 @@ pub fn start_new_version(program: &Path) -> std::io::Result<()> {
 #[cfg(target_os = "macos")]
 pub fn relaunch_when_gone(bundle: &Path) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
-    // A process that ended but wasn't reaped yet (a zombie) counts as gone.
-    const WAIT_THEN_OPEN: &str = r#"pid=$1; shift
+    // A process that ended but wasn't reaped yet (a zombie) counts as gone. One that is still
+    // there after ten minutes is left alone (the new version is in place for its next start).
+    const WAIT_THEN_OPEN: &str = r#"pid=$1; shift; n=0
 while kill -0 "$pid" 2>/dev/null; do
   case $(/bin/ps -o stat= -p "$pid" 2>/dev/null) in Z*) break ;; esac
-  sleep 0.2
+  n=$((n + 1)); [ "$n" -gt 3000 ] && exit 1
+  /bin/sleep 0.2
 done
 exec /usr/bin/open "$@""#;
     let mut c = detached(Path::new("/bin/sh"));

@@ -187,9 +187,9 @@ async fn install(
                     Err(worse) => worse,
                 });
             }
-            if !swap.finish() {
-                tracing::warn!("the previous version couldn't be deleted; the next start tries again");
-            }
+            // The previous version stays until the new one starts (`mac::cleanup`): this process
+            // runs from it.
+            drop(swap);
             return Ok(());
         }
         if let InstallKind::WindowsMsi { .. } = kind {
