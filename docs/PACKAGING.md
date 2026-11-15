@@ -15,14 +15,16 @@ workflow uploads all artifacts to a GitHub release and publishes it when every i
 | Linux | `Corrent-<v>-x86_64.AppImage` | `scripts/package-appimage.sh` (linuxdeploy) |
 | Linux | `Corrent-<v>-linux-x86_64.tar.gz` | release workflow |
 | Linux | Flatpak | `packaging/linux/flatpak/io.github.ulaas.Corrent.yml` (manual, see below) |
-| macOS | `Corrent-<v>-macos.dmg` | `scripts/package-macos.sh` (cargo-bundle + hdiutil) |
+| macOS | `Corrent-<v>-macos.dmg` (Apple silicon) | `scripts/package-macos.sh` (app bundle with libmpv + hdiutil) |
 | Server | `Corrent-Server-<v>-linux-x86_64.tar.gz`, `-darwin-arm64.tar.gz` | `scripts/package-server.sh` (correntd, corrent-mpvw, service files) |
+| Server | `Corrent-Server-<v>-macos-arm64.pkg` (launchd agent, libmpv included) | `scripts/package-macos.sh` |
 | Server | `Corrent-Server-<v>-windows-x86_64.zip` | `scripts/package-windows.ps1` |
 | Server | Docker image | `packaging/server/docker/Dockerfile` (not published by the workflow) |
 
 Every package also carries **`corrent-mpvw`**, the libmpv worker the media library uses for
 probing, thumbnails and transcoding (next to the main executable). libmpv itself is not bundled
-(licensing and size): the app plays and probes when the system has it and says so otherwise.
+(licensing and size), except in the macOS packages (below): the app plays and probes when the
+system has it and says so otherwise.
 On Windows, where no package manager provides it, the app offers to download it on request
 (*Get mpv for playback*, also in Settings › Playback): the pinned build from
 shinchiro/mpv-winbuild-cmake that `scripts/fetch-libmpv.ps1` uses, checked against its SHA-256
@@ -76,14 +78,36 @@ other folders go through the file chooser portal.
 
 ## macOS
 
-`cargo bundle --release` uses `[package.metadata.bundle]` in `Cargo.toml` (magnet URL scheme,
-`.torrent` document type from `packaging/macos/Info.plist.ext`). `scripts/package-macos.sh` wraps
-the app in a dmg. The app is universal (Apple silicon and Intel).
-Signing and notarization need the owner's Developer ID: locally set `CODESIGN_IDENTITY` and
-`NOTARY_PROFILE` (a `notarytool store-credentials` profile); in CI add the secrets
-`MACOS_CERTIFICATE_P12` (base64), `MACOS_CERTIFICATE_PASSWORD`, `MACOS_CODESIGN_IDENTITY` and an
-App Store Connect API key (`MACOS_NOTARY_KEY_P8`, `MACOS_NOTARY_KEY_ID`, `MACOS_NOTARY_ISSUER`).
-Without them the dmg is unsigned and opens after right-click › Open.
+`scripts/package-macos.sh` (on an Apple silicon Mac with `brew install mpv dylibbundler`) builds
+both macOS packages into `dist/`, for **arm64 only** (no Intel slice):
+
+- **`Corrent-<v>-macos.dmg`**: `Corrent.app` and an Applications link (ULFO-compressed). The script
+  assembles the bundle itself (`cargo-bundle` isn't needed): `Info.plist` with the version from
+  `Cargo.toml`, `LSArchitecturePriority` arm64, the `magnet` URL scheme and the `.torrent` document
+  type, local-network and Apple Events usage texts (`packaging/macos/Info.plist.ext` and the script),
+  and `Corrent.icns` rendered from `assets/icon/corrent.svg` with `sips`/`iconutil`.
+- **`Corrent-Server-<v>-macos-arm64.pkg`**: `correntd` and `corrent-mpvw` in `/usr/local/bin`,
+  libmpv in `/usr/local/bin/corrent-lib`, and a postinstall that installs the launchd agent
+  (`packaging/server/macos/io.github.ulaas.correntd.plist`) for the logged-in user and starts it;
+  `enable-agent.sh` and `uninstall.sh` go to `/usr/local/share/corrent-server` (`packaging/server/macos/pkg/`).
+
+**libmpv** comes from Homebrew at build time and is copied with every library it needs into
+`Contents/Frameworks` (the player and `corrent-mpvw` look there first), with install names
+rewritten to `@loader_path/` by `dylibbundler`; the script fails if anything still points into
+`/opt/homebrew`. These are GPL builds of mpv and FFmpeg, so the packages carry their license files
+(`Contents/Resources/licenses`). Homebrew's bottles are built for the macOS they were poured on, so
+`LSMinimumSystemVersion` (and the pkg's minimum) is the newest `minos` among the bundled files: build
+on the oldest macOS you want to support (the release workflow uses `macos-14`).
+
+**Signing.** Without an identity everything is signed ad hoc (hardened runtime, inside out:
+libraries, `corrent-mpvw`, the app) with `packaging/macos/Corrent.entitlements` (JIT for mpv's
+LuaJIT, library validation off for the dlopened libmpv), and the dmg opens after right-click ›
+Open (or `xattr -dr com.apple.quarantine /Applications/Corrent.app`). With the owner's Developer ID:
+locally set `MACOS_SIGN_IDENTITY` (or `CODESIGN_IDENTITY`), `MACOS_INSTALLER_IDENTITY` for the pkg and
+`MACOS_NOTARY_PROFILE` (a `notarytool store-credentials` profile); in CI add the secrets
+`MACOS_CERTIFICATE_P12` (base64), `MACOS_CERTIFICATE_PASSWORD`, `MACOS_CODESIGN_IDENTITY`,
+`MACOS_INSTALLER_IDENTITY` and an App Store Connect API key (`MACOS_NOTARY_KEY_P8`,
+`MACOS_NOTARY_KEY_ID`, `MACOS_NOTARY_ISSUER`).
 
 ## Updates in place
 

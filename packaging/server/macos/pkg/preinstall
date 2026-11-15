@@ -1,0 +1,8 @@
+#!/bin/sh
+# Corrent Server pkg: stop a running agent of the logged-in user before its files are replaced.
+label=io.github.ulaas.correntd
+user=$(stat -f%Su /dev/console)
+case "$user" in root|loginwindow|_mbsetupuser|"") exit 0 ;; esac
+uid=$(id -u "$user") || exit 0
+launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+exit 0

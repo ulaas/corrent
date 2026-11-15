@@ -346,8 +346,12 @@ media and download folders with `ReadWritePaths=` and file permissions for the `
 GPU encoding needs `SupplementaryGroups=render video`. `correntd.user.service` runs it as your own
 user instead (`systemctl --user`, `loginctl enable-linger`).
 
-**macOS (launchd)** — `packaging/server/macos/io.github.ulaas.correntd.plist` is a per-user agent
-(it can read your media); see the comments in the file for `launchctl bootstrap`.
+**macOS (launchd)** — `Corrent-Server-<v>-macos-arm64.pkg` (Apple silicon) installs `correntd`
+with libmpv included into `/usr/local/bin` and starts it as a launchd agent of the logged-in user
+(it can read your media); other users run `/usr/local/share/corrent-server/enable-agent.sh`, and
+`sudo /usr/local/share/corrent-server/uninstall.sh` removes it (the data stays). From the tarball,
+`packaging/server/macos/io.github.ulaas.correntd.plist` is the same agent; see the comments in the
+file for `launchctl bootstrap`.
 
 **Windows** — from an elevated prompt: `correntd service install` (data in
 `%ProgramData%\Corrent Server`, automatic start, restarted after failures; `--data-dir`,

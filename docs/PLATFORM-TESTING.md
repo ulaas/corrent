@@ -13,7 +13,7 @@ Corrent runs on each platform, and after changes to `src/integration/`, `src/app
 | Linux x86-64 release binary links | `scripts/cross/build-linux.ps1 -Release` | ✅ 2026-10-08 |
 | Linux binary needs only glibc ≥ 2.28 (`libc`, `libm`, `libpthread`, `libdl`); X11/Wayland/D-Bus are loaded at runtime | `python scripts/cross/elfneeded.py <binary>` | ✅ 2026-10-08 |
 | macOS-only modules (`macos_events`, `os_handler`) type-check for `aarch64-apple-darwin` | isolated scratch crate, see CLAUDE.md | ✅ 2026-10-08 |
-| Full macOS build | needs a Mac (or CI `macos-latest`) | ⏳ |
+| Full macOS build, app bundle, dmg and server pkg (arm64) | `scripts/package-macos.sh` on a Mac | ✅ 2026-11-15 |
 
 ## Manual checklist (Linux and macOS)
 
@@ -34,7 +34,7 @@ Run from a terminal so logs are visible (`CORRENT_LOG=debug corrent --portable`)
    - Linux: `xdg-mime query default x-scheme-handler/magnet` prints `corrent.desktop`;
      `xdg-open "magnet:?xt=urn:btih:…"` reaches Corrent; `~/.local/share/applications/corrent.desktop`
      exists and its `Exec=` line quotes the path correctly (try a path with a space).
-   - macOS: build the bundle (`cargo bundle --release`), launch it once, then
+   - macOS: build the bundle (`scripts/package-macos.sh`), launch it once, then
      `open "magnet:?xt=urn:btih:…"` — both while Corrent is running and while it is closed
      (Apple Event path). Double-click a `.torrent` in Finder.
 7. **Tray**: tray icon appears (Linux: needs a StatusNotifier host — KDE, GNOME with the
@@ -70,4 +70,4 @@ Run from a terminal so logs are visible (`CORRENT_LOG=debug corrent --portable`)
 
 | Date | Platform / distro / desktop | Tester | Result | Notes |
 |---|---|---|---|---|
-| | | | | |
+| 2026-11-15 | macOS 27.2, Apple silicon | Claude (packaging review) | Partial | Only start-up and quit (step 1, 10) from the dmg's `Corrent.app --portable` opened with `open`: window up, no Terminal window, bundled libmpv loaded from `Contents/Frameworks`, Cmd-Q-style quit leaves no crash marker. The rest of the checklist not run. |

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime exceptions for Corrent.app, corrent-mpvw and correntd (scripts/package-macos.sh).
+  allow-jit: the bundled libmpv runs its Lua scripts with LuaJIT, which needs MAP_JIT pages.
+  disable-library-validation: libmpv and its libraries in Contents/Frameworks are loaded with
+  dlopen; with an ad-hoc signature they have no Team ID to match the app's.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

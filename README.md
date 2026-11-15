@@ -184,9 +184,10 @@ The binary is `target/release/corrent` (`corrent.exe` on Windows).
 - **Windows:** MSVC toolchain. NASM is used if available; otherwise prebuilt objects are used.
 - **Linux:** a C compiler plus the usual windowing libraries (`libxkbcommon`, Wayland/X11).
   The tray icon uses the D-Bus StatusNotifierItem protocol and needs no GTK.
-- **macOS:** build an app bundle with [`cargo-bundle`](https://github.com/burtonageo/cargo-bundle):
-  `cargo bundle --release`. The bundle declares the `magnet` URL scheme and `.torrent` documents,
-  and Corrent receives them via Apple Events.
+- **macOS (Apple silicon):** `brew install mpv dylibbundler`, then `scripts/package-macos.sh` builds
+  `Corrent.app` (with libmpv inside) into `dist/Corrent-<version>-macos.dmg`, and the server as
+  `dist/Corrent-Server-<version>-macos-arm64.pkg`. The bundle declares the `magnet` URL scheme and
+  `.torrent` documents, and Corrent receives them via Apple Events.
 
 ## Command line
 
@@ -202,7 +203,7 @@ corrent [OPTIONS] [MAGNET | URL | FILE.torrent]...
   --help         show this help
 ```
 
-Installers: see `docs/PACKAGING.md` (MSI, portable zip, winget, AppImage, Flatpak, dmg).
+Installers: see `docs/PACKAGING.md` (MSI, portable zip, winget, AppImage, Flatpak, dmg, pkg).
 
 ## Where data lives
 
