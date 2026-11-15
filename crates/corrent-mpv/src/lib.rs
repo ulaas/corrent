@@ -112,7 +112,18 @@ impl Library {
                 // folder on PATH keeps the library there, out of other programs' search), then
                 // the platform's search.
                 let dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
-                let local = dir.into_iter().flat_map(|d| {
+                // In a macOS app bundle (`Contents/MacOS/corrent`) the packaged libmpv and its
+                // dependencies live in `Contents/Frameworks` (scripts/package-macos.sh).
+                let dirs: Vec<PathBuf> = match dir {
+                    #[cfg(target_os = "macos")]
+                    Some(d) if d.ends_with("Contents/MacOS") => {
+                        let frameworks = d.parent().map(|c| c.join("Frameworks")).filter(|f| f.is_dir());
+                        frameworks.into_iter().chain([d]).collect()
+                    }
+                    Some(d) => vec![d],
+                    None => Vec::new(),
+                };
+                let local = dirs.into_iter().flat_map(|d| {
                     candidate_names()
                         .iter()
                         .filter(|n| !n.contains('/'))
