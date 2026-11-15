@@ -51,7 +51,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace --no-fail-fast  # every failing test binary in one run
       - run: cargo build --release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: corrent-${{ runner.os }}
           path: |
