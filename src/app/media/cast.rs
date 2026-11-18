@@ -55,6 +55,7 @@ pub fn reason_text(reason: &str) -> String {
     match reason {
         "casting is turned off in the settings" => t!("Casting is turned off in the settings.").to_string(),
         "cant_play" => t!("The device couldn’t play this.").to_string(),
+        "pair_first" => t!("This device has to be paired first: Settings → Playback → Casting.").to_string(),
         "cant_reach" => {
             t!("The device couldn’t reach this computer. Allow Corrent through the firewall for private networks, then try again.")
                 .to_string()

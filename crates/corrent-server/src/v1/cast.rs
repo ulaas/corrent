@@ -23,6 +23,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/cast/config", get(get_config).put(put_config))
         .route("/cast/{device}", get(status))
         .route("/cast/{device}/play", post(play))
+        .route("/cast/{device}/pair", post(pair_start).delete(pair_forget))
+        .route("/cast/{device}/pair/finish", post(pair_finish))
         .route("/cast/{device}/command", post(command))
 }
 
@@ -40,10 +42,92 @@ async fn devices(
     let cfg = enabled(&st)?;
     let list = st
         .casts
-        .devices(q.refresh, &cfg.devices, cfg.dlna)
+        .devices(q.refresh, &cfg.devices, also(&cfg))
         .await
         .map_err(|e| err(ErrorCode::Internal, format!("{e:#}")))?;
-    Ok(Json(list.into_iter().map(|f| f.device).collect()))
+    let paired = crate::cast::airplay::store::paired(&st.paths.data_dir);
+    Ok(Json(
+        list.into_iter()
+            .map(|f| CastDevice {
+                needs_pairing: f.airplay.as_ref().is_some_and(|r| !paired.contains(&r.id)),
+                ..f.device
+            })
+            .collect(),
+    ))
+}
+
+fn also(c: &CastConfig) -> crate::cast::Also {
+    crate::cast::Also { dlna: c.dlna, airplay: c.airplay }
+}
+
+/// An AirPlay receiver of the list, for pairing (which changes what the server may play on:
+/// a settings matter).
+async fn receiver(
+    st: &AppState,
+    auth: &Auth,
+    device: &str,
+) -> Result<Arc<crate::cast::airplay::Receiver>, super::ApiErr> {
+    auth.require(Perms::SETTINGS_WRITE)?;
+    let cfg = enabled(st)?;
+    let found = st
+        .casts
+        .device(device, &cfg.devices, also(&cfg))
+        .await
+        .map_err(|e| err(ErrorCode::NotFound, format!("{e:#}")))?;
+    found.airplay.ok_or_else(|| err(ErrorCode::BadRequest, "this device needs no pairing"))
+}
+
+/// `POST /cast/{device}/pair`: the device shows a PIN on its screen.
+async fn pair_start(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Path(device): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let r = receiver(&st, &auth, &device).await?;
+    st.casts.start_pairing(&r).await.map_err(|e| err(ErrorCode::Conflict, format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({})))
+}
+
+#[derive(Deserialize)]
+struct PinBody {
+    pin: String,
+}
+
+/// `POST /cast/{device}/pair/finish {pin}`: the PIN from the device's screen; the pairing is
+/// kept in the server's profile.
+async fn pair_finish(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Path(device): Path<String>,
+    Json(b): Json<PinBody>,
+) -> ApiResult<serde_json::Value> {
+    let r = receiver(&st, &auth, &device).await?;
+    let name = st.cfg.load().name.clone();
+    let name = if name.trim().is_empty() { "Corrent".to_string() } else { name };
+    let creds =
+        st.casts.finish_pairing(&r, &b.pin, &name).await.map_err(|e| err(ErrorCode::Conflict, format!("{e:#}")))?;
+    let (dir, id) = (st.paths.data_dir.clone(), r.id.clone());
+    tokio::task::spawn_blocking(move || crate::cast::airplay::store::set(&dir, &id, Some(creds)))
+        .await
+        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
+        .map_err(|e| err(ErrorCode::Internal, format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({})))
+}
+
+/// `DELETE /cast/{device}/pair`: the server forgets the pairing (the device keeps its side
+/// until it is removed there).
+async fn pair_forget(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Path(device): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let r = receiver(&st, &auth, &device).await?;
+    let (dir, id) = (st.paths.data_dir.clone(), r.id.clone());
+    tokio::task::spawn_blocking(move || crate::cast::airplay::store::set(&dir, &id, None))
+        .await
+        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
+        .map_err(|e| err(ErrorCode::Internal, format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({})))
 }
 
 /// The casting settings, unless casting is off.
@@ -55,7 +139,13 @@ fn enabled(st: &AppState) -> Result<CastConfig, super::ApiErr> {
 /// What a device is asked to play as it is: the Default Media Receiver's formats, as far as the
 /// settings go, or (`dlna`) what TVs play — those take 4K and H.265 without being told, so of
 /// the settings only the bitrate limit is theirs.
-fn profile(c: &CastConfig, dlna: bool) -> ClientProfile {
+fn profile(c: &CastConfig, dlna: bool, airplay: bool) -> ClientProfile {
+    // AirPlay receivers take H.265 and 4K where they can; of the settings, the bitrate limit.
+    if airplay {
+        let mut p = ClientProfile::airplay();
+        p.max_bitrate = (c.max_bitrate_kbps > 0).then_some(i64::from(c.max_bitrate_kbps) * 1000);
+        return p;
+    }
     if dlna {
         let mut p = ClientProfile::dlna_renderer();
         p.max_bitrate = (c.max_bitrate_kbps > 0).then_some(i64::from(c.max_bitrate_kbps) * 1000);
@@ -217,9 +307,15 @@ async fn play(
     may_control(&st, &auth, &device)?;
     let found = st
         .casts
-        .device(&device, &cfg.devices, cfg.dlna)
+        .device(&device, &cfg.devices, also(&cfg))
         .await
         .map_err(|e| err(ErrorCode::NotFound, format!("{e:#}")))?;
+    // Before anything else: an unpaired receiver plays nothing (clients then offer to pair).
+    if let Some(r) = &found.airplay
+        && crate::cast::airplay::store::get(&st.paths.data_dir, &r.id).is_none()
+    {
+        return Err(err(ErrorCode::Conflict, "pair_first"));
+    }
     let user = auth.0.user.id;
     let detail = st.library.item(user, b.item_id).await.map_err(lib_err)?;
     let file = match b.file_id {
@@ -232,10 +328,13 @@ async fn play(
     };
     let chosen = b.subtitle.filter(|i| *i > 0).and_then(|i| streams().find(|s| s.index == i));
     let dlna = found.dlna.is_some();
+    let airplay = found.airplay.is_some();
+    // What the device shows no subtitles of ours on: they go into the picture.
+    let burns = dlna || airplay;
     // The device shows text from a file by itself; anything else has to be in the picture. A
     // DLNA renderer shows none of ours: every subtitle goes into the picture.
-    let burn = chosen.filter(|s| dlna || !is_text(s)).map(|s| s.index);
-    let active = chosen.filter(|s| !dlna && is_text(s)).map(|s| s.index);
+    let burn = chosen.filter(|s| burns || !is_text(s)).map(|s| s.index);
+    let active = chosen.filter(|s| !burns && is_text(s)).map(|s| s.index);
     let loaded = crate::cast::Loaded {
         item_id: b.item_id,
         audio_track: b.audio_track,
@@ -250,7 +349,16 @@ async fn play(
         crate::cast::local_ip_towards(found.addr).ok_or_else(|| err(ErrorCode::Internal, "no route to the device"))?;
     let links = crate::remote::lan_links(&st).await.map_err(|e| err(ErrorCode::EngineUnavailable, format!("{e:#}")))?;
     let mut req = PlaybackRequest {
-        profile: Some(if dlna { "dlna" } else { "chromecast" }.into()),
+        profile: Some(
+            if airplay {
+                "airplay"
+            } else if dlna {
+                "dlna"
+            } else {
+                "chromecast"
+            }
+            .into(),
+        ),
         file_id: b.file_id,
         audio_track: b.audio_track,
         burn_subtitle: burn,
@@ -258,7 +366,7 @@ async fn play(
     };
     // What the devices play as they are, and what a conversion for them is made at.
     let shape = super::playback::How {
-        profile: Some(profile(&cfg, dlna)),
+        profile: Some(profile(&cfg, dlna, airplay)),
         remux_ok: false,
         target_height: (cfg.transcode_height > 0).then_some(i64::from(cfg.transcode_height)),
         target_bitrate: (cfg.transcode_bitrate_kbps > 0).then_some(i64::from(cfg.transcode_bitrate_kbps) * 1000),
@@ -280,7 +388,7 @@ async fn play(
         .map(|i| links.art(host, &i.sha));
     let serial = st.casts.next_serial();
     let tracks = streams()
-        .filter(|s| !dlna && is_text(s))
+        .filter(|s| !burns && is_text(s))
         .map(|s| crate::cast::SideTrack {
             id: s.index,
             url: links.subtitle(host, user, info.file_id, s.index),
@@ -309,7 +417,9 @@ async fn play(
         hits: links.hits(),
     };
     // Copied streams the device fails on: a transcode, as for a browser.
-    let fallback = copied.then(|| {
+    // The same for a file an AirPlay receiver fetched and couldn't play as it is.
+    let direct = media.hls_session.is_none() && !copied;
+    let fallback = (copied || (airplay && direct)).then(|| {
         let (st, principal, found, media) = (st.clone(), auth.0.clone(), found.clone(), media.clone());
         let (links, shape) = (links.clone(), shape.clone());
         req.force_transcode = true;

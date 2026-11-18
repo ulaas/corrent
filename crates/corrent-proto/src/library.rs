@@ -1006,10 +1006,15 @@ pub struct CastDevice {
     pub name: String,
     #[serde(default)]
     pub model: String,
-    /// How it is spoken to: "" (Google Cast) or "dlna". A DLNA renderer plays files as they
-    /// are, shows no subtitles of ours and may have no volume control.
+    /// How it is spoken to: "" (Google Cast), "dlna" or "airplay". A DLNA renderer plays files
+    /// as they are, shows no subtitles of ours and may have no volume control; an AirPlay
+    /// receiver has no volume control of ours either.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
+    /// An AirPlay receiver the server hasn't been paired with yet: it shows a PIN once
+    /// (`POST /cast/{device}/pair`), and plays nothing before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_pairing: bool,
 }
 
 /// What a cast device is doing (`GET /api/v1/cast/{device}`).
@@ -1067,6 +1072,8 @@ pub struct CastConfig {
     pub transcode_bitrate_kbps: u32,
     /// Also offer DLNA renderers (smart TVs, receivers, Kodi).
     pub dlna: bool,
+    /// Also offer AirPlay receivers (Apple TVs, TVs with AirPlay built in).
+    pub airplay: bool,
 }
 
 impl Default for CastConfig {
@@ -1082,6 +1089,7 @@ impl Default for CastConfig {
             transcode_height: 0,
             transcode_bitrate_kbps: 0,
             dlna: true,
+            airplay: true,
         }
     }
 }

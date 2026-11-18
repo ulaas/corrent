@@ -2946,11 +2946,21 @@ impl Player {
             }
             Some(Ok(list)) => {
                 for d in list {
-                    let label =
+                    let mut label =
                         if d.model.is_empty() { d.name.clone() } else { format!("{}  ·  {}", d.name, d.model) };
-                    // CORRENT_DEV_CAST=<device name>: chosen as soon as it is listed.
+                    // A TV may be listed twice: say by which way.
+                    match d.kind.as_str() {
+                        "dlna" => label.push_str("  ·  DLNA"),
+                        "airplay" => label.push_str("  ·  AirPlay"),
+                        _ => {}
+                    }
+                    if d.needs_pairing {
+                        label.push_str(&format!("  ·  {}", t!("not paired")));
+                    }
+                    // CORRENT_DEV_CAST=<device name>[;<kind>]: chosen as soon as it is listed.
                     let hooked = cfg!(debug_assertions)
-                        && std::env::var("CORRENT_DEV_CAST").is_ok_and(|n| n == d.name)
+                        && std::env::var("CORRENT_DEV_CAST")
+                            .is_ok_and(|n| n == d.name || n == format!("{};{}", d.name, d.kind))
                         && !DEV_CAST_DONE.swap(true, Ordering::Relaxed);
                     let clicked =
                         glass::item(ui, tone, Some(egui_phosphor::regular::TELEVISION), &label, false).clicked();

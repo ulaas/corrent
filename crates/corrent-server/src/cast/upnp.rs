@@ -177,9 +177,16 @@ fn found(r: Renderer, addr: SocketAddr) -> Found {
     let id: String =
         id.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).take(80).collect();
     Found {
-        device: CastDevice { id, name: r.name.clone(), model: r.model.clone(), kind: KIND.into() },
+        device: CastDevice {
+            id,
+            name: r.name.clone(),
+            model: r.model.clone(),
+            kind: KIND.into(),
+            needs_pairing: false,
+        },
         addr,
         dlna: Some(Arc::new(r)),
+        airplay: None,
     }
 }
 

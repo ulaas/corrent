@@ -146,6 +146,8 @@ the client asks for it. Media files, HLS and remux segments and torrent streams 
 | GET PUT | `/api/v1/transcode/config` |
 | POST | `/api/v1/playback/sessions/{id}/keep` |
 | GET | `/api/v1/playback/stats` |
+| POST DELETE | `/api/v1/cast/{device}/pair` |
+| POST | `/api/v1/cast/{device}/pair/finish` |
 | GET | `/api/v1/library/search` |
 | GET PUT | `/api/v1/users/{id}/libraries` |
 

@@ -1766,3 +1766,5 @@
 "{rate} kbit/s audio" = "{rate} kbit/sn ses"
 "{speed}× · {fps} fps" = "{speed}× · {fps} kare/sn"
 "Server" = "Sunucu"
+"not paired" = "eşleştirilmedi"
+"This device has to be paired first: Settings → Playback → Casting." = "Bu cihazın önce eşleştirilmesi gerekiyor: Ayarlar → Oynatma → Yayın."

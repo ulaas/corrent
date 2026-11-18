@@ -108,6 +108,23 @@ impl ClientProfile {
         }
     }
 
+    /// An AirPlay receiver: what Apple's players take, as files (MP4) or as HLS.
+    pub fn airplay() -> ClientProfile {
+        let list = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        ClientProfile {
+            name: "airplay".into(),
+            containers: list(&["mp4", "mov", "mp3"]),
+            video_codecs: list(&["h264", "hevc"]),
+            audio_codecs: list(&["aac", "ac3", "eac3", "mp3", "alac"]),
+            h264_10bit: false,
+            max_height: None,
+            max_audio_channels: 6,
+            max_bitrate: None,
+            hls: true,
+            everything: false,
+        }
+    }
+
     pub fn web_safari() -> ClientProfile {
         let mut p = ClientProfile::web_chromium();
         p.name = "safari".into();
@@ -125,6 +142,7 @@ impl ClientProfile {
             "safari" => ClientProfile::web_safari(),
             "chromecast" => ClientProfile::chromecast(),
             "dlna" => ClientProfile::dlna_renderer(),
+            "airplay" => ClientProfile::airplay(),
             _ => ClientProfile::web_chromium(),
         }
     }

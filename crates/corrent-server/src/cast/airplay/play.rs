@@ -22,6 +22,10 @@ pub enum Event {
     State { name: String, position: Option<f64>, duration: Option<f64>, rate: Option<f64>, reason: Option<String> },
     /// `itemPlayedToEnd`, `itemFailedToPlayToEnd`, `timeJumped`, …
     Notification { name: String, detail: String },
+    /// The answer to [`Session::ask_state`]: where playback is.
+    Info { state: String, position: Option<f64>, duration: Option<f64>, rate: Option<f64>, ready: bool },
+    /// The device couldn't play the item (its error code).
+    Failed(i64),
     /// Anything else, as it came (for the log).
     Other(String),
     /// The device closed the channel.
@@ -113,6 +117,23 @@ pub fn event(v: &Value) -> Event {
                 reason: from("reason").and_then(Value::as_string).map(str::to_string),
             }
         }
+        Some("playbackInfo") => match d.get("info").and_then(Value::as_dictionary) {
+            Some(info) => Event::Info {
+                state: info.get("playbackState").and_then(Value::as_string).unwrap_or_default().to_string(),
+                position: info.get("position").and_then(seconds),
+                duration: info.get("duration").and_then(seconds),
+                rate: info.get("rate").and_then(number),
+                ready: info.get("readyToPlay").and_then(Value::as_boolean).unwrap_or(false),
+            },
+            None => Event::Other(format!("{v:?}")),
+        },
+        Some("error") => Event::Failed(
+            d.get("error")
+                .and_then(Value::as_dictionary)
+                .and_then(|e| e.get("code"))
+                .and_then(Value::as_signed_integer)
+                .unwrap_or(0),
+        ),
         Some("notification") => Event::Notification {
             name: get("name").unwrap_or_default(),
             detail: params.map(|p| format!("{p:?}")).unwrap_or_default(),
@@ -367,7 +388,7 @@ impl Session {
 
     /// Puts `url` on the device's queue and starts it at `start` seconds. `hls`: a playlist
     /// (`.m3u8`) rather than a file.
-    pub async fn play(&mut self, url: &str, start: f64, hls: bool) -> anyhow::Result<()> {
+    pub async fn play(&mut self, url: &str, start: f64, hls: bool) -> anyhow::Result<String> {
         let zero = || {
             dict(vec![
                 ("flags", Value::Integer(0.into())),
@@ -376,8 +397,9 @@ impl Session {
                 ("timescale", Value::Integer(0.into())),
             ])
         };
+        let uuid = upper_uuid();
         let mut item = vec![
-            ("uuid", text(upper_uuid())),
+            ("uuid", text(uuid.clone())),
             ("Content-Location", text(url)),
             ("mediaType", text(if hls { "streaming" } else { "file" })),
             ("playbackRestrictions", Value::Integer(0.into())),
@@ -401,12 +423,24 @@ impl Session {
             ("value", Value::Integer(1.into())),
         ]))
         .await?;
-        self.set_rate(1.0).await
+        self.set_rate(1.0).await?;
+        Ok(uuid)
     }
 
     /// 1: play, 0: pause.
     pub async fn set_rate(&mut self, rate: f64) -> anyhow::Result<()> {
         self.command(dict(vec![("type", text("setRate")), ("rate", Value::Real(rate))])).await
+    }
+
+    /// Jumps to `seconds` in the item [`Session::play`] named `item`. (Found by trying on a
+    /// Samsung TV: the command isn't in any description of the protocol.)
+    pub async fn seek(&mut self, item: &str, seconds: f64) -> anyhow::Result<()> {
+        self.command(dict(vec![
+            ("type", text("seek")),
+            ("item", dict(vec![("uuid", text(item))])),
+            ("time", cm_time(seconds)),
+        ]))
+        .await
     }
 
     /// Asks where playback is; the answer comes as an event.
@@ -448,6 +482,34 @@ mod tests {
                 reason: None
             }
         );
+        // As a Samsung TV answers a state request, and reports a file it can't play.
+        let info = dict(vec![
+            ("type", text("playbackInfo")),
+            ("kind", text("response")),
+            (
+                "info",
+                dict(vec![
+                    ("playbackState", text("playing")),
+                    ("readyToPlay", Value::Boolean(true)),
+                    ("rate", Value::Integer(1.into())),
+                    ("position", cm_time(6.794)),
+                    ("duration", cm_time(40.0)),
+                ]),
+            ),
+        ]);
+        assert_eq!(
+            event(&info),
+            Event::Info {
+                state: "playing".into(),
+                position: Some(6.794),
+                duration: Some(40.0),
+                rate: Some(1.0),
+                ready: true
+            }
+        );
+        let failed =
+            dict(vec![("type", text("error")), ("error", dict(vec![("code", Value::Integer((-12927).into()))]))]);
+        assert_eq!(event(&failed), Event::Failed(-12927));
         let end = dict(vec![("type", text("notification")), ("name", text("itemPlayedToEnd"))]);
         assert!(matches!(event(&end), Event::Notification { name, .. } if name == "itemPlayedToEnd"));
     }
@@ -462,6 +524,33 @@ mod tests {
         let reply = timing_reply(&ask).unwrap();
         assert_eq!((reply[1], &reply[2..4], &reply[8..16]), (0xd3, &[0u8, 7][..], &[1u8, 2, 3, 4, 5, 6, 7, 8][..]));
         assert!(timing_reply(&ask[..8]).is_none());
+    }
+
+    /// Serves a folder to devices on the network for a while, with Range requests, and prints
+    /// who asks for what: `SERVE_DIR=<folder> SERVE_PORT=<port> [SERVE_SECS=120] cargo test -p
+    /// corrent-server serve_a_folder -- --ignored --nocapture`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "opens a port on the network"]
+    async fn serve_a_folder() {
+        let dir = std::path::PathBuf::from(std::env::var("SERVE_DIR").expect("SERVE_DIR"));
+        let port: u16 = std::env::var("SERVE_PORT").expect("SERVE_PORT").parse().unwrap();
+        let secs: u64 = std::env::var("SERVE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+        let app = axum::Router::new().fallback(move |req: axum::extract::Request| {
+            let dir = dir.clone();
+            async move {
+                println!(
+                    "{} {} range {:?} agent {:?}",
+                    req.method(),
+                    req.uri(),
+                    req.headers().get("range"),
+                    req.headers().get("user-agent")
+                );
+                tower::ServiceExt::oneshot(tower_http::services::ServeDir::new(&dir), req).await
+            }
+        });
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.unwrap();
+        println!("serving on port {port}");
+        let _ = tokio::time::timeout(Duration::from_secs(secs), axum::serve(listener, app)).await;
     }
 
     /// Plays a link on a paired real device and prints what it reports for a while:
@@ -480,7 +569,8 @@ mod tests {
         let local = crate::cast::local_ip_towards(addr).unwrap();
         let mut s = Session::open(addr, &creds, &id, local).await.expect("session");
         println!("session open; commands go over stream {}", s.stream_id);
-        s.play(&url, 0.0, url.contains(".m3u8")).await.expect("queued");
+        let start: f64 = std::env::var("AIRPLAY_START").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let uuid = s.play(&url, start, url.contains(".m3u8")).await.expect("queued");
         println!("queued {url}");
         let until = std::time::Instant::now() + Duration::from_secs(secs);
         let mut beat = tokio::time::interval(Duration::from_secs(2));
@@ -495,6 +585,24 @@ mod tests {
                     n += 1;
                     if let Err(e) = s.feedback().await { println!("feedback: {e}"); break; }
                     if n % 5 == 0 && let Err(e) = s.ask_state(n).await { println!("playbackInfo: {e}"); }
+                    // AIRPLAY_TRY=1: ways a seek might be asked for, one every four seconds.
+                    if std::env::var("AIRPLAY_TRY").is_ok() && n >= 4 && n % 2 == 0 {
+                        let to = cm_time(30.0);
+                        let it = || dict(vec![("uuid", text(uuid.clone()))]);
+                        let tries: Vec<Value> = vec![
+                            dict(vec![("type", text("seekToTime")), ("item", it()), ("time", to.clone())]),
+                            dict(vec![("type", text("setProperty")), ("property", text("currentTime")), ("item", it()), ("value", to.clone())]),
+                            dict(vec![("type", text("setProperty")), ("property", text("position")), ("item", it()), ("value", to.clone())]),
+                            dict(vec![("type", text("seek")), ("item", it()), ("time", to.clone())]),
+                            dict(vec![("type", text("seekToTime")), ("item", it()), ("time", to.clone()), ("toleranceBefore", cm_time(0.0)), ("toleranceAfter", cm_time(0.0))]),
+                            dict(vec![("type", text("setProperty")), ("property", text("currentTime")), ("item", it()), ("value", Value::Real(30.0))]),
+                        ];
+                        if let Some(c) = tries.get((n as usize - 4) / 2) {
+                            println!("trying {c:?}: {:?}", s.command(c.clone()).await.map_err(|e| e.to_string()));
+                        }
+                        continue;
+                    }
+                    if std::env::var("AIRPLAY_TRY").is_ok() { continue; }
                     if n == 10 { println!("pausing"); let _ = s.set_rate(0.0).await; }
                     if n == 13 { println!("resuming"); let _ = s.set_rate(1.0).await; }
                 }

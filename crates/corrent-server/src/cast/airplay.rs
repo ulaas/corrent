@@ -89,8 +89,9 @@ impl Receiver {
             }
         }
         format!(
-            "{} · {} · {} · {} · features {:#x} · flags {:#x} · {}",
+            "{} · {} · {} · {} · {} · features {:#x} · flags {:#x} · {}",
             self.name,
+            self.id,
             self.model,
             self.addr,
             self.version,
@@ -213,6 +214,318 @@ pub async fn probe(r: &Receiver) -> Vec<String> {
         });
     }
     out
+}
+
+/// Takes a link through its play queue (bit 49), or the older way (bit 0, which Apple's own
+/// devices have next to it): what [`session`] can play on.
+const FEATURE_VIDEO_QUEUE: u64 = 1 << 49;
+
+impl Receiver {
+    pub fn playable(&self) -> bool {
+        self.features & (FEATURE_VIDEO | FEATURE_VIDEO_QUEUE) != 0 && !self.needs_password()
+    }
+
+    /// The device as the cast list shows it.
+    pub fn found(self) -> super::Found {
+        let id: String = self.id.chars().filter(char::is_ascii_alphanumeric).collect();
+        super::Found {
+            device: corrent_proto::library::CastDevice {
+                id: format!("airplay-{id}"),
+                name: self.name.clone(),
+                model: self.model.clone(),
+                kind: KIND.into(),
+                needs_pairing: false,
+            },
+            addr: self.addr,
+            dlna: None,
+            airplay: Some(std::sync::Arc::new(self)),
+        }
+    }
+}
+
+/// The pairings made with receivers, by their `deviceid`: `<data dir>/airplay-pairings.json`,
+/// readable by the server's account only (they are the keys to play on those devices).
+pub mod store {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    use super::pair::Credentials;
+
+    fn file(data_dir: &Path) -> PathBuf {
+        data_dir.join("airplay-pairings.json")
+    }
+
+    fn all(data_dir: &Path) -> BTreeMap<String, Credentials> {
+        std::fs::read_to_string(file(data_dir)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    pub fn get(data_dir: &Path, device: &str) -> Option<Credentials> {
+        all(data_dir).remove(device)
+    }
+
+    pub fn paired(data_dir: &Path) -> Vec<String> {
+        all(data_dir).into_keys().collect()
+    }
+
+    /// `None` forgets the device.
+    pub fn set(data_dir: &Path, device: &str, creds: Option<Credentials>) -> anyhow::Result<()> {
+        let mut map = all(data_dir);
+        match creds {
+            Some(c) => map.insert(device.to_string(), c),
+            None => map.remove(device),
+        };
+        crate::tls::write_private(&file(data_dir), &serde_json::to_string_pretty(&map)?)
+    }
+}
+
+/// The actor of one receiver: like [`super::upnp::session`], for a device that reports on its
+/// own channel and is asked where it is every second besides.
+pub(super) async fn session(
+    r: std::sync::Arc<Receiver>,
+    status: std::sync::Arc<std::sync::Mutex<corrent_proto::library::CastStatus>>,
+    mut rx: tokio::sync::mpsc::Receiver<super::Cmd>,
+    st: std::sync::Arc<crate::state::AppState>,
+) -> anyhow::Result<()> {
+    use std::sync::atomic::Ordering;
+
+    use corrent_proto::library::CastCommand;
+
+    use self::play::{Event, Session};
+    use super::{CANT_PLAY, CANT_REACH, Cmd, IDLE_EXIT, LOAD_DEADLINE, Media, report_progress};
+
+    let set = |f: &mut dyn FnMut(&mut corrent_proto::library::CastStatus)| {
+        f(&mut status.lock().unwrap_or_else(|e| e.into_inner()))
+    };
+    // Its volume is the TV's own: not ours to set over this channel.
+    set(&mut |s| s.volume_fixed = true);
+    let stop_hls = |m: &Option<Box<Media>>| {
+        if let Some(id) = m.as_ref().and_then(|m| m.hls_session.clone()) {
+            let hls = st.hls.clone();
+            tokio::spawn(async move { hls.stop(&id).await });
+        }
+    };
+    let creds = store::get(&st.paths.data_dir, &r.id)
+        .ok_or_else(|| anyhow::anyhow!("this device isn't paired yet: pair it in the casting settings"))?;
+    let local = super::local_ip_towards(r.addr).ok_or_else(|| anyhow::anyhow!("no route to the device"))?;
+    let mut current: Option<Box<Media>> = None;
+    // The connection to the device (closing it ends playback there) and the queued item's name.
+    let mut live: Option<(Session, String)> = None;
+    let mut played = false;
+    let mut played_at = 0i64;
+    let mut loading_since: Option<Instant> = None;
+    let mut hits_at_load = None;
+    let mut last_report = Instant::now();
+    let mut idle_since: Option<Instant> = None;
+    let mut ticks = 0i64;
+    let mut beat = tokio::time::interval(Duration::from_secs(1));
+    beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // What ends the current item: `None` while it goes on.
+    enum End {
+        Finished,
+        Failed,
+        Gone,
+    }
+    loop {
+        let mut end: Option<End> = None;
+        tokio::select! {
+            cmd = rx.recv() => {
+                let Some(cmd) = cmd else {
+                    if let Some(c) = &current {
+                        report_progress(&st, c, played_at, c.duration_ms, false);
+                    }
+                    stop_hls(&current);
+                    return Ok(());
+                };
+                match cmd {
+                    Cmd::Load(m) => {
+                        if let Some(c) = &current {
+                            report_progress(&st, c, played_at, c.duration_ms, false);
+                        }
+                        stop_hls(&current);
+                        // A new connection for every item: closing the old one clears the
+                        // device's queue, which no command of ours is known to do.
+                        live = None;
+                        current = None;
+                        set(&mut |s| s.state = "loading".into());
+                        idle_since = None;
+                        played = false;
+                        played_at = (m.start_s * 1000.0) as i64;
+                        hits_at_load = Some((m.hits.clone(), m.hits.load(Ordering::Relaxed)));
+                        let hls = m.content_type.contains("mpegurl");
+                        let opened = async {
+                            let mut s = Session::open(r.addr, &creds, &r.id, local).await?;
+                            let item = s.play(&m.url, m.start_s, hls).await?;
+                            anyhow::Ok((s, item))
+                        }
+                        .await;
+                        match opened {
+                            Ok(l) => {
+                                live = Some(l);
+                                loading_since = Some(Instant::now());
+                                current = Some(m);
+                            }
+                            Err(e) => {
+                                tracing::info!("cast to {}: {e:#}", r.name);
+                                stop_hls(&Some(m));
+                                loading_since = None;
+                                set(&mut |s| {
+                                    s.state = "error".into();
+                                    s.error = Some(format!("{e:#}"));
+                                });
+                                idle_since = Some(Instant::now());
+                            }
+                        }
+                    }
+                    Cmd::Failed(why) => {
+                        loading_since = None;
+                        set(&mut |s| {
+                            s.state = "error".into();
+                            s.error = Some(why.clone());
+                        });
+                        idle_since = Some(Instant::now());
+                    }
+                    Cmd::Tracks(_) => {}
+                    Cmd::Control(CastCommand::Stop) => {
+                        if let Some(c) = &current {
+                            report_progress(&st, c, played_at, c.duration_ms, false);
+                        }
+                        stop_hls(&current);
+                        return Ok(());
+                    }
+                    Cmd::Control(c) => {
+                        let Some((s, item)) = live.as_mut() else { continue };
+                        let done = match c {
+                            CastCommand::Play => s.set_rate(1.0).await,
+                            CastCommand::Pause => s.set_rate(0.0).await,
+                            CastCommand::Seek { position_ms } => s.seek(item, position_ms.max(0) as f64 / 1000.0).await,
+                            _ => Ok(()),
+                        };
+                        if let Err(e) = done {
+                            tracing::debug!("cast to {}: {e:#}", r.name);
+                        }
+                    }
+                }
+            }
+            e = async {
+                match live.as_mut() {
+                    Some((s, _)) => s.events.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(m) = current.as_ref() else { continue };
+                match e {
+                    Some(Event::State { name, position, duration, reason, .. }) => {
+                        if let Some(p) = position {
+                            played_at = (p * 1000.0) as i64;
+                        }
+                        match name.as_str() {
+                            "playing" | "paused" => {
+                                played = true;
+                                loading_since = None;
+                                set(&mut |s| {
+                                    s.state = name.clone();
+                                    s.position_ms = played_at;
+                                    if let Some(d) = duration.filter(|d| *d > 0.0 && m.hls_session.is_none()) {
+                                        s.duration_ms = Some((d * 1000.0) as i64);
+                                    }
+                                    s.error = None;
+                                });
+                            }
+                            "loading" if played => set(&mut |s| s.state = "buffering".into()),
+                            "stopped" if reason.as_deref() == Some("ended") => end = Some(End::Finished),
+                            _ => {}
+                        }
+                    }
+                    Some(Event::Info { state, position, .. }) => {
+                        if let Some(p) = position.filter(|_| played) {
+                            played_at = (p * 1000.0) as i64;
+                            set(&mut |s| {
+                                s.position_ms = played_at;
+                                if matches!(state.as_str(), "playing" | "paused") {
+                                    s.state = state.clone();
+                                }
+                            });
+                        }
+                    }
+                    Some(Event::Notification { name, .. }) => match name.as_str() {
+                        "itemPlayedToEnd" => end = Some(End::Finished),
+                        "itemFailedToPlayToEnd" => end = Some(End::Failed),
+                        _ => {}
+                    },
+                    Some(Event::Failed(code)) => {
+                        tracing::info!("cast to {}: the device can't play this (error {code})", r.name);
+                        end = Some(End::Failed);
+                    }
+                    Some(Event::Other(_)) => {}
+                    Some(Event::Closed) | None => end = Some(End::Gone),
+                }
+            }
+            _ = beat.tick() => {
+                ticks += 1;
+                if idle_since.is_some_and(|t| t.elapsed() > IDLE_EXIT) {
+                    return Ok(());
+                }
+                let (Some(m), Some((s, _))) = (current.as_ref(), live.as_mut()) else { continue };
+                if ticks % 5 == 0 && let Some(id) = m.hls_session.as_deref() {
+                    st.hls.keep_alive(id);
+                }
+                // "Still here" every two seconds, and where it is every second.
+                let alive = if ticks % 2 == 0 { s.feedback().await } else { Ok(()) };
+                let asked = s.ask_state(ticks).await;
+                if alive.is_err() || asked.is_err() {
+                    end = Some(End::Gone);
+                } else if !played && loading_since.is_some_and(|t| t.elapsed() > LOAD_DEADLINE) {
+                    end = Some(End::Failed);
+                } else if played && last_report.elapsed() > Duration::from_secs(10) {
+                    last_report = Instant::now();
+                    report_progress(&st, m, played_at, m.duration_ms, false);
+                }
+            }
+        }
+        let Some(end) = end else { continue };
+        let Some(m) = current.take() else { continue };
+        live = None;
+        loading_since = None;
+        idle_since = Some(Instant::now());
+        match end {
+            End::Finished => {
+                report_progress(&st, &m, played_at, m.duration_ms, true);
+                set(&mut |s| {
+                    s.state = "idle".into();
+                    s.finished = true;
+                });
+            }
+            // Gone after it had played: someone took the TV over, or switched it off.
+            End::Gone if played => {
+                report_progress(&st, &m, played_at, m.duration_ms, false);
+                set(&mut |s| s.state = "idle".into());
+            }
+            End::Failed | End::Gone => {
+                if played {
+                    report_progress(&st, &m, played_at, m.duration_ms, false);
+                }
+                let why = match &hits_at_load {
+                    Some((now, then)) if now.load(Ordering::Relaxed) == *then => CANT_REACH,
+                    _ => CANT_PLAY,
+                };
+                // A file it fetched and can't play (an MP4 with its index at the end, say) may
+                // play converted.
+                if why == CANT_PLAY
+                    && let Some(f) = m.fallback.clone()
+                {
+                    tokio::spawn((f.0)(played_at as f64 / 1000.0));
+                    idle_since = None;
+                    loading_since = Some(Instant::now());
+                } else {
+                    set(&mut |s| {
+                        s.state = "error".into();
+                        s.error = Some(why.into());
+                    });
+                }
+            }
+        }
+        stop_hls(&Some(m));
+    }
 }
 
 #[cfg(test)]

@@ -2485,6 +2485,79 @@ async fn fake_tv(
     (addr, tv)
 }
 
+/// An AirPlay receiver is paired once, with the PIN it shows; until then nothing plays on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_airplay_receiver_is_paired_with_its_pin() {
+    let h = harness("cast-airplay-pair", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let addr = crate::cast::airplay::pair::tests::fake_receiver("0412", b"").await;
+    let receiver = crate::cast::airplay::Receiver {
+        id: "aa:bb:cc:dd:ee:ff".into(),
+        name: "Den".into(),
+        model: "QE55".into(),
+        addr,
+        features: 1 << 49,
+        flags: 0x244,
+        password: false,
+        version: "1".into(),
+    };
+    h.st.casts.inject(receiver.found());
+    let id = "airplay-aabbccddeeff";
+    let needs = async || {
+        let (_, v, _) = get(app, "/api/v1/cast/devices", &admin).await;
+        assert_eq!((v[0]["id"].as_str(), v[0]["kind"].as_str()), (Some(id), Some("airplay")), "{v}");
+        v[0]["needs_pairing"].as_bool().unwrap_or(false)
+    };
+    assert!(needs().await);
+    let (s, v, _) = send(app, Method::POST, &format!("/api/v1/cast/{id}/play"), &admin, json!({ "item_id": 1 })).await;
+    assert_eq!((s, v["message"].as_str()), (StatusCode::CONFLICT, Some("pair_first")), "{v}");
+    // A PIN without a pairing under way; then a wrong one, which ends the attempt.
+    let finish = format!("/api/v1/cast/{id}/pair/finish");
+    let (s, _, _) = send(app, Method::POST, &finish, &admin, json!({ "pin": "0412" })).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let pair = format!("/api/v1/cast/{id}/pair");
+    let (s, v, _) = send(app, Method::POST, &pair, &admin, json!({})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v, _) = send(app, Method::POST, &finish, &admin, json!({ "pin": "1111" })).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(v["message"].as_str().unwrap().contains("PIN was wrong"), "{v}");
+    assert!(needs().await);
+    // The right one: kept in the profile, in a file of its own.
+    send(app, Method::POST, &pair, &admin, json!({})).await;
+    let (s, v, _) = send(app, Method::POST, &finish, &admin, json!({ "pin": "412" })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(!needs().await);
+    assert!(crate::cast::airplay::store::get(&h.st.paths.data_dir, "aa:bb:cc:dd:ee:ff").is_some());
+    // Forgotten again.
+    let (s, _, _) = send(app, Method::DELETE, &pair, &admin, json!({})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(needs().await);
+    // Pairing is the administrator's: it decides what the server may play on.
+    send(
+        app,
+        Method::POST,
+        "/api/v1/users",
+        &admin,
+        json!({ "name": "guest1", "password": "long enough pw", "role": "user" }),
+    )
+    .await;
+    let (_, v, _) = call(
+        app,
+        Method::POST,
+        "/api/v1/auth/login",
+        Call {
+            body: Some(json!({ "username": "guest1", "password": "long enough pw", "device": device() })),
+            ..Default::default()
+        },
+    )
+    .await;
+    let guest = v["token"].as_str().unwrap().to_string();
+    let (s, _, _) = send(app, Method::POST, &pair, &guest, json!({})).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn casts_to_a_dlna_renderer() {
     let h = harness("cast-dlna", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
@@ -2632,6 +2705,7 @@ async fn casts_to_a_receiver() {
         },
         addr,
         dlna: None,
+        airplay: None,
     });
     let (_, v, _) = get(app, "/api/v1/cast/devices", &admin).await;
     assert_eq!(v[0]["name"], "Living room");
@@ -2774,6 +2848,7 @@ async fn cast_fixture(h: &H, admin: &str, addr: SocketAddr) -> i64 {
         device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), ..Default::default() },
         addr,
         dlna: None,
+        airplay: None,
     });
     item
 }
@@ -2840,6 +2915,7 @@ async fn cast_mkv_fixture(
         device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), ..Default::default() },
         addr,
         dlna: None,
+        airplay: None,
     });
     Some((item, index, seen))
 }
@@ -3188,6 +3264,7 @@ async fn cast_settings_are_saved_and_followed() {
         device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), ..Default::default() },
         addr: "192.168.77.8:8009".parse().unwrap(),
         dlna: None,
+        airplay: None,
     });
     let (_, v, _) = get(app, "/api/v1/cast/devices", &admin).await;
     assert_eq!((v[0]["name"].as_str(), v[1]["name"].as_str()), (Some("TV"), Some("Den")), "{v}");

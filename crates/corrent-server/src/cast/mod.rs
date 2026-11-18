@@ -54,6 +54,25 @@ pub struct Found {
     pub addr: SocketAddr,
     /// A DLNA renderer's control addresses (`None`: a Google Cast receiver).
     pub dlna: Option<Arc<upnp::Renderer>>,
+    /// An AirPlay receiver and what it announces.
+    pub airplay: Option<Arc<airplay::Receiver>>,
+}
+
+/// The kinds of devices looked for besides Google Cast receivers (the casting settings).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Also {
+    pub dlna: bool,
+    pub airplay: bool,
+}
+
+impl Also {
+    fn covers(self, other: Also) -> bool {
+        (self.dlna || !other.dlna) && (self.airplay || !other.airplay)
+    }
+
+    fn wants(self, f: &Found) -> bool {
+        (self.dlna || f.dlna.is_none()) && (self.airplay || f.airplay.is_none())
+    }
 }
 
 /// What to play.
@@ -141,7 +160,9 @@ struct Session {
 #[derive(Default)]
 pub struct Casts {
     /// What the last search found, when, and whether it looked for DLNA renderers too.
-    found: Mutex<Option<(Instant, Vec<Found>, bool)>>,
+    found: Mutex<Option<(Instant, Vec<Found>, Also)>>,
+    /// Pairings with AirPlay receivers under way: the device shows its PIN and waits for it.
+    pairing: tokio::sync::Mutex<HashMap<String, (Instant, airplay::pair::Setup)>>,
     sessions: Mutex<HashMap<String, Session>>,
     /// When links on the media listener were last asked for.
     last_use: Mutex<Option<Instant>>,
@@ -169,7 +190,7 @@ pub fn manual_device(line: &str) -> Option<Found> {
     }
     let id = format!("manual-{}-{}", addr.ip(), addr.port());
     let name = if name.is_empty() { addr.ip().to_string() } else { name.to_string() };
-    Some(Found { device: CastDevice { id, name, ..Default::default() }, addr, dlna: None })
+    Some(Found { device: CastDevice { id, name, ..Default::default() }, addr, dlna: None, airplay: None })
 }
 
 /// A DLNA renderer typed into the settings: the address of its description
@@ -239,6 +260,7 @@ fn browse(wait: Duration) -> anyhow::Result<Vec<Found>> {
                     device: CastDevice { id, name, model: get("md"), ..Default::default() },
                     addr: SocketAddr::new(ip, s.get_port()),
                     dlna: None,
+                    airplay: None,
                 });
             }
             Ok(_) => {}
@@ -255,39 +277,82 @@ impl Casts {
     /// The devices on the network (looked for at most once a minute unless `refresh`) and the
     /// typed ones. Typed ones are offered even when the search can't run.
     /// With `dlna`, DLNA renderers too.
-    pub async fn devices(&self, refresh: bool, manual: &[String], dlna: bool) -> anyhow::Result<Vec<Found>> {
+    pub async fn devices(&self, refresh: bool, manual: &[String], also: Also) -> anyhow::Result<Vec<Found>> {
         if !refresh
-            && let Some((at, list, with_dlna)) = self.found.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            && let Some((at, list, with)) = self.found.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
             && at.elapsed() < FRESH
-            // Renderers just turned on in the settings aren't in a list made without them.
-            && (*with_dlna || !dlna)
+            // Kinds just turned on in the settings aren't in a list made without them.
+            && with.covers(also)
         {
-            let list = list.iter().filter(|f| dlna || f.dlna.is_none()).cloned().collect();
+            let list = list.iter().filter(|f| also.wants(f)).cloned().collect();
             return Ok(merged(list, manual));
         }
         let typed: Vec<String> = manual.iter().filter_map(|l| manual_renderer(l)).collect();
-        let renderers = async { if dlna { upnp::search(Duration::from_secs(3), &typed).await } else { Vec::new() } };
-        let (casts, renderers) =
-            tokio::join!(tokio::task::spawn_blocking(|| browse(Duration::from_secs(3))), renderers);
+        let renderers =
+            async { if also.dlna { upnp::search(Duration::from_secs(3), &typed).await } else { Vec::new() } };
+        let receivers = async {
+            if !also.airplay {
+                return Vec::new();
+            }
+            match tokio::task::spawn_blocking(|| airplay::browse(Duration::from_secs(3))).await {
+                Ok(Ok(list)) => {
+                    list.into_iter().filter(airplay::Receiver::playable).map(airplay::Receiver::found).collect()
+                }
+                Ok(Err(e)) => {
+                    tracing::info!("casting: can't look for AirPlay receivers: {e:#}");
+                    Vec::new()
+                }
+                Err(_) => Vec::new(),
+            }
+        };
+        let (casts, renderers, receivers) =
+            tokio::join!(tokio::task::spawn_blocking(|| browse(Duration::from_secs(3))), renderers, receivers);
+        let others = !renderers.is_empty() || !receivers.is_empty();
         let mut list = match casts? {
             Ok(list) => list,
-            Err(e) if !renderers.is_empty() || manual.iter().any(|l| manual_device(l).is_some()) => {
+            Err(e) if others || manual.iter().any(|l| manual_device(l).is_some()) => {
                 tracing::info!("casting: can't look for devices: {e:#}");
                 Vec::new()
             }
             Err(e) => return Err(e),
         };
         list.extend(renderers);
-        list.sort_by_key(|f| f.device.name.to_lowercase());
-        *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), list.clone(), dlna));
+        list.extend(receivers);
+        // The same TV by two ways sits together, the way that needs no pairing first.
+        list.sort_by_key(|f| (f.device.name.to_lowercase(), f.airplay.is_some()));
+        *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), list.clone(), also));
         Ok(merged(list, manual))
     }
 
-    pub async fn device(&self, id: &str, manual: &[String], dlna: bool) -> anyhow::Result<Found> {
-        if let Some(f) = self.devices(false, manual, dlna).await?.into_iter().find(|f| f.device.id == id) {
+    /// Asks an AirPlay receiver to show its PIN. [`Casts::finish_pairing`] takes it within a
+    /// few minutes; starting again replaces an attempt under way.
+    pub async fn start_pairing(&self, r: &airplay::Receiver) -> anyhow::Result<()> {
+        let setup = airplay::pair::start(r.addr).await?;
+        let mut pending = self.pairing.lock().await;
+        pending.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(300));
+        pending.insert(r.id.clone(), (Instant::now(), setup));
+        Ok(())
+    }
+
+    /// Finishes the pairing with the PIN from the device's screen; the keys to keep.
+    pub async fn finish_pairing(
+        &self,
+        r: &airplay::Receiver,
+        pin: &str,
+        name: &str,
+    ) -> anyhow::Result<airplay::pair::Credentials> {
+        let setup = self.pairing.lock().await.remove(&r.id);
+        let (_, setup) = setup
+            .filter(|(at, _)| at.elapsed() < Duration::from_secs(300))
+            .ok_or_else(|| anyhow::anyhow!("no pairing is under way with this device: start it again"))?;
+        setup.finish(pin, name).await
+    }
+
+    pub async fn device(&self, id: &str, manual: &[String], also: Also) -> anyhow::Result<Found> {
+        if let Some(f) = self.devices(false, manual, also).await?.into_iter().find(|f| f.device.id == id) {
             return Ok(f);
         }
-        self.devices(true, manual, dlna)
+        self.devices(true, manual, also)
             .await?
             .into_iter()
             .find(|f| f.device.id == id)
@@ -297,7 +362,8 @@ impl Casts {
     /// A device as if found on the network (tests).
     #[cfg(test)]
     pub fn inject(&self, f: Found) {
-        *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), vec![f], true));
+        *self.found.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((Instant::now(), vec![f], Also { dlna: true, airplay: true }));
     }
 
     pub fn status(&self, id: &str) -> Option<CastStatus> {
@@ -361,9 +427,10 @@ impl Casts {
             if let Some(before) = before {
                 let _ = tokio::time::timeout(Duration::from_secs(4), before.closed()).await;
             }
-            let r = match found.dlna.clone() {
-                Some(renderer) => upnp::session(renderer, s2.clone(), rx, st.clone()).await,
-                None => connection(found.addr, s2.clone(), rx, st.clone()).await,
+            let r = match (found.dlna.clone(), found.airplay.clone()) {
+                (Some(renderer), _) => upnp::session(renderer, s2.clone(), rx, st.clone()).await,
+                (None, Some(receiver)) => airplay::session(receiver, s2.clone(), rx, st.clone()).await,
+                (None, None) => connection(found.addr, s2.clone(), rx, st.clone()).await,
             };
             let mut s = s2.lock().unwrap_or_else(|e| e.into_inner());
             if let Err(e) = r {
