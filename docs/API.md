@@ -142,6 +142,7 @@ the client asks for it. Media files, HLS and remux segments and torrent streams 
 | GET | `/api/v1/files/{id}` |
 | GET | `/api/v1/images/{sha}` |
 | GET | `/api/v1/home` |
+| GET | `/api/v1/facets` |
 | GET | `/api/v1/library/search` |
 | GET PUT | `/api/v1/users/{id}/libraries` |
 
@@ -150,6 +151,15 @@ unless `sort` says otherwise; paged) and `next_up=true` (the next episode of eac
 watched, the most recent first). `next_up` isn't paged: it returns at most 100 items with
 `total` = their number, and of the other parameters only `library_id` applies. An item whose main
 file is gone from disk has `missing: true`; the field is left out otherwise.
+
+Filters (`GET /items` and `GET /home`, where every row keeps only what matches):
+`watch=unplayed|in_progress|played` (a show, season, album or artist goes by the playable items in
+it: played when all are, in progress when some are; `played=true|false` on `/items` means the
+same), `genre=<name>`, `favorite=true`, `decade=2010` (2010–2019) or `year_from=`/`year_to=`.
+`GET /items` also takes `top=true` (only items without a parent). `GET /facets?library_id=&kind=`
+lists what there is to filter by: `{ "genres": [...], "decades": [2020, 2010, ...] }`. Marking a
+container played with `PUT /items/{id}/state` answers with `played` and `unplayed` as its items
+now are.
 
 ### Playlists and collections
 
