@@ -356,6 +356,8 @@ pub(super) async fn session(
     let mut queued: Option<Option<Cmd>> = None;
     loop {
         let mut end: Option<End> = None;
+        // Why it ended, for the log: a cast that fails says little on the screen.
+        let mut cause = "";
         tokio::select! {
             cmd = async {
                 match queued.take() {
@@ -454,7 +456,8 @@ pub(super) async fn session(
                         };
                         // A command that fails leaves the connection out of step: over.
                         if let Err(e) = done {
-                            tracing::debug!("cast to {}: {e:#}", r.name);
+                            tracing::info!("cast to {}: a command failed: {e:#}", r.name);
+                            cause = "a command failed";
                             end = Some(End::Gone);
                         }
                     }
@@ -488,7 +491,10 @@ pub(super) async fn session(
                             "loading" if played => set(&mut |s| s.state = "buffering".into()),
                             "stopped" if reason.as_deref() == Some("ended") => end = Some(End::Finished),
                             // Stopped at the TV (its remote, another app): over, not finished.
-                            "stopped" if played => end = Some(End::Gone),
+                            "stopped" if played => {
+                                cause = "stopped at the device";
+                                end = Some(End::Gone);
+                            }
                             _ => {}
                         }
                     }
@@ -509,19 +515,27 @@ pub(super) async fn session(
                             if let Some((s, _)) = live.as_mut()
                                 && s.set_rate(1.0).await.is_err()
                             {
+                                cause = "the device didn't take the command to play";
                                 end = Some(End::Gone);
                             }
                         }
                         "itemPlayedToEnd" => end = Some(End::Finished),
-                        "itemFailedToPlayToEnd" => end = Some(End::Failed),
+                        "itemFailedToPlayToEnd" => {
+                            cause = "the device says the item failed to play";
+                            end = Some(End::Failed);
+                        }
                         _ => {}
                     },
                     Some(Event::Failed(code)) => {
                         tracing::info!("cast to {}: the device can't play this (error {code})", r.name);
+                        cause = "the device reported an error";
                         end = Some(End::Failed);
                     }
                     Some(Event::Other(_)) => {}
-                    Some(Event::Closed) | None => end = Some(End::Gone),
+                    Some(Event::Closed) | None => {
+                        cause = "the device closed the connection";
+                        end = Some(End::Gone);
+                    }
                 }
             }
             _ = beat.tick() => {
@@ -543,8 +557,10 @@ pub(super) async fn session(
                 let alive = if ticks % 2 == 0 { s.feedback().await } else { Ok(()) };
                 let asked = if played { s.ask_state(ticks).await } else { Ok(()) };
                 if alive.is_err() || asked.is_err() {
+                    cause = "the device stopped answering";
                     end = Some(End::Gone);
                 } else if !played && loading_since.is_some_and(|t| t.elapsed() > LOAD_DEADLINE) {
+                    cause = "the device didn't start playing in time";
                     end = Some(End::Failed);
                 } else if played && last_report.elapsed() > Duration::from_secs(10) {
                     last_report = Instant::now();
@@ -574,10 +590,15 @@ pub(super) async fn session(
                 if played {
                     report_progress(&st, &m, played_at, m.duration_ms, false);
                 }
-                let why = match &hits_at_load {
-                    Some((now, then)) if now.load(Ordering::Relaxed) == *then => CANT_REACH,
-                    _ => CANT_PLAY,
-                };
+                let fetched = hits_at_load.as_ref().map_or(0, |(now, then)| now.load(Ordering::Relaxed) - *then);
+                let why = if hits_at_load.is_some() && fetched == 0 { CANT_REACH } else { CANT_PLAY };
+                tracing::info!(
+                    "cast to {}: ended without playing to the end: {cause} (it had {}played; {fetched} requests from the                      device for a stream of type {}; a converted stream follows: {})",
+                    r.name,
+                    if played { "" } else { "not " },
+                    m.content_type,
+                    why == CANT_PLAY && m.fallback.is_some(),
+                );
                 // A file it fetched and can't play (an MP4 with its index at the end, say) may
                 // play converted.
                 if why == CANT_PLAY
