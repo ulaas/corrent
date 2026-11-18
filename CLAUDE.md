@@ -99,11 +99,11 @@ crates/corrent-i18n + assets/i18n/
 crates/corrent-mpv/         Runtime-loaded libmpv (dlopen): probe, encode, GL/SW render; spike examples
 crates/corrent-proto/       API v1 wire types (serde): torrents + deltas, events, errors, auth DTOs
 crates/corrent-db/          SQLite (bundled): batching writer thread, read pool, migrations (corrent.db)
-                            (cast/: Google Cast, cast/upnp.rs DLNA renderers — SOAP written by hand, TVs want the
-                            header `SOAPACTION` in capitals — and cast/airplay* AirPlay 2 with HomeKit pairing;
-                            findings from a real Samsung TV in docs/spikes/airplay-protocol.md)
 crates/corrent-server/      Media server: v1/ (API v1 + WebSocket events), identity (users, tokens, pairing,
                             audit), net (LAN guard), tls (own CA), webapi/ (qBittorrent API for Sonarr/Radarr)
+                            cast/: Google Cast, cast/upnp.rs DLNA renderers — SOAP written by hand, TVs want the
+                            header `SOAPACTION` in capitals — and cast/airplay* AirPlay 2 with HomeKit pairing;
+                            findings from a real Samsung TV in docs/spikes/airplay-protocol.md
 crates/correntd/            Headless server binary (docs/SERVER.md)
 assets/webui/               Web interface served by corrent-server's webapi at /
 src/integration/            single_instance (local socket IPC), os_handler(+_windows) magnet/.torrent
