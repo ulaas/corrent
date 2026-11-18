@@ -132,13 +132,88 @@ pub fn ass_to_vtt(ass: &str) -> String {
     out
 }
 
-/// Converts by file extension (`srt`, `ass`, `ssa`, `vtt`); `None` for image subtitles.
+/// `{12}{34}` at the start of a MicroDVD line: the frames a cue starts and ends at (the end may
+/// be left out), and the rest of the line.
+fn microdvd_frames(line: &str) -> Option<(u64, Option<u64>, &str)> {
+    let (start, rest) = line.strip_prefix('{')?.split_once('}')?;
+    let (end, rest) = rest.strip_prefix('{')?.split_once('}')?;
+    let end = end.trim();
+    Some((start.trim().parse().ok()?, if end.is_empty() { None } else { Some(end.parse().ok()?) }, rest))
+}
+
+/// Whether a `.sub` file is MicroDVD text (the other `.sub`, VobSub, is pictures).
+pub fn is_microdvd(text: &str) -> bool {
+    text.trim_start_matches('\u{feff}')
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .is_some_and(|l| microdvd_frames(l.trim()).is_some())
+}
+
+/// MicroDVD (`{start frame}{end frame}first line|second line`) to WebVTT. Its times are frame
+/// numbers: a first cue `{1}{1}25.000` names the frame rate, otherwise it is the video's (`fps`),
+/// or 23.976 when that isn't known.
+pub fn microdvd_to_vtt(text: &str, fps: Option<f64>) -> String {
+    let ok = |f: &f64| f.is_finite() && (1.0..=1000.0).contains(f);
+    let mut fps = fps.filter(ok).unwrap_or(24000.0 / 1001.0);
+    let mut cues: Vec<(u64, u64, String)> = Vec::new();
+    for (n, line) in text.trim_start_matches('\u{feff}').lines().filter(|l| !l.trim().is_empty()).enumerate() {
+        let Some((start, end, body)) = microdvd_frames(line.trim()) else { continue };
+        if n == 0
+            && start == 1
+            && end == Some(1)
+            && let Some(declared) = body.trim().replace(',', ".").parse::<f64>().ok().filter(ok)
+        {
+            fps = declared;
+            continue;
+        }
+        let ms = |frame: u64| (frame.min(100_000_000) as f64 * 1000.0 / fps).round() as u64;
+        let start_ms = ms(start);
+        // Without an end: three seconds.
+        let end_ms = end.map(ms).filter(|e| *e > start_ms).unwrap_or(start_ms + 3000);
+        let lines: Vec<String> = body
+            .split('|')
+            .filter_map(|l| {
+                // Control codes come first (`{y:i}` italic, `{c:$0000ff}` colour…); `/` is italic too.
+                let mut l = l.trim();
+                let mut italic = false;
+                while let Some((code, rest)) = l.strip_prefix('{').and_then(|r| r.split_once('}')) {
+                    italic |= code.to_ascii_lowercase().starts_with("y:") && code.to_ascii_lowercase().contains('i');
+                    l = rest.trim_start();
+                }
+                if let Some(rest) = l.strip_prefix('/') {
+                    italic = true;
+                    l = rest.trim_start();
+                }
+                let t = cue_text(l);
+                (!t.is_empty()).then(|| if italic { format!("<i>{t}</i>") } else { t })
+            })
+            .collect();
+        if !lines.is_empty() {
+            cues.push((start_ms, end_ms, lines.join("\n")));
+        }
+    }
+    cues.sort_by_key(|c| (c.0, c.1));
+    let mut out = String::from("WEBVTT\n\n");
+    for (s, e, b) in cues {
+        out.push_str(&format!("{} --> {}\n{}\n\n", fmt_time(s), fmt_time(e), b));
+    }
+    out
+}
+
+/// Converts by file extension (`srt`, `ass`, `ssa`, `vtt`, a MicroDVD `sub`); `None` for image
+/// subtitles.
 pub fn to_vtt(ext: &str, bytes: &[u8]) -> Option<String> {
+    to_vtt_at(ext, bytes, None)
+}
+
+/// `to_vtt` for a video with `fps` frames a second: what MicroDVD's frame numbers count.
+pub fn to_vtt_at(ext: &str, bytes: &[u8], fps: Option<f64>) -> Option<String> {
     let text = String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| bytes.iter().map(|&b| b as char).collect());
     match ext.to_ascii_lowercase().as_str() {
         "srt" => Some(srt_to_vtt(&text)),
         "ass" | "ssa" => Some(ass_to_vtt(&text)),
         "vtt" => Some(text),
+        "sub" | "microdvd" if is_microdvd(&text) => Some(microdvd_to_vtt(&text, fps)),
         _ => None,
     }
 }
@@ -167,6 +242,30 @@ mod tests {
             ass_to_vtt(a),
             "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nFirst\n\n00:00:02.000 --> 00:00:04.500\n<i>Hi</i>, there\nline two\n\n"
         );
+    }
+
+    #[test]
+    fn microdvd() {
+        // The video's frame rate counts the frames.
+        let v =
+            microdvd_to_vtt("{25}{50}Hello|{y:i}there\r\n{100}{}/Aside & <b>\n{c:$ff}{200}{250}broken\n", Some(25.0));
+        assert_eq!(
+            v,
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n<i>there</i>\n\n00:00:04.000 --> 00:00:07.000\n<i>Aside &amp; <b></i>\n\n"
+        );
+        // A rate the file names itself wins.
+        let v = microdvd_to_vtt("{1}{1}50.000\n{50}{100}One\n", Some(25.0));
+        assert_eq!(v, "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nOne\n\n");
+        // Neither: film's 23.976.
+        assert!(microdvd_to_vtt("{24000}{24024}x\n", None).contains("00:16:41.000 --> 00:16:42.001"));
+        assert!(to_vtt("sub", b"{1}{2}text").is_some());
+        // VobSub's `.sub` is an MPEG stream.
+        assert!(to_vtt("sub", &[0, 0, 1, 0xba, 0x44]).is_none());
+        for s in ["", "{", "{1}", "{1}{", "{x}{y}z", "{1}{1}0", "{1}{1}nan", "{99999999999999999999}{1}x", "{5}{1}|||"]
+        {
+            let _ = microdvd_to_vtt(s, Some(0.0));
+            let _ = is_microdvd(s);
+        }
     }
 
     #[test]

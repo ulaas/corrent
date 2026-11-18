@@ -362,6 +362,57 @@ async fn items_whose_file_is_gone_are_flagged() {
     h.stop().await;
 }
 
+/// The scan reads a video's folder once; subtitles put there later are found when it is played.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn subtitle_files_put_next_to_a_video_are_offered_when_it_plays() {
+    let h = harness("latesubs", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let lib = empty_library(&h, &admin, "Films", "movies").await;
+    let dir = h.dir.join("films");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Clip.mkv"), b"not really a video").unwrap();
+    let item = seed_item(&h, lib, "movie", None, None, "Clip", Some(dir.join("Clip.mkv").display().to_string())).await;
+    let play = || async {
+        let (s, v, _) =
+            send(app, Method::POST, &format!("/api/v1/playback/{item}"), &admin, json!({ "profile": "native" })).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let mut subs: Vec<(String, String, i64)> = v["subtitles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                let label = s["title"].as_str().or(s["lang"].as_str()).unwrap_or_default().to_string();
+                (label, s["url"].as_str().unwrap_or_default().to_string(), s["index"].as_i64().unwrap())
+            })
+            .collect();
+        subs.sort();
+        subs
+    };
+    assert!(play().await.is_empty());
+
+    std::fs::write(dir.join("Clip.srt"), "1\n00:00:01,000 --> 00:00:02,000\nHello\n").unwrap();
+    std::fs::write(dir.join("Clip.sub"), "{1}{1}25.000\n{25}{50}Hello|there\n").unwrap();
+    std::fs::write(dir.join("Clip.tr.srt"), "1\n00:00:01,000 --> 00:00:02,000\nMerhaba\n").unwrap();
+    // VobSub: pictures, which no client is handed as a file.
+    std::fs::write(dir.join("Clip.de.sub"), [0u8, 0, 1, 0xba, 0x44]).unwrap();
+    std::fs::write(dir.join("Other.srt"), "1\n00:00:01,000 --> 00:00:02,000\nNot this one\n").unwrap();
+    let subs = play().await;
+    let labels: Vec<&str> = subs.iter().map(|s| s.0.as_str()).collect();
+    assert_eq!(labels, ["SRT", "SUB", "de", "tr"], "{subs:?}");
+    assert!(subs[2].1.is_empty(), "{subs:?}");
+    // MicroDVD's frames become times.
+    let (s, vtt, _) = get(app, &subs[1].1, &admin).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(vtt.as_str(), Some("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\nthere\n\n"));
+
+    // One that goes away is no longer listed, and the others keep their numbers.
+    std::fs::remove_file(dir.join("Clip.srt")).unwrap();
+    let fewer = play().await;
+    assert_eq!(fewer, [subs[1].clone(), subs[2].clone(), subs[3].clone()]);
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn text_is_compressed_and_video_is_not() {
     let h = harness("compress", ServerConfig { tls: false, ..Default::default() }).await;

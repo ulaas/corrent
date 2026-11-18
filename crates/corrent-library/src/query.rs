@@ -723,6 +723,22 @@ impl Library {
             .ok_or(LibError::NotFound)
     }
 
+    /// The frame rate of a file's picture, if it was probed (MicroDVD subtitles count frames).
+    pub async fn video_fps(&self, file_id: i64) -> Option<f64> {
+        self.db()
+            .read(move |c| {
+                c.query_row(
+                    "SELECT fps FROM streams WHERE file_id = ?1 AND kind = 'video' AND fps > 0 ORDER BY idx LIMIT 1",
+                    [file_id],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .await
+            .ok()
+            .flatten()
+    }
+
     pub async fn search(&self, user: i64, q: &str) -> Result<SearchResults> {
         let Some(fts) = fts_query(q) else { return Ok(SearchResults::default()) };
         let like = format!("%{}%", q.trim().replace(['%', '_'], ""));

@@ -22,6 +22,10 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ### Fixed
 
+- **Subtitle files next to a video.** A subtitle put beside a video after the library was scanned
+  (`Movie.srt`, `Movie.tr.srt`) is now found when the video is played and listed with the other
+  tracks, without being switched on. MicroDVD `.sub` files are listed too. In the desktop player
+  such a subtitle no longer shows as `1000.vtt · en · webvtt`, only as its language or format.
 - Marking an item played or a favorite shows at once (it used to appear only after the next
   refresh, half a minute later), also for whole shows and seasons on the web.
 

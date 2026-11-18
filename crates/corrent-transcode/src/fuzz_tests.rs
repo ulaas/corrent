@@ -26,7 +26,7 @@ fn subtitle_conversion_never_panics() {
         assert!(out.starts_with("WEBVTT"), "{out:?}");
     });
     run("to_vtt", iterations(5_000), |r| {
-        let ext = *r.pick(&["srt", "ASS", "ssa", "vtt", "sup", ""]);
+        let ext = *r.pick(&["srt", "ASS", "ssa", "vtt", "sub", "sup", ""]);
         let bytes = if r.chance(50) { r.bytes(300) } else { r.case(SRT, 100).into_bytes() };
         let _ = crate::vtt::to_vtt(ext, &bytes);
     });

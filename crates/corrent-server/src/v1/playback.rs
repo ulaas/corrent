@@ -39,7 +39,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/files/{id}/trickplay/{name}", get(trickplay))
 }
 
-pub(crate) const TEXT_SUBS: &[&str] = &["srt", "subrip", "ass", "ssa", "vtt", "webvtt"];
+pub(crate) const TEXT_SUBS: &[&str] = &["srt", "subrip", "ass", "ssa", "vtt", "webvtt", "microdvd"];
 
 pub(crate) fn facts(f: &MediaFile) -> MediaFacts {
     let video = f.streams.iter().find(|s| s.kind == "video").map(|s| VideoFacts {
@@ -242,13 +242,21 @@ pub(crate) async fn prepare(
     let How { profile, remux_ok, target_height, target_bitrate } = how;
     let st = st.clone();
     let user = auth.0.user.id;
-    let detail = st.library.item(user, item).await.map_err(lib_err)?;
-    let file = match req.file_id {
-        Some(id) => detail.files.iter().find(|f| f.id == id),
-        None => detail.files.iter().find(|f| f.role == "main" && !f.missing),
+    let chosen = async || {
+        let detail = st.library.item(user, item).await.map_err(lib_err)?;
+        let file = match req.file_id {
+            Some(id) => detail.files.iter().find(|f| f.id == id),
+            None => detail.files.iter().find(|f| f.role == "main" && !f.missing),
+        }
+        .cloned()
+        .ok_or_else(|| err(ErrorCode::NotFound, "nothing to play"))?;
+        Ok::<_, ApiErr>((detail, file))
+    };
+    let (mut detail, mut file) = chosen().await?;
+    // A subtitle file put next to the video since the last scan is offered too.
+    if st.library.refresh_subtitles(file.id).await.unwrap_or(false) {
+        (detail, file) = chosen().await?;
     }
-    .ok_or_else(|| err(ErrorCode::NotFound, "nothing to play"))?
-    .clone();
     // A file of an unfinished download plays through the engine (reads wait for pieces).
     let downloading = crate::integrate::downloading_file(&st, std::path::Path::new(&file.path)).await;
     let profile = profile.unwrap_or_else(|| ClientProfile::named(req.profile.as_deref().unwrap_or("web")));
@@ -305,7 +313,12 @@ pub(crate) async fn prepare(
             SubtitleTrack {
                 index: s.index,
                 lang: s.lang.clone(),
-                title: s.title.clone(),
+                // A file named exactly as the video says no language: then its format tells
+                // `Movie.srt` from `Movie.sub`.
+                title: s.title.clone().or_else(|| {
+                    let format = s.codec.as_deref().filter(|_| s.external && s.lang.is_none())?;
+                    Some(if format == "microdvd" { "SUB".into() } else { format.to_ascii_uppercase() })
+                }),
                 forced: s.forced,
                 external: s.external,
                 url: (s.external && text).then(|| format!("/api/v1/files/{}/subtitles/{}.vtt", file.id, s.index)),
@@ -639,7 +652,10 @@ pub(crate) async fn subtitle_vtt(st: &AppState, user: i64, file: i64, index: i64
     if bytes.len() > 20 * 1024 * 1024 {
         return Err(err(ErrorCode::PayloadTooLarge, "subtitle file too large"));
     }
-    corrent_transcode::vtt::to_vtt(&ext, &bytes).ok_or_else(|| err(ErrorCode::BadRequest, "not a text subtitle"))
+    // MicroDVD counts frames of the video.
+    let fps = if ext.eq_ignore_ascii_case("sub") { st.library.video_fps(file).await } else { None };
+    corrent_transcode::vtt::to_vtt_at(&ext, &bytes, fps)
+        .ok_or_else(|| err(ErrorCode::BadRequest, "not a text subtitle"))
 }
 
 async fn trickplay(

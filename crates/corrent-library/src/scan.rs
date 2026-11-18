@@ -197,7 +197,7 @@ struct Analyzed {
     parent_nfo: Option<Nfo>,
     placement: Placement,
     art: Vec<(ArtTarget, &'static str, artwork::Stored, String)>,
-    external_subs: Vec<(PathBuf, Option<String>, bool)>,
+    external_subs: Vec<ExternalSub>,
     /// Re-placed by the repair: an existing episode takes the file's title again.
     retitle: bool,
 }
@@ -449,8 +449,45 @@ fn local_art(kind: LibraryKind, roots: &[PathBuf], f: &Path, cx: Context) -> Vec
     out
 }
 
+/// A subtitle file that belongs to a video file.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct ExternalSub {
+    path: PathBuf,
+    lang: Option<String>,
+    forced: bool,
+    codec: Option<String>,
+}
+
+/// What kind of subtitle a file is: its extension, except that `.sub` is two formats. MicroDVD
+/// is text (`{start frame}{end frame}line`), VobSub is pictures (with an `.idx` next to it).
+fn sub_codec(p: &Path) -> Option<String> {
+    let ext = p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)?;
+    if ext != "sub" {
+        return Some(ext);
+    }
+    let mut head = [0u8; 256];
+    let n = std::fs::File::open(p).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    Some(if is_microdvd(&head[..n]) { "microdvd".into() } else { ext })
+}
+
+fn is_microdvd(head: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(head);
+    let mut rest = text.trim_start_matches('\u{feff}').trim_start();
+    // `{123}{456}`; the end frame may be left out (`{123}{}`).
+    for must_have_digits in [true, false] {
+        let Some(r) = rest.strip_prefix('{') else { return false };
+        let digits = r.len() - r.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if must_have_digits && digits == 0 {
+            return false;
+        }
+        let Some(r) = r[digits..].strip_prefix('}') else { return false };
+        rest = r;
+    }
+    true
+}
+
 /// `Movie.en.forced.srt`, `Movie.tr.srt`, `Subs/…`: subtitles that belong to a video file.
-fn external_subs(f: &Path) -> Vec<(PathBuf, Option<String>, bool)> {
+fn external_subs(f: &Path) -> Vec<ExternalSub> {
     let dir = f.parent().unwrap_or(Path::new("/"));
     let st = stem(f).to_lowercase();
     let mut out = Vec::new();
@@ -472,7 +509,8 @@ fn external_subs(f: &Path) -> Vec<(PathBuf, Option<String>, bool)> {
                 .iter()
                 .find(|x| (2..=3).contains(&x.len()) && x.chars().all(|c| c.is_ascii_alphabetic()))
                 .map(|x| x.to_string());
-            out.push((p, lang, forced));
+            let codec = sub_codec(&p);
+            out.push(ExternalSub { path: p, lang, forced, codec });
         }
     }
     out.sort();
@@ -782,11 +820,8 @@ fn upsert_file(t: &Transaction, library_id: i64, a: &Analyzed) -> rusqlite::Resu
         params![library_id, path, a.size as i64, a.mtime, a.quick_hash, probe, a.probe.as_ref().map(|_| now)],
     )?;
     let file_id: i64 = t.query_row("SELECT id FROM files WHERE path = ?1", [&path], |r| r.get(0))?;
-    // The numbers the external subtitles have now: a remembered choice names one of them.
-    let known: Vec<(String, i64)> = t
-        .prepare("SELECT external_path, idx FROM streams WHERE file_id = ?1 AND external_path IS NOT NULL")?
-        .query_map([file_id], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+    // Before the streams are replaced: the external subtitles keep their numbers.
+    let known = known_external_subs(t, file_id)?;
     if let Some(p) = &a.probe {
         t.execute("DELETE FROM streams WHERE file_id = ?1", [file_id])?;
         t.execute("DELETE FROM chapters WHERE file_id = ?1", [file_id])?;
@@ -814,18 +849,89 @@ fn upsert_file(t: &Transaction, library_id: i64, a: &Analyzed) -> rusqlite::Resu
             )?;
         }
     }
-    // External subtitles: numbered after the embedded ones.
+    write_external_subs(t, file_id, &known, &a.external_subs)?;
+    Ok(file_id)
+}
+
+/// The numbers a file's external subtitles have now: a remembered choice names one of them.
+fn known_external_subs(t: &Transaction, file_id: i64) -> rusqlite::Result<Vec<(String, i64)>> {
+    t.prepare("SELECT external_path, idx FROM streams WHERE file_id = ?1 AND external_path IS NOT NULL")?
+        .query_map([file_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect()
+}
+
+/// Replaces a file's external subtitles: numbered after the embedded ones.
+fn write_external_subs(
+    t: &Transaction,
+    file_id: i64,
+    known: &[(String, i64)],
+    subs: &[ExternalSub],
+) -> rusqlite::Result<()> {
     t.execute("DELETE FROM streams WHERE file_id = ?1 AND external_path IS NOT NULL", [file_id])?;
-    let paths: Vec<String> = a.external_subs.iter().map(|(p, ..)| p.display().to_string()).collect();
-    let numbers = external_sub_numbers(&known, &paths);
-    for ((p, lang, forced), (path, idx)) in a.external_subs.iter().zip(paths.iter().zip(numbers)) {
-        let codec = p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    let paths: Vec<String> = subs.iter().map(|s| s.path.display().to_string()).collect();
+    let numbers = external_sub_numbers(known, &paths);
+    for (s, (path, idx)) in subs.iter().zip(paths.iter().zip(numbers)) {
         t.execute(
             "INSERT OR REPLACE INTO streams(file_id, idx, kind, codec, lang, forced, external_path) VALUES (?1, ?2, 'subtitle', ?3, ?4, ?5, ?6)",
-            params![file_id, idx, codec, lang, forced, path],
+            params![file_id, idx, s.codec, s.lang, s.forced, path],
         )?;
     }
-    Ok(file_id)
+    Ok(())
+}
+
+impl Library {
+    /// Looks next to a video for its subtitle files again, as the scan only does for a new or
+    /// changed video: one that was put there since is listed, one that is gone no longer is.
+    /// True when something changed.
+    pub async fn refresh_subtitles(&self, file_id: i64) -> Result<bool> {
+        let known = self
+            .db()
+            .read(move |c| {
+                let path: Option<String> = c
+                    .query_row("SELECT path FROM files WHERE id = ?1 AND missing_since IS NULL", [file_id], |r| r.get(0))
+                    .optional()?;
+                let subs = c
+                    .prepare(
+                        "SELECT external_path, lang, forced, codec FROM streams WHERE file_id = ?1 AND external_path IS NOT NULL",
+                    )?
+                    .query_map([file_id], |r| {
+                        Ok(ExternalSub {
+                            path: PathBuf::from(r.get::<_, String>(0)?),
+                            lang: r.get(1)?,
+                            forced: r.get(2)?,
+                            codec: r.get(3)?,
+                        })
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(path.map(|p| (PathBuf::from(p), subs)))
+            })
+            .await?;
+        let Some((video, mut known)) = known else { return Ok(false) };
+        if parse::file_kind(&video) != FileKind::Video {
+            return Ok(false);
+        }
+        // A folder that can't be read (an unplugged drive) says nothing about its subtitles.
+        let found =
+            tokio::task::spawn_blocking(move || video.is_file().then(|| external_subs(&video))).await.ok().flatten();
+        let Some(mut found) = found else { return Ok(false) };
+        // A downloaded subtitle knows its language better than its file name tells.
+        for s in &mut found {
+            if s.lang.is_none() {
+                s.lang = known.iter().find(|k| k.path == s.path).and_then(|k| k.lang.clone());
+            }
+        }
+        known.sort();
+        if found == known {
+            return Ok(false);
+        }
+        self.db()
+            .write(move |t| {
+                let numbers = known_external_subs(t, file_id)?;
+                write_external_subs(t, file_id, &numbers, &found)
+            })
+            .await?;
+        Ok(true)
+    }
 }
 
 fn link(t: &Transaction, item: i64, file: i64, role: &str) -> rusqlite::Result<()> {

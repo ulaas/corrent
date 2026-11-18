@@ -623,7 +623,8 @@ async fn subtitle(st: &AppState, a: &JfAuth, item: String, source: String, index
         return fail(StatusCode::PAYLOAD_TOO_LARGE, "Subtitle file too large");
     }
     let (ct, body) = if want == "vtt" {
-        match corrent_transcode::vtt::to_vtt(&ext, &bytes) {
+        let fps = if ext == "sub" { st.library.video_fps(fid).await } else { None };
+        match corrent_transcode::vtt::to_vtt_at(&ext, &bytes, fps) {
             Some(v) => ("text/vtt; charset=utf-8", v.into_bytes()),
             None => return not_found(),
         }

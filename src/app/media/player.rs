@@ -559,13 +559,22 @@ fn track_list(n: &Node) -> Vec<Track> {
             let lang = t.get("lang").and_then(Node::as_str).unwrap_or("");
             let title = t.get("title").and_then(Node::as_str).unwrap_or("");
             let codec = t.get("codec").and_then(Node::as_str).unwrap_or("");
+            let external = t.get("external-filename").and_then(Node::as_str);
+            // A subtitle file from the server arrives as WebVTT under a URL (`1000.vtt`), which
+            // mpv takes for its title when it has none: neither says anything about it.
+            let url_name =
+                external.filter(|f| f.contains("://")).and_then(|f| f.split(['?', '#']).next()?.rsplit('/').next());
+            let (title, codec) = match url_name {
+                Some(name) => (if title == name { "" } else { title }, ""),
+                None => (title, codec),
+            };
             let label = [title, lang, codec].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" · ");
             Some(Track {
                 id,
                 kind,
                 title: if label.is_empty() { format!("#{id}") } else { label },
                 selected: t.get("selected").and_then(Node::as_bool) == Some(true),
-                external: t.get("external-filename").and_then(Node::as_str).map(str::to_string),
+                external: external.map(str::to_string),
             })
         })
         .collect()

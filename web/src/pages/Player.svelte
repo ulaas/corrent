@@ -134,7 +134,7 @@
   }
   const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
   /** External subtitle formats the server serves as WebVTT (`TEXT_SUBS` in v1/playback.rs). */
-  const TEXT_SUBS = ['srt', 'subrip', 'ass', 'ssa', 'vtt', 'webvtt'];
+  const TEXT_SUBS = ['srt', 'subrip', 'ass', 'ssa', 'vtt', 'webvtt', 'microdvd'];
 
   async function start(itemId: number, o: PlaybackOptions, at: number | null) {
     const gen = ++startGen;
