@@ -105,8 +105,9 @@ pub fn local_url(url: &str, only: Option<IpAddr>) -> Option<(url::Url, SocketAdd
     Some((u, addr))
 }
 
-/// One client for every renderer (connections are kept and reused): never through a proxy,
-/// never following a redirect.
+/// One client for every renderer: never through a proxy, never following a redirect, and a
+/// new connection for every request — TVs close theirs after each answer without saying so,
+/// and a request sent down a connection kept from before then fails (seen on a Samsung TV).
 fn http() -> Result<reqwest::Client, Fault> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
     CLIENT
@@ -114,6 +115,7 @@ fn http() -> Result<reqwest::Client, Fault> {
             reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .no_proxy()
+                .pool_max_idle_per_host(0)
                 .timeout(TIMEOUT)
                 .build()
                 .ok()
@@ -313,27 +315,117 @@ async fn soap_within(
         body.push_str(&format!("<{k}>{}</{k}>", esc(v)));
     }
     body.push_str(&format!("</u:{action}></s:Body></s:Envelope>"));
-    let res = http()?
-        .post(u)
-        .header(reqwest::header::CONTENT_TYPE, "text/xml; charset=\"utf-8\"")
-        .header("SOAPACTION", format!("\"{service}#{action}\""))
-        .timeout(limit)
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| fault(e.to_string()))?;
-    let ok = res.status().is_success();
-    let status = res.status();
-    let text = String::from_utf8_lossy(&crate::net::read_capped(res, MAX_BODY).await.map_err(fault)?).into_owned();
-    if ok {
+    let (status, text) = match post(&u, service, action, &body, limit).await {
+        Ok(answer) => answer,
+        // Once more when the connection itself failed: a renderer busy with the last command
+        // drops the next one.
+        Err(first) => {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            post(&u, service, action, &body, limit).await.map_err(|e| fault(format!("{action}: {first}; then {e}")))?
+        }
+    };
+    if (200..300).contains(&status) {
         return Ok(text);
     }
     Err(Fault {
         code: tag(&text, "errorCode").and_then(|c| c.trim().parse().ok()),
         message: tag(&text, "errorDescription")
             .filter(|d| !d.trim().is_empty())
+            .map(|d| format!("{action}: {d}"))
             .unwrap_or_else(|| format!("{action}: the device answered {status}")),
     })
+}
+
+/// One SOAP request written by hand, on a connection of its own: its status and body.
+///
+/// Not through the HTTP client: TVs look for the header `SOAPACTION` spelled exactly so (a
+/// Samsung answers "Invalid Args" to `soapaction` and to `SOAPAction`), and HTTP libraries write
+/// header names their own way. They also close the connection after every answer.
+async fn post(u: &url::Url, service: &str, action: &str, body: &str, limit: Duration) -> Result<(u16, String), String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (_, addr) = local_url(u.as_str(), None).ok_or("not a device on this network")?;
+    let path = match u.query() {
+        Some(q) => format!("{}?{q}", u.path()),
+        None => u.path().to_string(),
+    };
+    let head = request_head(&path, addr, service, action, body.len());
+    let exchange = async {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        stream.write_all(head.as_bytes()).await.map_err(|e| e.to_string())?;
+        stream.write_all(body.as_bytes()).await.map_err(|e| e.to_string())?;
+        let mut answer = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            // To the end of the connection, or of the body its length announces.
+            if complete(&answer) {
+                break;
+            }
+            match stream.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => answer.extend_from_slice(buf.get(..n).unwrap_or_default()),
+                Err(e) if answer.is_empty() => return Err(e.to_string()),
+                Err(_) => break,
+            }
+            if answer.len() > MAX_BODY {
+                return Err("the answer is too large".to_string());
+            }
+        }
+        parse_answer(&answer).ok_or_else(|| "not an HTTP answer".to_string())
+    };
+    tokio::time::timeout(limit, exchange).await.map_err(|_| "no answer in time".to_string())?
+}
+
+/// The head of a SOAP request, header names in capitals as renderers expect them.
+fn request_head(path: &str, addr: SocketAddr, service: &str, action: &str, length: usize) -> String {
+    format!(
+        "POST {path} HTTP/1.1\r\nHOST: {addr}\r\nCONTENT-TYPE: text/xml; charset=\"utf-8\"\r\n\
+         SOAPACTION: \"{service}#{action}\"\r\nCONTENT-LENGTH: {length}\r\nCONNECTION: close\r\n\
+         USER-AGENT: Corrent UPnP/1.1\r\n\r\n"
+    )
+}
+
+fn split_answer(answer: &[u8]) -> Option<(&[u8], &[u8])> {
+    let at = answer.windows(4).position(|w| w == b"\r\n\r\n")?;
+    Some((answer.get(..at)?, answer.get(at + 4..)?))
+}
+
+fn header_value(head: &str, name: &str) -> Option<String> {
+    head.lines().skip(1).find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim().eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+    })
+}
+
+/// Has all of an answer with an announced length arrived? (Others end with the connection.)
+fn complete(answer: &[u8]) -> bool {
+    let Some((head, body)) = split_answer(answer) else { return false };
+    let head = String::from_utf8_lossy(head);
+    header_value(&head, "content-length").and_then(|l| l.parse::<usize>().ok()).is_some_and(|l| body.len() >= l)
+}
+
+/// The status and body of a whole answer (a chunked body put together).
+fn parse_answer(answer: &[u8]) -> Option<(u16, String)> {
+    let (head, body) = split_answer(answer)?;
+    let head = String::from_utf8_lossy(head);
+    let status: u16 = head.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
+    let chunked = header_value(&head, "transfer-encoding").is_some_and(|v| v.eq_ignore_ascii_case("chunked"));
+    if !chunked {
+        return Some((status, String::from_utf8_lossy(body).into_owned()));
+    }
+    let mut out = Vec::new();
+    let mut rest = body;
+    loop {
+        let line_end = rest.windows(2).position(|w| w == b"\r\n")?;
+        let size = std::str::from_utf8(rest.get(..line_end)?).ok()?.split(';').next()?.trim();
+        let size = usize::from_str_radix(size, 16).ok()?;
+        rest = rest.get(line_end + 2..)?;
+        if size == 0 {
+            break;
+        }
+        out.extend_from_slice(rest.get(..size)?);
+        rest = rest.get(size + 2..).unwrap_or_default();
+    }
+    Some((status, String::from_utf8_lossy(&out).into_owned()))
 }
 
 /// `H:MM:SS` as renderers take positions.
@@ -773,6 +865,26 @@ mod tests {
         }
         let other: IpAddr = "192.168.1.21".parse().unwrap();
         assert!(local_url("http://192.168.1.20/dmr", Some(other)).is_none(), "a device speaks for itself");
+    }
+
+    #[test]
+    fn answers_written_by_hand_are_read_whole() {
+        // A Samsung TV answers "Invalid Args" to any other spelling of this header's name.
+        let head =
+            request_head("/upnp/control/AVTransport1", "192.168.1.20:9197".parse().unwrap(), AV_TRANSPORT, "Play", 7);
+        assert!(head.contains("\r\nSOAPACTION: \"urn:schemas-upnp-org:service:AVTransport:1#Play\"\r\n"), "{head}");
+        assert!(head.starts_with("POST /upnp/control/AVTransport1 HTTP/1.1\r\nHOST: 192.168.1.20:9197\r\n"));
+        let plain = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+        assert!(complete(plain) && !complete(&plain[..plain.len() - 1]));
+        assert_eq!(parse_answer(plain), Some((200, "hello".to_string())));
+        // No length: over when the device closes.
+        let open = b"HTTP/1.1 500 Internal Server Error\r\nEXT:\r\n\r\n<s:Fault/>";
+        assert!(!complete(open));
+        assert_eq!(parse_answer(open), Some((500, "<s:Fault/>".to_string())));
+        let chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2;x=1\r\nde\r\n0\r\n\r\n";
+        assert_eq!(parse_answer(chunked), Some((200, "abcde".to_string())));
+        assert_eq!(parse_answer(b"garbage"), None);
+        assert_eq!(parse_answer(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n"), None);
     }
 
     #[test]
