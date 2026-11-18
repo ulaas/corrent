@@ -65,7 +65,9 @@ symbols resolve to file:line.
 `application/x-bittorrent`; `io.github.ulaas.Corrent.metainfo.xml` is the AppStream data.
 Inside an AppImage, Corrent registers the AppImage file itself (`$APPIMAGE`) as the handler.
 
-**Flatpak**: generate offline cargo sources, then build:
+**Flatpak**: the build is offline and the SDK has no Node, so build the web client first
+(`cargo build`, or `npm ci && npm run build` in `web/`) and add `CORRENT_SKIP_WEB_BUILD: "1"` to
+the manifest's `build-options.env`. Then generate offline cargo sources and build:
 
 ```
 python3 flatpak-cargo-generator.py Cargo.lock -o packaging/linux/flatpak/cargo-sources.json

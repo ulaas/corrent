@@ -25,8 +25,8 @@ The web gets faithful ports of these, plus a context menu on media cards and row
 the desktop item page's buttons; the desktop got the same card menu afterwards
 (`src/app/media/item_menu.rs`), so both work alike.
 
-## Steps (each a commit after `cd web && npm run check`; `npm run build` and commit `web/dist`
-## once per group of steps — it is 1.3 MB of hashed files, replaced whole every build)
+## Steps (each a commit after `cd web && npm run check`; `web/dist` is built by `cargo build`
+## and not committed)
 
 Strings: reuse the desktop's English text exactly where it exists (not keys with key hints
 such as `"Rename…  (F2)"`) (the web catalog falls back to

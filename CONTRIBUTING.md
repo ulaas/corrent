@@ -27,8 +27,9 @@ cargo test --workspace
 cargo deny check
 ```
 
-Changes to the web client (`web/`) also need `npm ci && npm run check` in `web/`, and
-`npm run build` to refresh `web/dist` (the server embeds it).
+Building needs Node 20.19+ with npm: the server's build script builds the web client (`web/`)
+into `web/dist`, which is embedded and not committed. Changes to the web client also need
+`npm ci && npm run check` in `web/`.
 
 ## Conventions
 

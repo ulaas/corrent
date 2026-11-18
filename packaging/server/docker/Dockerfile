@@ -7,9 +7,19 @@
 # Containers aren't on the LAN by default: open https://<host>:8443 and pair apps by address
 # (mDNS discovery needs --network host).
 
+# The web client, which the server embeds.
+FROM node:24-bookworm-slim AS web
+WORKDIR /src
+COPY web web
+COPY assets/i18n assets/i18n
+COPY design design
+RUN cd web && npm ci --no-audit --no-fund && npm run build
+
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY . .
+COPY --from=web /src/web/dist web/dist
+ENV CORRENT_SKIP_WEB_BUILD=1
 RUN cargo build --release -p correntd -p corrent-mpv --bin correntd --bin corrent-mpvw
 
 FROM debian:bookworm-slim

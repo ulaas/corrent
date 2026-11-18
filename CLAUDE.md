@@ -27,7 +27,7 @@ librqbit 9.0.1 engine. Goal: full-featured, beautiful, stable, easy to use, full
 ## Commands
 
 ```sh
-cargo build                 # debug
+cargo build                 # debug; needs Node 20.19+ (crates/corrent-server/build.rs builds web/ into web/dist, not committed; CORRENT_SKIP_WEB_BUILD=1 keeps the existing one)
 cargo build --release       # target/release/corrent.exe (owner runs this build)
 powershell -File scripts/fetch-libmpv.ps1   # once: libmpv-2.dll into .cache/libmpv; build.rs copies it next to the exe
 cargo test --workspace      # unit + loopback engine integration tests (crates/corrent-core/src/engine/e2e_tests.rs)

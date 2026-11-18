@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Builds the web client (web/) into web/dist, which correntd embeds. Needs Node 20+ and npm.
+# Checks and builds the web client (web/) into web/dist, which correntd embeds. Needs Node 20.19+
+# and npm. `cargo build` builds web/dist by itself (crates/corrent-server/build.rs); this also
+# runs the checks.
 #   scripts/web-build.sh            install exact dependencies, check, test and build
 #   scripts/web-build.sh --no-ci    reuse web/node_modules (faster while developing)
 set -euo pipefail

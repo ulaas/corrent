@@ -26,12 +26,12 @@ Windows, and what is still open.
   - `corrent-plugins`: wasmtime component host and built-in plugins.
   - `corrent-db`: SQLite, migrations 0001–0010.
   - `corrent-proto`, `corrent-i18n`, `corrent-fuzz`.
-- **Clients:** the web client is in `web/` (Svelte 5; built into `web/dist`, which is committed and
-  embedded). The desktop media UI is in `src/app/media/`.
+- **Clients:** the web client is in `web/` (Svelte 5; built into `web/dist` by the server's build script
+  and embedded; `web/dist` is not committed). The desktop media UI is in `src/app/media/`.
 
 ## Building and checking on Windows
 
-1. **Toolchains:** Rust (MSVC, see `rust-version` in the manifests); Node 20+ for `web/`;
+1. **Toolchains:** Rust (MSVC, see `rust-version` in the manifests); Node 20.19+ with npm (every `cargo build` of the server or the app builds the web client);
    `cargo install cargo-deny`; `rustup target add wasm32-wasip2` only if you rebuild plugins.
 2. **libmpv:** Corrent loads `libmpv-2.dll` (or `mpv-2.dll`/`mpv-1.dll`) at runtime, from next to
    the executables or from `PATH`. An installed mpv player doesn't include it.
@@ -49,8 +49,8 @@ Windows, and what is still open.
 3. **Gate:** `powershell -File scripts/gate.ps1`, the same checks as `scripts/gate.sh`. Commit only after
    it prints `GATE OK`.
 4. **Web client:** the scripts are bash: run `scripts/web-build.sh --no-ci` from Git Bash, or run its
-   steps in PowerShell: `cd web; npm ci; npm run check; npm run build`. Commit `web/dist` with the
-   change.
+   steps in PowerShell: `cd web; npm ci; npm run check`. `cargo build` rebuilds `web/dist` (ignored by git) when the
+   web sources changed; `CORRENT_SKIP_WEB_BUILD=1` keeps the one that is there.
 5. **Plugins:** `scripts/build-plugins.sh` (Git Bash) rebuilds the built-in wasm plugins into
    `crates/corrent-plugins/builtin/`.
 6. **Soak:** run `bash scripts/soak.sh [minutes]` from Git Bash. On Windows it samples with

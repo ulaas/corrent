@@ -2,7 +2,6 @@
 *.ttf binary
 *.png binary
 *.ico binary
-web/dist/** -diff linguist-generated=true
 *.woff2 binary
 tests/fuzz-corpus/** binary
 tests/fuzz-corpus/README.md text

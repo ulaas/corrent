@@ -1,4 +1,4 @@
-//! The web client (`web/dist`, built from `web/` with `scripts/web-build.sh`), embedded in the
+//! The web client (`web/dist`, built from `web/` by this crate's `build.rs`), embedded in the
 //! binary. Debug builds read the files from disk, so a rebuilt client shows up without
 //! recompiling the server.
 

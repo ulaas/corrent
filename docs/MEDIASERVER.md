@@ -96,7 +96,7 @@ crates/corrent-server       lib: axum router (v1 + qBittorrent v2 moved from src
                             iroh listener, media/HLS/artwork endpoints, embedded web client (rust-embed), audit log
 crates/correntd             bin: CLI, service wrappers (systemd notify, launchd, Windows service), logging, shutdown
 plugins/{tmdb,tvdb,musicbrainz,coverart,fanart,opensubtitles}   first-party WASM components (wasm32-wasip2)
-web/                        Svelte 5 + Vite + TypeScript client; `web/dist` is committed and embedded (no Node needed for cargo build)
+web/                        Svelte 5 + Vite + TypeScript client; `web/dist` is built by `crates/corrent-server/build.rs` and embedded (cargo build needs Node; not committed since 2026-11-19)
 design/tokens.json          shared design tokens (colors, type scale, radii, spacing, motion) for both clients
 ```
 
@@ -861,6 +861,8 @@ Rules for the implementation:
   allowed; `Unicode-3.0` is allowed).
 - Web client: `web/node_modules` (~200 MB) and `web/dist` build output are not needed for
   `cargo build`; `web/dist` is committed with `.gitattributes` `-diff` and kept ≤ 1 MB.
+  (Changed 2026-11-19: `web/dist` is no longer committed; the server's build script builds it,
+  so `cargo build` needs Node 20.19+.)
 
 ---
 
@@ -989,7 +991,7 @@ and `server.toml`. F5/F6 (stream write timeout, HTTP timeouts) land with V4a/S6 
 | Native video | mpv OpenGL render API into an FBO texture drawn by egui (`get_proc_address` from eframe), SW render API fallback | Child window/HWND; `wgpu` interop; separate mpv process window | Composable overlays, one window, verified API surface; mpv has no Vulkan render API and Corrent is on glow anyway |
 | Transcoding | mpv encode mode in a worker process (primary; `LibMpv` in-process in the worker, `MpvCli` exec when only the binary exists); ffmpeg CLI optional; remux-in-Rust later (opt) | ffmpeg only; GStreamer; libmpv encode inside the server process | Owner's choice honoured; HLS/TS+fMP4, NVENC and restart-at-offset verified with mpv 0.41; process isolation; mpv can't stream-copy so remux needs something else |
 | HLS delivery | Server-owned virtual VOD playlist + segment files from the encoder; stop/restart at seek | Let the muxer own the playlist; MPEG-DASH; WebRTC | Seeking across unencoded ranges, cache reuse, player-agnostic; DASH adds nothing for this |
-| Web stack | Svelte 5 + Vite + TS, `web/dist` committed and embedded | Lit; SolidJS; Leptos/WASM; keep vanilla | Fluid UI with a tiny runtime; `cargo build` stays Node-free; reproducible via CI freshness check |
+| Web stack | Svelte 5 + Vite + TS, `web/dist` embedded (committed until 2026-11-19, since then built by the server's build script) | Lit; SolidJS; Leptos/WASM; keep vanilla | Fluid UI with a tiny runtime; the committed bundle grew the history with every web change and could go stale, so `cargo build` now needs Node |
 | Theming | `design/tokens.json` shared by Rust presets and CSS variables | Separate themes per client | One look, one editor (today's theme editor exports both) |
 | Auth | argon2id + opaque hashed tokens (session/device), cookie+CSRF for web, Bearer for apps | JWT; OAuth/OIDC; qBittorrent-style only | Revocation per device, simple, no key management; OIDC can be added as a plugin later |
 | TLS | rcgen self-signed CA + SPKI pinning in native clients; `rustls-acme` optional | Plain HTTP; mandatory ACME; mkcert-style user CA | Secure by default on LANs without a domain; browsers get a clear trust flow |
