@@ -36,6 +36,11 @@ the research it was written from.
   `seekToTime`, `setProperty currentTime/position`, and `seek` without the item are answered 200
   and do nothing.
 - Closing the control connection ends playback.
+- An item queued without `setRate` loads by itself and reports `playbackLikelyToKeepUp` (after
+  about 1.8 s for HLS here); `setRate 1` then gives `playing` at once. Sent straight after the
+  insert instead, the states go `playing`, `loading`, `playing`, and the owner saw the TV's
+  spinner stay over the first seconds of the picture. The server now waits for the notification
+  (6 s at most). Whether that removes the spinner is to be confirmed at the TV.
 
 ## 0. The main finding for a Samsung TV (read this first)
 

@@ -334,6 +334,10 @@ pub(super) async fn session(
     // The connection to the device (closing it ends playback there) and the queued item's name.
     let mut live: Option<(Session, String)> = None;
     let mut played = false;
+    // The item is on the device's queue and not told to play yet. It is told when the device
+    // says it could keep up, not before: told to play while it still loads, a TV's player goes
+    // into "waiting", and shows its spinner over the first seconds of the picture.
+    let mut start_when_ready = false;
     let mut played_at = 0i64;
     let mut loading_since: Option<Instant> = None;
     let mut hits_at_load = None;
@@ -384,7 +388,8 @@ pub(super) async fn session(
                         let hls = m.content_type.contains("mpegurl");
                         let open = async {
                             let mut s = Session::open(r.addr, &creds, &r.id, local).await?;
-                            let item = s.play(&m.url, m.start_s, hls).await?;
+                            // Queued, not played yet: see `start_when_ready`.
+                            let item = s.queue(&m.url, m.start_s, hls).await?;
                             anyhow::Ok((s, item))
                         };
                         // Connecting can take a while with a TV waking up: a Stop or another
@@ -401,6 +406,7 @@ pub(super) async fn session(
                             Ok(l) => {
                                 live = Some(l);
                                 loading_since = Some(Instant::now());
+                                start_when_ready = true;
                                 current = Some(m);
                             }
                             Err(e) => {
@@ -434,8 +440,15 @@ pub(super) async fn session(
                     Cmd::Control(c) => {
                         let Some((s, item)) = live.as_mut() else { continue };
                         let done = match c {
-                            CastCommand::Play => s.set_rate(1.0).await,
-                            CastCommand::Pause => s.set_rate(0.0).await,
+                            CastCommand::Play => {
+                                start_when_ready = false;
+                                s.set_rate(1.0).await
+                            }
+                            // Paused before it began: it stays loaded, and isn't started for them.
+                            CastCommand::Pause => {
+                                start_when_ready = false;
+                                s.set_rate(0.0).await
+                            }
                             CastCommand::Seek { position_ms } => s.seek(item, position_ms.max(0) as f64 / 1000.0).await,
                             _ => Ok(()),
                         };
@@ -491,6 +504,14 @@ pub(super) async fn session(
                         }
                     }
                     Some(Event::Notification { name, .. }) => match name.as_str() {
+                        "playbackLikelyToKeepUp" if start_when_ready => {
+                            start_when_ready = false;
+                            if let Some((s, _)) = live.as_mut()
+                                && s.set_rate(1.0).await.is_err()
+                            {
+                                end = Some(End::Gone);
+                            }
+                        }
                         "itemPlayedToEnd" => end = Some(End::Finished),
                         "itemFailedToPlayToEnd" => end = Some(End::Failed),
                         _ => {}
@@ -512,9 +533,15 @@ pub(super) async fn session(
                 if ticks % 5 == 0 && let Some(id) = m.hls_session.as_deref() {
                     st.hls.keep_alive(id);
                 }
-                // "Still here" every two seconds, and where it is every second.
+                // A device that doesn't say it is ready is told to play all the same.
+                if start_when_ready && loading_since.is_some_and(|t| t.elapsed() > Duration::from_secs(6)) {
+                    start_when_ready = false;
+                    let _ = s.set_rate(1.0).await;
+                }
+                // "Still here" every two seconds, and where it is every second (once it plays:
+                // a device still loading has enough to do).
                 let alive = if ticks % 2 == 0 { s.feedback().await } else { Ok(()) };
-                let asked = s.ask_state(ticks).await;
+                let asked = if played { s.ask_state(ticks).await } else { Ok(()) };
                 if alive.is_err() || asked.is_err() {
                     end = Some(End::Gone);
                 } else if !played && loading_since.is_some_and(|t| t.elapsed() > LOAD_DEADLINE) {

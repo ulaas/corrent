@@ -452,6 +452,15 @@ impl Session {
     /// Puts `url` on the device's queue and starts it at `start` seconds. `hls`: a playlist
     /// (`.m3u8`) rather than a file.
     pub async fn play(&mut self, url: &str, start: f64, hls: bool) -> anyhow::Result<String> {
+        let item = self.queue(url, start, hls).await?;
+        self.set_rate(1.0).await?;
+        Ok(item)
+    }
+
+    /// Puts `url` on the device's queue to start at `start` seconds, without playing yet: the
+    /// device loads it, and says when it could play ([`Event::Notification`]
+    /// `playbackLikelyToKeepUp`). Returns the item's name.
+    pub async fn queue(&mut self, url: &str, start: f64, hls: bool) -> anyhow::Result<String> {
         let zero = || {
             dict(vec![
                 ("flags", Value::Integer(0.into())),
@@ -486,7 +495,6 @@ impl Session {
             ("value", Value::Integer(1.into())),
         ]))
         .await?;
-        self.set_rate(1.0).await?;
         Ok(uuid)
     }
 
@@ -648,7 +656,35 @@ mod tests {
         let mut s = Session::open(addr, &creds, &id, local).await.expect("session");
         println!("session open; commands go over stream {}", s.stream_id);
         let start: f64 = std::env::var("AIRPLAY_START").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        let uuid = s.play(&url, start, url.contains(".m3u8")).await.expect("queued");
+        // AIRPLAY_WAIT=1: play only once the device says it could keep up (or after 6 s).
+        let wait = std::env::var("AIRPLAY_WAIT").is_ok();
+        let quiet = std::env::var("AIRPLAY_QUIET").is_ok();
+        let uuid = if wait {
+            let uuid = s.queue(&url, start, url.contains(".m3u8")).await.expect("queued");
+            let t = std::time::Instant::now();
+            loop {
+                match tokio::time::timeout(Duration::from_millis(500), s.events.recv()).await {
+                    Ok(Some(e)) => {
+                        println!("  (waiting {:>4.1}s)  {e:?}", t.elapsed().as_secs_f64());
+                        if matches!(&e, Event::Notification { name, .. } if name == "playbackLikelyToKeepUp") {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        let _ = s.feedback().await;
+                    }
+                }
+                if t.elapsed() > Duration::from_secs(6) {
+                    println!("  not ready after 6 s: playing anyway");
+                    break;
+                }
+            }
+            s.set_rate(1.0).await.expect("play");
+            uuid
+        } else {
+            s.play(&url, start, url.contains(".m3u8")).await.expect("queued")
+        };
         println!("queued {url}");
         let until = std::time::Instant::now() + Duration::from_secs(secs);
         let mut beat = tokio::time::interval(Duration::from_secs(2));
@@ -662,7 +698,7 @@ mod tests {
                 _ = beat.tick() => {
                     n += 1;
                     if let Err(e) = s.feedback().await { println!("feedback: {e}"); break; }
-                    if n % 5 == 0 && let Err(e) = s.ask_state(n).await { println!("playbackInfo: {e}"); }
+                    if !quiet && n % 5 == 0 && let Err(e) = s.ask_state(n).await { println!("playbackInfo: {e}"); }
                     // AIRPLAY_TRY=1: ways a seek might be asked for, one every four seconds.
                     if std::env::var("AIRPLAY_TRY").is_ok() && n >= 4 && n % 2 == 0 {
                         let to = cm_time(30.0);
