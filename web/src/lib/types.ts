@@ -754,8 +754,11 @@ export interface CastDevice {
   id: string;
   name: string;
   model: string;
-  /** How the server speaks to it: absent (Google Cast) or "dlna" (a TV, a receiver, Kodi). */
+  /** How the server speaks to it: absent or "" (Google Cast), "dlna" (a TV, a receiver, Kodi)
+   *  or "airplay". */
   kind?: string;
+  /** An AirPlay receiver the server hasn't paired with yet (Settings → Casting). */
+  needs_pairing?: boolean;
 }
 
 export interface CastStatus {
@@ -787,6 +790,8 @@ export interface CastConfig {
   copy_streams: boolean;
   /** Also offer DLNA renderers (smart TVs). Absent on an older server. */
   dlna?: boolean;
+  /** Also offer AirPlay receivers. Absent on an older server; on unless false. */
+  airplay?: boolean;
   /** What a conversion for a device is made at: lines and kbit/s; 0 keeps the file's. */
   transcode_height?: number;
   transcode_bitrate_kbps?: number;

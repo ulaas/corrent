@@ -115,19 +115,25 @@ async fn pair_finish(
 }
 
 /// `DELETE /cast/{device}/pair`: the server forgets the pairing (the device keeps its side
-/// until it is removed there).
+/// until it is removed there). Works for a device that is off: by its id alone.
 async fn pair_forget(
     State(st): State<Arc<AppState>>,
     auth: Auth,
     Path(device): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let r = receiver(&st, &auth, &device).await?;
-    let (dir, id) = (st.paths.data_dir.clone(), r.id.clone());
-    tokio::task::spawn_blocking(move || crate::cast::airplay::store::set(&dir, &id, None))
-        .await
-        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
-        .map_err(|e| err(ErrorCode::Internal, format!("{e:#}")))?;
-    Ok(Json(serde_json::json!({})))
+    auth.require(Perms::SETTINGS_WRITE)?;
+    let dir = st.paths.data_dir.clone();
+    let known = tokio::task::spawn_blocking(move || {
+        let id = crate::cast::airplay::store::by_cast_id(&dir, &device)?;
+        Some(crate::cast::airplay::store::set(&dir, &id, None))
+    })
+    .await
+    .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+    match known {
+        Some(Ok(())) => Ok(Json(serde_json::json!({}))),
+        Some(Err(e)) => Err(err(ErrorCode::Internal, format!("{e:#}"))),
+        None => Err(err(ErrorCode::NotFound, "no pairing with this device")),
+    }
 }
 
 /// The casting settings, unless casting is off.

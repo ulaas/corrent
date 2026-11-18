@@ -136,7 +136,9 @@ pub fn browse(wait: Duration) -> anyhow::Result<Vec<Receiver>> {
                 let p = s.get_properties();
                 let get = |k: &str| p.get_property_val_str(k).unwrap_or_default().to_string();
                 let Some(ip) = s.get_addresses().iter().map(|a| a.to_ip_addr()).find(|a| a.is_ipv4()) else { continue };
-                if !crate::net::is_local(ip, &[]) {
+                // Another device on the network: not this computer, not a link-local address.
+                let odd = matches!(ip, std::net::IpAddr::V4(v4) if v4.is_loopback() || v4.is_link_local());
+                if odd || !crate::net::is_local(ip, &[]) {
                     continue;
                 }
                 let id = get("deviceid").to_ascii_lowercase();
@@ -221,8 +223,12 @@ pub async fn probe(r: &Receiver) -> Vec<String> {
 const FEATURE_VIDEO_QUEUE: u64 = 1 << 49;
 
 impl Receiver {
+    /// What [`session`] can play on: video by link, and HomeKit pairing (older receivers with
+    /// neither would be listed only to fail).
     pub fn playable(&self) -> bool {
-        self.features & (FEATURE_VIDEO | FEATURE_VIDEO_QUEUE) != 0 && !self.needs_password()
+        self.features & (FEATURE_VIDEO | FEATURE_VIDEO_QUEUE) != 0
+            && self.features & FEATURE_HOMEKIT_PAIRING != 0
+            && !self.needs_password()
     }
 
     /// The device as the cast list shows it.
@@ -255,21 +261,38 @@ pub mod store {
         data_dir.join("airplay-pairings.json")
     }
 
-    fn all(data_dir: &Path) -> BTreeMap<String, Credentials> {
-        std::fs::read_to_string(file(data_dir)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    /// Every pairing; an error for a file that is there and can't be read (never taken for
+    /// "none": the next change would write the others away).
+    fn all(data_dir: &Path) -> anyhow::Result<BTreeMap<String, Credentials>> {
+        match std::fs::read_to_string(file(data_dir)) {
+            Ok(text) => Ok(serde_json::from_str(&text)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn get(data_dir: &Path, device: &str) -> Option<Credentials> {
-        all(data_dir).remove(device)
+        all(data_dir).ok()?.remove(device)
     }
 
     pub fn paired(data_dir: &Path) -> Vec<String> {
-        all(data_dir).into_keys().collect()
+        all(data_dir).map(|m| m.into_keys().collect()).unwrap_or_default()
     }
 
-    /// `None` forgets the device.
+    /// The stored device whose cast id (`airplay-<its id without punctuation>`) is `cast_id`:
+    /// a device that is off can still be forgotten.
+    pub fn by_cast_id(data_dir: &Path, cast_id: &str) -> Option<String> {
+        let wanted = cast_id.strip_prefix("airplay-")?;
+        paired(data_dir)
+            .into_iter()
+            .find(|id| id.chars().filter(char::is_ascii_alphanumeric).collect::<String>() == wanted)
+    }
+
+    /// `None` forgets the device. One change at a time: each reads the file and writes it back.
     pub fn set(data_dir: &Path, device: &str, creds: Option<Credentials>) -> anyhow::Result<()> {
-        let mut map = all(data_dir);
+        static CHANGING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one = CHANGING.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = all(data_dir)?;
         match creds {
             Some(c) => map.insert(device.to_string(), c),
             None => map.remove(device),
@@ -325,10 +348,17 @@ pub(super) async fn session(
         Failed,
         Gone,
     }
+    // A command that arrived while the device was being connected to: handled next.
+    let mut queued: Option<Option<Cmd>> = None;
     loop {
         let mut end: Option<End> = None;
         tokio::select! {
-            cmd = rx.recv() => {
+            cmd = async {
+                match queued.take() {
+                    Some(c) => c,
+                    None => rx.recv().await,
+                }
+            } => {
                 let Some(cmd) = cmd else {
                     if let Some(c) = &current {
                         report_progress(&st, c, played_at, c.duration_ms, false);
@@ -352,12 +382,21 @@ pub(super) async fn session(
                         played_at = (m.start_s * 1000.0) as i64;
                         hits_at_load = Some((m.hits.clone(), m.hits.load(Ordering::Relaxed)));
                         let hls = m.content_type.contains("mpegurl");
-                        let opened = async {
+                        let open = async {
                             let mut s = Session::open(r.addr, &creds, &r.id, local).await?;
                             let item = s.play(&m.url, m.start_s, hls).await?;
                             anyhow::Ok((s, item))
-                        }
-                        .await;
+                        };
+                        // Connecting can take a while with a TV waking up: a Stop or another
+                        // item meanwhile ends the attempt (and closes what it had opened).
+                        let opened = tokio::select! {
+                            r = open => r,
+                            next = rx.recv() => {
+                                queued = Some(next);
+                                stop_hls(&Some(m));
+                                continue;
+                            }
+                        };
                         match opened {
                             Ok(l) => {
                                 live = Some(l);
@@ -400,8 +439,10 @@ pub(super) async fn session(
                             CastCommand::Seek { position_ms } => s.seek(item, position_ms.max(0) as f64 / 1000.0).await,
                             _ => Ok(()),
                         };
+                        // A command that fails leaves the connection out of step: over.
                         if let Err(e) = done {
                             tracing::debug!("cast to {}: {e:#}", r.name);
+                            end = Some(End::Gone);
                         }
                     }
                 }
@@ -433,6 +474,8 @@ pub(super) async fn session(
                             }
                             "loading" if played => set(&mut |s| s.state = "buffering".into()),
                             "stopped" if reason.as_deref() == Some("ended") => end = Some(End::Finished),
+                            // Stopped at the TV (its remote, another app): over, not finished.
+                            "stopped" if played => end = Some(End::Gone),
                             _ => {}
                         }
                     }
@@ -513,9 +556,9 @@ pub(super) async fn session(
                 if why == CANT_PLAY
                     && let Some(f) = m.fallback.clone()
                 {
+                    // The converted stream arrives as a new item; if it never does, this session
+                    // still ends by itself.
                     tokio::spawn((f.0)(played_at as f64 / 1000.0));
-                    idle_since = None;
-                    loading_since = Some(Instant::now());
                 } else {
                     set(&mut |s| {
                         s.state = "error".into();

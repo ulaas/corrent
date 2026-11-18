@@ -3,11 +3,22 @@
   import Icon from '../../components/Icon.svelte';
   import Spinner from '../../components/Spinner.svelte';
   import Toggle from '../../components/Toggle.svelte';
-    import { castConfig, castErrorText, castsActive, saveCastConfig, stopCastOn } from '../../lib/cast.svelte';
+  import {
+    castConfig,
+    castDevices,
+    castErrorText,
+    castPairFinish,
+    castPairForget,
+    castPairStart,
+    castsActive,
+    saveCastConfig,
+    stopCastOn,
+  } from '../../lib/cast.svelte';
+  import { confirm } from '../../lib/confirm.svelte';
   import { t } from '../../lib/i18n.svelte';
   import { ms } from '../../lib/prefs.svelte';
   import { toast } from '../../lib/toast.svelte';
-  import type { CastConfig, CastStatus } from '../../lib/types';
+  import type { CastConfig, CastDevice, CastStatus } from '../../lib/types';
   import { QUALITIES, qualityLabel } from '../../lib/quality';
   import { everyVisible } from '../../lib/visibility.svelte';
 
@@ -74,6 +85,100 @@
     }
   }
 
+  // AirPlay receivers: each is paired once, with the PIN it shows.
+  const airplayOn = $derived(!!saved?.enabled && saved.airplay !== false);
+  const airplayToggle = {
+    get value() {
+      return draft?.airplay ?? true;
+    },
+    set value(v: boolean) {
+      if (draft) draft.airplay = v;
+    },
+  };
+  let airplay = $state<CastDevice[] | null>(null);
+  let airplayLoading = $state(false);
+  let airplayError = $state('');
+  /** The device whose PIN is being asked for. */
+  let pairing = $state('');
+  let pin = $state('');
+  let pairBusy = $state('');
+  /** Why the last attempt failed, under its device. */
+  let pairError = $state<{ id: string; text: string } | null>(null);
+  let loads = 0;
+
+  async function loadAirplay(refresh = false) {
+    const at = ++loads;
+    airplayLoading = true;
+    try {
+      const all = await castDevices(refresh);
+      if (at !== loads) return;
+      airplay = all.filter((d) => d.kind === 'airplay');
+      airplayError = '';
+    } catch (e) {
+      if (at !== loads) return;
+      airplayError = castErrorText(e);
+    } finally {
+      if (at === loads) airplayLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (airplayOn) void loadAirplay();
+    else {
+      loads++;
+      airplay = null;
+      airplayLoading = false;
+      pairing = '';
+    }
+  });
+
+  async function pairStart(d: CastDevice) {
+    pairError = null;
+    pairBusy = d.id;
+    try {
+      await castPairStart(d.id);
+      pin = '';
+      pairing = d.id;
+    } catch (e) {
+      pairError = { id: d.id, text: castErrorText(e) };
+    } finally {
+      pairBusy = '';
+    }
+  }
+
+  async function pairFinish(d: CastDevice) {
+    const code = pin.trim();
+    if (!code || pairBusy) return;
+    pairBusy = d.id;
+    try {
+      await castPairFinish(d.id, code);
+      toast(t('Paired with {name}.', { name: d.name }), 'success');
+      void loadAirplay();
+    } catch (e) {
+      // The attempt is over: the TV shows a new PIN the next time.
+      pairError = { id: d.id, text: castErrorText(e) };
+    } finally {
+      if (pairing === d.id) pairing = '';
+      pin = '';
+      pairBusy = '';
+    }
+  }
+
+  async function forget(d: CastDevice) {
+    const r = await confirm({
+      title: t('Forget the pairing with {name}? To play on it again it has to be paired again.', { name: d.name }),
+      ok: t('Forget'),
+      danger: true,
+    });
+    if (!r.ok) return;
+    try {
+      await castPairForget(d.id);
+    } catch (e) {
+      toast(castErrorText(e), 'error');
+    }
+    void loadAirplay();
+  }
+
   async function stop(s: CastStatus) {
     try {
       await stopCastOn(s.device.id);
@@ -106,6 +211,7 @@
     <div class="srow toggle-row">
       <Toggle bind:checked={draft.enabled} label={t('Allow casting to Chromecasts and TVs')} hint={t('While something is casting, the device fetches it from this computer over plain HTTP on the local network. Only signed links are served, and the port closes soon after casting ends.')} />
       <Toggle bind:checked={draft.dlna} label={t('Also find smart TVs and other DLNA players')} hint={t('Samsung, LG and Sony TVs, receivers, Kodi. They play most files as they are; what they can’t play is converted, with the subtitles in the picture. The picture size and H.265 settings below are for Chromecasts.')} />
+      <Toggle bind:checked={airplayToggle.value} label={t('Also find AirPlay devices')} hint={t('Apple TVs and TVs with AirPlay built in (Samsung, LG, Sony). Each is paired once with a PIN it shows on its screen. Converted streams and files they play as they are both work; subtitles go into the picture.')} />
     </div>
     <div class="srow">
       <div class="stext"><span class="slabel">{t('Largest picture sent as it is')}</span><span class="shint">{t('Taller videos are converted first. Older Chromecasts stop at 1080p.')}</span></div>
@@ -144,6 +250,46 @@
     </div>
   </div>
 
+  {#if airplayOn}
+    <div class="sgroup">
+      <h3>{t('AirPlay devices')}</h3>
+      {#if airplayError}
+        <div class="srow wide"><p class="form-error">{airplayError}</p></div>
+      {:else if !airplay}
+        <div class="srow wide"><Spinner /></div>
+      {:else if !airplay.length}
+        <div class="srow wide"><span class="shint">{t('No AirPlay devices found on the server’s network.')}</span></div>
+      {/if}
+      {#each airplay ?? [] as d (d.id)}
+        <div class="srow" class:wide={pairing === d.id}>
+          <div class="stext">
+            <span class="slabel">{d.model ? `${d.name} · ${d.model}` : d.name}</span>
+            {#if pairing === d.id}
+              <span class="shint">{t('Enter the PIN shown on the TV.')}</span>
+            {:else if pairError?.id === d.id}
+              <span class="shint pair-error" role="alert">{pairError.text}</span>
+            {/if}
+          </div>
+          {#if pairing === d.id}
+            <form class="sctl pairform" onsubmit={(e) => (e.preventDefault(), void pairFinish(d))}>
+              <!-- svelte-ignore a11y_autofocus -->
+              <input class="input pin" inputmode="numeric" maxlength="8" autocomplete="off" autofocus bind:value={pin} aria-label={t('Enter the PIN shown on the TV.')} />
+              <button type="submit" class="btn primary sm" disabled={!pin.trim() || pairBusy === d.id}>{#if pairBusy === d.id}<Spinner size={14} />{/if}{t('Pair')}</button>
+              <button type="button" class="btn ghost sm" onclick={() => ((pairing = ''), (pin = ''))}>{t('Cancel')}</button>
+            </form>
+          {:else if d.needs_pairing}
+            <div class="sctl"><button class="btn sm" disabled={!!pairBusy} onclick={() => pairStart(d)}>{#if pairBusy === d.id}<Spinner size={14} />{/if}{t('Pair…')}</button></div>
+          {:else}
+            <div class="sctl"><span class="badge ok">{t('Paired')}</span><button class="btn sm" onclick={() => forget(d)}>{t('Forget')}</button></div>
+          {/if}
+        </div>
+      {/each}
+      <div class="srow wide">
+        <div class="sctl"><button class="btn sm" disabled={airplayLoading} onclick={() => loadAirplay(true)}>{#if airplayLoading && airplay}<Spinner size={14} />{:else}<Icon name="arrows-clockwise" size={14} />{/if}{t('Search again')}</button></div>
+      </div>
+    </div>
+  {/if}
+
   {#if dirty}
     <div class="savebar" transition:fly={{ y: 20, duration: ms(200) }}>
       <Icon name="info" />
@@ -167,6 +313,18 @@
   .chips {
     flex-wrap: wrap;
     gap: 6px;
+  }
+  .pairform {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .pin {
+    width: 9em;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.15em;
+  }
+  .pair-error {
+    color: var(--error);
   }
   textarea {
     width: 100%;

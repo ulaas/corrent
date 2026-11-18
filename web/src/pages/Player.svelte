@@ -8,7 +8,7 @@
   import { api, errorText } from '../lib/api';
   import { back, go, route, setQuery } from '../lib/router.svelte';
   import { SyncRoom } from '../lib/syncplay.svelte';
-  import { Cast, castDevices, castErrorText, castsActive } from '../lib/cast.svelte';
+  import { Cast, castDevices, castErrorText, castLabel, castsActive } from '../lib/cast.svelte';
   import { toast } from '../lib/toast.svelte';
   import { attachSource, reportProgress, resolveSource, resumeAt, stopSession, type PlaybackInfo, type PlaybackOptions } from '../lib/player.svelte';
   import { music } from '../lib/player.svelte';
@@ -810,7 +810,7 @@
       : !castList?.length
         ? [{ label: t('No Chromecasts or TVs found on the server’s network.'), disabled: true, onselect: () => {} }]
         : castList.map((d) => ({
-            label: d.model ? `${d.name} · ${d.model}` : d.name,
+            label: castLabel(d),
             checked: cast?.device.id === d.id,
             radio: true,
             onselect: () => void castTo(d),

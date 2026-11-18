@@ -38,8 +38,71 @@ fn bplist(v: &Value) -> anyhow::Result<Vec<u8>> {
     Ok(out)
 }
 
+/// What a device may send in one message: its state, with room to spare.
+const MAX_PLIST: usize = 64 * 1024;
+
 fn read_plist(bytes: &[u8]) -> Option<Value> {
+    if !plain_tree(bytes) {
+        return None;
+    }
     Value::from_reader(Cursor::new(bytes)).ok()
+}
+
+/// Is this binary property list small, and a tree (no array or dictionary used twice)? The
+/// format lets containers be shared; a list of lists of the same list unfolds to gigabytes from
+/// a few hundred bytes, and these come from a device.
+pub fn plain_tree(bytes: &[u8]) -> bool {
+    if bytes.len() > MAX_PLIST || !bytes.starts_with(b"bplist") {
+        return false;
+    }
+    let Some(trailer) = bytes.len().checked_sub(32).and_then(|at| bytes.get(at..)) else { return false };
+    let int = |b: &[u8]| b.iter().fold(0usize, |n, x| n << 8 | usize::from(*x));
+    let (offset_size, ref_size) = (usize::from(trailer[6]), usize::from(trailer[7]));
+    let (objects, table) = (int(&trailer[8..16]), int(&trailer[24..32]));
+    if !(1..=8).contains(&offset_size) || !(1..=8).contains(&ref_size) || objects > MAX_PLIST {
+        return false;
+    }
+    let offset_of = |n: usize| {
+        let at = table.checked_add(n.checked_mul(offset_size)?)?;
+        bytes.get(at..at.checked_add(offset_size)?).map(int)
+    };
+    let is_container = |n: usize| {
+        offset_of(n).and_then(|at| bytes.get(at)).is_some_and(|marker| matches!(marker >> 4, 0xA | 0xC | 0xD))
+    };
+    let mut used = vec![false; objects];
+    for n in 0..objects {
+        let Some(at) = offset_of(n) else { return false };
+        let Some(marker) = bytes.get(at).copied() else { return false };
+        let per_entry = match marker >> 4 {
+            0xA | 0xC => 1,
+            0xD => 2,
+            _ => continue,
+        };
+        // The count: in the marker, or (15) in the integer after it.
+        let (count, refs_at) = match marker & 0x0f {
+            15 => {
+                let Some(size) = bytes.get(at + 1).map(|m| 1usize << (m & 0x0f)) else { return false };
+                let Some(count) = bytes.get(at + 2..at + 2 + size).map(int) else { return false };
+                (count, at + 2 + size)
+            }
+            c => (usize::from(c), at + 1),
+        };
+        if count > MAX_PLIST {
+            return false;
+        }
+        for i in 0..count * per_entry {
+            let Some(target) = bytes.get(refs_at + i * ref_size..refs_at + (i + 1) * ref_size).map(int) else {
+                return false;
+            };
+            if is_container(target) {
+                match used.get_mut(target) {
+                    Some(seen) if !*seen => *seen = true,
+                    _ => return false,
+                }
+            }
+        }
+    }
+    true
 }
 
 fn dict(items: Vec<(&str, Value)>) -> Value {
@@ -209,7 +272,7 @@ impl Session {
         // The timing server the session names: receivers ask it for the time.
         let timing = tokio::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).await?;
         let timing_port = timing.local_addr()?.port();
-        let mut tasks = vec![tokio::spawn(async move {
+        let timing_task = tokio::spawn(async move {
             let mut buf = [0u8; 128];
             while let Ok((n, from)) = timing.recv_from(&mut buf).await {
                 if from.ip() == addr.ip()
@@ -218,7 +281,7 @@ impl Session {
                     let _ = timing.send_to(&reply, from).await;
                 }
             }
-        })];
+        });
         let mut s = Session {
             conn,
             cseq: 0,
@@ -227,7 +290,8 @@ impl Session {
             uri: format!("rtsp://{local}/{session_no}"),
             stream_id: 0,
             events: mpsc::channel(1).1,
-            tasks: Vec::new(),
+            // Owned from here on: whatever fails below, dropping the session ends its tasks.
+            tasks: vec![timing_task],
         };
         let setup = dict(vec![
             ("deviceID", text(mac.clone())),
@@ -271,7 +335,7 @@ impl Session {
         )?;
         let (tx, rx) = mpsc::channel(64);
         s.events = rx;
-        tasks.push(tokio::spawn(async move {
+        s.tasks.push(tokio::spawn(async move {
             loop {
                 let Ok((first, headers, body)) = events.incoming().await else {
                     let _ = tx.send(Event::Closed).await;
@@ -301,7 +365,6 @@ impl Session {
                 }
             }
         }));
-        s.tasks = tasks;
         s.feedback().await?;
         s.rtsp("RECORD", &uri, None, &[]).await?;
         // The stream commands go over.
@@ -464,6 +527,21 @@ mod tests {
         let back = unwrapped(&wrapped(&cmd).unwrap()).unwrap();
         assert_eq!(back, cmd);
         assert!(unwrapped(b"not a plist").is_none());
+        // A list holding the same list twice (and so on, a few levels down) is refused unread.
+        let shared: &[u8] = &[
+            b'b', b'p', b'l', b'i', b's', b't', b'0', b'0', // header
+            0xA2, 1, 1, // object 0: an array of object 1, twice
+            0xA2, 2, 2,    // object 1: an array of object 2, twice
+            0xA0, // object 2: an empty array
+            8, 11, 14, // where the objects are
+            0, 0, 0, 0, 0, 0, 1, 1, // trailer: sizes of offsets and references
+            0, 0, 0, 0, 0, 0, 0, 3, // three objects
+            0, 0, 0, 0, 0, 0, 0, 0, // the top one
+            0, 0, 0, 0, 0, 0, 0, 15, // the table
+        ];
+        assert!(!plain_tree(shared));
+        assert!(plain_tree(&bplist(&cmd).unwrap()) && plain_tree(&wrapped(&cmd).unwrap()));
+        assert!(!plain_tree(&vec![b'b'; MAX_PLIST + 1]));
         let state = dict(vec![
             ("type", text("playbackState")),
             ("name", text("playing")),

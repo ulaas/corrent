@@ -52,6 +52,9 @@ pub struct Conn {
     raw: Vec<u8>,
     /// Text ready to parse.
     text: Vec<u8>,
+    /// A request failed or went unanswered: what comes next on the wire can't be told apart
+    /// from its late answer, so nothing more is sent.
+    broken: bool,
 }
 
 impl Conn {
@@ -61,7 +64,7 @@ impl Conn {
         }
         let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr)).await??;
         let _ = stream.set_nodelay(true);
-        Ok(Conn { stream, sealed: None, raw: Vec::new(), text: Vec::new() })
+        Ok(Conn { stream, sealed: None, raw: Vec::new(), text: Vec::new(), broken: false })
     }
 
     /// From the next request on, everything goes inside the framing. `write`: what we send with.
@@ -144,12 +147,18 @@ impl Conn {
         text.push_str("\r\n");
         let mut bytes = text.into_bytes();
         bytes.extend_from_slice(body);
-        tokio::time::timeout(TIMEOUT, async {
+        if self.broken {
+            anyhow::bail!("the connection to the device is no longer usable");
+        }
+        let done = tokio::time::timeout(TIMEOUT, async {
             self.send(&bytes).await?;
             self.answer().await
         })
         .await
-        .map_err(|_| anyhow::anyhow!("the device didn't answer {method} {path}"))?
+        .map_err(|_| anyhow::anyhow!("the device didn't answer {method} {path}"))
+        .and_then(|r| r);
+        self.broken = done.is_err();
+        done
     }
 
     async fn answer(&mut self) -> anyhow::Result<Response> {
@@ -165,7 +174,7 @@ impl Conn {
     /// The other side of a connection, for a receiver made for tests.
     #[cfg(test)]
     pub(crate) fn accepted(stream: TcpStream) -> Conn {
-        Conn { stream, sealed: None, raw: Vec::new(), text: Vec::new() }
+        Conn { stream, sealed: None, raw: Vec::new(), text: Vec::new(), broken: false }
     }
 
     /// Tests: the next request as (first line, body).

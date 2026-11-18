@@ -2,6 +2,7 @@
 // on one; this side picks the device, follows its status and drives it.
 import { everyVisible } from './visibility.svelte';
 import { api, ApiError, errorText } from './api';
+import { castDeviceLabel } from './castlabel';
 import { t } from './i18n.svelte';
 import type { CastConfig, CastDevice, CastStatus } from './types';
 
@@ -9,8 +10,12 @@ import type { CastConfig, CastDevice, CastStatus } from './types';
  *  mislead where the same code means several things. Permissions still read as permissions. */
 export function castErrorText(e: unknown): string {
   if (!(e instanceof ApiError) || e.code === 'forbidden' || !e.detail) return errorText(e);
+  if (e.detail === 'pair_first') return t('This device has to be paired first: Settings → Casting.');
   return e.detail === 'casting is turned off in the settings' ? t('Casting is turned off in the settings.') : e.detail;
 }
+
+/** A device as a list shows it: name, model, how it is reached, whether it still needs pairing. */
+export const castLabel = (d: CastDevice) => castDeviceLabel(d, t('not paired'));
 
 export function castDevices(refresh = false): Promise<CastDevice[]> {
   return api.get<CastDevice[]>(`/cast/devices${refresh ? '?refresh=true' : ''}`);
@@ -23,6 +28,14 @@ export function castsActive(mine = false): Promise<CastStatus[]> {
 
 export const castConfig = () => api.get<CastConfig>('/cast/config');
 export const saveCastConfig = (c: CastConfig) => api.put<CastConfig>('/cast/config', c);
+
+/** Starts pairing with an AirPlay receiver: it shows a PIN on its screen. */
+export const castPairStart = (deviceId: string) => api.post(`/cast/${encodeURIComponent(deviceId)}/pair`);
+/** Finishes it with that PIN; a wrong PIN ends the attempt (409 with the reason in words). */
+export const castPairFinish = (deviceId: string, pin: string) =>
+  api.post(`/cast/${encodeURIComponent(deviceId)}/pair/finish`, { pin });
+/** The server forgets its pairing with the device. */
+export const castPairForget = (deviceId: string) => api.del(`/cast/${encodeURIComponent(deviceId)}/pair`);
 export const stopCastOn = (deviceId: string) =>
   api.post(`/cast/${encodeURIComponent(deviceId)}/command`, { action: 'stop' });
 

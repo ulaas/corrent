@@ -3,7 +3,7 @@
 // offline. The API, events and media are never cached here.
 // A new build (the plugin in plugins/swhash.ts fills in its hash) means a new cache: activate
 // drops the old ones, and with them the chunks no page asks for any more.
-const CACHE = 'corrent-shell-4185f9c98283';
+const CACHE = 'corrent-shell-11277206f69a';
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/'])).then(() => self.skipWaiting()));

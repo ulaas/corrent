@@ -35,8 +35,17 @@ pub struct Extra {
 /// Never in the bundle, whatever the options: accounts and tokens (`corrent.db`,
 /// `servers.toml`), keys (`tls/`, `connect.key`), feeds with their passkeys (`rss.json`), the
 /// engine's list and the torrents themselves (only counted).
-const NEVER: &[&str] =
-    &["corrent.db", "servers.toml", "tls", "connect.key", "rss.json", "session.json", "store.json", "settings.toml"];
+const NEVER: &[&str] = &[
+    "corrent.db",
+    "servers.toml",
+    "tls",
+    "connect.key",
+    "rss.json",
+    "session.json",
+    "store.json",
+    "settings.toml",
+    "airplay-pairings.json",
+];
 
 fn never(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
