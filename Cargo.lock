@@ -1610,6 +1610,7 @@ dependencies = [
  "mdns-sd",
  "mime_guess",
  "num-bigint",
+ "plist",
  "portmapper",
  "qrcode",
  "rcgen 0.14.10",

@@ -9,6 +9,7 @@
 
 pub mod conn;
 pub mod pair;
+pub mod play;
 pub mod srp;
 pub mod tlv8;
 

@@ -175,6 +175,17 @@ impl Conn {
         Ok((first, body))
     }
 
+    /// The next message the other side sends on its own (the event channel: there the device
+    /// asks and we answer): its first line, headers and body. Waits as long as it takes.
+    pub async fn incoming(&mut self) -> anyhow::Result<(String, Vec<(String, String)>, Vec<u8>)> {
+        self.message().await
+    }
+
+    /// Text sent as it is (an answer on the event channel).
+    pub async fn send_text(&mut self, text: &[u8]) -> anyhow::Result<()> {
+        self.send(text).await
+    }
+
     /// Tests: an answer to it.
     #[cfg(test)]
     pub(crate) async fn respond(&mut self, status: u16, body: &[u8]) -> anyhow::Result<()> {

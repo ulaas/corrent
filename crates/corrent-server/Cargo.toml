@@ -69,6 +69,7 @@ rustls-acme = { version = "0.15.4", default-features = false, features = ["aws-l
 futures-util = { version = "0.3", default-features = false }
 sysinfo = { version = "0.40.4", default-features = false, features = ["system"] }
 num-bigint = "0.4"
+plist = { version = "1", default-features = false }
 
 [target."cfg(windows)".dependencies]
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
