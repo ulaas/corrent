@@ -232,6 +232,20 @@ pub fn danger_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
     )
 }
 
+/// A pill that is on or off (filters, sort order): accent tinted when on.
+pub fn toggle_chip(ui: &mut Ui, p: &Palette, text: &str, on: bool) -> Response {
+    let color = if on { p.accent } else { p.text_dim };
+    let resp = ui.add(
+        egui::Button::new(RichText::new(text).size(12.5).color(color))
+            .fill(if on { p.accent_soft() } else { p.bg2 })
+            .stroke(Stroke::new(1.0, if on { p.accent } else { p.border }))
+            .corner_radius(CornerRadius::same(13))
+            .min_size(vec2(0.0, 26.0)),
+    );
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, text));
+    resp
+}
+
 pub fn secondary_button(ui: &mut Ui, text: &str) -> Response {
     ui.add(egui::Button::new(text).corner_radius(CornerRadius::same(8)).min_size(vec2(84.0, 30.0)))
 }

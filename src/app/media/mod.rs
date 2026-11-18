@@ -8,6 +8,7 @@ pub mod cast;
 pub mod cast_settings;
 pub mod client;
 pub mod downloads;
+mod filters;
 pub mod glass;
 mod grid;
 mod identify;
@@ -28,7 +29,9 @@ pub mod syncplay;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use corrent_proto::library::{HomeRow, Item, ItemDetail, ItemKind, Library, Page as ItemPage, SearchResults};
+use corrent_proto::library::{
+    HomeRow, Item, ItemDetail, ItemKind, Library, Page as ItemPage, SearchResults, UserState,
+};
 use egui::{Color32, CornerRadius, Rect, RichText, Sense, Ui, pos2, vec2};
 use egui_phosphor::regular as icons;
 
@@ -132,6 +135,13 @@ pub struct MediaState {
     focus_rect: Option<Rect>,
     /// How library pages are sorted (and reversed).
     sort: (corrent_proto::library::SortBy, bool),
+    /// The filter buttons of Home and the library pages.
+    filters: filters::Filters,
+    /// Played/favorite changes on their way to the server; the pages load again when they land.
+    state_sent: Vec<Slot<UserState>>,
+    /// Children and the item page being loaded again: they replace what is shown on arrival.
+    children_fresh: HashMap<i64, Slot<ItemPage<Item>>>,
+    detail_fresh: Option<(i64, Slot<ItemDetail>)>,
     offline: Option<Arc<offline::Store>>,
     offline_loading: Option<Slot<Arc<offline::Store>>>,
     radio: Option<Slot<Vec<corrent_server::radio::Station>>>,
@@ -194,6 +204,18 @@ impl MediaState {
         g.items = items.into_iter().enumerate().map(|(i, it)| (i as i64, it)).collect();
     }
 
+    /// Tests: an item of a library grid, by its place.
+    #[cfg(test)]
+    pub(crate) fn grid_item(&self, library: i64, index: i64) -> Option<&Item> {
+        self.grids.get(&library)?.items.get(&index)
+    }
+
+    /// Tests: a page's filter as if chosen with its buttons.
+    #[cfg(test)]
+    pub(crate) fn set_filter(&mut self, scope: Option<i64>, f: corrent_proto::library::ItemFilter) {
+        self.filters.set(scope, f);
+    }
+
     /// Load everything again (after a change); what is on screen stays until the new data is
     /// there.
     pub(crate) fn invalidate(&mut self) {
@@ -205,6 +227,72 @@ impl MediaState {
         self.grids.clear();
         self.children.clear();
         self.detail = None;
+        self.filters.forget_facets();
+    }
+
+    /// Shows a played/favorite change at once, wherever the item (or, for a show or an album
+    /// marked played, what is in it) is on screen; the server's answer follows.
+    fn patch_state(&mut self, id: i64, played: Option<bool>, favorite: Option<bool>) {
+        // The item and what is loaded below it, two levels down (show > season > episode).
+        let mut below: HashSet<i64> = HashSet::new();
+        if played.is_some() {
+            let mut level = vec![id];
+            for _ in 0..2 {
+                let next: Vec<i64> = level
+                    .iter()
+                    .filter_map(|p| self.children.get(p).and_then(ready_arc).and_then(Result::ok))
+                    .flat_map(|page| page.items.iter().map(|i| i.id).collect::<Vec<_>>())
+                    .collect();
+                below.extend(&next);
+                level = next;
+            }
+        }
+        let patch = |it: &mut Item| {
+            let own = it.id == id;
+            if !own && !below.contains(&it.id) {
+                return;
+            }
+            if let Some(p) = played {
+                it.state.played = p;
+                it.state.position_ms = 0;
+                if !it.kind.playable() {
+                    it.state.unplayed = p.then_some(0);
+                }
+            }
+            if let Some(f) = favorite.filter(|_| own) {
+                it.state.favorite = f;
+            }
+        };
+        fn in_slot<T: Clone>(slot: &Slot<T>, f: impl FnOnce(&mut T)) {
+            if let Some(Ok(v)) = slot.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                f(Arc::make_mut(v));
+            }
+        }
+        let rows = |rows: &mut Vec<HomeRow>| rows.iter_mut().flat_map(|r| &mut r.items).for_each(patch);
+        if let Some(s) = &self.home {
+            in_slot(s, rows);
+        }
+        if let Some(shown) = &mut self.home_shown {
+            rows(Arc::make_mut(shown));
+        }
+        // Arranged from the rows as they were.
+        self.home_arranged = None;
+        self.grids.values_mut().flat_map(|g| g.items.values_mut()).for_each(patch);
+        for s in self.children.values() {
+            in_slot(s, |page| page.items.iter_mut().for_each(patch));
+        }
+        if let Some((_, s)) = &self.detail {
+            in_slot(s, |d| patch(&mut d.item));
+        }
+        if let Some((_, s)) = &self.person {
+            in_slot(s, |page| page.items.iter_mut().for_each(patch));
+        }
+        if let Some((_, s)) = &self.search {
+            in_slot(s, |r| r.items.iter_mut().for_each(patch));
+        }
+        if let Some((_, s)) = &self.list_items {
+            in_slot(s, |items| items.iter_mut().for_each(patch));
+        }
     }
 
     /// The periodic refresh: home, libraries and the loaded parts of library grids are fetched
@@ -752,6 +840,7 @@ impl CorrentApp {
         self.subtitle_finder_window(&ctx, p);
         self.identify_window(&ctx, p);
         self.refresh_tick(&client);
+        self.state_tick(&client);
         egui::ScrollArea::vertical().id_salt(("media", format!("{page:?}"))).auto_shrink([false, false]).show(
             ui,
             |ui| {
@@ -1132,7 +1221,8 @@ impl CorrentApp {
     fn home_rows(&mut self, client: &MediaClient) -> Option<Arc<Vec<HomeRow>>> {
         if self.media.home.is_none() {
             let c = client.clone();
-            self.media.home = Some(fetch(&self.rt, &self.ctx, async move { c.get("/api/v1/home").await }));
+            let path = format!("/api/v1/home?{}", filters::query(&self.media.filters.of(None)));
+            self.media.home = Some(fetch(&self.rt, &self.ctx, async move { c.get(&path).await }));
         }
         self.media.home_now()
     }
@@ -1274,9 +1364,11 @@ impl CorrentApp {
     fn home_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient) {
         if self.media.home.is_none() {
             let c = client.clone();
-            self.media.home = Some(fetch(&self.rt, &self.ctx, async move { c.get("/api/v1/home").await }));
+            let path = format!("/api/v1/home?{}", filters::query(&self.media.filters.of(None)));
+            self.media.home = Some(fetch(&self.rt, &self.ctx, async move { c.get(&path).await }));
         }
         let rows = self.media.home.as_ref().and_then(ready_arc).or_else(|| self.media.home_shown.clone().map(Ok));
+        let filtering = !self.media.filters.of(None).is_empty();
         match rows {
             None => {
                 ui.add_space(40.0);
@@ -1284,6 +1376,16 @@ impl CorrentApp {
             }
             Some(Err(e)) => {
                 crate::ui::widgets::empty_state(ui, p, icons::WARNING_CIRCLE, t!("Couldn't load the home screen"), &e)
+            }
+            Some(Ok(rows)) if rows.is_empty() && filtering => {
+                self.home_filters(ui, p, client);
+                crate::ui::widgets::empty_state(
+                    ui,
+                    p,
+                    icons::FUNNEL,
+                    t!("Nothing matches these filters"),
+                    t!("Turn a filter off to see more."),
+                );
             }
             Some(Ok(rows)) if rows.is_empty() => {
                 let libs = self.media.libraries();
@@ -1336,6 +1438,7 @@ impl CorrentApp {
                     }
                 }
                 ui.add_space(12.0);
+                self.home_filters(ui, p, client);
                 for r in rows.iter() {
                     let (max_rows, more) = match r.id.as_str() {
                         "continue" | "next_up" => (Some(1), Some(Page::Row(r.id.clone()))),
@@ -1348,6 +1451,16 @@ impl CorrentApp {
                 }
             }
         }
+    }
+
+    /// Home's filter buttons: every row keeps only what matches (the rows are fetched again;
+    /// the ones shown stay until then).
+    fn home_filters(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient) {
+        if self.filter_bar(ui, p, client, None, None, None) {
+            self.media.keep_shown();
+            self.media.home = None;
+        }
+        ui.add_space(12.0);
     }
 
     /// Orders and hides home rows as the user arranged them (in the web client; stored per
@@ -1382,7 +1495,7 @@ impl CorrentApp {
     }
 
     fn library_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, id: i64) {
-        use corrent_proto::library::{LibraryKind, SortBy};
+        use corrent_proto::library::LibraryKind;
         let width = ui.available_width() - 40.0;
         let lib_kind = self.media.libraries().iter().find(|l| l.id == id).map(|l| l.kind);
         let top_kind = match lib_kind {
@@ -1399,7 +1512,16 @@ impl CorrentApp {
         let spec = grid::spec(width, min, max, 18.0);
         let (card_w, gap, cols) = (spec.card_w, spec.gap, spec.cols as i64);
         let row_h = card_w / aspect + 44.0 + gap;
+        // The filter and sort buttons, above everything (they stay while the grid loads).
+        let count = self.media.grids.get(&id).and_then(|g| g.total);
+        if self.filter_bar(ui, p, client, Some(id), top_kind, count) {
+            // Fetched again, filtered and in the new order.
+            self.media.grids.remove(&id);
+        }
+        ui.add_space(8.0);
         let (sort, desc) = self.media.sort;
+        let filter = self.media.filters.of(Some(id));
+        let narrowed = filters::query(&filter);
         // Load pages as they come into view.
         let g = self.media.grids.entry(id).or_default();
         let done: Vec<usize> = g.pending.iter().enumerate().filter(|(_, (_, s))| is_ready(s)).map(|(i, _)| i).collect();
@@ -1415,10 +1537,13 @@ impl CorrentApp {
         let request = |g: &mut Grid, off: i64, rt: &tokio::runtime::Handle, ctx: &egui::Context| {
             if g.requested.insert(off) {
                 let c = client.clone();
-                let kind = top_kind.map(|k| format!("&kind={}", k.as_str())).unwrap_or_default();
+                // Without a kind, the library's own list: filters must not bring up what is inside
+                // its items (a show's played episodes).
+                let kind = top_kind.map(|k| format!("&kind={}", k.as_str())).unwrap_or_else(|| "&top=true".into());
                 let by = serde_json::to_value(sort).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-                let path =
-                    format!("/api/v1/items?library_id={id}{kind}&sort={by}&desc={desc}&offset={off}&limit={PAGE}");
+                let path = format!(
+                    "/api/v1/items?library_id={id}{kind}{narrowed}&sort={by}&desc={desc}&offset={off}&limit={PAGE}"
+                );
                 g.pending.push((off, fetch(rt, ctx, async move { c.get(&path).await })));
             }
         };
@@ -1430,58 +1555,25 @@ impl CorrentApp {
             return;
         };
         if total == 0 {
-            crate::ui::widgets::empty_state(
-                ui,
-                p,
-                icons::FOLDER_OPEN,
-                t!("This library is empty"),
-                t!("Add files to its folders; they appear after the next scan."),
-            );
+            if filter.is_empty() {
+                crate::ui::widgets::empty_state(
+                    ui,
+                    p,
+                    icons::FOLDER_OPEN,
+                    t!("This library is empty"),
+                    t!("Add files to its folders; they appear after the next scan."),
+                );
+            } else {
+                crate::ui::widgets::empty_state(
+                    ui,
+                    p,
+                    icons::FUNNEL,
+                    t!("Nothing matches these filters"),
+                    t!("Turn a filter off to see more."),
+                );
+            }
             return;
         }
-        let mut resort = None;
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
-            ui.label(
-                RichText::new(if total == 1 { t!("1 item").to_string() } else { t!("{n} items", n = total) })
-                    .color(p.text_dim),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(20.0);
-                let arrow = if desc { icons::SORT_DESCENDING } else { icons::SORT_ASCENDING };
-                if ui
-                    .add(egui::Button::new(RichText::new(arrow).size(16.0)).frame(false))
-                    .on_hover_text(t!("Reverse order"))
-                    .clicked()
-                {
-                    resort = Some((sort, !desc));
-                }
-                let name = |s: SortBy| match s {
-                    SortBy::Title => t!("Title"),
-                    SortBy::Added => t!("Date added"),
-                    SortBy::Year => t!("Year"),
-                    SortBy::Played => t!("Last watched"),
-                    SortBy::Index => t!("Number"),
-                    SortBy::Random => t!("Shuffle"),
-                };
-                egui::ComboBox::from_id_salt(("lib-sort", id)).selected_text(name(sort)).show_ui(ui, |ui| {
-                    for s in [SortBy::Title, SortBy::Added, SortBy::Year, SortBy::Played, SortBy::Random] {
-                        if ui.selectable_label(s == sort, name(s)).clicked() {
-                            // Newest first is the useful order for dates.
-                            resort = Some((s, matches!(s, SortBy::Added | SortBy::Played | SortBy::Year)));
-                        }
-                    }
-                });
-                ui.label(RichText::new(t!("Sort")).color(p.text_dim));
-            });
-        });
-        if let Some(s) = resort {
-            self.media.sort = s;
-            // Fetched again in the new order.
-            self.media.grids.remove(&id);
-            return;
-        }
-        ui.add_space(8.0);
         let rows = (total + cols - 1) / cols;
         let first_row = ((ui.clip_rect().top() - ui.cursor().top()) / row_h).floor().max(0.0) as i64;
         let visible = (ui.clip_rect().height() / row_h).ceil() as i64 + 2;
@@ -1534,12 +1626,11 @@ impl CorrentApp {
 
     /// A parent's children (empty until they're loaded), shared, not copied.
     fn children(&mut self, client: &MediaClient, parent: i64) -> Children {
-        let slot = self.media.children.entry(parent).or_insert_with(|| {
-            let c = client.clone();
-            fetch(&self.rt, &self.ctx, async move {
-                c.get::<ItemPage<Item>>(&format!("/api/v1/items?parent_id={parent}&sort=index&limit=500")).await
-            })
-        });
+        let slot = self
+            .media
+            .children
+            .entry(parent)
+            .or_insert_with(|| Self::fetch_children(&self.rt, &self.ctx, client, parent));
         Children(ready_arc(slot).and_then(Result::ok))
     }
 
@@ -1966,17 +2057,74 @@ impl CorrentApp {
         }
     }
 
+    /// Changes an item's played/favorite state: shown at once, sent to the server, and when
+    /// the server has it the pages load again (rows and counts that follow from it).
     fn set_state(&mut self, client: &MediaClient, id: i64, body: serde_json::Value) {
+        let flag = |k: &str| body.get(k).and_then(|v| v.as_bool());
+        self.media.patch_state(id, flag("played"), flag("favorite"));
         let c = client.clone();
-        let ctx = self.ctx.clone();
-        self.rt.spawn(async move {
-            let _: Result<serde_json::Value, String> =
-                c.send(reqwest::Method::PUT, &format!("/api/v1/items/{id}/state"), &body).await;
-            ctx.request_repaint();
+        self.media.state_sent.push(fetch(&self.rt, &self.ctx, async move {
+            c.send(reqwest::Method::PUT, &format!("/api/v1/items/{id}/state"), &body).await
+        }));
+    }
+
+    /// State changes the server answered: everything that shows state is fetched again and
+    /// replaces what is on screen when it arrives (nothing goes blank meanwhile). Asking
+    /// earlier would race the change and bring the old state back.
+    fn state_tick(&mut self, client: &MediaClient) {
+        let m = &mut self.media;
+        let before = m.state_sent.len();
+        let mut failed = None;
+        m.state_sent.retain(|s| match ready(s) {
+            None => true,
+            Some(r) => {
+                failed = failed.take().or(r.err());
+                false
+            }
         });
-        self.media.detail = None;
-        self.media.home = None;
-        self.media.children.clear();
+        if m.state_sent.len() < before && m.state_sent.is_empty() {
+            m.refresh();
+            for parent in m.children.keys().copied().collect::<Vec<_>>() {
+                m.children_fresh.insert(parent, Self::fetch_children(&self.rt, &self.ctx, client, parent));
+            }
+            if let Some((id, _)) = m.detail {
+                let c = client.clone();
+                let slot = fetch(&self.rt, &self.ctx, async move { c.get(&format!("/api/v1/items/{id}")).await });
+                m.detail_fresh = Some((id, slot));
+            }
+        }
+        if let Some(e) = failed {
+            self.toasts.push(crate::engine::ToastKind::Error, e);
+        }
+        let m = &mut self.media;
+        let arrived: Vec<i64> = m.children_fresh.iter().filter(|(_, s)| is_ready(s)).map(|(id, _)| *id).collect();
+        for parent in arrived {
+            if let Some(s) = m.children_fresh.remove(&parent)
+                && matches!(ready_arc(&s), Some(Ok(_)))
+                && m.children.contains_key(&parent)
+            {
+                m.children.insert(parent, s);
+            }
+        }
+        if m.detail_fresh.as_ref().is_some_and(|(_, s)| is_ready(s))
+            && let Some((id, s)) = m.detail_fresh.take()
+            && matches!(ready_arc(&s), Some(Ok(_)))
+            && m.detail.as_ref().is_some_and(|(shown, _)| *shown == id)
+        {
+            m.detail = Some((id, s));
+        }
+    }
+
+    fn fetch_children(
+        rt: &tokio::runtime::Handle,
+        ctx: &egui::Context,
+        client: &MediaClient,
+        parent: i64,
+    ) -> Slot<ItemPage<Item>> {
+        let c = client.clone();
+        fetch(rt, ctx, async move {
+            c.get::<ItemPage<Item>>(&format!("/api/v1/items?parent_id={parent}&sort=index&limit=500")).await
+        })
     }
 
     /// The "Media" section of the sidebar: home, each library, search.

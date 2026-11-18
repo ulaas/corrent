@@ -1505,8 +1505,36 @@ fn right_clicking_a_card_shows_the_item_menu() {
         "IMDb / TMDB",
         "Copy link",
     ] {
-        assert!(h.query_by_label_contains(entry).is_some(), "{entry} in the menu");
+        assert!(h.query_all_by_label_contains(entry).next().is_some(), "{entry} in the menu");
     }
+    // Marking it played shows at once: the card doesn't wait for the server (here: nowhere).
+    h.get_by_label_contains("Mark as played").click();
+    h.run_steps(2);
+    let state = |h: &Harness<'_, CorrentApp>, n| h.state().media.grid_item(1, n).map(|i| i.state.played);
+    assert_eq!((state(&h, 0), state(&h, 1)), (Some(false), Some(true)));
+}
+
+#[test]
+fn a_library_page_has_filter_and_sort_buttons() {
+    use corrent_proto::library::{ItemFilter, Watch};
+    let (_f, mut app) = app("lib-filters", vec![]);
+    app.main_view = super::feeds::MainView::Media;
+    app.media.client = Some(super::media::client::MediaClient::new("http://127.0.0.1:9", "t", None).unwrap());
+    app.media.fill_grid(1, Vec::new());
+    app.media.page = Some(super::media::Page::Library(1));
+    app.media.set_filter(Some(1), ItemFilter { watch: Some(Watch::Played), ..Default::default() });
+    let mut h = harness(app);
+    h.run_steps(3);
+    // Buttons, not a drop-down: every choice is on the page.
+    for label in ["All", "Unplayed", "In progress", "Played", "Favorites", "Date added", "Year", "Last watched"] {
+        assert!(h.query_all_by_label_contains(label).next().is_some(), "{label}");
+    }
+    assert!(h.query_by_label_contains("Nothing matches these filters").is_some(), "an empty result says why");
+    // Turning the filter off asks for the list again.
+    h.get_by_label_contains("Clear filters").click();
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("Clear filters").is_none());
+    assert!(h.query_by_label_contains("Nothing matches these filters").is_none());
 }
 
 #[test]
