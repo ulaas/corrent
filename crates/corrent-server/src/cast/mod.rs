@@ -4,6 +4,7 @@
 //! itself when the device plays it, else an HLS transcode. Clients only pick a device and send
 //! play/pause/seek; the device fetches the media from the server directly.
 
+pub mod airplay;
 pub mod upnp;
 pub mod wire;
 
