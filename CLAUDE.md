@@ -45,7 +45,7 @@ corrent --diagnostics <zip> | --symbolize <crash report>   # S10: support bundle
 
 Debug-only UI hooks (compiled out of release): `CORRENT_DEV_SELECT=<row>`,
 `CORRENT_DEV_TAB=general|files|peers|trackers|pieces|speed`,
-`CORRENT_DEV_OPEN=settings|remote|appearance|magnet|about|log|stats|streams|diagnostics|creator|import|feeds|rules|remove|remove-undo|mpv|columns|shortcuts|palette`, `CORRENT_DEV_SETTINGS_SEARCH=<query>`,
+`CORRENT_DEV_OPEN=settings|remote|appearance|magnet|about|log|stats|streams|diagnostics|creator|import|feeds|rules|remove|remove-undo|mpv|columns|shortcuts|palette|performance`, `CORRENT_DEV_SETTINGS_SEARCH=<query>`,
 `CORRENT_DEV_STREAM_URL=<file>` (writes the first torrent's stream URL prefix; play it with `curl`),
 `CORRENT_DEV_PANIC=ui|engine|torrent` (torrent: a task next to the engine, which the app survives), `CORRENT_DEV_HANG=ipc` (the primary takes forwarded launches but never confirms them) `|ui` (the UI thread sleeps 15 s) `|engine` (the engine is busy 40 s; both write `logs/hang-*.txt`), `CORRENT_DEV_SEARCH=<query>`, `CORRENT_DEV_LIGHT=1`, `CORRENT_DEV_MICA=1` (Mica spike),
 `CORRENT_DEV_UPDATE=http://127.0.0.1:<port>` (the update check reads `<base>/latest.json` and downloads from `<base>/`; with `CORRENT_DEV_UPDATE_NOW=1` the update starts when found; docs/PACKAGING.md "Updates in place"; no automatic check under `CORRENT_DEV_DEMO`/`CORRENT_DEV_SHOT`).

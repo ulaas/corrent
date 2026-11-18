@@ -274,3 +274,13 @@ reports them as cast devices (`kind: "dlna"`). Both Casting settings pages have 
 find smart TVs and other DLNA players" and take a TV's description address under the devices
 added by hand. On a TV the players' subtitle choice is burned in by the server, so changing it
 loads the item again.
+
+## Streaming performance (2026-11-19)
+
+Both clients show `GET /playback/stats`: the server's processor and memory load, the encoder,
+and per conversion what it is made at, its speed against real time, how much is ready ahead of
+the player, the bandwidth going out and a verdict (Smooth / Barely keeping up / Too slow /
+Starting / Waiting for the player), plus what is casting. Desktop: the ⋮ menu and the command
+palette → Streaming performance (`src/app/media/performance.rs`), and the server's line in the
+player's own stats; web: Settings → Streaming performance (`pages/settings/Sessions.svelte`,
+`lib/streamhealth.ts`). Files that play as they are aren't listed on either.

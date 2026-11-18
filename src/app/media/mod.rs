@@ -17,6 +17,7 @@ mod item_menu;
 pub mod libraries;
 pub mod lists;
 pub mod offline;
+pub mod performance;
 pub mod picture;
 pub mod player;
 pub mod profiles;
@@ -119,6 +120,8 @@ pub struct MediaState {
     pub providers: providers::ProvidersUi,
     pub cast_settings: cast_settings::CastSettingsUi,
     pub transcode_settings: transcode_settings::TranscodeSettingsUi,
+    /// The Streaming performance window.
+    pub performance: performance::PerformanceUi,
     /// Media → AI agent.
     pub agent: agent::AgentUi,
     remove_library: Option<(i64, String)>,

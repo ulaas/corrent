@@ -1515,6 +1515,73 @@ fn right_clicking_a_card_shows_the_item_menu() {
 }
 
 #[test]
+fn the_performance_window_shows_conversions_and_the_load() {
+    use corrent_proto::library::{CastDevice, CastStatus, PlaybackSession, PlaybackStats};
+    let (_f, mut app) = app("performance", vec![]);
+    app.media.client = Some(super::media::client::MediaClient::new("http://127.0.0.1:9", "t", None).unwrap());
+    let session = PlaybackSession {
+        id: "s1".into(),
+        user: "ayse".into(),
+        title: "Sintel".into(),
+        item_id: Some(1),
+        encoder: "libx264".into(),
+        video: true,
+        segments: 200,
+        produced: 12,
+        idle_secs: 0,
+        height: Some(720),
+        video_bitrate: Some(4_000_000),
+        audio_bitrate: Some(192_000),
+        fps: Some(24.0),
+        encoding: true,
+        speed: 0.6,
+        ahead_secs: 0.0,
+        position_secs: Some(48.0),
+        sent_bytes: 24_000_000,
+    };
+    let tv = CastStatus {
+        device: CastDevice {
+            id: "dlna-1".into(),
+            name: "Living room".into(),
+            kind: "dlna".into(),
+            ..Default::default()
+        },
+        state: "playing".into(),
+        title: "Big Buck Bunny".into(),
+        position_ms: 65_000,
+        duration_ms: Some(600_000),
+        ..Default::default()
+    };
+    app.media.performance.show_for_test(PlaybackStats {
+        sessions: vec![session],
+        casts: vec![tv],
+        cpu_percent: 93.0,
+        cores: 8,
+        memory_used: 4 << 30,
+        memory_total: 16 << 30,
+        encoder: Some("libx264".into()),
+        max_sessions: 3,
+    });
+    let mut h = harness(app);
+    h.run_steps(3);
+    for label in [
+        "Streaming performance",
+        "93%",
+        "8 cores",
+        "1 of 3 conversions",
+        "Encoder in use: libx264",
+        "Sintel",
+        "720p · 4.0 Mbit/s video · 192 kbit/s audio",
+        "0.6× · 14 fps",
+        "The server can’t convert this fast enough",
+        "Living room",
+        "Playing · 1:05 / 10:00",
+    ] {
+        assert!(h.query_all_by_label_contains(label).next().is_some(), "{label}");
+    }
+}
+
+#[test]
 fn a_library_page_has_filter_and_sort_buttons() {
     use corrent_proto::library::{ItemFilter, Watch};
     let (_f, mut app) = app("lib-filters", vec![]);

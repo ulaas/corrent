@@ -1,1 +1,0 @@
-import"./i18n.svelte-BAWV4Qkf.js";import{t as e}from"./PlaylistPage-Xlko3VIh.js";function t(t,n){e(t,{get params(){return n.params},collection:!0})}export{t as default};

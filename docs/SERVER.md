@@ -246,6 +246,15 @@ only shapes conversions, a file that plays as it is is never touched:
 Conversions are H.264 video and AAC audio in HLS; the encoder is found at startup (NVENC, Quick
 Sync, then libx264, then OpenH264).
 
+### Is it keeping up?
+
+`GET /api/v1/playback/stats` (the Streaming performance page of both clients; the caller's own
+conversions, everyone's for an administrator) lists every conversion with what it is made at,
+`speed` (seconds of media made per second: above 1 the server keeps up), `ahead_secs` (media ready
+beyond where the player is; at 0 the player is waiting for the server), `sent_bytes`, and the
+computer's processor and memory load. When a conversion is too slow: a lower quality in the
+player, a lighter `x264_preset`, or fewer conversions at once.
+
 ## Watching together
 
 The player's **Watch together** button starts a room for what is playing and copies a link

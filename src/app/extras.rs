@@ -197,6 +197,9 @@ impl CorrentApp {
                 if local && ui.button(format!("{}  {}", icons::PLAY_CIRCLE, t!("Streaming"))).clicked() {
                     self.extras.streams = true;
                 }
+                if ui.button(format!("{}  {}", icons::GAUGE, t!("Streaming performance"))).clicked() {
+                    self.media.performance.open = true;
+                }
                 if ui.button(format!("{}  {}", icons::SCROLL, t!("Log"))).clicked() {
                     self.extras.log = true;
                 }
@@ -230,6 +233,7 @@ impl CorrentApp {
         self.about_window(ctx, p);
         self.stats_window(ctx, p);
         self.streams_window(ctx, p);
+        self.performance_window(ctx, p);
         self.log_window(ctx, p);
         self.shortcuts_window(ctx, p);
         self.diagnostics_window(ctx, p);

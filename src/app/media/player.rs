@@ -49,6 +49,8 @@ pub struct Track {
 
 #[derive(Default)]
 struct Status {
+    /// What the server says about the conversion this player is fed from (the stats page).
+    server: String,
     /// mpv's renderer refused a shader (it says so in its log, and draws blue until it is gone).
     shader_refused: bool,
     pos: f64,
@@ -462,6 +464,7 @@ pub struct Player {
     /// stopped when the player moves on.
     session: Arc<Mutex<Option<String>>>,
     session_kept: Instant,
+    server_asked: Instant,
     last_report: Instant,
     controls_until: Instant,
     stop_events: Arc<AtomicBool>,
@@ -982,6 +985,7 @@ impl Player {
             quality: audio.quality.clone(),
             session: Arc::default(),
             session_kept: Instant::now(),
+            server_asked: Instant::now(),
             last_report: Instant::now(),
             controls_until: Instant::now() + Duration::from_secs(3),
             stop_events: stop,
@@ -1642,6 +1646,26 @@ impl Player {
                     let _: Result<serde_json::Value, String> =
                         client.send(reqwest::Method::POST, &path, &serde_json::Value::Null).await;
                 });
+            }
+        }
+        // With the stats up, the server's side of a conversion: is it keeping up?
+        if self.stats && self.server_asked.elapsed() > Duration::from_secs(2) {
+            self.server_asked = Instant::now();
+            let (client, status) = (self.client.clone(), self.status.clone());
+            match crate::util::lock(&self.session).clone() {
+                Some(id) => {
+                    self.rt.spawn(async move {
+                        let stats: Result<corrent_proto::library::PlaybackStats, String> =
+                            client.get("/api/v1/playback/stats").await;
+                        let line = stats
+                            .ok()
+                            .and_then(|st| st.sessions.into_iter().find(|s| s.id == id))
+                            .map(|s| super::performance::line(&s))
+                            .unwrap_or_default();
+                        crate::util::lock(&status).server = line;
+                    });
+                }
+                None => crate::util::lock(&status).server.clear(),
             }
         }
         self.save_volume(false);
@@ -3355,6 +3379,9 @@ fn stats_lines(s: &Status, render: &str) -> Vec<String> {
     }
     if !render.is_empty() {
         lines.push(render.to_string());
+    }
+    if !s.server.is_empty() {
+        lines.push(s.server.clone());
     }
     lines.push(format!("{} · FFmpeg {}", st.mpv_version, st.ffmpeg_version));
     lines

@@ -1429,6 +1429,7 @@ impl CorrentApp {
                 "log" => self.extras.log = true,
                 "stats" => self.extras.stats = true,
                 "streams" => self.extras.streams = true,
+                "performance" => self.media.performance.open = true,
                 "diagnostics" => self.open_diagnostics(),
                 "mpv" => self.open_get_mpv(true),
                 "remove" | "remove-undo" => {

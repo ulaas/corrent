@@ -45,6 +45,7 @@ pub enum Action {
     Statistics,
     Log,
     Streaming,
+    StreamingPerformance,
     Shortcuts,
     About,
     TvMode,
@@ -196,6 +197,7 @@ impl CorrentApp {
             cmd(icons::FILE_PLUS, t!("Create a torrent"), Action::Create);
             cmd(icons::ARROW_SQUARE_IN, t!("Import from another client…"), Action::Import);
             cmd(icons::PLAY_CIRCLE, t!("Streaming"), Action::Streaming);
+            cmd(icons::GAUGE, t!("Streaming performance"), Action::StreamingPerformance);
         }
         cmd(icons::SELECTION_ALL, t!("Select all"), Action::SelectAll);
         cmd(icons::PAUSE, t!("Pause all"), Action::PauseAll);
@@ -327,6 +329,7 @@ impl CorrentApp {
             Action::Statistics => self.extras.stats = true,
             Action::Log => self.extras.log = true,
             Action::Streaming => self.extras.streams = true,
+            Action::StreamingPerformance => self.media.performance.open = true,
             Action::Shortcuts => self.extras.shortcuts = true,
             Action::About => self.extras.about = true,
             Action::TvMode => self.set_tv(true),

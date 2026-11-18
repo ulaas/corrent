@@ -792,6 +792,52 @@ export interface CastConfig {
   transcode_bitrate_kbps?: number;
 }
 
+/** A running conversion (`GET /api/v1/playback/sessions`); the fields from `height` on come
+ *  with `GET /api/v1/playback/stats` (older servers don't send them). */
+export interface PlaybackSession {
+  id: string;
+  user: string;
+  title: string;
+  item_id?: number;
+  encoder: string;
+  video: boolean;
+  segments: number;
+  produced: number;
+  idle_secs: number;
+  /** What it is converted to: picture height (absent: the file's), video and audio bits/s. */
+  height?: number;
+  video_bitrate?: number;
+  audio_bitrate?: number;
+  /** The source's frames per second, when known. */
+  fps?: number;
+  /** The encoder is running (not resting ahead of the player). */
+  encoding?: boolean;
+  /** Seconds of media made per second of time, lately (0 while the encoder rests). */
+  speed?: number;
+  /** Seconds of media ready beyond where the player is. */
+  ahead_secs?: number;
+  /** Where the player is, in seconds. */
+  position_secs?: number;
+  /** Bytes handed to the player so far. */
+  sent_bytes?: number;
+}
+
+/** `GET /api/v1/playback/stats`: what is being streamed and what it costs the server. */
+export interface PlaybackStats {
+  sessions: PlaybackSession[];
+  casts: CastStatus[];
+  /** The computer's processor load, 0–100 over all cores, lately. */
+  cpu_percent: number;
+  cores: number;
+  /** Memory in use and installed, in bytes. */
+  memory_used: number;
+  memory_total: number;
+  /** The video encoder conversions use (absent: none found). */
+  encoder?: string;
+  /** How many conversions may run at once. */
+  max_sessions: number;
+}
+
 /** `PUT /api/v1/transcode/config`: the server's ceiling for conversions. */
 export interface TranscodeConfig {
   /** Lines; 0: no limit. */
