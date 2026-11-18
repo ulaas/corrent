@@ -30,11 +30,14 @@
   const narrowed = $derived(!!(filter.genre || filter.decade));
   const hasMore = $derived(facets.genres.length > 0 || facets.decades.length > 0);
 
+  let asked = 0;
   $effect(() => {
     const q = { library_id: library, kind };
+    const n = ++asked;
     facets = { genres: [], decades: [] };
     api.get<Facets>('/facets', q).then(
-      (f) => (facets = f),
+      // A slower answer for the page before this one is not this page's.
+      (f) => n === asked && (facets = f),
       // An older server has no filters to offer.
       () => {},
     );

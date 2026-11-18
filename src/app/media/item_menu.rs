@@ -90,7 +90,7 @@ impl CorrentApp {
                 });
             }
             ui.separator();
-            let played = item.state.played;
+            let played = item.state.played || item.state.unplayed == Some(0);
             let (icon, label) = if played {
                 (icons::CIRCLE, t!("Mark as unplayed"))
             } else {

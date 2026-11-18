@@ -141,6 +141,8 @@ pub struct MediaState {
     state_sent: Vec<Slot<UserState>>,
     /// Children and the item page being loaded again: they replace what is shown on arrival.
     children_fresh: HashMap<i64, Slot<ItemPage<Item>>>,
+    /// The items those changes were about.
+    state_changed: Vec<i64>,
     detail_fresh: Option<(i64, Slot<ItemDetail>)>,
     offline: Option<Arc<offline::Store>>,
     offline_loading: Option<Slot<Arc<offline::Store>>>,
@@ -255,7 +257,7 @@ impl MediaState {
             if let Some(p) = played {
                 it.state.played = p;
                 it.state.position_ms = 0;
-                if !it.kind.playable() {
+                if matches!(it.kind, ItemKind::Show | ItemKind::Season) {
                     it.state.unplayed = p.then_some(0);
                 }
             }
@@ -636,6 +638,8 @@ impl CorrentApp {
         // Lists go stale as scans and metadata land: refresh every 30 s while visible.
         if self.main_view == super::feeds::MainView::Media
             && self.media.refreshed.is_none_or(|t| t.elapsed().as_secs() > 30)
+            // Not while a played/favorite change is on its way: the answer could be from before it.
+            && self.media.state_sent.is_empty()
         {
             self.media.refreshed = Some(std::time::Instant::now());
             self.media.refresh();
@@ -1514,7 +1518,16 @@ impl CorrentApp {
         let row_h = card_w / aspect + 44.0 + gap;
         // The filter and sort buttons, above everything (they stay while the grid loads).
         let count = self.media.grids.get(&id).and_then(|g| g.total);
-        if self.filter_bar(ui, p, client, Some(id), top_kind, count) {
+        // Genres and decades of what the page lists (shows, not their episodes).
+        let listed = top_kind.or(match lib_kind {
+            Some(LibraryKind::Movies) => Some(ItemKind::Movie),
+            Some(LibraryKind::Shows | LibraryKind::Podcasts) => Some(ItemKind::Show),
+            Some(LibraryKind::Audiobooks) => Some(ItemKind::Book),
+            Some(LibraryKind::Videos) => Some(ItemKind::Video),
+            Some(LibraryKind::Photos) => Some(ItemKind::Photo),
+            _ => None,
+        });
+        if self.filter_bar(ui, p, client, Some(id), listed, count) {
             // Fetched again, filtered and in the new order.
             self.media.grids.remove(&id);
         }
@@ -2061,7 +2074,19 @@ impl CorrentApp {
     /// the server has it the pages load again (rows and counts that follow from it).
     fn set_state(&mut self, client: &MediaClient, id: i64, body: serde_json::Value) {
         let flag = |k: &str| body.get(k).and_then(|v| v.as_bool());
-        self.media.patch_state(id, flag("played"), flag("favorite"));
+        let m = &mut self.media;
+        // Answers asked for before this change would bring the old state back: they are dropped
+        // (what is shown stays), and everything is asked for again once the change has landed.
+        m.children_fresh.clear();
+        m.detail_fresh = None;
+        if m.home.as_ref().is_some_and(|s| !is_ready(s)) {
+            m.home = m.home_shown.clone().map(|rows| Arc::new(std::sync::Mutex::new(Some(Ok(rows)))));
+        }
+        for g in m.grids.values_mut().filter(|g| g.total.is_some()) {
+            g.pending.clear();
+        }
+        m.state_changed.push(id);
+        m.patch_state(id, flag("played"), flag("favorite"));
         let c = client.clone();
         self.media.state_sent.push(fetch(&self.rt, &self.ctx, async move {
             c.send(reqwest::Method::PUT, &format!("/api/v1/items/{id}/state"), &body).await
@@ -2084,7 +2109,20 @@ impl CorrentApp {
         });
         if m.state_sent.len() < before && m.state_sent.is_empty() {
             m.refresh();
-            for parent in m.children.keys().copied().collect::<Vec<_>>() {
+            // The lists a change shows in: the item's own children and, two levels up, the lists
+            // it is in (an episode's season, in the show's list of seasons, counts what is left).
+            let mut touched: HashSet<i64> = m.state_changed.drain(..).collect();
+            let mut again: HashSet<i64> = HashSet::new();
+            for _ in 0..3 {
+                for (parent, slot) in &m.children {
+                    let has = || matches!(ready_arc(slot), Some(Ok(page)) if page.items.iter().any(|i| touched.contains(&i.id)));
+                    if touched.contains(parent) || has() {
+                        again.insert(*parent);
+                    }
+                }
+                touched.extend(&again);
+            }
+            for parent in again {
                 m.children_fresh.insert(parent, Self::fetch_children(&self.rt, &self.ctx, client, parent));
             }
             if let Some((id, _)) = m.detail {

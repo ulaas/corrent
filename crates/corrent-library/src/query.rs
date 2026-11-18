@@ -819,7 +819,7 @@ impl Library {
     }
 
     /// What the items of a library (or, without one, of everything the user may see) can be
-    /// filtered by; decades are those of `kind` items when one is given.
+    /// filtered by; with a `kind`, only what items of that kind have.
     pub async fn facets(&self, user: i64, library: Option<i64>, kind: Option<ItemKind>) -> Result<Facets> {
         Ok(self
             .db()
@@ -828,12 +828,12 @@ impl Library {
                 if let Some(l) = library {
                     scope.push_str(&format!(" AND i.library_id = {l}"));
                 }
+                let of_kind = kind.map(|k| format!(" AND i.kind = '{}'", k.as_str())).unwrap_or_default();
                 let mut st = c.prepare(&format!(
                     "SELECT DISTINCT g.name FROM genres g JOIN item_genres ig ON ig.genre_id = g.id \
-                     JOIN items i ON i.id = ig.item_id WHERE 1 = 1{scope} ORDER BY g.name COLLATE NOCASE"
+                     JOIN items i ON i.id = ig.item_id WHERE 1 = 1{of_kind}{scope} ORDER BY g.name COLLATE NOCASE"
                 ))?;
                 let genres = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
-                let of_kind = kind.map(|k| format!(" AND i.kind = '{}'", k.as_str())).unwrap_or_default();
                 let mut st = c.prepare(&format!(
                     "SELECT DISTINCT i.year / 10 * 10 FROM items i WHERE i.year > 0{of_kind}{scope} ORDER BY 1 DESC"
                 ))?;
@@ -902,7 +902,8 @@ impl Library {
                         )?;
                         st.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
                     };
-                    if !kind.playable() {
+                    // Shows and seasons carry a count of what is left (the cards' badge).
+                    if matches!(kind, ItemKind::Show | ItemKind::Season) {
                         container = Some((p, targets.len() as i64));
                     }
                     for item in targets {

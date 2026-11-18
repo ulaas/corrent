@@ -17,11 +17,13 @@ const WATCH: Watch[] = ['unplayed', 'in_progress', 'played'];
 
 /** The filter in a page's query string (`?watch=played&fav=1&genre=Drama&decade=2010`). */
 export function readFilter(q: URLSearchParams): ItemFilter {
-  const watch = WATCH.find((w) => w === q.get('watch'));
+  // `filter=` is what links from before these buttons carry.
+  const old = q.get('filter');
+  const watch = WATCH.find((w) => w === (q.get('watch') ?? old));
   const decade = Number(q.get('decade'));
   return {
     watch,
-    favorite: q.get('fav') === '1' || undefined,
+    favorite: q.get('fav') === '1' || old === 'favorites' || undefined,
     genre: q.get('genre') || undefined,
     decade: Number.isInteger(decade) && decade > 0 ? decade : undefined,
   };
@@ -30,6 +32,7 @@ export function readFilter(q: URLSearchParams): ItemFilter {
 /** The filter as page query values for `setQuery` (null removes one). */
 export function writeFilter(f: ItemFilter): Record<string, string | null> {
   return {
+    filter: null,
     watch: f.watch ?? null,
     fav: f.favorite ? '1' : null,
     genre: f.genre ?? null,
