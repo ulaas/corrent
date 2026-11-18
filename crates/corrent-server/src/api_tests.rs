@@ -2816,6 +2816,31 @@ async fn a_load_failing_before_any_fetch_says_the_device_cant_reach_us() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transcode_settings_are_saved_and_kept_in_range() {
+    let h = harness("transcode-config", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let (s, v, _) = get(app, "/api/v1/transcode/config", &admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["max_height"].as_i64(), v["x264_preset"].as_str(), v["max_sessions"].as_i64()),
+        (Some(0), Some("veryfast"), Some(3))
+    );
+    let (s, _, _) =
+        send(app, Method::PUT, "/api/v1/transcode/config", &admin, json!({ "x264_preset": "placebo; rm" })).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "only the presets offered reach the encoder");
+    let body = json!({ "max_height": 100, "max_bitrate_kbps": 4000, "x264_preset": "fast", "max_sessions": 99 });
+    let (s, v, _) = send(app, Method::PUT, "/api/v1/transcode/config", &admin, body).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!((v["max_height"].as_i64(), v["max_sessions"].as_i64()), (Some(240), Some(16)), "{v}");
+    let file = crate::ServerConfig::load(&h.st.paths.data_dir).unwrap();
+    assert_eq!((file.transcode.max_bitrate_kbps, file.transcode.x264_preset.as_str()), (4000, "fast"));
+    let now = h.st.hls.config();
+    assert_eq!((now.x264_preset.as_str(), now.max_sessions), ("fast", 16), "new conversions follow it");
+    h.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cast_settings_are_saved_and_followed() {
     let cfg = ServerConfig { hosted: true, bind: "127.0.0.1".into(), tls: false, dlna_port: 0, ..Default::default() };
     let h = harness("cast-config", cfg).await;
@@ -2837,10 +2862,15 @@ async fn cast_settings_are_saved_and_followed() {
         Method::PUT,
         "/api/v1/cast/config",
         &admin,
-        json!({ "enabled": true, "devices": [" Den=192.168.77.9 ", ""], "max_height": 2160, "hevc": true }),
+        json!({
+            "enabled": true, "devices": [" Den=192.168.77.9 ", ""], "max_height": 2160, "hevc": true,
+            "transcode_height": 4320, "transcode_bitrate_kbps": 6000,
+        }),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    // A conversion is never larger than what goes out as it is.
+    assert_eq!((v["transcode_height"].as_i64(), v["transcode_bitrate_kbps"].as_i64()), (Some(2160), Some(6000)));
     assert_eq!(v["devices"], json!(["Den=192.168.77.9"]));
     // Offered at once, next to what the search found.
     h.st.casts.inject(crate::cast::Found {

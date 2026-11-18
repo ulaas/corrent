@@ -11,7 +11,9 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use corrent_proto::ErrorCode;
 use corrent_proto::auth::Perms;
-use corrent_proto::library::{MediaFile, PlaybackInfo, PlaybackRequest, PlaybackSession, SubtitleTrack};
+use corrent_proto::library::{
+    MediaFile, PlaybackInfo, PlaybackRequest, PlaybackSession, SubtitleTrack, TranscodeConfig, TranscodeInfo,
+};
 use corrent_transcode::decide::{
     self, AudioFacts, ClientProfile, Decision, MediaFacts, PlayRequest, SubFacts, VideoFacts,
 };
@@ -26,6 +28,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/playback/{item}", post(start))
         .route("/playback/sessions", get(sessions))
         .route("/playback/sessions/{id}", delete(stop))
+        .route("/transcode/config", get(get_transcode).put(put_transcode))
         .route("/hls/{id}/index.m3u8", get(playlist))
         .route("/hls/{id}/{segment}", get(segment))
         .route("/remux/{file}/{audio}/{name}", get(remux_file))
@@ -142,19 +145,90 @@ async fn start(
     Path(item): Path<i64>,
     body: Option<Json<PlaybackRequest>>,
 ) -> ApiResult<PlaybackInfo> {
-    Ok(Json(prepare(&st, &auth, item, body.map(|b| b.0).unwrap_or_default(), None, true).await?))
+    let how = How { remux_ok: true, ..Default::default() };
+    Ok(Json(prepare(&st, &auth, item, body.map(|b| b.0).unwrap_or_default(), how).await?))
 }
 
-/// How `auth` plays `item` with `req` (starting an HLS session when it transcodes). With
-/// `remux_ok`, Matroska files whose streams the client plays are copied into HLS instead.
+/// `GET /transcode/config`: how the server converts, and the encoder it found.
+async fn get_transcode(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<TranscodeInfo> {
+    auth.require(Perms::SETTINGS_WRITE)?;
+    Ok(Json(transcode_info(&st, st.cfg.load().transcode.clone().clamped())))
+}
+
+fn transcode_info(st: &AppState, config: TranscodeConfig) -> TranscodeInfo {
+    TranscodeInfo { config, encoder: st.hls_encoder.lock().unwrap_or_else(|e| e.into_inner()).clone() }
+}
+
+/// `PUT /transcode/config`: saved to `server.toml`; conversions started from now on follow it.
+async fn put_transcode(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Json(c): Json<TranscodeConfig>,
+) -> ApiResult<TranscodeInfo> {
+    auth.require(Perms::SETTINGS_WRITE)?;
+    if !corrent_proto::library::X264_PRESETS.contains(&c.x264_preset.as_str()) {
+        return Err(err(ErrorCode::BadRequest, "unknown encoder preset"));
+    }
+    let c = c.clamped();
+    {
+        let _w = st.settings_lock.lock().await;
+        // From the file: what a hosted server forces isn't its setting.
+        let mut file =
+            crate::ServerConfig::load(&st.paths.data_dir).map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+        file.transcode = c.clone();
+        file.save(&st.paths.data_dir).map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+        let mut cfg = (*st.cfg.load_full()).clone();
+        cfg.transcode = c.clone();
+        st.cfg.store(Arc::new(cfg));
+    }
+    st.hls.set_tuning(&c.x264_preset, c.max_sessions as usize);
+    Ok(Json(transcode_info(&st, c)))
+}
+
+/// How [`prepare`] plays something, besides what the client asked for.
+#[derive(Clone, Default)]
+pub(crate) struct How {
+    /// What the client plays as it is (default: the profile the request names).
+    pub profile: Option<ClientProfile>,
+    /// Matroska files whose streams the client plays are copied into HLS instead of converted.
+    pub remux_ok: bool,
+    /// The picture height and video bitrate (bits/s) a conversion is made at, when the caller
+    /// has a say (casting's settings). They never turn a direct play into a conversion.
+    pub target_height: Option<i64>,
+    pub target_bitrate: Option<i64>,
+}
+
+/// A conversion's picture within the limits (`None`: none): never taller than the file, and a
+/// bitrate that isn't spent on a picture too small for it.
+fn limit_video(
+    v: decide::VideoTarget,
+    source_height: Option<i64>,
+    height: Option<i64>,
+    bitrate: Option<i64>,
+) -> decide::VideoTarget {
+    let src = source_height.unwrap_or(1080);
+    let now = v.height.unwrap_or(src);
+    let h = height.map_or(now, |l| l.min(now));
+    decide::VideoTarget {
+        height: (h < src).then_some(h),
+        // A smaller picture than the decision's needs less than its bitrate.
+        bitrate: bitrate
+            .into_iter()
+            .chain((h < now).then(|| decide::bitrate_for(h)))
+            .fold(v.bitrate, i64::min)
+            .max(300_000),
+    }
+}
+
+/// How `auth` plays `item` with `req` (starting an HLS session when it transcodes).
 pub(crate) async fn prepare(
     st: &Arc<AppState>,
     auth: &Auth,
     item: i64,
     req: PlaybackRequest,
-    profile: Option<ClientProfile>,
-    remux_ok: bool,
+    how: How,
 ) -> Result<PlaybackInfo, ApiErr> {
+    let How { profile, remux_ok, target_height, target_bitrate } = how;
     let st = st.clone();
     let user = auth.0.user.id;
     let detail = st.library.item(user, item).await.map_err(lib_err)?;
@@ -240,6 +314,13 @@ pub(crate) async fn prepare(
         }
         Decision::Transcode { video, audio, burn_subtitle, reasons } => {
             auth.require(Perms::PLAYBACK_TRANSCODE)?;
+            // The caller's target and the server's own ceiling (Settings → Transcoding).
+            let cap = st.cfg.load().transcode.clone().clamped();
+            let set = |v: u32| (v > 0).then_some(i64::from(v));
+            let height = [target_height, set(cap.max_height)].into_iter().flatten().min();
+            let bitrate = [target_bitrate, set(cap.max_bitrate_kbps).map(|k| k * 1000)].into_iter().flatten().min();
+            let source_height = facts.video.as_ref().and_then(|v| v.height);
+            let video = video.map(|v| limit_video(v, source_height, height, bitrate));
             if video.is_some() && st.hls_encoder.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
                 return Err(err(
                     ErrorCode::EngineUnavailable,
@@ -503,4 +584,31 @@ async fn trickplay(
     .await
     .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
     .map(axum::body::Body::new))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use corrent_transcode::decide::VideoTarget;
+
+    #[test]
+    fn a_conversion_stays_within_the_limits() {
+        let full = VideoTarget { height: None, bitrate: 8_000_000 };
+        // No limits: as decided.
+        assert_eq!(limit_video(full.clone(), Some(1080), None, None), full);
+        // A smaller picture gets the bitrate that suits it, a bitrate limit applies as it is.
+        assert_eq!(
+            limit_video(full.clone(), Some(1080), Some(720), None),
+            VideoTarget { height: Some(720), bitrate: 4_000_000 }
+        );
+        assert_eq!(
+            limit_video(full.clone(), Some(1080), Some(720), Some(2_500_000)),
+            VideoTarget { height: Some(720), bitrate: 2_500_000 }
+        );
+        // Never enlarged, never above what was decided, never nothing.
+        assert_eq!(limit_video(full.clone(), Some(1080), Some(2160), Some(50_000_000)), full);
+        let small = VideoTarget { height: Some(480), bitrate: 2_000_000 };
+        assert_eq!(limit_video(small.clone(), Some(1080), Some(720), None), small);
+        assert_eq!(limit_video(full, Some(1080), None, Some(1)).bitrate, 300_000);
+    }
 }

@@ -228,6 +228,24 @@ transcode if the browser refuses the copied streams. MP3 audio isn't copied (Chr
 Source doesn't take MP3 in MP4). `cargo run -p corrent-transcode --example remux -- in.mkv out/`
 writes the HLS of a file for checking a player by hand.
 
+### Quality
+
+Clients choose a quality per playback (`max_height` and `max_bitrate` of `POST playback/{item}`;
+the players' Quality buttons: Original, 4K, 1080p, 720p, 480p). A file within the chosen limits
+plays as it is; a larger one is converted down to them. The server's own ceiling is `[transcode]`
+in `server.toml` (Settings → Transcoding in both clients, `GET/PUT /api/v1/transcode/config`); it
+only shapes conversions, a file that plays as it is is never touched:
+
+| Setting | Default | |
+|---|---|---|
+| `max_height` | `0` | The tallest picture a conversion is made at, whatever the client asks for. 0: no limit. |
+| `max_bitrate_kbps` | `0` | The highest video bitrate of a conversion. 0: no limit. |
+| `x264_preset` | `veryfast` | How hard the software encoder works: `ultrafast` … `medium`. Faster is lighter on the processor, slower looks better. Hardware encoders ignore it. |
+| `max_sessions` | `3` | Conversions running at once (1–16). |
+
+Conversions are H.264 video and AAC audio in HLS; the encoder is found at startup (NVENC, Quick
+Sync, then libx264, then OpenH264).
+
 ## Watching together
 
 The player's **Watch together** button starts a room for what is playing and copies a link
@@ -284,6 +302,8 @@ Stop.
 | `max_bitrate_kbps` | `0` | Files above this are transcoded. 0: no limit. |
 | `hevc` | `false` | The devices play H.265, so such files needn't be transcoded. |
 | `copy_streams` | `true` | Streams the device plays, in a container it doesn't (MKV), are copied into HLS/fMP4 rather than transcoded. A device that fetches them and fails gets a transcode. |
+| `transcode_height` | `0` | The picture height a transcode for a device is made at (never above `max_height`). 0: the file's. |
+| `transcode_bitrate_kbps` | `0` | The video bitrate of such a transcode. 0: by the picture's size (8 Mbit/s at 1080p, 4 at 720p, 2 at 480p). |
 | `port` | `0` | The port devices fetch from. 0: `dlna_port`, or any free port if that's taken. A running DLNA listener is used instead of this. |
 
 **In the desktop app** the server's API stays on `127.0.0.1`. Only while something is casting, the

@@ -1004,6 +1004,11 @@ pub struct CastConfig {
     /// Copy streams the device plays into HLS when only the file's container is in the way (MKV),
     /// instead of converting them. A device that fails on the copy gets a transcode.
     pub copy_streams: bool,
+    /// The picture height converted streams are made at, in lines (0: the file's, up to
+    /// `max_height`).
+    pub transcode_height: u32,
+    /// The video bitrate converted streams are made at, in kbit/s (0: by the picture's size).
+    pub transcode_bitrate_kbps: u32,
 }
 
 impl Default for CastConfig {
@@ -1016,7 +1021,73 @@ impl Default for CastConfig {
             hevc: false,
             port: 0,
             copy_streams: true,
+            transcode_height: 0,
+            transcode_bitrate_kbps: 0,
         }
+    }
+}
+
+/// The quality choices of the players and settings: (id, picture height, total bitrate in
+/// bits/s). A file within both plays as it is; anything larger is converted down to them.
+pub const QUALITIES: &[(&str, i64, i64)] =
+    &[("2160", 2160, 20_000_000), ("1080", 1080, 8_000_000), ("720", 720, 4_000_000), ("480", 480, 1_500_000)];
+
+/// The limits of a quality id as `(max_height, max_bitrate)`; `None` for "original" (and for
+/// anything unknown): the file as it is.
+pub fn quality_limits(id: &str) -> Option<(i64, i64)> {
+    QUALITIES.iter().find(|(q, ..)| *q == id).map(|(_, h, b)| (*h, *b))
+}
+
+/// How the server converts media (`GET/PUT /api/v1/transcode/config`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TranscodeConfig {
+    /// The tallest picture a conversion is made at, in lines (0: no limit), whatever a client
+    /// asks for. Files that play as they are aren't touched.
+    pub max_height: u32,
+    /// The highest video bitrate of a conversion, in kbit/s (0: no limit).
+    pub max_bitrate_kbps: u32,
+    /// How hard the software encoder works (libx264 preset): faster is lighter on the
+    /// processor, slower looks better at the same bitrate.
+    pub x264_preset: String,
+    /// Conversions running at once.
+    pub max_sessions: u32,
+}
+
+/// The answer of `GET/PUT /api/v1/transcode/config`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscodeInfo {
+    #[serde(flatten)]
+    pub config: TranscodeConfig,
+    /// The H.264 encoder the server found working (hardware first); `None`: none, or still
+    /// looking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<String>,
+}
+
+/// The libx264 presets offered, fastest first.
+pub const X264_PRESETS: &[&str] = &["ultrafast", "superfast", "veryfast", "faster", "fast", "medium"];
+
+impl Default for TranscodeConfig {
+    fn default() -> Self {
+        TranscodeConfig { max_height: 0, max_bitrate_kbps: 0, x264_preset: "veryfast".into(), max_sessions: 3 }
+    }
+}
+
+impl TranscodeConfig {
+    /// Within what the transcoder takes (a hand-edited file, a client's request).
+    pub fn clamped(mut self) -> TranscodeConfig {
+        if self.max_height != 0 {
+            self.max_height = self.max_height.clamp(240, 4320);
+        }
+        if self.max_bitrate_kbps != 0 {
+            self.max_bitrate_kbps = self.max_bitrate_kbps.clamp(300, 100_000);
+        }
+        if !X264_PRESETS.contains(&self.x264_preset.as_str()) {
+            self.x264_preset = TranscodeConfig::default().x264_preset;
+        }
+        self.max_sessions = self.max_sessions.clamp(1, 16);
+        self
     }
 }
 

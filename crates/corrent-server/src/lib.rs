@@ -172,6 +172,8 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
         jellyfin: Default::default(),
         remote_status: Default::default(),
     });
+    let tuning = state.cfg.load().transcode.clone().clamped();
+    state.hls.set_tuning(&tuning.x264_preset, tuning.max_sessions as usize);
     metadata::start(state.clone());
     // Find a working H.264 encoder in the background (hardware first).
     let st2 = state.clone();

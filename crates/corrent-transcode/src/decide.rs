@@ -204,7 +204,7 @@ fn effective_container(c: &str, m: &MediaFacts, audio: Option<&AudioFacts>) -> S
 }
 
 /// Bitrate for an H.264 transcode at a height (bits/s).
-fn bitrate_for(height: i64) -> i64 {
+pub fn bitrate_for(height: i64) -> i64 {
     match height {
         h if h > 1440 => 20_000_000,
         h if h > 1080 => 12_000_000,

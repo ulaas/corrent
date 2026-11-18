@@ -95,6 +95,16 @@ async fn put_config(
     if let Some(bad) = c.devices.iter().find(|l| crate::cast::manual_device(l).is_none()) {
         return Err(err(ErrorCode::BadRequest, format!("not a device on this network: {bad}")));
     }
+    // A conversion is never made larger than what is sent as it is.
+    if c.transcode_height != 0 {
+        c.transcode_height = c.transcode_height.clamp(240, 4320);
+        if c.max_height != 0 {
+            c.transcode_height = c.transcode_height.min(c.max_height);
+        }
+    }
+    if c.transcode_bitrate_kbps != 0 {
+        c.transcode_bitrate_kbps = c.transcode_bitrate_kbps.clamp(300, 100_000);
+    }
     let own = st.cfg.load();
     if c.port != 0 && [own.https_port, own.http_port, own.jellyfin_port].contains(&c.port) {
         return Err(err(ErrorCode::BadRequest, format!("port {} is used by the server itself", c.port)));
@@ -216,13 +226,19 @@ async fn play(
         burn_subtitle: burn,
         ..Default::default()
     };
-    let shape = profile(&cfg);
-    let mut info =
-        super::playback::prepare(&st, &auth, b.item_id, req.clone(), Some(shape.clone()), cfg.copy_streams).await?;
+    // What the devices play as they are, and what a conversion for them is made at.
+    let shape = super::playback::How {
+        profile: Some(profile(&cfg)),
+        remux_ok: false,
+        target_height: (cfg.transcode_height > 0).then_some(i64::from(cfg.transcode_height)),
+        target_bitrate: (cfg.transcode_bitrate_kbps > 0).then_some(i64::from(cfg.transcode_bitrate_kbps) * 1000),
+    };
+    let copying = super::playback::How { remux_ok: cfg.copy_streams, ..shape.clone() };
+    let mut info = super::playback::prepare(&st, &auth, b.item_id, req.clone(), copying).await?;
     // Unfinished downloads only play through the engine: transcode (which reads through it).
     if info.method == "direct" && info.downloading {
         req.force_transcode = true;
-        info = super::playback::prepare(&st, &auth, b.item_id, req.clone(), Some(shape.clone()), false).await?;
+        info = super::playback::prepare(&st, &auth, b.item_id, req.clone(), shape.clone()).await?;
     }
     let (url, content_type, copied) = source(&st, &links, host, user, &info).await?;
     let image = detail
@@ -278,7 +294,7 @@ async fn play(
                     return;
                 }
                 let auth = Auth(principal);
-                let info = match super::playback::prepare(&st, &auth, media.item_id, req, Some(shape), false).await {
+                let info = match super::playback::prepare(&st, &auth, media.item_id, req, shape).await {
                     Ok(info) => info,
                     Err(e) => return st.casts.fail(&id, media.serial, e.0.message),
                 };

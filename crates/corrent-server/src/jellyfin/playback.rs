@@ -353,11 +353,15 @@ async fn start_hls(
         force_transcode: true,
         ..Default::default()
     };
-    let info = crate::v1::playback::prepare(st, &crate::v1::Auth(a.p.clone()), item, req, Some(profile), false)
-        .await
-        .map_err(|e| {
-        fail(StatusCode::from_u16(e.0.code.http_status()).unwrap_or(StatusCode::BAD_REQUEST), &e.0.message)
-    })?;
+    let info = crate::v1::playback::prepare(
+        st,
+        &crate::v1::Auth(a.p.clone()),
+        item,
+        req,
+        crate::v1::playback::How { profile: Some(profile), ..Default::default() },
+    )
+    .await
+    .map_err(|e| fail(StatusCode::from_u16(e.0.code.http_status()).unwrap_or(StatusCode::BAD_REQUEST), &e.0.message))?;
     info.session_id.ok_or_else(|| fail(StatusCode::BAD_REQUEST, "Nothing to transcode"))
 }
 

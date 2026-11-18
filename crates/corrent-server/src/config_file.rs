@@ -57,6 +57,8 @@ pub struct ServerConfig {
     pub hosted: bool,
     /// Casting to Chromecasts.
     pub cast: corrent_proto::library::CastConfig,
+    /// How media is converted for clients that can't play it as it is.
+    pub transcode: corrent_proto::library::TranscodeConfig,
     /// DLNA/UPnP media server for TVs and players on the local network (plain HTTP).
     pub dlna: bool,
     pub dlna_port: u16,
@@ -111,6 +113,7 @@ impl Default for ServerConfig {
             plugin_keys: Vec::new(),
             hosted: false,
             cast: Default::default(),
+            transcode: Default::default(),
             dlna: false,
             dlna_port: 8201,
             dlna_user: String::new(),

@@ -143,6 +143,7 @@ the client asks for it. Media files, HLS and remux segments and torrent streams 
 | GET | `/api/v1/images/{sha}` |
 | GET | `/api/v1/home` |
 | GET | `/api/v1/facets` |
+| GET PUT | `/api/v1/transcode/config` |
 | GET | `/api/v1/library/search` |
 | GET PUT | `/api/v1/users/{id}/libraries` |
 

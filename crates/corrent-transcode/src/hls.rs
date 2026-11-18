@@ -276,6 +276,13 @@ impl HlsManager {
         self.cfg.lock().unwrap_or_else(|e| e.into_inner()).encoder = encoder.to_string();
     }
 
+    /// The libx264 preset and how many sessions may run at once; applies to new sessions.
+    pub fn set_tuning(&self, x264_preset: &str, max_sessions: usize) {
+        let mut cfg = self.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        cfg.x264_preset = x264_preset.to_string();
+        cfg.max_sessions = max_sessions.max(1);
+    }
+
     pub fn config(&self) -> HlsConfig {
         self.cfg.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
