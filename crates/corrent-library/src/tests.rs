@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use corrent_db::Db;
-use corrent_proto::library::{ItemKind, ItemQuery, LibraryKind, LibrarySettings, NewLibrary, SortBy, StateUpdate};
+use corrent_proto::library::{
+    ItemFilter, ItemKind, ItemQuery, LibraryKind, LibrarySettings, NewLibrary, SortBy, StateUpdate, Watch,
+};
 
 use crate::Library;
 use crate::probe::Prober;
@@ -365,10 +367,64 @@ async fn scans_movies_shows_and_music() {
     assert_eq!((st.audio_track, st.subtitle_track), (Some(2), Some(1001)));
     let d = lib.item(user, sintel.id).await.unwrap();
     assert_eq!((d.item.state.audio_track, d.item.state.subtitle_track), (Some(2), Some(1001)));
-    // Marking the show played marks every episode.
-    lib.set_state(user, show.id, StateUpdate { played: Some(true), ..Default::default() }).await.unwrap();
+    // The filter buttons: a show with one of two episodes played is in progress, not played.
+    let shows_where = |watch| {
+        let lib = lib.clone();
+        async move {
+            let q = ItemQuery { library_id: Some(ls.id), top_level: true, watch: Some(watch), ..Default::default() };
+            lib.items(user, q).await.unwrap().total
+        }
+    };
+    assert_eq!(
+        (shows_where(Watch::Unplayed).await, shows_where(Watch::InProgress).await, shows_where(Watch::Played).await),
+        (1, 1, 0)
+    );
+    let movies_where = |f: ItemFilter| {
+        let lib = lib.clone();
+        async move {
+            let q = ItemQuery {
+                library_id: Some(lm.id),
+                watch: f.watch,
+                genre: f.genre,
+                year_from: f.year_from,
+                year_to: f.year_to,
+                ..Default::default()
+            };
+            lib.items(user, q).await.unwrap().items.into_iter().map(|i| i.title).collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(movies_where(ItemFilter { watch: Some(Watch::Played), ..Default::default() }).await, ["Sintel"]);
+    assert_eq!(
+        movies_where(ItemFilter { watch: Some(Watch::Unplayed), ..Default::default() }).await,
+        ["Big Buck Bunny"]
+    );
+    assert_eq!(
+        movies_where(ItemFilter { year_from: Some(2010), year_to: Some(2019), ..Default::default() }).await,
+        ["Sintel"]
+    );
+    assert_eq!(movies_where(ItemFilter { genre: Some("Fantasy".into()), ..Default::default() }).await, ["Sintel"]);
+    let facets = lib.facets(user, Some(lm.id), Some(ItemKind::Movie)).await.unwrap();
+    assert!(facets.genres.contains(&"Fantasy".to_string()), "{facets:?}");
+    assert_eq!(facets.decades, [2010, 2000]);
+    // Home rows keep only what matches.
+    let home = lib.home_filtered(user, ItemFilter { watch: Some(Watch::Played), ..Default::default() }).await.unwrap();
+    assert!(home.iter().all(|r| r.id != "continue" && r.id != "next_up"), "nothing played is left to watch");
+    let recent = home.iter().find(|r| r.id == format!("recent:{}", lm.id)).expect("recent movies");
+    assert_eq!(recent.items.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(), ["Sintel"]);
+    let home =
+        lib.home_filtered(user, ItemFilter { genre: Some("Fantasy".into()), ..Default::default() }).await.unwrap();
+    assert!(home.iter().flat_map(|r| &r.items).all(|i| i.title == "Sintel"), "only the fantasy film");
+
+    // Marking the show played marks every episode, and the answer says so.
+    let st = lib.set_state(user, show.id, StateUpdate { played: Some(true), ..Default::default() }).await.unwrap();
+    assert_eq!((st.played, st.unplayed), (true, Some(0)));
     let show_now = lib.items(user, ItemQuery { library_id: Some(ls.id), ..Default::default() }).await.unwrap();
     assert_eq!(show_now.items[0].state.unplayed, Some(0));
+    assert_eq!((shows_where(Watch::Played).await, shows_where(Watch::InProgress).await), (1, 0));
+    let st = lib.set_state(user, show.id, StateUpdate { played: Some(false), ..Default::default() }).await.unwrap();
+    assert_eq!((st.played, st.unplayed), (false, Some(2)));
+    assert_eq!(shows_where(Watch::Played).await, 0);
+    lib.set_state(user, show.id, StateUpdate { played: Some(true), ..Default::default() }).await.unwrap();
 
     // A moved file keeps its row (and the item's state).
     std::fs::rename(movies.join("Sintel (2010)"), movies.join("Sintel Renamed (2010)")).unwrap();

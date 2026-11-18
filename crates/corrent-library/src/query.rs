@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use corrent_db::rusqlite::{self, Connection, OptionalExtension, Row, params, params_from_iter};
 use corrent_proto::library::{
-    Chapter, Credit, HomeRow, ImageRef, Item, ItemDetail, ItemKind, ItemQuery, MediaFile, Page, SearchResults, SortBy,
-    StateUpdate, Stream, UserState,
+    Chapter, Credit, Facets, HomeRow, ImageRef, Item, ItemDetail, ItemFilter, ItemKind, ItemQuery, MediaFile, Page,
+    SearchResults, SortBy, StateUpdate, Stream, UserState, Watch,
 };
 
 use crate::{LibError, Library, Result, now_unix};
@@ -142,6 +142,65 @@ pub(crate) fn allowed_clause(allowed: &Option<Vec<i64>>) -> String {
     }
 }
 
+/// The playable items of container `i` (children and grandchildren) for which `cond` holds;
+/// `w` is the user's (`?1`) state of each.
+fn leaves(cond: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM items e LEFT JOIN watch_state w ON w.item_id = e.id AND w.user_id = ?1 \
+         WHERE (e.parent_id = i.id OR e.parent_id IN (SELECT s.id FROM items s WHERE s.parent_id = i.id)) \
+         AND e.kind IN ('movie','episode','track','book','video') AND {cond})"
+    )
+}
+
+/// SQL conditions for a filter, over `i` (the item) and `ws` (its state for user `?1`); values
+/// go to `args` and are referred to by their place.
+fn filter_sql(f: &ItemFilter, args: &mut Vec<rusqlite::types::Value>) -> Vec<String> {
+    const CONTAINER: &str = "i.kind IN ('show','season','album','artist')";
+    let mut out = Vec::new();
+    if let Some(w) = f.watch {
+        let played = format!(
+            "CASE WHEN {CONTAINER} THEN {} AND NOT {} ELSE coalesce(ws.played, 0) = 1 END",
+            leaves("1 = 1"),
+            leaves("coalesce(w.played, 0) = 0")
+        );
+        out.push(match w {
+            Watch::Played => played,
+            Watch::Unplayed => format!("NOT ({played})"),
+            Watch::InProgress => format!(
+                "CASE WHEN {CONTAINER} THEN {} AND {} ELSE coalesce(ws.position_ms, 0) > 0 AND coalesce(ws.played, 0) = 0 END",
+                leaves("(coalesce(w.played, 0) = 1 OR coalesce(w.position_ms, 0) > 0)"),
+                leaves("coalesce(w.played, 0) = 0")
+            ),
+        });
+    }
+    const GRANDPARENT: &str = "(SELECT x.parent_id FROM items x WHERE x.id = i.parent_id)";
+    if let Some(g) = &f.genre {
+        args.push(g.clone().into());
+        out.push(format!(
+            "EXISTS (SELECT 1 FROM item_genres ig JOIN genres g ON g.id = ig.genre_id \
+             WHERE ig.item_id IN (i.id, i.parent_id, {GRANDPARENT}) AND g.name = ?{})",
+            args.len()
+        ));
+    }
+    if let Some(fav) = f.favorite {
+        out.push(format!("coalesce(ws.favorite, 0) = {}", if fav { 1 } else { 0 }));
+    }
+    if f.year_from.is_some() || f.year_to.is_some() {
+        let year = format!(
+            "coalesce(i.year, (SELECT x.year FROM items x WHERE x.id = i.parent_id), (SELECT x.year FROM items x WHERE x.id = {GRANDPARENT}))"
+        );
+        if let Some(y) = f.year_from {
+            args.push(i64::from(y).into());
+            out.push(format!("{year} >= ?{}", args.len()));
+        }
+        if let Some(y) = f.year_to {
+            args.push(i64::from(y).into());
+            out.push(format!("{year} <= ?{}", args.len()));
+        }
+    }
+    out
+}
+
 fn query_items(c: &Connection, user: i64, q: &ItemQuery) -> rusqlite::Result<Page<Item>> {
     let allowed = allowed(c, user)?;
     let mut where_ = vec!["1 = 1".to_string()];
@@ -155,6 +214,7 @@ fn query_items(c: &Connection, user: i64, q: &ItemQuery) -> rusqlite::Result<Pag
     }
     match q.parent_id {
         Some(p) => where_.push(format!("i.parent_id = {}", arg(p.into()))),
+        None if q.top_level => where_.push("i.parent_id IS NULL".into()),
         None if q.kind.is_none()
             && q.kinds.is_empty()
             && q.ids.is_none()
@@ -216,6 +276,10 @@ fn query_items(c: &Connection, user: i64, q: &ItemQuery) -> rusqlite::Result<Pag
     if let Some(p) = q.played {
         where_.push(format!("coalesce(ws.played, 0) = {}", if p { 1 } else { 0 }));
     }
+    where_.extend(filter_sql(
+        &ItemFilter { watch: q.watch, year_from: q.year_from, year_to: q.year_to, ..Default::default() },
+        &mut args,
+    ));
     let filter = format!("{}{}", where_.join(" AND "), allowed_clause(&allowed));
     let dir = if q.desc { "DESC" } else { "ASC" };
     let order = match q.sort {
@@ -684,23 +748,40 @@ impl Library {
 
     /// Home screen rows for a user.
     pub async fn home(&self, user: i64) -> Result<Vec<HomeRow>> {
+        self.home_filtered(user, ItemFilter::default()).await
+    }
+
+    /// The home rows narrowed by the filter buttons: every row keeps only what matches (and
+    /// is filled up to its usual length from what does).
+    pub async fn home_filtered(&self, user: i64, f: ItemFilter) -> Result<Vec<HomeRow>> {
         let libs = self.list().await?;
         Ok(self
             .db()
             .read(move |c| {
+                // `base` with the filter's conditions; its values follow `extra`.
+                let filtered = |base: &str, order: &str, limit: i64, extra: Vec<rusqlite::types::Value>| {
+                    let mut args: Vec<rusqlite::types::Value> = vec![user.into()];
+                    args.extend(extra);
+                    let mut conds = vec![base.to_string()];
+                    conds.extend(filter_sql(&f, &mut args));
+                    items_by_sql(c, user, &conds.join(" AND "), order, limit, &args[1..])
+                };
                 let mut rows = Vec::new();
-                let cont = items_by_sql(
-                    c,
-                    user,
+                let cont = filtered(
                     "ws.position_ms > 0 AND coalesce(ws.played, 0) = 0 AND i.kind IN ('movie','episode','book','video')",
                     "ws.last_played_at DESC",
                     20,
-                    &[],
+                    Vec::new(),
                 )?;
                 if !cont.is_empty() {
                     rows.push(HomeRow { id: "continue".into(), title: t!("Continue watching").into(), items: cont });
                 }
-                let next = next_up(c, user, HOME_NEXT_UP)?;
+                let mut next = next_up(c, user, HOME_NEXT_UP)?;
+                if !f.is_empty() && !next.is_empty() {
+                    let ids: Vec<String> = next.iter().map(|i| i.id.to_string()).collect();
+                    let keep = filtered(&format!("i.id IN ({})", ids.join(",")), "i.id", 500, Vec::new())?;
+                    next.retain(|i| keep.iter().any(|k| k.id == i.id));
+                }
                 if !next.is_empty() {
                     rows.push(HomeRow { id: "next_up".into(), title: t!("Next up").into(), items: next });
                 }
@@ -714,13 +795,11 @@ impl Library {
                         corrent_proto::library::LibraryKind::Photos => "photo",
                         corrent_proto::library::LibraryKind::Podcasts => "episode",
                     };
-                    let items = items_by_sql(
-                        c,
-                        user,
+                    let items = filtered(
                         "i.library_id = ?2 AND i.kind = ?3",
                         "i.added_at DESC, i.id DESC",
                         20,
-                        &[l.id.into(), kind.to_string().into()],
+                        vec![l.id.into(), kind.to_string().into()],
                     )?;
                     if !items.is_empty() {
                         rows.push(HomeRow {
@@ -730,11 +809,36 @@ impl Library {
                         });
                     }
                 }
-                let fav = items_by_sql(c, user, "coalesce(ws.favorite, 0) = 1", "i.sort_title", 30, &[])?;
+                let fav = filtered("coalesce(ws.favorite, 0) = 1", "i.sort_title", 30, Vec::new())?;
                 if !fav.is_empty() {
                     rows.push(HomeRow { id: "favorites".into(), title: t!("Favorites").into(), items: fav });
                 }
                 Ok(rows)
+            })
+            .await?)
+    }
+
+    /// What the items of a library (or, without one, of everything the user may see) can be
+    /// filtered by; decades are those of `kind` items when one is given.
+    pub async fn facets(&self, user: i64, library: Option<i64>, kind: Option<ItemKind>) -> Result<Facets> {
+        Ok(self
+            .db()
+            .read(move |c| {
+                let mut scope = allowed_clause(&allowed(c, user)?);
+                if let Some(l) = library {
+                    scope.push_str(&format!(" AND i.library_id = {l}"));
+                }
+                let mut st = c.prepare(&format!(
+                    "SELECT DISTINCT g.name FROM genres g JOIN item_genres ig ON ig.genre_id = g.id \
+                     JOIN items i ON i.id = ig.item_id WHERE 1 = 1{scope} ORDER BY g.name COLLATE NOCASE"
+                ))?;
+                let genres = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+                let of_kind = kind.map(|k| format!(" AND i.kind = '{}'", k.as_str())).unwrap_or_default();
+                let mut st = c.prepare(&format!(
+                    "SELECT DISTINCT i.year / 10 * 10 FROM items i WHERE i.year > 0{of_kind}{scope} ORDER BY 1 DESC"
+                ))?;
+                let decades = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i32>>>()?;
+                Ok(Facets { genres, decades })
             })
             .await?)
     }
@@ -774,6 +878,8 @@ impl Library {
                     )?;
                 }
                 let mut played = u.played;
+                // A container marked played or not, and how many items that was.
+                let mut container: Option<(bool, i64)> = None;
                 if let Some(pos) = u.position_ms {
                     let pos = pos.max(0);
                     t.execute(
@@ -796,6 +902,9 @@ impl Library {
                         )?;
                         st.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
                     };
+                    if !kind.playable() {
+                        container = Some((p, targets.len() as i64));
+                    }
                     for item in targets {
                         ensure(item)?;
                         if p {
@@ -830,6 +939,14 @@ impl Library {
                         })
                     },
                 )
+                .map(|mut s| {
+                    // A container has no state of its own: it answers with what its items got.
+                    if let Some((p, n)) = container {
+                        s.played = p;
+                        s.unplayed = Some(if p { 0 } else { n });
+                    }
+                    s
+                })
             })
             .await
             .map_err(Into::into)

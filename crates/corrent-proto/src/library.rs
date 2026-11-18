@@ -424,6 +424,66 @@ pub enum SortBy {
     Random,
 }
 
+/// Where the user is with an item. A container (show, season, album, artist) goes by the
+/// playable items in it: played when all of them are, in progress when some are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Watch {
+    /// Not played to the end (started or not).
+    Unplayed,
+    /// Started, not finished.
+    InProgress,
+    Played,
+}
+
+impl Watch {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Watch::Unplayed => "unplayed",
+            Watch::InProgress => "in_progress",
+            Watch::Played => "played",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Watch> {
+        [Watch::Unplayed, Watch::InProgress, Watch::Played].into_iter().find(|w| w.as_str() == s)
+    }
+}
+
+/// What the filter buttons of a library page or Home narrow a list to.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ItemFilter {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watch: Option<Watch>,
+    /// The item, or what it belongs to (an episode's show), has this genre.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub favorite: Option<bool>,
+    /// Years `year_from..=year_to` (an episode without a year goes by its show's).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year_from: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year_to: Option<i32>,
+}
+
+impl ItemFilter {
+    pub fn is_empty(&self) -> bool {
+        *self == ItemFilter::default()
+    }
+}
+
+/// `GET /facets`: what a list can be filtered by.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Facets {
+    /// Genres, by name.
+    pub genres: Vec<String>,
+    /// First years of the decades that have items, newest first (2020, 2010, …).
+    pub decades: Vec<i32>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ItemQuery {
@@ -453,6 +513,16 @@ pub struct ItemQuery {
     /// Titles containing this text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title_contains: Option<String>,
+    /// Only items without a parent (a library's own list), whatever else is asked for.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub top_level: bool,
+    /// Played, in progress or unplayed, containers included (`played` only looks at the item).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watch: Option<Watch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year_from: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year_to: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

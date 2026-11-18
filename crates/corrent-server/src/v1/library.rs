@@ -14,8 +14,8 @@ use corrent_library::LibError;
 use corrent_proto::ErrorCode;
 use corrent_proto::auth::Perms;
 use corrent_proto::library::{
-    HomeRow, Item, ItemDetail, ItemKind, ItemQuery, Library, LibraryUpdate, NewLibrary, Page, ScanStatus,
-    SearchResults, SortBy, StateUpdate, UserState,
+    Facets, HomeRow, Item, ItemDetail, ItemFilter, ItemKind, ItemQuery, Library, LibraryUpdate, NewLibrary, Page,
+    ScanStatus, SearchResults, SortBy, StateUpdate, UserState, Watch,
 };
 use serde::Deserialize;
 use tower::ServiceExt;
@@ -37,6 +37,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/files/{id}", get(file))
         .route("/images/{sha}", get(image))
         .route("/home", get(home))
+        .route("/facets", get(facets))
         .route("/library/search", get(search))
         .route("/users/{id}/libraries", get(user_libraries).put(set_user_libraries))
 }
@@ -180,7 +181,36 @@ async fn scan_status(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path
     Ok(Json(st.library.scan_status(id).unwrap_or(ScanStatus { library_id: id, ..Default::default() })))
 }
 
-/// `GET /items?library_id=&parent_id=&kind=&genre=&person_id=&favorite=&played=&in_progress=&next_up=&sort=&desc=&offset=&limit=`
+/// The filter buttons' part of a query: `watch=unplayed|in_progress|played&genre=&favorite=&decade=&year_from=&year_to=`.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct FilterQuery {
+    watch: Option<String>,
+    genre: Option<String>,
+    favorite: Option<bool>,
+    /// The first year of a decade (2010 = 2010–2019); `year_from`/`year_to` win over it.
+    decade: Option<i32>,
+    year_from: Option<i32>,
+    year_to: Option<i32>,
+}
+
+impl FilterQuery {
+    fn filter(self) -> Result<ItemFilter, ApiErr> {
+        let watch = match self.watch.as_deref() {
+            Some(w) => Some(Watch::parse(w).ok_or_else(|| err(ErrorCode::BadRequest, "unknown watch state"))?),
+            None => None,
+        };
+        Ok(ItemFilter {
+            watch,
+            genre: self.genre.filter(|g| !g.is_empty()),
+            favorite: self.favorite,
+            year_from: self.year_from.or(self.decade),
+            year_to: self.year_to.or(self.decade.map(|d| d.saturating_add(9))),
+        })
+    }
+}
+
+/// `GET /items?library_id=&parent_id=&kind=&top=&genre=&person_id=&favorite=&played=&watch=&decade=&year_from=&year_to=&in_progress=&next_up=&sort=&desc=&offset=&limit=`
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct ItemsQuery {
@@ -190,7 +220,14 @@ struct ItemsQuery {
     genre: Option<String>,
     person_id: Option<i64>,
     favorite: Option<bool>,
+    /// As `watch=played` / `watch=unplayed`.
     played: Option<bool>,
+    watch: Option<String>,
+    decade: Option<i32>,
+    year_from: Option<i32>,
+    year_to: Option<i32>,
+    /// Only items without a parent.
+    top: bool,
     /// Home's "Continue watching" row, whole: paged, most recently played first.
     in_progress: Option<bool>,
     /// Home's "Next up" row: worked out per show, so not paged (at most [`NEXT_UP_MAX`]).
@@ -225,14 +262,27 @@ async fn items(State(st): State<Arc<AppState>>, auth: Auth, Query(q): Query<Item
         "random" => SortBy::Random,
         _ => return Err(err(ErrorCode::BadRequest, "unknown sort")),
     };
+    let played = q.played.map(|p| if p { Watch::Played } else { Watch::Unplayed });
+    let f = FilterQuery {
+        watch: q.watch,
+        genre: q.genre,
+        favorite: q.favorite,
+        decade: q.decade,
+        year_from: q.year_from,
+        year_to: q.year_to,
+    }
+    .filter()?;
     let query = ItemQuery {
         library_id: q.library_id,
         parent_id: q.parent_id,
         kind,
-        genre: q.genre,
+        genre: f.genre,
         person_id: q.person_id,
-        favorite: q.favorite,
-        played: q.played,
+        favorite: f.favorite,
+        watch: f.watch.or(played),
+        year_from: f.year_from,
+        year_to: f.year_to,
+        top_level: q.top,
         sort,
         desc: q.desc,
         offset: q.offset,
@@ -299,8 +349,25 @@ async fn set_state(
     Ok(Json(st.library.set_state(auth.0.user.id, id, u).await.map_err(lib_err)?))
 }
 
-async fn home(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<Vec<HomeRow>> {
-    Ok(Json(st.library.home(auth.0.user.id).await.map_err(lib_err)?))
+/// `GET /home`, with the filter buttons' query (see [`FilterQuery`]).
+async fn home(State(st): State<Arc<AppState>>, auth: Auth, Query(q): Query<FilterQuery>) -> ApiResult<Vec<HomeRow>> {
+    Ok(Json(st.library.home_filtered(auth.0.user.id, q.filter()?).await.map_err(lib_err)?))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct FacetsQuery {
+    library_id: Option<i64>,
+    kind: Option<String>,
+}
+
+/// `GET /facets?library_id=&kind=`: the genres and decades a list can be filtered by.
+async fn facets(State(st): State<Arc<AppState>>, auth: Auth, Query(q): Query<FacetsQuery>) -> ApiResult<Facets> {
+    let kind = match q.kind.as_deref() {
+        Some(k) => Some(ItemKind::parse(k).ok_or_else(|| err(ErrorCode::BadRequest, "unknown kind"))?),
+        None => None,
+    };
+    Ok(Json(st.library.facets(auth.0.user.id, q.library_id, kind).await.map_err(lib_err)?))
 }
 
 #[derive(Deserialize)]
