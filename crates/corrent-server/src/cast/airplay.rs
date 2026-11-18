@@ -7,6 +7,11 @@
 //! a given TV plays a link sent to it, and after which kind of pairing, is not known in advance:
 //! [`Receiver`] carries what the device says, and [`probe`] asks it the harmless questions.
 
+pub mod conn;
+pub mod pair;
+pub mod srp;
+pub mod tlv8;
+
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 

@@ -1609,6 +1609,7 @@ dependencies = [
  "librqbit-upnp",
  "mdns-sd",
  "mime_guess",
+ "num-bigint",
  "portmapper",
  "qrcode",
  "rcgen 0.14.10",
