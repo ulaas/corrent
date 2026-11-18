@@ -104,7 +104,8 @@
   <div class="sgroup">
     <h3>{t('Casting')}</h3>
     <div class="srow toggle-row">
-      <Toggle bind:checked={draft.enabled} label={t('Allow casting to Chromecasts')} hint={t('While something is casting, the device fetches it from this computer over plain HTTP on the local network. Only signed links are served, and the port closes soon after casting ends.')} />
+      <Toggle bind:checked={draft.enabled} label={t('Allow casting to Chromecasts and TVs')} hint={t('While something is casting, the device fetches it from this computer over plain HTTP on the local network. Only signed links are served, and the port closes soon after casting ends.')} />
+      <Toggle bind:checked={draft.dlna} label={t('Also find smart TVs and other DLNA players')} hint={t('Samsung, LG and Sony TVs, receivers, Kodi. They play most files as they are; what they can’t play is converted, with the subtitles in the picture. The picture size and H.265 settings below are for Chromecasts.')} />
     </div>
     <div class="srow">
       <div class="stext"><span class="slabel">{t('Largest picture sent as it is')}</span><span class="shint">{t('Taller videos are converted first. Older Chromecasts stop at 1080p.')}</span></div>
@@ -138,7 +139,7 @@
       <div class="sctl"><input class="input num-input" type="number" min="0" max="65535" bind:value={draft.port} aria-label={t('Port for the devices')} /></div>
     </div>
     <div class="srow col">
-      <div class="stext"><span class="slabel">{t('Devices to add by hand')}</span><span class="shint">{t('One a line, for networks where the search finds nothing: 192.168.1.20 or Bedroom=192.168.1.20')}</span></div>
+      <div class="stext"><span class="slabel">{t('Devices to add by hand')}</span><span class="shint">{t('One a line, for networks where the search finds nothing: 192.168.1.20 or Bedroom=192.168.1.20 for a Chromecast, the address of its description for a TV (http://192.168.1.20:9197/dmr on Samsung TVs)')}</span></div>
       <textarea class="input mono" rows="3" bind:value={devices} aria-label={t('Devices to add by hand')}></textarea>
     </div>
   </div>

@@ -11,7 +11,7 @@
 //! only casting needs it, it runs without announcing and without browsing, closes again when
 //! casting ends, and in the desktop app is the only part of the server on the network.
 
-mod didl;
+pub(crate) mod didl;
 mod ssdp;
 
 use std::net::SocketAddr;
@@ -113,6 +113,13 @@ impl Links {
     /// Counts what the listener served: whether a device ever reached it.
     pub fn hits(&self) -> Arc<AtomicU64> {
         self.d.hits.clone()
+    }
+
+    /// An HLS session as one continuous MPEG-TS stream, for devices that take no HLS (DLNA
+    /// renderers). `?from=<segment>` starts it later: that is how such a stream is sought.
+    pub fn ts(&self, host: std::net::IpAddr, session: &str) -> String {
+        let sig = sign(&self.d, &format!("hls:{session}"));
+        format!("http://{}/dlna/hls/{session}/{sig}/stream.ts", host_port(host, self.port))
     }
 
     /// An HLS session's playlist.
@@ -597,6 +604,35 @@ async fn hls(
 ) -> Response {
     if !signed(&d, &format!("hls:{session}"), &sig) {
         return StatusCode::NOT_FOUND.into_response();
+    }
+    if name == "stream.ts" {
+        // Segment after segment as the encoder makes them, from `?from=` on. One reader in
+        // order never makes the encoder start over; the timestamps run on from segment to
+        // segment, so the device sees one stream.
+        let from = req
+            .uri()
+            .query()
+            .and_then(|q| url::form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == "from"))
+            .and_then(|(_, v)| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        if d.st.hls.playlist(&session).is_err() {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        let hls = d.st.hls.clone();
+        let body = Body::from_stream(futures_util::stream::unfold(from, move |n| {
+            let (hls, session) = (hls.clone(), session.clone());
+            async move {
+                let path = hls.segment(&session, n).await.ok()?;
+                let bytes = tokio::fs::read(&path).await.ok()?;
+                Some((Ok::<_, std::io::Error>(axum::body::Bytes::from(bytes)), n + 1))
+            }
+        }));
+        let mut res =
+            ([(header::CONTENT_TYPE, "video/mp2t"), (header::CACHE_CONTROL, "no-store")], body).into_response();
+        let h = res.headers_mut();
+        h.insert("transfermode.dlna.org", HeaderValue::from_static("Streaming"));
+        h.insert("contentfeatures.dlna.org", HeaderValue::from_static(crate::cast::upnp::features(false)));
+        return res;
     }
     let mut res = if name == "index.m3u8" {
         match d.st.hls.playlist(&session) {

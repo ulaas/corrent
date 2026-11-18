@@ -151,7 +151,7 @@ impl Page {
                 )
             }
             Page::Playback => t!(
-                "audio sound output device speakers headphones exclusive bit-perfect channels surround stereo 5.1 7.1 passthrough receiver hdmi spdif dolby dts normalize loudness equalizer bass treble replaygain gapless cast casting chromecast google tv quality bitrate resolution 4k 1080p 720p 480p transcode transcoding convert encoder"
+                "audio sound output device speakers headphones exclusive bit-perfect channels surround stereo 5.1 7.1 passthrough receiver hdmi spdif dolby dts normalize loudness equalizer bass treble replaygain gapless cast casting chromecast google tv quality bitrate resolution 4k 1080p 720p 480p transcode transcoding convert encoder samsung lg sony smart tv dlna upnp"
             ),
             Page::Advanced => t!("log level refresh interval checking concurrent data folder reset defaults"),
         }

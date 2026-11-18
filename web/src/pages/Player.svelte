@@ -808,7 +808,7 @@
     ...(castLoading
       ? [{ label: t('Looking for devices…'), disabled: true, onselect: () => {} }]
       : !castList?.length
-        ? [{ label: t('No Chromecasts found on the server’s network.'), disabled: true, onselect: () => {} }]
+        ? [{ label: t('No Chromecasts or TVs found on the server’s network.'), disabled: true, onselect: () => {} }]
         : castList.map((d) => ({
             label: d.model ? `${d.name} · ${d.model}` : d.name,
             checked: cast?.device.id === d.id,

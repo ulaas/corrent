@@ -266,3 +266,11 @@ streams" in the casting settings, all as toggle buttons. Desktop: `src/app/media
   subtitle menus: a choice restarts the conversion with the same quality.
 - The web hides the Quality row while casting (the device's quality is the casting setting), and
   its Transcoding page saves with the usual "unsaved changes" bar instead of a Save button.
+
+## Smart TVs (DLNA renderers) in the cast list (2026-11-19)
+
+Both clients list DLNA renderers next to Chromecasts with no code of their own: the server
+reports them as cast devices (`kind: "dlna"`). Both Casting settings pages have the toggle "Also
+find smart TVs and other DLNA players" and take a TV's description address under the devices
+added by hand. On a TV the players' subtitle choice is burned in by the server, so changing it
+loads the item again.

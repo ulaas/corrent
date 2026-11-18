@@ -4,6 +4,7 @@
 //! itself when the device plays it, else an HLS transcode. Clients only pick a device and send
 //! play/pause/seek; the device fetches the media from the server directly.
 
+pub mod upnp;
 pub mod wire;
 
 use std::collections::HashMap;
@@ -50,6 +51,8 @@ const FRESH: Duration = Duration::from_secs(60);
 pub struct Found {
     pub device: CastDevice,
     pub addr: SocketAddr,
+    /// A DLNA renderer's control addresses (`None`: a Google Cast receiver).
+    pub dlna: Option<Arc<upnp::Renderer>>,
 }
 
 /// What to play.
@@ -147,6 +150,9 @@ pub struct Casts {
 /// IPv4 addresses only: this is where the server opens connections.
 pub fn manual_device(line: &str) -> Option<Found> {
     let line = line.trim();
+    if manual_renderer(line).is_some() {
+        return None;
+    }
     let (name, at) = match line.split_once('=') {
         Some((n, a)) => (n.trim(), a.trim()),
         None => ("", line),
@@ -161,7 +167,14 @@ pub fn manual_device(line: &str) -> Option<Found> {
     }
     let id = format!("manual-{}-{}", addr.ip(), addr.port());
     let name = if name.is_empty() { addr.ip().to_string() } else { name.to_string() };
-    Some(Found { device: CastDevice { id, name, model: String::new() }, addr })
+    Some(Found { device: CastDevice { id, name, ..Default::default() }, addr, dlna: None })
+}
+
+/// A DLNA renderer typed into the settings: the address of its description
+/// (`http://192.168.1.20:9197/dmr`), for networks where the search doesn't pass.
+pub fn manual_renderer(line: &str) -> Option<String> {
+    let line = line.trim();
+    line.starts_with("http://").then(|| upnp::local_url(line, None)).flatten().map(|(u, _)| u.to_string())
 }
 
 /// What was found, then the typed devices that aren't among them.
@@ -221,8 +234,9 @@ fn browse(wait: Duration) -> anyhow::Result<Vec<Found>> {
                     .filter(|n| !n.is_empty())
                     .unwrap_or_else(|| s.get_hostname().trim_end_matches('.').to_string());
                 out.push(Found {
-                    device: CastDevice { id, name, model: get("md") },
+                    device: CastDevice { id, name, model: get("md"), ..Default::default() },
                     addr: SocketAddr::new(ip, s.get_port()),
+                    dlna: None,
                 });
             }
             Ok(_) => {}
@@ -238,30 +252,38 @@ fn browse(wait: Duration) -> anyhow::Result<Vec<Found>> {
 impl Casts {
     /// The devices on the network (looked for at most once a minute unless `refresh`) and the
     /// typed ones. Typed ones are offered even when the search can't run.
-    pub async fn devices(&self, refresh: bool, manual: &[String]) -> anyhow::Result<Vec<Found>> {
+    /// With `dlna`, DLNA renderers too.
+    pub async fn devices(&self, refresh: bool, manual: &[String], dlna: bool) -> anyhow::Result<Vec<Found>> {
         if !refresh
             && let Some((at, list)) = self.found.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
             && at.elapsed() < FRESH
         {
-            return Ok(merged(list.clone(), manual));
+            let list = list.iter().filter(|f| dlna || f.dlna.is_none()).cloned().collect();
+            return Ok(merged(list, manual));
         }
-        let list = match tokio::task::spawn_blocking(|| browse(Duration::from_secs(3))).await? {
+        let typed: Vec<String> = manual.iter().filter_map(|l| manual_renderer(l)).collect();
+        let renderers = async { if dlna { upnp::search(Duration::from_secs(3), &typed).await } else { Vec::new() } };
+        let (casts, renderers) =
+            tokio::join!(tokio::task::spawn_blocking(|| browse(Duration::from_secs(3))), renderers);
+        let mut list = match casts? {
             Ok(list) => list,
-            Err(e) if manual.iter().any(|l| manual_device(l).is_some()) => {
+            Err(e) if !renderers.is_empty() || manual.iter().any(|l| manual_device(l).is_some()) => {
                 tracing::info!("casting: can't look for devices: {e:#}");
                 Vec::new()
             }
             Err(e) => return Err(e),
         };
+        list.extend(renderers);
+        list.sort_by_key(|f| f.device.name.to_lowercase());
         *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), list.clone()));
         Ok(merged(list, manual))
     }
 
-    pub async fn device(&self, id: &str, manual: &[String]) -> anyhow::Result<Found> {
-        if let Some(f) = self.devices(false, manual).await?.into_iter().find(|f| f.device.id == id) {
+    pub async fn device(&self, id: &str, manual: &[String], dlna: bool) -> anyhow::Result<Found> {
+        if let Some(f) = self.devices(false, manual, dlna).await?.into_iter().find(|f| f.device.id == id) {
             return Ok(f);
         }
-        self.devices(true, manual)
+        self.devices(true, manual, dlna)
             .await?
             .into_iter()
             .find(|f| f.device.id == id)
@@ -329,7 +351,10 @@ impl Casts {
         let _ = tx.try_send(Cmd::Load(Box::new(media)));
         let s2 = status.clone();
         tokio::spawn(async move {
-            let r = connection(found.addr, s2.clone(), rx, st.clone()).await;
+            let r = match found.dlna.clone() {
+                Some(renderer) => upnp::session(renderer, s2.clone(), rx, st.clone()).await,
+                None => connection(found.addr, s2.clone(), rx, st.clone()).await,
+            };
             let mut s = s2.lock().unwrap_or_else(|e| e.into_inner());
             if let Err(e) = r {
                 tracing::info!("cast to {}: {e:#}", s.device.name);
@@ -988,7 +1013,7 @@ mod tests {
         assert!(!about_replaced(&reused, Some(3), "loading"), "the number used again, for the new item");
     }
 
-    fn media(serial: u64) -> Media {
+    pub(super) fn media(serial: u64) -> Media {
         Media {
             url: String::new(),
             content_type: String::new(),

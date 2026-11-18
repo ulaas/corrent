@@ -89,6 +89,25 @@ impl ClientProfile {
         }
     }
 
+    /// A DLNA renderer (a smart TV, a receiver, Kodi): plays files as they are, in the formats
+    /// TVs of the last ten years share. No HLS; DTS and TrueHD sound, AV1 and 10-bit H.264 are
+    /// what they most often refuse.
+    pub fn dlna_renderer() -> ClientProfile {
+        let list = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        ClientProfile {
+            name: "dlna".into(),
+            containers: list(&["mp4", "mov", "matroska", "webm", "mpegts", "avi", "mp3", "flac", "wav", "ogg"]),
+            video_codecs: list(&["h264", "hevc", "mpeg2video", "mpeg4", "vp9"]),
+            audio_codecs: list(&["aac", "mp3", "ac3", "eac3", "flac", "vorbis", "opus", "pcm_s16le"]),
+            h264_10bit: false,
+            max_height: None,
+            max_audio_channels: 6,
+            max_bitrate: None,
+            hls: false,
+            everything: false,
+        }
+    }
+
     pub fn web_safari() -> ClientProfile {
         let mut p = ClientProfile::web_chromium();
         p.name = "safari".into();
@@ -105,6 +124,7 @@ impl ClientProfile {
             "native" => ClientProfile::native(),
             "safari" => ClientProfile::web_safari(),
             "chromecast" => ClientProfile::chromecast(),
+            "dlna" => ClientProfile::dlna_renderer(),
             _ => ClientProfile::web_chromium(),
         }
     }
@@ -430,6 +450,28 @@ mod tests {
             decide(&facts("mov,mp4,m4a,3gp,3g2,mj2", "hevc", "aac", 2), &ClientProfile::web_safari(), &none),
             Decision::Direct { .. }
         ));
+    }
+
+    #[test]
+    fn a_tv_plays_files_as_they_are_or_gets_them_converted() {
+        let tv = ClientProfile::dlna_renderer();
+        let none = PlayRequest::default();
+        for (c, v, a, ch) in [
+            ("matroska,webm", "hevc", "eac3", 6),
+            ("mov,mp4,m4a,3gp,3g2,mj2", "h264", "aac", 2),
+            ("mpegts", "mpeg2video", "ac3", 6),
+            ("avi", "mpeg4", "mp3", 2),
+        ] {
+            assert!(matches!(decide(&facts(c, v, a, ch), &tv, &none), Decision::Direct { .. }), "{c} {v} {a}");
+        }
+        // DTS, AV1, 7.1 and a subtitle in the picture need the server.
+        assert!(matches!(decide(&facts("matroska,webm", "h264", "dts", 6), &tv, &none), Decision::Transcode { .. }));
+        assert!(matches!(decide(&facts("matroska,webm", "av1", "aac", 2), &tv, &none), Decision::Transcode { .. }));
+        assert!(matches!(decide(&facts("matroska,webm", "h264", "aac", 8), &tv, &none), Decision::Transcode { .. }));
+        let burn = PlayRequest { burn_subtitle: Some(3), ..Default::default() };
+        assert!(matches!(decide(&facts("matroska,webm", "h264", "aac", 2), &tv, &burn), Decision::Transcode { .. }));
+        // Never copied into HLS: a TV doesn't take it.
+        assert_eq!(remux(&facts("matroska,webm", "h264", "dts", 6), &tv, &none), None);
     }
 
     #[test]

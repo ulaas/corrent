@@ -2917,7 +2917,7 @@ impl Player {
                 ui.colored_label(Color32::LIGHT_RED, e);
             }
             Some(Ok(list)) if list.is_empty() => {
-                ui.label(t!("No Chromecasts found on the server’s network."));
+                ui.label(t!("No Chromecasts or TVs found on the server’s network."));
             }
             Some(Ok(list)) => {
                 for d in list {

@@ -38,8 +38,11 @@ async fn devices(
     Query(q): Query<DevicesQuery>,
 ) -> ApiResult<Vec<CastDevice>> {
     let cfg = enabled(&st)?;
-    let list =
-        st.casts.devices(q.refresh, &cfg.devices).await.map_err(|e| err(ErrorCode::Internal, format!("{e:#}")))?;
+    let list = st
+        .casts
+        .devices(q.refresh, &cfg.devices, cfg.dlna)
+        .await
+        .map_err(|e| err(ErrorCode::Internal, format!("{e:#}")))?;
     Ok(Json(list.into_iter().map(|f| f.device).collect()))
 }
 
@@ -50,8 +53,14 @@ fn enabled(st: &AppState) -> Result<CastConfig, super::ApiErr> {
 }
 
 /// What a device is asked to play as it is: the Default Media Receiver's formats, as far as the
-/// settings go.
-fn profile(c: &CastConfig) -> ClientProfile {
+/// settings go, or (`dlna`) what TVs play — those take 4K and H.265 without being told, so of
+/// the settings only the bitrate limit is theirs.
+fn profile(c: &CastConfig, dlna: bool) -> ClientProfile {
+    if dlna {
+        let mut p = ClientProfile::dlna_renderer();
+        p.max_bitrate = (c.max_bitrate_kbps > 0).then_some(i64::from(c.max_bitrate_kbps) * 1000);
+        return p;
+    }
     let mut p = ClientProfile::chromecast();
     p.max_height = (c.max_height > 0).then_some(i64::from(c.max_height));
     p.max_bitrate = (c.max_bitrate_kbps > 0).then_some(i64::from(c.max_bitrate_kbps) * 1000);
@@ -92,7 +101,9 @@ async fn put_config(
 ) -> ApiResult<CastConfig> {
     auth.require(Perms::SETTINGS_WRITE)?;
     c.devices = c.devices.iter().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
-    if let Some(bad) = c.devices.iter().find(|l| crate::cast::manual_device(l).is_none()) {
+    if let Some(bad) =
+        c.devices.iter().find(|l| crate::cast::manual_device(l).is_none() && crate::cast::manual_renderer(l).is_none())
+    {
         return Err(err(ErrorCode::BadRequest, format!("not a device on this network: {bad}")));
     }
     // A conversion is never made larger than what is sent as it is.
@@ -170,8 +181,13 @@ async fn source(
     host: std::net::IpAddr,
     user: i64,
     info: &corrent_proto::library::PlaybackInfo,
+    dlna: bool,
 ) -> Result<(String, String, bool), super::ApiErr> {
     if let Some(session) = &info.session_id {
+        // A TV takes no HLS: the same conversion as one continuous stream.
+        if dlna {
+            return Ok((links.ts(host, session), "video/mp2t".to_string(), false));
+        }
         return Ok((links.hls(host, session), "application/x-mpegurl".to_string(), false));
     }
     if info.method == "remux" {
@@ -191,7 +207,11 @@ async fn play(
 ) -> ApiResult<CastStatus> {
     let cfg = enabled(&st)?;
     may_control(&st, &auth, &device)?;
-    let found = st.casts.device(&device, &cfg.devices).await.map_err(|e| err(ErrorCode::NotFound, format!("{e:#}")))?;
+    let found = st
+        .casts
+        .device(&device, &cfg.devices, cfg.dlna)
+        .await
+        .map_err(|e| err(ErrorCode::NotFound, format!("{e:#}")))?;
     let user = auth.0.user.id;
     let detail = st.library.item(user, b.item_id).await.map_err(lib_err)?;
     let file = match b.file_id {
@@ -203,9 +223,11 @@ async fn play(
         s.external && s.codec.as_deref().is_some_and(|c| super::playback::TEXT_SUBS.contains(&c))
     };
     let chosen = b.subtitle.filter(|i| *i > 0).and_then(|i| streams().find(|s| s.index == i));
-    // The device shows text from a file by itself; anything else has to be in the picture.
-    let burn = chosen.filter(|s| !is_text(s)).map(|s| s.index);
-    let active = chosen.filter(is_text).map(|s| s.index);
+    let dlna = found.dlna.is_some();
+    // The device shows text from a file by itself; anything else has to be in the picture. A
+    // DLNA renderer shows none of ours: every subtitle goes into the picture.
+    let burn = chosen.filter(|s| dlna || !is_text(s)).map(|s| s.index);
+    let active = chosen.filter(|s| !dlna && is_text(s)).map(|s| s.index);
     let loaded = crate::cast::Loaded {
         item_id: b.item_id,
         audio_track: b.audio_track,
@@ -220,7 +242,7 @@ async fn play(
         crate::cast::local_ip_towards(found.addr).ok_or_else(|| err(ErrorCode::Internal, "no route to the device"))?;
     let links = crate::remote::lan_links(&st).await.map_err(|e| err(ErrorCode::EngineUnavailable, format!("{e:#}")))?;
     let mut req = PlaybackRequest {
-        profile: Some("chromecast".into()),
+        profile: Some(if dlna { "dlna" } else { "chromecast" }.into()),
         file_id: b.file_id,
         audio_track: b.audio_track,
         burn_subtitle: burn,
@@ -228,19 +250,19 @@ async fn play(
     };
     // What the devices play as they are, and what a conversion for them is made at.
     let shape = super::playback::How {
-        profile: Some(profile(&cfg)),
+        profile: Some(profile(&cfg, dlna)),
         remux_ok: false,
         target_height: (cfg.transcode_height > 0).then_some(i64::from(cfg.transcode_height)),
         target_bitrate: (cfg.transcode_bitrate_kbps > 0).then_some(i64::from(cfg.transcode_bitrate_kbps) * 1000),
     };
-    let copying = super::playback::How { remux_ok: cfg.copy_streams, ..shape.clone() };
+    let copying = super::playback::How { remux_ok: cfg.copy_streams && !dlna, ..shape.clone() };
     let mut info = super::playback::prepare(&st, &auth, b.item_id, req.clone(), copying).await?;
     // Unfinished downloads only play through the engine: transcode (which reads through it).
     if info.method == "direct" && info.downloading {
         req.force_transcode = true;
         info = super::playback::prepare(&st, &auth, b.item_id, req.clone(), shape.clone()).await?;
     }
-    let (url, content_type, copied) = source(&st, &links, host, user, &info).await?;
+    let (url, content_type, copied) = source(&st, &links, host, user, &info, dlna).await?;
     let image = detail
         .item
         .images
@@ -250,7 +272,7 @@ async fn play(
         .map(|i| links.art(host, &i.sha));
     let serial = st.casts.next_serial();
     let tracks = streams()
-        .filter(is_text)
+        .filter(|s| !dlna && is_text(s))
         .map(|s| crate::cast::SideTrack {
             id: s.index,
             url: links.subtitle(host, user, info.file_id, s.index),
@@ -299,7 +321,7 @@ async fn play(
                     Err(e) => return st.casts.fail(&id, media.serial, e.0.message),
                 };
                 let session = info.session_id.clone();
-                match source(&st, &links, host, media.user_id, &info).await {
+                match source(&st, &links, host, media.user_id, &info, false).await {
                     Ok((url, content_type, copied)) => {
                         media.url = url;
                         media.content_type = content_type;

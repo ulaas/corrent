@@ -69,6 +69,24 @@ Run from a terminal so logs are visible (`CORRENT_LOG=debug corrent --portable`)
       image, translocated, ad hoc signed or from an admin's `/Applications` as a standard user:
       the dmg lands in Downloads, opens, and the dialog says why and to drag it across.
 
+## Smart TVs (needs a real TV; any platform)
+
+Playing to DLNA renderers has only run against a renderer made for the tests. On a real Samsung
+(Tizen), LG or Sony TV on the same network, with the TV on:
+
+1. The player's cast list shows the TV by its name (if not: add its description address under
+   Settings → Playback → Casting → devices, `http://<tv>:9197/dmr` on Samsung).
+2. An MP4 or MKV with H.264 or H.265 and AAC/AC-3 sound starts within a few seconds (the TV may
+   first ask to allow the device); the position follows, pause, seek, volume, mute and stop work,
+   and at the end the item is marked played and the next one starts.
+3. A file with DTS sound, and any file with a subtitle chosen, plays converted (Settings →
+   Sessions shows the conversion); seeking restarts the stream at the new place within a few
+   seconds; pausing for two minutes and resuming works.
+4. With the firewall closed for the media port the player says the device couldn't reach this
+   computer, not that it can't play the file.
+
+Note the TV's model and what failed (the log has the renderer's error codes at info level).
+
 ## Results
 
 | Date | Platform / distro / desktop | Tester | Result | Notes |

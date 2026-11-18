@@ -2361,6 +2361,240 @@ async fn fake_receiver_with(seen: tokio::sync::mpsc::UnboundedSender<String>, ki
     addr
 }
 
+/// A DLNA renderer (a TV) on loopback: its description and the SOAP actions the server uses.
+/// What it was told goes to `seen`; `state` is what it says it is doing.
+#[derive(Default)]
+struct FakeTv {
+    state: String,
+    uri: String,
+    metadata: String,
+    position: String,
+    volume: i64,
+    muted: bool,
+}
+
+async fn fake_tv(
+    seen: tokio::sync::mpsc::UnboundedSender<String>,
+) -> (std::net::SocketAddr, Arc<std::sync::Mutex<FakeTv>>) {
+    use axum::routing::{get, post};
+    let tv = Arc::new(std::sync::Mutex::new(FakeTv {
+        state: "NO_MEDIA_PRESENT".into(),
+        position: "0:00:00".into(),
+        volume: 40,
+        ..Default::default()
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let description = format!(
+        "<?xml version=\"1.0\"?><root xmlns=\"urn:schemas-upnp-org:device-1-0\"><URLBase>http://{addr}/</URLBase><device>\
+         <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType><friendlyName>[TV] Den</friendlyName>\
+         <modelName>QE55</modelName><UDN>uuid:fake-tv-1</UDN><serviceList>\
+         <service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><controlURL>/av</controlURL></service>\
+         <service><serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType><controlURL>/rc</controlURL></service>\
+         </serviceList></device></root>"
+    );
+    let control = {
+        let tv = tv.clone();
+        move |headers: axum::http::HeaderMap, body: String| {
+            let (tv, seen) = (tv.clone(), seen.clone());
+            async move {
+                use crate::dlna::didl::tag;
+                let action = headers
+                    .get("soapaction")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim_matches('"').rsplit('#').next())
+                    .unwrap_or_default()
+                    .to_string();
+                let mut t = tv.lock().unwrap();
+                let answer = match action.as_str() {
+                    "SetAVTransportURI" => {
+                        t.uri = tag(&body, "CurrentURI").unwrap_or_default();
+                        t.metadata = tag(&body, "CurrentURIMetaData").unwrap_or_default();
+                        t.state = "STOPPED".into();
+                        t.position = "0:00:00".into();
+                        let _ = seen.send(format!("URI {}", t.uri));
+                        String::new()
+                    }
+                    "Play" => {
+                        t.state = "PLAYING".into();
+                        let _ = seen.send("PLAY".into());
+                        String::new()
+                    }
+                    "Pause" => {
+                        t.state = "PAUSED_PLAYBACK".into();
+                        let _ = seen.send("PAUSE".into());
+                        String::new()
+                    }
+                    "Stop" => {
+                        t.state = "STOPPED".into();
+                        let _ = seen.send("STOP".into());
+                        String::new()
+                    }
+                    "Seek" => {
+                        t.position = tag(&body, "Target").unwrap_or_default();
+                        let _ = seen.send(format!("SEEK {}", t.position));
+                        String::new()
+                    }
+                    "SetVolume" => {
+                        t.volume = tag(&body, "DesiredVolume").and_then(|v| v.parse().ok()).unwrap_or(0);
+                        let _ = seen.send(format!("VOLUME {}", t.volume));
+                        String::new()
+                    }
+                    "SetMute" => {
+                        t.muted = tag(&body, "DesiredMute").as_deref() == Some("1");
+                        let _ = seen.send(format!("MUTE {}", t.muted));
+                        String::new()
+                    }
+                    "GetTransportInfo" => format!("<CurrentTransportState>{}</CurrentTransportState>", t.state),
+                    "GetPositionInfo" => {
+                        format!("<TrackDuration>0:00:10</TrackDuration><RelTime>{}</RelTime>", t.position)
+                    }
+                    "GetVolume" => format!("<CurrentVolume>{}</CurrentVolume>", t.volume),
+                    "GetMute" => format!("<CurrentMute>{}</CurrentMute>", i32::from(t.muted)),
+                    _ => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "<s:Envelope><s:Body><s:Fault><detail><UPnPError><errorCode>401</errorCode>\
+                             <errorDescription>Invalid Action</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>"
+                                .to_string(),
+                        );
+                    }
+                };
+                (
+                    StatusCode::OK,
+                    format!(
+                        "<s:Envelope><s:Body><u:{action}Response>{answer}</u:{action}Response></s:Body></s:Envelope>"
+                    ),
+                )
+            }
+        }
+    };
+    let app = axum::Router::new()
+        .route(
+            "/dmr",
+            get(move || {
+                let d = description.clone();
+                async move { d }
+            }),
+        )
+        .route("/av", post(control.clone()))
+        .route("/rc", post(control));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (addr, tv)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn casts_to_a_dlna_renderer() {
+    let h = harness("cast-dlna", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let photos = h.dir.join("Pics");
+    std::fs::create_dir_all(&photos).unwrap();
+    image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])).save(photos.join("a & b.png")).unwrap();
+    let (_, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Pics", "kind": "photos", "folders": [photos] }),
+    )
+    .await;
+    let lib = v["id"].as_i64().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let item = loop {
+        let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+        if let Some(id) = v["items"][0]["id"].as_i64() {
+            break id;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let (tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
+    let (addr, tv) = fake_tv(tx).await;
+    // Its description names it; one that points control somewhere else is no device of ours.
+    let found = crate::cast::upnp::device(&format!("http://{addr}/dmr")).await.unwrap();
+    assert_eq!((found.device.name.as_str(), found.device.kind.as_str()), ("[TV] Den", "dlna"));
+    assert!(crate::cast::upnp::device("http://93.184.216.34/dmr").await.is_err(), "not on this network");
+    let id = found.device.id.clone();
+    h.st.casts.inject(found);
+    let (_, v, _) = get(app, "/api/v1/cast/devices", &admin).await;
+    assert_eq!((v[0]["id"].as_str(), v[0]["kind"].as_str()), (Some(id.as_str()), Some("dlna")), "{v}");
+    let next = async |seen: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
+        tokio::time::timeout(std::time::Duration::from_secs(10), seen.recv()).await.unwrap().unwrap()
+    };
+    let wait = async |want: &str| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let (_, v, _) = get(app, &format!("/api/v1/cast/{id}"), &admin).await;
+            if v["state"] == want {
+                return v;
+            }
+            assert!(std::time::Instant::now() < deadline, "waiting for {want}: {v}");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    };
+    let (s, v, _) =
+        send(app, Method::POST, &format!("/api/v1/cast/{id}/play"), &admin, json!({ "item_id": item })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // Whatever was on is stopped, then the address with its description, then play.
+    assert_eq!(next(&mut seen).await, "STOP");
+    let uri = next(&mut seen).await;
+    let url = uri.strip_prefix("URI ").unwrap().to_string();
+    assert!(url.starts_with("http://127.0.0.1:") && url.contains("/dlna/media/"), "{url}");
+    assert_eq!(next(&mut seen).await, "PLAY");
+    let described = tv.lock().unwrap().metadata.clone();
+    assert!(
+        described.contains("<dc:title>a &amp; b</dc:title>") && described.contains("DLNA.ORG_OP=01"),
+        "{described}"
+    );
+    // The TV fetches the file itself, with the headers TVs look for.
+    let res = reqwest::get(&url).await.unwrap();
+    assert!(res.headers().get("contentfeatures.dlna.org").is_some());
+    assert!(res.bytes().await.unwrap().starts_with(b"\x89PNG"));
+    let v = wait("playing").await;
+    assert_eq!(v["item_id"], item);
+    let command = format!("/api/v1/cast/{id}/command");
+    let cmd = |body: serde_json::Value| send(app, Method::POST, &command, &admin, body);
+    cmd(json!({ "action": "pause" })).await;
+    assert_eq!(next(&mut seen).await, "PAUSE");
+    wait("paused").await;
+    cmd(json!({ "action": "volume", "level": 0.25 })).await;
+    assert_eq!(next(&mut seen).await, "VOLUME 25");
+    cmd(json!({ "action": "mute", "muted": true })).await;
+    assert_eq!(next(&mut seen).await, "MUTE true");
+    cmd(json!({ "action": "play" })).await;
+    assert_eq!(next(&mut seen).await, "PLAY");
+    cmd(json!({ "action": "seek", "position_ms": 9000 })).await;
+    assert_eq!(next(&mut seen).await, "SEEK 0:00:09");
+    // Asked every second: where it is, how loud.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let (_, v, _) = get(app, &format!("/api/v1/cast/{id}"), &admin).await;
+        if v["position_ms"] == 9000 && v["volume"].as_f64() == Some(0.25) && v["muted"] == true {
+            assert_eq!(v["duration_ms"], 10_000, "{v}");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{v}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    // It stops by itself at the end: played through.
+    tv.lock().unwrap().state = "STOPPED".into();
+    let v = wait("idle").await;
+    assert_eq!(v["finished"], true, "{v}");
+    // Told to stop: the TV is, and the session is over.
+    let (s, _, _) =
+        send(app, Method::POST, &format!("/api/v1/cast/{id}/play"), &admin, json!({ "item_id": item })).await;
+    assert_eq!(s, StatusCode::OK);
+    wait("playing").await;
+    while seen.try_recv().is_ok() {}
+    cmd(json!({ "action": "stop" })).await;
+    assert_eq!(next(&mut seen).await, "STOP");
+    wait("idle").await;
+    h.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn casts_to_a_receiver() {
     let h = harness("cast", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
@@ -2394,8 +2628,10 @@ async fn casts_to_a_receiver() {
             id: "tv".into(),
             name: "Living room".into(),
             model: "Chromecast".into(),
+            ..Default::default()
         },
         addr,
+        dlna: None,
     });
     let (_, v, _) = get(app, "/api/v1/cast/devices", &admin).await;
     assert_eq!(v[0]["name"], "Living room");
@@ -2535,8 +2771,9 @@ async fn cast_fixture(h: &H, admin: &str, addr: SocketAddr) -> i64 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     };
     h.st.casts.inject(crate::cast::Found {
-        device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), model: String::new() },
+        device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), ..Default::default() },
         addr,
+        dlna: None,
     });
     item
 }
@@ -2600,14 +2837,80 @@ async fn cast_mkv_fixture(
     let (tx, seen) = tokio::sync::mpsc::unbounded_channel();
     let addr = fake_receiver_with(tx, kind).await;
     h.st.casts.inject(crate::cast::Found {
-        device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), model: String::new() },
+        device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), ..Default::default() },
         addr,
+        dlna: None,
     });
     Some((item, index, seen))
 }
 
 async fn next_seen(seen: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> String {
     tokio::time::timeout(std::time::Duration::from_secs(20), seen.recv()).await.unwrap().unwrap()
+}
+
+/// A TV shows no subtitles of ours and takes no HLS: the subtitle is burned in, and the
+/// conversion reaches it as one MPEG-TS stream that is "sought" by starting it again later.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tv_gets_a_conversion_as_one_stream() {
+    let h = harness("cast-dlna-ts", ServerConfig { tls: false, dlna_port: 0, ..Default::default() }).await;
+    let admin = admin_token(&h.app).await;
+    let Some((item, index, _)) = cast_mkv_fixture(&h, &admin, FakeDevice::Normal).await else { return };
+    let app = &h.app;
+    let (tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
+    let (addr, tv) = fake_tv(tx).await;
+    let found = crate::cast::upnp::device(&format!("http://{addr}/dmr")).await.unwrap();
+    let id = found.device.id.clone();
+    h.st.casts.inject(found);
+    // Without a subtitle the MKV plays as it is: nothing is converted.
+    let (s, v, _) =
+        send(app, Method::POST, &format!("/api/v1/cast/{id}/play"), &admin, json!({ "item_id": item })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let uri = loop {
+        let m = next_seen(&mut seen).await;
+        if let Some(u) = m.strip_prefix("URI ") {
+            break u.to_string();
+        }
+    };
+    assert!(uri.contains("/dlna/media/") && h.st.hls.sessions().is_empty(), "{uri}");
+    // With one, it is converted (the subtitle in the picture) and sent as a stream.
+    let body = json!({ "item_id": item, "subtitle": index, "position_ms": 0 });
+    let (s, v, _) = send(app, Method::POST, &format!("/api/v1/cast/{id}/play"), &admin, body).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let uri = loop {
+        let m = next_seen(&mut seen).await;
+        if let Some(u) = m.strip_prefix("URI ").filter(|u| u.contains("stream.ts")) {
+            break u.to_string();
+        }
+    };
+    assert!(uri.ends_with("/stream.ts?from=0"), "{uri}");
+    assert_eq!(h.st.hls.sessions().len(), 1);
+    let described = tv.lock().unwrap().metadata.clone();
+    assert!(described.contains("video/mp2t:DLNA.ORG_OP=00"), "not seekable by bytes: {described}");
+    let res = reqwest::get(&uri).await.unwrap();
+    assert_eq!(res.headers()["content-type"], "video/mp2t");
+    let bytes = res.bytes().await.unwrap();
+    // MPEG-TS packets (188 bytes, each starting 0x47) from the first byte to the last.
+    assert!(bytes.len() > 188 * 10 && bytes.len() % 188 == 0, "{} bytes", bytes.len());
+    assert!(bytes.chunks(188).all(|p| p.first() == Some(&0x47)), "packets stay aligned across segments");
+    // A seek starts the stream again at the segment wanted (segments are 4 s long).
+    let cmd = format!("/api/v1/cast/{id}/command");
+    while seen.try_recv().is_ok() {}
+    send(app, Method::POST, &cmd, &admin, json!({ "action": "seek", "position_ms": 4500 })).await;
+    let again = loop {
+        let m = next_seen(&mut seen).await;
+        if let Some(u) = m.strip_prefix("URI ") {
+            break u.to_string();
+        }
+    };
+    assert!(again.ends_with("/stream.ts?from=1"), "{again}");
+    // Stopping the cast stops the conversion.
+    send(app, Method::POST, &cmd, &admin, json!({ "action": "stop" })).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !h.st.hls.sessions().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "the conversion is still running");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    h.stop().await;
 }
 
 /// H.264 and AAC in an MKV: copied, not converted. The subtitle file goes along as a track the
@@ -2874,8 +3177,9 @@ async fn cast_settings_are_saved_and_followed() {
     assert_eq!(v["devices"], json!(["Den=192.168.77.9"]));
     // Offered at once, next to what the search found.
     h.st.casts.inject(crate::cast::Found {
-        device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), model: String::new() },
+        device: corrent_proto::library::CastDevice { id: "tv".into(), name: "TV".into(), ..Default::default() },
         addr: "192.168.77.8:8009".parse().unwrap(),
+        dlna: None,
     });
     let (_, v, _) = get(app, "/api/v1/cast/devices", &admin).await;
     assert_eq!((v[0]["name"].as_str(), v[1]["name"].as_str()), (Some("TV"), Some("Den")), "{v}");

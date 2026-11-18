@@ -302,6 +302,7 @@ Stop.
 | `max_bitrate_kbps` | `0` | Files above this are transcoded. 0: no limit. |
 | `hevc` | `false` | The devices play H.265, so such files needn't be transcoded. |
 | `copy_streams` | `true` | Streams the device plays, in a container it doesn't (MKV), are copied into HLS/fMP4 rather than transcoded. A device that fetches them and fails gets a transcode. |
+| `dlna` | `true` | Also offer DLNA renderers: smart TVs (Samsung, LG, Sony), receivers, Kodi. |
 | `transcode_height` | `0` | The picture height a transcode for a device is made at (never above `max_height`). 0: the file's. |
 | `transcode_bitrate_kbps` | `0` | The video bitrate of such a transcode. 0: by the picture's size (8 Mbit/s at 1080p, 4 at 720p, 2 at 480p). |
 | `port` | `0` | The port devices fetch from. 0: `dlna_port`, or any free port if that's taken. A running DLNA listener is used instead of this. |
@@ -313,6 +314,32 @@ may ask to allow Corrent through the firewall on the first cast (again for a por
 folder); if that's refused, the cast fails with "The device couldn't reach this computer". A `correntd`
 whose owner set `bind = "127.0.0.1"` stays on loopback and refuses to cast. Closing the app ends what
 the device can fetch.
+
+### Smart TVs and other DLNA renderers
+
+The same device list also offers DLNA/UPnP renderers ("play to"): Samsung (Tizen), LG and Sony
+TVs, AV receivers, Kodi. The server finds them with an SSDP search for `MediaRenderer`, reads
+their description and drives them with SOAP (AVTransport, RenderingControl); their state is asked
+for every second. In the API they are cast devices with `"kind": "dlna"`; play, pause, seek, stop,
+volume and mute work as for a Chromecast.
+
+- **What plays as it is:** MP4/MOV, MKV, WebM, MPEG-TS and AVI with H.264, H.265, MPEG-2, MPEG-4
+  or VP9 video and AAC, MP3, AC-3, E-AC-3, FLAC, Vorbis, Opus or PCM sound (up to 5.1). The TV
+  fetches the file itself from the media listener (signed link, Range requests).
+- **Everything else is converted** (DTS and TrueHD sound, AV1, 10-bit H.264, more than 5.1, a
+  file still downloading, a chosen subtitle): TVs take no HLS, so the conversion goes out as one
+  continuous MPEG-TS stream (`/dlna/hls/<session>/<signature>/stream.ts`). Such a stream can't be
+  sought by the TV; a seek starts it again at the 4-second segment wanted (`?from=<n>`).
+- **Subtitles** are always burned into the picture (a TV shows none of ours), which converts.
+- Of the settings above, `max_bitrate_kbps` and the `transcode_*` targets apply; `max_height`
+  and `hevc` are for Chromecasts (TVs take 4K and H.265).
+- A TV the search doesn't find (another VLAN) is added under `devices` by the address of its
+  description, e.g. `http://192.168.1.20:9197/dmr` on Samsung TVs. Only plain-HTTP local IPv4
+  addresses are opened, and a description may only name control addresses on the device itself.
+- A TV may ask on its screen whether to allow the server the first time.
+
+Not tested on real TVs yet (only against a renderer made for the tests): see
+`docs/PLATFORM-TESTING.md`.
 
 ## Jellyfin apps
 

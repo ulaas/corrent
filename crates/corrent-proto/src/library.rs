@@ -947,13 +947,18 @@ pub enum RoomCommand {
     Seek { position_ms: i64 },
 }
 
-/// A Chromecast (or other Google Cast receiver) the server found on its network.
+/// A device the server found on its network to play on: a Chromecast (or other Google Cast
+/// receiver), or a DLNA renderer (a smart TV, a receiver, Kodi).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CastDevice {
     pub id: String,
     pub name: String,
     #[serde(default)]
     pub model: String,
+    /// How it is spoken to: "" (Google Cast) or "dlna". A DLNA renderer plays files as they
+    /// are, shows no subtitles of ours and may have no volume control.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
 }
 
 /// What a cast device is doing (`GET /api/v1/cast/{device}`).
@@ -1009,6 +1014,8 @@ pub struct CastConfig {
     pub transcode_height: u32,
     /// The video bitrate converted streams are made at, in kbit/s (0: by the picture's size).
     pub transcode_bitrate_kbps: u32,
+    /// Also offer DLNA renderers (smart TVs, receivers, Kodi).
+    pub dlna: bool,
 }
 
 impl Default for CastConfig {
@@ -1023,6 +1030,7 @@ impl Default for CastConfig {
             copy_streams: true,
             transcode_height: 0,
             transcode_bitrate_kbps: 0,
+            dlna: true,
         }
     }
 }

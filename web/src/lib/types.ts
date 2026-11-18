@@ -754,6 +754,8 @@ export interface CastDevice {
   id: string;
   name: string;
   model: string;
+  /** How the server speaks to it: absent (Google Cast) or "dlna" (a TV, a receiver, Kodi). */
+  kind?: string;
 }
 
 export interface CastStatus {
@@ -783,6 +785,8 @@ export interface CastConfig {
   hevc: boolean;
   port: number;
   copy_streams: boolean;
+  /** Also offer DLNA renderers (smart TVs). Absent on an older server. */
+  dlna?: boolean;
   /** What a conversion for a device is made at: lines and kbit/s; 0 keeps the file's. */
   transcode_height?: number;
   transcode_bitrate_kbps?: number;
