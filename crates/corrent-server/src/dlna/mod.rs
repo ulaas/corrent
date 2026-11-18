@@ -619,12 +619,27 @@ async fn hls(
             return StatusCode::NOT_FOUND.into_response();
         }
         let hls = d.st.hls.clone();
-        let body = Body::from_stream(futures_util::stream::unfold(from, move |n| {
+        // A piece at a time: a segment at a high bitrate is tens of megabytes.
+        type Open = Option<tokio::fs::File>;
+        let body = Body::from_stream(futures_util::stream::unfold((from, Open::None), move |(mut n, mut file)| {
             let (hls, session) = (hls.clone(), session.clone());
             async move {
-                let path = hls.segment(&session, n).await.ok()?;
-                let bytes = tokio::fs::read(&path).await.ok()?;
-                Some((Ok::<_, std::io::Error>(axum::body::Bytes::from(bytes)), n + 1))
+                use tokio::io::AsyncReadExt;
+                loop {
+                    let mut open = match file.take() {
+                        Some(f) => f,
+                        None => tokio::fs::File::open(hls.segment(&session, n).await.ok()?).await.ok()?,
+                    };
+                    let mut piece = vec![0u8; 256 * 1024];
+                    let got = open.read(&mut piece).await.ok()?;
+                    if got == 0 {
+                        // That segment is through: on to the next.
+                        n += 1;
+                        continue;
+                    }
+                    piece.truncate(got);
+                    return Some((Ok::<_, std::io::Error>(axum::body::Bytes::from(piece)), (n, Some(open))));
+                }
             }
         }));
         let mut res =

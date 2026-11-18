@@ -664,6 +664,10 @@ pub struct PlaybackRequest {
     pub max_bitrate: Option<i64>,
     pub max_height: Option<i64>,
     pub force_transcode: bool,
+    /// The subtitle stream to burn in if the item is converted anyway (a conversion carries no
+    /// subtitles of its own); unlike `burn_subtitle` it is no reason to convert.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub burn_when_converted: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

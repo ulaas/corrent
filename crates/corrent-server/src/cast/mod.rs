@@ -140,7 +140,8 @@ struct Session {
 
 #[derive(Default)]
 pub struct Casts {
-    found: Mutex<Option<(Instant, Vec<Found>)>>,
+    /// What the last search found, when, and whether it looked for DLNA renderers too.
+    found: Mutex<Option<(Instant, Vec<Found>, bool)>>,
     sessions: Mutex<HashMap<String, Session>>,
     /// When links on the media listener were last asked for.
     last_use: Mutex<Option<Instant>>,
@@ -256,8 +257,10 @@ impl Casts {
     /// With `dlna`, DLNA renderers too.
     pub async fn devices(&self, refresh: bool, manual: &[String], dlna: bool) -> anyhow::Result<Vec<Found>> {
         if !refresh
-            && let Some((at, list)) = self.found.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            && let Some((at, list, with_dlna)) = self.found.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
             && at.elapsed() < FRESH
+            // Renderers just turned on in the settings aren't in a list made without them.
+            && (*with_dlna || !dlna)
         {
             let list = list.iter().filter(|f| dlna || f.dlna.is_none()).cloned().collect();
             return Ok(merged(list, manual));
@@ -276,7 +279,7 @@ impl Casts {
         };
         list.extend(renderers);
         list.sort_by_key(|f| f.device.name.to_lowercase());
-        *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), list.clone()));
+        *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), list.clone(), dlna));
         Ok(merged(list, manual))
     }
 
@@ -294,7 +297,7 @@ impl Casts {
     /// A device as if found on the network (tests).
     #[cfg(test)]
     pub fn inject(&self, f: Found) {
-        *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), vec![f]));
+        *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), vec![f], true));
     }
 
     pub fn status(&self, id: &str) -> Option<CastStatus> {
@@ -351,7 +354,13 @@ impl Casts {
         let (tx, rx) = mpsc::channel(16);
         let _ = tx.try_send(Cmd::Load(Box::new(media)));
         let s2 = status.clone();
+        // A session told to stop is still telling the device so: this one starts after it, or
+        // that late Stop would end what this one plays.
+        let before = sessions.get(&id).map(|s| s.tx.clone());
         tokio::spawn(async move {
+            if let Some(before) = before {
+                let _ = tokio::time::timeout(Duration::from_secs(4), before.closed()).await;
+            }
             let r = match found.dlna.clone() {
                 Some(renderer) => upnp::session(renderer, s2.clone(), rx, st.clone()).await,
                 None => connection(found.addr, s2.clone(), rx, st.clone()).await,

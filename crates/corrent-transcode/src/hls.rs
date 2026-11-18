@@ -467,6 +467,9 @@ impl HlsManager {
                             // It may have written `n` just after the check above.
                             s.refresh_done().await;
                             if s.has_segment(n, &path).await {
+                                if let Ok(meta) = tokio::fs::metadata(&path).await {
+                                    s.sent.fetch_add(meta.len(), Ordering::Relaxed);
+                                }
                                 return Ok(path);
                             }
                             let start = r.start;

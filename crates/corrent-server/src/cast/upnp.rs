@@ -32,6 +32,21 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_FAILURES: u32 = 8;
 /// After Play, a renderer that says "stopped" for this long couldn't play it.
 const START_GRACE: Duration = Duration::from_secs(12);
+const ASK_TIMEOUT: Duration = Duration::from_secs(2);
+/// Polls in a row that show the renderer on something that isn't ours before it is let go.
+const FOREIGN_POLLS: u32 = 3;
+
+/// Is `theirs` (what the renderer says it plays) the address we gave it? By host, port and
+/// path: renderers echo the address, some without its query.
+fn same_media(ours: &str, theirs: &str) -> bool {
+    let part =
+        |u: &str| url::Url::parse(u).ok().map(|u| (u.host_str().map(str::to_string), u.port(), u.path().to_string()));
+    match (part(ours), part(theirs.trim())) {
+        (Some(a), Some(b)) => a == b,
+        // Nothing, or nothing that reads as an address: no evidence of anything else.
+        _ => true,
+    }
+}
 
 /// A renderer's control addresses, from its description.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,6 +92,11 @@ pub fn local_url(url: &str, only: Option<IpAddr>) -> Option<(url::Url, SocketAdd
         url::Host::Ipv4(ip) => ip,
         _ => return None,
     };
+    // A renderer is another device: not this computer (tests run one on loopback), and not a
+    // link-local address (cloud metadata services live there).
+    if ip.is_link_local() || (ip.is_loopback() && !cfg!(test)) {
+        return None;
+    }
     let ip = IpAddr::V4(ip);
     if !crate::net::is_local(ip, &[]) || only.is_some_and(|o| o != ip) {
         return None;
@@ -85,13 +105,21 @@ pub fn local_url(url: &str, only: Option<IpAddr>) -> Option<(url::Url, SocketAdd
     Some((u, addr))
 }
 
+/// One client for every renderer (connections are kept and reused): never through a proxy,
+/// never following a redirect.
 fn http() -> Result<reqwest::Client, Fault> {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .no_proxy()
-        .timeout(TIMEOUT)
-        .build()
-        .map_err(|e| fault(e.to_string()))
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .timeout(TIMEOUT)
+                .build()
+                .ok()
+        })
+        .clone()
+        .ok_or_else(|| fault("no HTTP client"))
 }
 
 /// Reads a renderer's description at `location` (an address it announced or the user typed).
@@ -199,7 +227,20 @@ async fn answers(ip: Ipv4Addr, wait: Duration) -> Vec<String> {
 /// Renderers that answer a search within `wait`, and the typed ones (`extra`: description
 /// addresses).
 pub async fn search(wait: Duration, extra: &[String]) -> Vec<Found> {
+    // A device that doesn't answer mustn't hold up the others, or the list for long.
+    let describe_soon = |location: String| async move {
+        let r = match tokio::time::timeout(Duration::from_secs(3), describe(&location)).await {
+            Ok(r) => r,
+            Err(_) => Err(fault("the device didn't answer")),
+        };
+        (location, r)
+    };
+    let mut describing = tokio::task::JoinSet::new();
+    // The typed ones are asked while the search runs.
     let mut locations: Vec<String> = extra.to_vec();
+    for location in &locations {
+        describing.spawn(describe_soon(location.clone()));
+    }
     // From every network this computer is on: the default route alone misses a TV on another
     // interface (a second card, a VPN up at the same time).
     let mut from: Vec<Ipv4Addr> = if_addrs::get_if_addrs()
@@ -220,20 +261,13 @@ pub async fn search(wait: Duration, extra: &[String]) -> Vec<Found> {
     while let Some(found) = asking.join_next().await {
         for location in found.unwrap_or_default() {
             if !locations.contains(&location) && locations.len() < 64 {
-                locations.push(location);
+                locations.push(location.clone());
+                describing.spawn(describe_soon(location));
             }
         }
     }
-    // All at once: a device that doesn't answer mustn't hold up the others.
-    let mut asking = tokio::task::JoinSet::new();
-    for location in locations {
-        asking.spawn(async move {
-            let r = describe(&location).await;
-            (location, r)
-        });
-    }
     let mut out: Vec<Found> = Vec::new();
-    while let Some(Ok((location, r))) = asking.join_next().await {
+    while let Some(Ok((location, r))) = describing.join_next().await {
         match r {
             Ok((r, addr)) => {
                 let f = found(r, addr);
@@ -250,6 +284,18 @@ pub async fn search(wait: Duration, extra: &[String]) -> Vec<Found> {
 
 /// One SOAP action; the answer's body.
 pub async fn soap(control: &str, service: &str, action: &str, args: &[(&str, &str)]) -> Result<String, Fault> {
+    soap_within(control, service, action, args, TIMEOUT).await
+}
+
+/// [`soap`] with its own time limit (the questions asked every second get a short one, so a
+/// renderer that has gone quiet doesn't keep a Stop waiting).
+async fn soap_within(
+    control: &str,
+    service: &str,
+    action: &str,
+    args: &[(&str, &str)],
+    limit: Duration,
+) -> Result<String, Fault> {
     let (u, _) = local_url(control, None).ok_or_else(|| fault("not a device on this network"))?;
     let mut body = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
@@ -264,6 +310,7 @@ pub async fn soap(control: &str, service: &str, action: &str, args: &[(&str, &st
         .post(u)
         .header(reqwest::header::CONTENT_TYPE, "text/xml; charset=\"utf-8\"")
         .header("SOAPACTION", format!("\"{service}#{action}\""))
+        .timeout(limit)
         .body(body)
         .send()
         .await
@@ -346,6 +393,16 @@ impl Ctl<'_> {
         soap(&self.r.av, AV_TRANSPORT, action, &all).await
     }
 
+    /// A question about its state: answered soon or not at all.
+    async fn ask(&self, action: &str) -> Result<String, Fault> {
+        soap_within(&self.r.av, AV_TRANSPORT, action, &[("InstanceID", "0")], ASK_TIMEOUT).await
+    }
+
+    async fn ask_rc(&self, action: &str) -> Option<String> {
+        let rc = self.r.rc.as_deref()?;
+        soap_within(rc, RENDERING, action, &[("InstanceID", "0"), ("Channel", "Master")], ASK_TIMEOUT).await.ok()
+    }
+
     async fn rc(&self, action: &str, args: &[(&str, &str)]) -> Result<String, Fault> {
         let rc = self.r.rc.as_deref().ok_or_else(|| fault("the device has no volume control"))?;
         let mut all = vec![("InstanceID", "0"), ("Channel", "Master")];
@@ -382,6 +439,9 @@ pub(super) async fn session(
         }
     };
     let mut current: Option<Box<Media>> = None;
+    // The address the renderer was given for it, and how often it has shown another since.
+    let mut current_url = String::new();
+    let mut foreign = 0u32;
     // Told to play and not playing yet; what the media listener had served when it was told.
     let mut loading_since: Option<Instant> = None;
     let mut hits_at_load: Option<(Arc<AtomicU64>, u64)> = None;
@@ -407,13 +467,21 @@ pub(super) async fn session(
     loop {
         tokio::select! {
             cmd = rx.recv() => {
-                let Some(cmd) = cmd else { return Ok(()) };
+                let Some(cmd) = cmd else {
+                    // Nobody holds this session any more: what it converts isn't wanted.
+                    if let Some(c) = &current {
+                        report_progress(&st, c, played_at, c.duration_ms, false);
+                    }
+                    stop_hls(&current);
+                    return Ok(());
+                };
                 match cmd {
                     Cmd::Load(m) => {
                         if let Some(c) = &current {
                             report_progress(&st, c, played_at, c.duration_ms, false);
                         }
                         stop_hls(&current);
+                        foreign = 0;
                         set(&mut |s| s.state = "loading".into());
                         idle_since = None;
                         played = false;
@@ -433,6 +501,7 @@ pub(super) async fn session(
                             Ok(()) => {
                                 loading_since = Some(Instant::now());
                                 current = Some(m);
+                                current_url = url;
                             }
                             Err(e) => {
                                 tracing::info!("cast to {}: {e}", r.name);
@@ -476,6 +545,8 @@ pub(super) async fn session(
                                         s.state = "buffering".into();
                                         s.position_ms = offset;
                                     });
+                                    foreign = 0;
+                                    current_url = url.clone();
                                     ctl.load(m, &url).await.map(|_| String::new())
                                 }
                                 _ => {
@@ -517,8 +588,8 @@ pub(super) async fn session(
                         st.hls.keep_alive(id);
                     }
                     if r.rc.is_some() {
-                        let volume = ctl.rc("GetVolume", &[]).await.ok().and_then(|a| tag(&a, "CurrentVolume"));
-                        let muted = ctl.rc("GetMute", &[]).await.ok().and_then(|a| tag(&a, "CurrentMute"));
+                        let volume = ctl.ask_rc("GetVolume").await.and_then(|a| tag(&a, "CurrentVolume"));
+                        let muted = ctl.ask_rc("GetMute").await.and_then(|a| tag(&a, "CurrentMute"));
                         set(&mut |s| {
                             if let Some(v) = volume.as_ref().and_then(|v| v.trim().parse::<f64>().ok()) {
                                 s.volume = Some((v / 100.0).clamp(0.0, 1.0));
@@ -529,7 +600,7 @@ pub(super) async fn session(
                         });
                     }
                 }
-                let state = match ctl.av("GetTransportInfo", &[]).await {
+                let state = match ctl.ask("GetTransportInfo").await {
                     Ok(a) => {
                         failures = 0;
                         tag(&a, "CurrentTransportState").unwrap_or_default().trim().to_string()
@@ -544,17 +615,47 @@ pub(super) async fn session(
                         continue;
                     }
                 };
-                let position = match ctl.av("GetPositionInfo", &[]).await {
-                    Ok(a) => (tag(&a, "RelTime").and_then(|t| parse_clock(&t)), tag(&a, "TrackDuration").and_then(|t| parse_clock(&t))),
-                    Err(_) => (None, None),
+                let (position, theirs) = match ctl.ask("GetPositionInfo").await {
+                    Ok(a) => (
+                        (
+                            tag(&a, "RelTime").and_then(|t| parse_clock(&t)),
+                            tag(&a, "TrackDuration").and_then(|t| parse_clock(&t)),
+                        ),
+                        tag(&a, "TrackURI").unwrap_or_default(),
+                    ),
+                    Err(_) => ((None, None), String::new()),
                 };
+                // Someone else (another app, the TV's own remote) put something on: what it
+                // plays now isn't ours to follow, and its position isn't our item's.
+                if matches!(state.as_str(), "PLAYING" | "PAUSED_PLAYBACK") && !same_media(&current_url, &theirs) {
+                    foreign += 1;
+                    if foreign >= FOREIGN_POLLS {
+                        tracing::info!("cast to {}: the device is playing something else now", r.name);
+                        set(&mut |s| s.state = "idle".into());
+                        stop_hls(&current);
+                        current = None;
+                        loading_since = None;
+                        idle_since = Some(Instant::now());
+                    }
+                    continue;
+                }
+                foreign = 0;
+                // A converted stream may take the encoder a while to start (again).
+                let grace = if m.hls_session.is_some() { LOAD_DEADLINE } else { START_GRACE };
+                let overdue = !played && loading_since.is_some_and(|t| t.elapsed() > LOAD_DEADLINE);
                 match state.as_str() {
                     "PLAYING" | "PAUSED_PLAYBACK" => {
                         loading_since = None;
-                        // Where it was asked to start, once (it starts at the beginning).
-                        if let Some(at) = seek_to.take().filter(|_| state == "PLAYING") {
+                        // Where it was asked to start, once it plays (it starts at the beginning;
+                        // a renderer that comes up paused is sought when it is let go).
+                        if state == "PLAYING" && let Some(at) = seek_to.take() {
                             let _ = ctl.av("Seek", &[("Unit", "REL_TIME"), ("Target", &clock(at))]).await;
                             played = true;
+                            continue;
+                        }
+                        // Not there yet: its clock says 0, which isn't where the item is.
+                        if seek_to.is_some() {
+                            set(&mut |s| s.state = "paused".into());
                             continue;
                         }
                         played = true;
@@ -577,7 +678,8 @@ pub(super) async fn session(
                             report_progress(&st, m, played_at, m.duration_ms, false);
                         }
                     }
-                    "TRANSITIONING" => {
+                    // Getting there; one that never does is caught below.
+                    "TRANSITIONING" if !overdue => {
                         if played {
                             set(&mut |s| s.state = "buffering".into());
                         }
@@ -585,10 +687,9 @@ pub(super) async fn session(
                     // STOPPED, NO_MEDIA_PRESENT: over when it had played, a failure when it never
                     // did (after a moment: renderers say "stopped" while they fetch the start).
                     _ => {
-                        let failed = !played
-                            && loading_since.is_some_and(|t| t.elapsed() > START_GRACE);
-                        let timed_out = loading_since.is_some_and(|t| t.elapsed() > LOAD_DEADLINE);
-                        if played {
+                        let failed = !played && loading_since.is_some_and(|t| t.elapsed() > grace);
+                        let timed_out = overdue;
+                        if played && state != "TRANSITIONING" {
                             let duration = m.duration_ms.or(position.1.filter(|_| m.hls_session.is_none())).unwrap_or(0);
                             let finished = duration > 0 && played_at + 5000 >= duration;
                             report_progress(&st, m, played_at, m.duration_ms, finished);
@@ -685,6 +786,10 @@ mod tests {
             duration_ms: Some(3_725_000),
             ..super::super::tests::media(1)
         };
+        assert!(same_media(&m.url, "http://192.168.1.2:8200/dlna/media/1/2/sig.mkv"), "the query may be dropped");
+        assert!(same_media(&m.url, ""), "a renderer that doesn't say");
+        assert!(!same_media(&m.url, "http://192.168.1.2:8200/dlna/media/1/3/other.mkv"));
+        assert!(!same_media(&m.url, "https://video.example/stream.m3u8"));
         let d = metadata(&m);
         assert!(d.contains("<dc:title>Tom &amp; &lt;Jerry&gt;</dc:title>"), "{d}");
         assert!(d.contains("sig.mkv?a=1&amp;b=2</res>"), "{d}");

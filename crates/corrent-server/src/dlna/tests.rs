@@ -63,3 +63,15 @@ fn stable_uuid() {
     assert_ne!(a, super::udn("server-b"));
     assert!(a.starts_with("uuid:") && a.len() == 5 + 36, "{a}");
 }
+
+#[test]
+fn a_body_of_brackets_is_read_quickly() {
+    use super::didl::tag;
+    // Bodies come from devices on the network: 256 KiB of `<` took a quarter of a minute per
+    // call before an element's name was looked for in its first bytes only.
+    let hostile = format!("{}>", "<".repeat(256 * 1024));
+    let t = std::time::Instant::now();
+    assert_eq!(tag(&hostile, "UDN"), None);
+    assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    assert_eq!(tag("<a><<<x:UDN attr=\"1\">uuid:1</x:UDN>", "UDN").as_deref(), Some("uuid:1"));
+}

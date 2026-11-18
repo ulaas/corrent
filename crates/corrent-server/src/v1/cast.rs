@@ -97,9 +97,17 @@ async fn get_config(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<Ca
 async fn put_config(
     State(st): State<Arc<AppState>>,
     auth: Auth,
-    Json(mut c): Json<CastConfig>,
+    Json(sent): Json<serde_json::Value>,
 ) -> ApiResult<CastConfig> {
     auth.require(Perms::SETTINGS_WRITE)?;
+    // What the request doesn't mention stays as it is: a client from before a setting existed
+    // must not put it back to its default.
+    let mut merged = serde_json::to_value(&st.cfg.load().cast).map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+    match (merged.as_object_mut(), sent) {
+        (Some(now), serde_json::Value::Object(sent)) => now.extend(sent),
+        _ => return Err(err(ErrorCode::BadRequest, "the casting settings as an object")),
+    }
+    let mut c: CastConfig = serde_json::from_value(merged).map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
     c.devices = c.devices.iter().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
     if let Some(bad) =
         c.devices.iter().find(|l| crate::cast::manual_device(l).is_none() && crate::cast::manual_renderer(l).is_none())

@@ -1043,8 +1043,9 @@ impl Player {
     }
 
     /// What the server is asked for `e`: the file as it is, or (videos, with a quality chosen)
-    /// within that quality's limits — then with the remembered audio track, and the remembered
-    /// subtitle in the picture, since a conversion carries one sound track and no subtitles.
+    /// within that quality's limits — then with the remembered audio track, and, if that makes
+    /// the server convert it, the remembered subtitle in the picture (a conversion carries one
+    /// sound track and no subtitles; a file within the limits still plays as it is).
     fn playback_body(&self, e: &QueueEntry) -> serde_json::Value {
         let mut body = serde_json::Map::new();
         body.insert("profile".into(), "native".into());
@@ -1058,7 +1059,7 @@ impl Player {
             }
             // Subtitle files (1000 and up) come along as files when they are text.
             if let Some(sub) = e.subtitle_track.filter(|i| (1..1000).contains(i)) {
-                body.insert("burn_subtitle".into(), sub.into());
+                body.insert("burn_when_converted".into(), sub.into());
             }
         }
         body.into()
@@ -3257,6 +3258,8 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
+        // A playback request still on its way finds it isn't wanted and ends its conversion.
+        self.playlist_generation.fetch_add(1, Ordering::Relaxed);
         self.end_session();
         self.report(true);
         self.save_volume(true);

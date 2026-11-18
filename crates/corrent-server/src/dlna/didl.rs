@@ -47,7 +47,12 @@ pub fn tag(xml: &str, name: &str) -> Option<String> {
     let mut rest = xml;
     while let Some(i) = rest.find('<') {
         rest = &rest[i + 1..];
-        let end = rest.find(['>', ' ', '\t', '\r', '\n', '/'])?;
+        // An element's name is short: looking further for its end would make a body of
+        // nothing but `<` cost its length squared (bodies come from devices on the network).
+        let Some(end) = rest.bytes().take(256).position(|b| matches!(b, b'>' | b' ' | b'\t' | b'\r' | b'\n' | b'/'))
+        else {
+            continue;
+        };
         let tag = &rest[..end];
         let local = tag.rsplit_once(':').map(|(_, l)| l).unwrap_or(tag);
         if local == name && !tag.starts_with('/') {

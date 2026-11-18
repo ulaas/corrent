@@ -260,7 +260,16 @@ pub(crate) async fn prepare(
         max_height: req.max_height,
         force_transcode: req.force_transcode,
     };
-    let decision = decide::decide(&facts, &profile, &play);
+    let mut decision = decide::decide(&facts, &profile, &play);
+    // Converted for another reason: then with the subtitle the client would have shown itself.
+    let play = match (&decision, req.burn_when_converted) {
+        (Decision::Transcode { .. }, Some(sub)) if play.burn_subtitle.is_none() => {
+            let play = PlayRequest { burn_subtitle: Some(sub), ..play };
+            decision = decide::decide(&facts, &profile, &play);
+            play
+        }
+        _ => play,
+    };
     // Direct stream: only the container is in the way (and the file is complete on disk).
     let remux = match (&decision, remux_ok && downloading.is_none(), decide::remux(&facts, &profile, &play)) {
         (Decision::Transcode { .. }, true, Some(audio)) => {
@@ -332,9 +341,10 @@ pub(crate) async fn prepare(
             let bitrate = [target_bitrate, set(cap.max_bitrate_kbps).map(|k| k * 1000)].into_iter().flatten().min();
             let source_height = facts.video.as_ref().and_then(|v| v.height);
             let video = video.map(|v| limit_video(v, source_height, height, bitrate));
-            // Asked for in the server's first moments: the search for an encoder is about done.
+            // Asked for in the server's first moments: the search for an encoder is about done
+            // (sound alone needs none).
             for _ in 0..40 {
-                if st.hls_probed.load(std::sync::atomic::Ordering::Relaxed) {
+                if video.is_none() || st.hls_probed.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
