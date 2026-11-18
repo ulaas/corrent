@@ -67,6 +67,7 @@ hyper-util = { version = "0.1", features = ["tokio", "service"] }
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys"] }
 rustls-acme = { version = "0.15.4", default-features = false, features = ["aws-lc-rs", "tls12", "webpki-roots"], optional = true }
 futures-util = { version = "0.3", default-features = false }
+sysinfo = { version = "0.40.4", default-features = false, features = ["system"] }
 
 [target."cfg(windows)".dependencies]
 aws-lc-rs = { version = "1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }

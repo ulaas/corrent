@@ -2892,6 +2892,14 @@ async fn a_tv_gets_a_conversion_as_one_stream() {
     // MPEG-TS packets (188 bytes, each starting 0x47) from the first byte to the last.
     assert!(bytes.len() > 188 * 10 && bytes.len() % 188 == 0, "{} bytes", bytes.len());
     assert!(bytes.chunks(188).all(|p| p.first() == Some(&0x47)), "packets stay aligned across segments");
+    // The performance page's numbers: what it is converted to, what went out, the computer's load.
+    let (s, v, _) = get(app, "/api/v1/playback/stats", &admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let one = &v["sessions"][0];
+    assert!(one["video_bitrate"].as_i64().unwrap() > 0 && one["encoder"].as_str().is_some(), "{v}");
+    assert_eq!(one["sent_bytes"].as_u64(), Some(bytes.len() as u64), "{v}");
+    assert!(v["cores"].as_u64().unwrap() > 0 && v["max_sessions"].as_u64() == Some(3), "{v}");
+    assert_eq!(v["casts"][0]["device"]["kind"], "dlna", "{v}");
     // A seek starts the stream again at the segment wanted (segments are 4 s long).
     let cmd = format!("/api/v1/cast/{id}/command");
     while seen.try_recv().is_ok() {}

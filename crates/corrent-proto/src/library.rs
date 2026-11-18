@@ -716,6 +716,53 @@ pub struct PlaybackSession {
     pub segments: u64,
     pub produced: u64,
     pub idle_secs: u64,
+    /// What it is converted to: picture height (absent: the file's), video and audio bits/s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_bitrate: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_bitrate: Option<i64>,
+    /// The source's frames per second, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<f64>,
+    /// The encoder is running (not resting ahead of the player).
+    #[serde(default)]
+    pub encoding: bool,
+    /// Seconds of media made per second of time, lately (0 while the encoder rests). Above 1
+    /// the server keeps up with the player.
+    #[serde(default)]
+    pub speed: f32,
+    /// Seconds of media ready beyond where the player is: at 0 the player waits for the server.
+    #[serde(default)]
+    pub ahead_secs: f64,
+    /// Where the player is, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position_secs: Option<f64>,
+    /// Bytes handed to the player so far (two readings give the bandwidth in use).
+    #[serde(default)]
+    pub sent_bytes: u64,
+}
+
+/// `GET /api/v1/playback/stats`: what is being streamed and what it costs the server.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlaybackStats {
+    /// Conversions running (the caller's; an administrator sees everyone's).
+    pub sessions: Vec<PlaybackSession>,
+    /// What is playing on cast devices and TVs.
+    pub casts: Vec<CastStatus>,
+    /// The computer's processor load, 0–100 over all cores, lately.
+    pub cpu_percent: f32,
+    pub cores: u32,
+    /// Memory in use and installed, in bytes.
+    pub memory_used: u64,
+    pub memory_total: u64,
+    /// The video encoder conversions use (absent: none found).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<String>,
+    /// How many conversions may run at once.
+    pub max_sessions: u32,
 }
 
 /// What makes a release acceptable and how releases are ranked.

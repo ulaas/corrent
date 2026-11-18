@@ -97,6 +97,24 @@ pub struct SessionInfo {
     pub produced: u64,
     pub encoding_from: Option<u64>,
     pub idle_secs: u64,
+    /// What it is encoded to: picture height (`None`: the file's), video and audio bits/s.
+    pub height: Option<i64>,
+    pub video_bitrate: Option<i64>,
+    pub audio_bitrate: Option<i64>,
+    /// The source's frames per second, when known.
+    pub fps: Option<f64>,
+    /// The encoder is running (not resting ahead of the player, not finished).
+    pub encoding: bool,
+    /// Seconds of media made per second, over the last few seconds (0 while it rests): above 1
+    /// it keeps up with a player.
+    pub speed: f32,
+    /// Seconds of media ready beyond where the player is.
+    pub ahead_secs: f64,
+    /// Where the player is, in seconds (`None`: it hasn't fetched anything yet).
+    pub position_secs: Option<f64>,
+    /// Bytes of segments handed to the player so far.
+    pub sent_bytes: u64,
+    pub segment_secs: u32,
 }
 
 enum Encoder {
@@ -138,6 +156,10 @@ struct Session {
     last_access: Mutex<Instant>,
     /// The last segment the player asked for (`u64::MAX`: none yet).
     wanted: AtomicU64,
+    /// Bytes of segments handed out.
+    sent: AtomicU64,
+    /// When segments were last counted, how many there were, and the speed that gave.
+    rate: Mutex<(Instant, u64, f32)>,
 }
 
 impl Session {
@@ -342,6 +364,8 @@ impl HlsManager {
                 running: tokio::sync::Mutex::new(None),
                 last_access: Mutex::new(Instant::now()),
                 wanted: AtomicU64::new(u64::MAX),
+                sent: AtomicU64::new(0),
+                rate: Mutex::new((Instant::now(), 0, 0.0)),
             }),
         );
         Ok(id)
@@ -417,6 +441,9 @@ impl HlsManager {
         loop {
             s.refresh_done().await;
             if s.has_segment(n, &path).await {
+                if let Ok(meta) = tokio::fs::metadata(&path).await {
+                    s.sent.fetch_add(meta.len(), Ordering::Relaxed);
+                }
                 return Ok(path);
             }
             {
@@ -481,22 +508,54 @@ impl HlsManager {
     }
 
     pub fn sessions(&self) -> Vec<SessionInfo> {
-        let encoder = self.config().encoder;
+        let cfg = self.config();
+        let encoder = cfg.encoder;
+        let seg = f64::from(cfg.segment_secs);
         self.sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .values()
-            .map(|s| SessionInfo {
-                id: s.id.clone(),
-                user: s.spec.user.clone(),
-                title: s.spec.title.clone(),
-                item_id: s.spec.item_id,
-                encoder: encoder.clone(),
-                video: s.spec.video.is_some(),
-                segments: s.segments.load(Ordering::Relaxed),
-                produced: s.done.lock().unwrap_or_else(|e| e.into_inner()).len() as u64,
-                encoding_from: s.running.try_lock().ok().and_then(|r| r.as_ref().map(|r| r.start)),
-                idle_secs: s.idle().as_secs(),
+            .map(|s| {
+                // Each lock on its own line: guards made inside the struct below would all live
+                // until its end, and the second one on the same lock would wait for the first.
+                let wanted = s.wanted.load(Ordering::Relaxed);
+                let (produced, ahead) = {
+                    let done = s.done.lock().unwrap_or_else(|e| e.into_inner());
+                    let from = if wanted == u64::MAX { 0 } else { wanted };
+                    // The run of finished segments from the player's on.
+                    (done.len() as u64, (from..).take_while(|n| done.contains(n)).count())
+                };
+                let (encoding_from, encoding) = match s.running.try_lock() {
+                    Ok(r) => (
+                        r.as_ref().map(|r| r.start),
+                        r.as_ref().is_some_and(|r| r.ended.lock().unwrap_or_else(|e| e.into_inner()).is_none()),
+                    ),
+                    // Being started or stopped right now.
+                    Err(_) => (None, true),
+                };
+                let speed = s.rate.lock().unwrap_or_else(|e| e.into_inner()).2;
+                SessionInfo {
+                    id: s.id.clone(),
+                    user: s.spec.user.clone(),
+                    title: s.spec.title.clone(),
+                    item_id: s.spec.item_id,
+                    encoder: encoder.clone(),
+                    video: s.spec.video.is_some(),
+                    segments: s.segments.load(Ordering::Relaxed),
+                    produced,
+                    encoding_from,
+                    idle_secs: s.idle().as_secs(),
+                    height: s.spec.video.as_ref().and_then(|v| v.height),
+                    video_bitrate: s.spec.video.as_ref().map(|v| v.bitrate),
+                    audio_bitrate: s.spec.audio.as_ref().map(|a| a.bitrate),
+                    fps: s.spec.fps,
+                    encoding,
+                    speed,
+                    ahead_secs: ahead as f64 * seg,
+                    position_secs: Some(wanted).filter(|w| *w != u64::MAX).map(|w| w as f64 * seg),
+                    sent_bytes: s.sent.load(Ordering::Relaxed),
+                    segment_secs: cfg.segment_secs,
+                }
             })
             .collect()
     }
@@ -511,6 +570,16 @@ async fn pace(cfg: &HlsConfig, s: &Session) {
         return;
     }
     s.refresh_done().await;
+    // How fast segments are being made, for whoever watches the sessions.
+    {
+        let made = s.done.lock().unwrap_or_else(|e| e.into_inner()).len() as u64;
+        let mut rate = s.rate.lock().unwrap_or_else(|e| e.into_inner());
+        let elapsed = rate.0.elapsed().as_secs_f32();
+        if elapsed >= 2.0 {
+            let speed = made.saturating_sub(rate.1) as f32 * cfg.segment_secs as f32 / elapsed;
+            *rate = (Instant::now(), made, speed);
+        }
+    }
     let next = {
         let done = s.done.lock().unwrap_or_else(|e| e.into_inner());
         (wanted..s.segments.load(Ordering::Relaxed)).find(|n| !done.contains(n))

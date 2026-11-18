@@ -12,7 +12,8 @@ use axum::{Json, Router};
 use corrent_proto::ErrorCode;
 use corrent_proto::auth::Perms;
 use corrent_proto::library::{
-    MediaFile, PlaybackInfo, PlaybackRequest, PlaybackSession, SubtitleTrack, TranscodeConfig, TranscodeInfo,
+    MediaFile, PlaybackInfo, PlaybackRequest, PlaybackSession, PlaybackStats, SubtitleTrack, TranscodeConfig,
+    TranscodeInfo,
 };
 use corrent_transcode::decide::{
     self, AudioFacts, ClientProfile, Decision, MediaFacts, PlayRequest, SubFacts, VideoFacts,
@@ -27,6 +28,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/playback/{item}", post(start))
         .route("/playback/sessions", get(sessions))
+        .route("/playback/stats", get(stats))
         .route("/playback/sessions/{id}", delete(stop))
         .route("/playback/sessions/{id}/keep", post(keep))
         .route("/transcode/config", get(get_transcode).put(put_transcode))
@@ -526,26 +528,83 @@ async fn stop(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<String
     Ok(Json(serde_json::json!({})))
 }
 
-async fn sessions(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<Vec<PlaybackSession>> {
+fn session_list(st: &AppState, auth: &Auth) -> Vec<PlaybackSession> {
     let all = auth.0.can(Perms::USERS_MANAGE);
-    Ok(Json(
-        st.hls
-            .sessions()
-            .into_iter()
-            .filter(|s| all || s.user == auth.name())
-            .map(|s| PlaybackSession {
-                id: s.id,
-                user: s.user,
-                title: s.title,
-                item_id: s.item_id,
-                encoder: s.encoder,
-                video: s.video,
-                segments: s.segments,
-                produced: s.produced,
-                idle_secs: s.idle_secs,
-            })
-            .collect(),
-    ))
+    st.hls
+        .sessions()
+        .into_iter()
+        .filter(|s| all || s.user == auth.name())
+        .map(|s| PlaybackSession {
+            id: s.id,
+            user: s.user,
+            title: s.title,
+            item_id: s.item_id,
+            encoder: s.encoder,
+            video: s.video,
+            segments: s.segments,
+            produced: s.produced,
+            idle_secs: s.idle_secs,
+            height: s.height,
+            video_bitrate: s.video_bitrate,
+            audio_bitrate: s.audio_bitrate,
+            fps: s.fps,
+            encoding: s.encoding,
+            speed: s.speed,
+            ahead_secs: s.ahead_secs,
+            position_secs: s.position_secs,
+            sent_bytes: s.sent_bytes,
+        })
+        .collect()
+}
+
+async fn sessions(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<Vec<PlaybackSession>> {
+    Ok(Json(session_list(&st, &auth)))
+}
+
+/// The computer's load, measured between two calls (the first answers 0; all zero where the
+/// system doesn't tell).
+fn system_load() -> (f32, u32, u64, u64) {
+    type Measured = (Option<sysinfo::System>, std::time::Instant, f32);
+    static SYSTEM: std::sync::OnceLock<std::sync::Mutex<Measured>> = std::sync::OnceLock::new();
+    let lock = SYSTEM.get_or_init(|| {
+        let mut sys = sysinfo::System::new().ok();
+        if let Some(sys) = &mut sys {
+            sys.refresh_cpu_usage();
+        }
+        std::sync::Mutex::new((sys, std::time::Instant::now(), 0.0))
+    });
+    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let due = g.1.elapsed() >= sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.max(std::time::Duration::from_secs(1));
+    let (sys, at, cpu) = &mut *g;
+    let Some(sys) = sys else { return (0.0, 0, 0, 0) };
+    // Asked by several pages at once: one measurement a second serves them all.
+    if due {
+        sys.refresh_cpu_usage();
+        sys.refresh_memory();
+        *cpu = sys.global_cpu_usage();
+        *at = std::time::Instant::now();
+    }
+    (*cpu, sys.cpus().len() as u32, sys.used_memory(), sys.total_memory())
+}
+
+/// `GET /playback/stats`: the conversions and casts running and the computer's load, for the
+/// performance page (asked for every couple of seconds while it is open).
+async fn stats(State(st): State<Arc<AppState>>, auth: Auth) -> ApiResult<PlaybackStats> {
+    let all = auth.0.can(Perms::USERS_MANAGE);
+    let (cpu_percent, cores, memory_used, memory_total) =
+        tokio::task::spawn_blocking(system_load).await.map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+    let mut casts = st.casts.active();
+    casts.retain(|c| all || c.by == auth.name());
+    Ok(Json(PlaybackStats {
+        sessions: session_list(&st, &auth),
+        casts,
+        cpu_percent,
+        cores,
+        memory_used,
+        memory_total,
+        encoder: st.hls_encoder.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        max_sessions: st.hls.config().max_sessions as u32,
+    }))
 }
 
 async fn subtitle(
