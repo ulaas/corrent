@@ -8,6 +8,7 @@
   import { ms } from '../../lib/prefs.svelte';
   import { toast } from '../../lib/toast.svelte';
   import type { CastConfig, CastStatus } from '../../lib/types';
+  import { QUALITIES, qualityLabel } from '../../lib/quality';
   import { everyVisible } from '../../lib/visibility.svelte';
 
   let saved = $state<CastConfig | null>(null);
@@ -52,6 +53,13 @@
       if (draft) draft.max_bitrate_kbps = Math.max(0, Math.round(v)) * 1000;
     },
   };
+
+  const converted = $derived(draft?.transcode_height ?? 0);
+  function convertTo(height: number, kbps: number) {
+    if (!draft) return;
+    draft.transcode_height = height;
+    draft.transcode_bitrate_kbps = kbps;
+  }
 
   async function save() {
     if (!pending) return;
@@ -100,15 +108,24 @@
     </div>
     <div class="srow">
       <div class="stext"><span class="slabel">{t('Largest picture sent as it is')}</span><span class="shint">{t('Taller videos are converted first. Older Chromecasts stop at 1080p.')}</span></div>
-      <div class="sctl">
-        <select class="input" bind:value={draft.max_height} aria-label={t('Largest picture sent as it is')}>
-          {#each heights as h (h.value)}<option value={h.value}>{h.label}</option>{/each}
-        </select>
+      <div class="sctl chips" role="group" aria-label={t('Largest picture sent as it is')}>
+        {#each heights as h (h.value)}
+          <button type="button" class="chip" class:on={draft.max_height === h.value} aria-pressed={draft.max_height === h.value} onclick={() => draft && (draft.max_height = h.value)}>{h.label}</button>
+        {/each}
       </div>
     </div>
     <div class="srow">
       <div class="stext"><span class="slabel">{t('Highest bitrate sent as it is')}</span><span class="shint">{t('In Mbit/s; for a slow Wi-Fi. 0 means no limit.')}</span></div>
       <div class="sctl"><input class="input num-input" type="number" min="0" max="200" bind:value={mbit.value} aria-label={t('Highest bitrate sent as it is')} /></div>
+    </div>
+    <div class="srow">
+      <div class="stext"><span class="slabel">{t('Quality of converted streams')}</span><span class="shint">{t('What a video is converted to when the device can’t play it as it is. Automatic keeps the file’s size.')}</span></div>
+      <div class="sctl chips" role="group" aria-label={t('Quality of converted streams')}>
+        <button type="button" class="chip" class:on={converted === 0} aria-pressed={converted === 0} onclick={() => convertTo(0, 0)}>{t('Automatic')}</button>
+        {#each QUALITIES as q (q.id)}
+          <button type="button" class="chip" class:on={converted === q.height} aria-pressed={converted === q.height} onclick={() => convertTo(q.height, q.bitrate / 1000)}>{qualityLabel(q.id)}</button>
+        {/each}
+      </div>
     </div>
     <div class="srow toggle-row">
       <Toggle bind:checked={draft.hevc} label={t('The devices play H.265')} hint={t('Chromecast with Google TV and most Cast-enabled TVs do; such files then needn’t be converted.')} />
@@ -144,6 +161,10 @@
   }
   .col {
     grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .chips {
+    flex-wrap: wrap;
     gap: 6px;
   }
   textarea {

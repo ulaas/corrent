@@ -19,6 +19,7 @@
   import { cueAt, parseTrickplay, type TrickCue } from '../lib/trickplay';
   import { imageUrl } from '../lib/api';
   import { ms, prefs } from '../lib/prefs.svelte';
+  import { QUALITY_IDS, qualityLabel, qualityLimits } from '../lib/quality';
   import { FxHost } from '../lib/fxhost.svelte';
   import { lazy } from '../lib/lazy.svelte';
   import { GRAIN_IMAGE, pictureRect, videoLook } from '../lib/videofxlook';
@@ -119,6 +120,18 @@
   const SKIP_LABEL = { intro: tk('Skip intro'), recap: tk('Skip recap'), credits: tk('Skip credits') };
   const audioTracks = $derived(file?.streams.filter((s) => s.kind === 'audio') ?? []);
   const subStreams = $derived(file?.streams.filter((s) => s.kind === 'subtitle') ?? []);
+  // The quality of this player: starts as this device's default, kept over the next episodes.
+  // Music is never converted for size.
+  let quality = $state(prefs.quality);
+  const audioOnly = $derived(item?.kind === 'track' || (!!file?.streams.length && !file.streams.some((s) => s.kind === 'video')));
+  /** The options with the chosen quality's limits: every (re)start asks with them, so retries
+   *  and track switches keep the quality. */
+  const limited = (o: PlaybackOptions): PlaybackOptions => (audioOnly ? o : { ...o, ...qualityLimits(quality) });
+  function chooseQuality(q: string) {
+    if (q === quality || !item) return;
+    quality = q;
+    void start(item.id, opts, time);
+  }
   const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
   /** External subtitle formats the server serves as WebVTT (`TEXT_SUBS` in v1/playback.rs). */
   const TEXT_SUBS = ['srt', 'subrip', 'ass', 'ssa', 'vtt', 'webvtt'];
@@ -147,7 +160,7 @@
       const old = info;
       let next: PlaybackInfo;
       try {
-        next = await resolveSource(itemId, o);
+        next = await resolveSource(itemId, limited(o));
       } catch (e) {
         if (stale()) return;
         // Burning the remembered subtitle isn't possible (no transcoding): play without it.
@@ -155,7 +168,7 @@
         o = { ...o, burn_subtitle: undefined };
         opts = o;
         subtitle = null;
-        next = await resolveSource(itemId, o);
+        next = await resolveSource(itemId, limited(o));
       }
       if (stale()) return stopSession(next);
       info = next;
@@ -1113,6 +1126,14 @@
                 <button class="chip" class:on={aspect === v} aria-pressed={aspect === v} onclick={() => (aspect = v as Aspect)}>{l}</button>
               {/each}
             </div>
+            {#if item && !audioOnly && !cast}
+              <div class="mh">{t('Quality')}</div>
+              <div class="chips" role="group" aria-label={t('Quality')}>
+                {#each QUALITY_IDS as q (q)}
+                  <button class="chip" class:on={quality === q} aria-pressed={quality === q} onclick={() => chooseQuality(q)}>{qualityLabel(q)}</button>
+                {/each}
+              </div>
+            {/if}
             <div class="sep"></div>
             {#if canThumb}
               <button class="mi" role="menuitem" onclick={() => ((menu = ''), void setThumbnail())}><span>{t('Use this frame as the thumbnail (T)')}</span><Icon name="image" size={14} /></button>

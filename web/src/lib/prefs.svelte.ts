@@ -1,10 +1,11 @@
 // Appearance and layout preferences: kept per user on the server (/me/prefs, shared by their
-// devices) and cached in localStorage; volume and the sidebar stay per device. A user with no
+// devices) and cached in localStorage; volume, the sidebar and the video quality stay per device. A user with no
 // saved preferences starts from the server's theme (/theme).
 import { accents, fixedAccentPresets } from 'virtual:tokens';
 import { api } from './api';
 import { onColor } from './color';
 import { defaultFx, normalizeFx, normalizePresets, type AudioFx, type UserPreset } from './audiofxmodel';
+import { normalizeQuality } from './quality';
 import { defaultVideoFx, normalizeLooks, normalizeVideoFx, type VideoFx, type VideoPreset } from './videofxmodel';
 
 export type ThemeMode = 'system' | 'dark' | 'light';
@@ -28,6 +29,8 @@ export interface Prefs {
   torrentColumns: string[];
   sidebarCollapsed: boolean;
   volume: number;
+  /** The quality videos start in on this device (an id of lib/quality.ts; '' is the original). */
+  quality: string;
   /** Sound processing (see lib/audiofxmodel.ts): off by default, and then no Web Audio at all. */
   audioFx: AudioFx;
   audioPresets: UserPreset[];
@@ -51,6 +54,7 @@ const DEFAULTS: Prefs = {
   torrentColumns: ['size', 'state', 'down', 'up', 'eta', 'ratio', 'peers'],
   sidebarCollapsed: false,
   volume: 1,
+  quality: '',
   audioFx: defaultFx(),
   audioPresets: [],
   videoFx: defaultVideoFx(),
@@ -66,7 +70,7 @@ let saveTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** Per-device settings never go to the server. */
 function shared(p: Prefs): Partial<Prefs> {
-  const { volume: _v, sidebarCollapsed: _s, ...rest } = p;
+  const { volume: _v, sidebarCollapsed: _s, quality: _q, ...rest } = p;
   return rest;
 }
 
@@ -84,6 +88,7 @@ export async function syncPrefs(): Promise<void> {
         videoFx: normalizeVideoFx(remote.videoFx),
         videoLooks: normalizeLooks(remote.videoLooks),
         volume: prefs.volume,
+        quality: prefs.quality,
         sidebarCollapsed: prefs.sidebarCollapsed,
       });
     } else if (!hadLocal) {
@@ -105,6 +110,7 @@ function load(): Prefs {
       return {
         ...DEFAULTS,
         ...p,
+        quality: normalizeQuality(p.quality),
         audioFx: normalizeFx(p.audioFx),
         audioPresets: normalizePresets(p.audioPresets),
         videoFx: normalizeVideoFx(p.videoFx),
@@ -149,7 +155,7 @@ export function ms(base: number): number {
 }
 
 export function resetPrefs() {
-  Object.assign(prefs, { ...DEFAULTS, homeOrder: [], homeHidden: [], audioFx: prefs.audioFx, audioPresets: prefs.audioPresets, videoFx: prefs.videoFx, videoLooks: prefs.videoLooks });
+  Object.assign(prefs, { ...DEFAULTS, homeOrder: [], homeHidden: [], quality: prefs.quality, audioFx: prefs.audioFx, audioPresets: prefs.audioPresets, videoFx: prefs.videoFx, videoLooks: prefs.videoLooks });
 }
 
 /** Keeps <html> attributes and CSS variables in sync with the preferences. */

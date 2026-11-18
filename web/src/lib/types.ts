@@ -783,6 +783,25 @@ export interface CastConfig {
   hevc: boolean;
   port: number;
   copy_streams: boolean;
+  /** What a conversion for a device is made at: lines and kbit/s; 0 keeps the file's. */
+  transcode_height?: number;
+  transcode_bitrate_kbps?: number;
+}
+
+/** `PUT /api/v1/transcode/config`: the server's ceiling for conversions. */
+export interface TranscodeConfig {
+  /** Lines; 0: no limit. */
+  max_height: number;
+  /** kbit/s; 0: no limit. */
+  max_bitrate_kbps: number;
+  x264_preset: string;
+  max_sessions: number;
+}
+
+/** The answer of `GET/PUT /api/v1/transcode/config`. */
+export interface TranscodeInfo extends TranscodeConfig {
+  /** The H.264 encoder the server found working; missing: none, or still looking. */
+  encoder?: string;
 }
 
 export interface Lyrics {

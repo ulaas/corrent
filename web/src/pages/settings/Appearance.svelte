@@ -9,6 +9,7 @@
   import { homeRowTitle } from '../../lib/media';
   import { LANGS, langSetting, setLang, t, tk, type Lang } from '../../lib/i18n.svelte';
   import type { HomeRow } from '../../lib/types';
+  import { QUALITY_IDS, qualityLabel } from '../../lib/quality';
 
   const THEMES: { id: ThemeMode; label: string; icon: 'desktop' | 'moon' | 'sun' }[] = [
     { id: 'system', label: tk('System'), icon: 'desktop' },
@@ -143,6 +144,18 @@
 </div>
 
 <div class="sgroup">
+  <h3>{t('Playback')}</h3>
+  <div class="srow">
+    <div class="stext"><span class="slabel">{t('Video quality')}</span><span class="shint">{t('What videos start in on this device; the player’s settings change it for what is playing. Smaller videos play as they are, larger ones are converted by the server.')}</span></div>
+    <div class="sctl chips" role="group" aria-label={t('Video quality')}>
+      {#each QUALITY_IDS as q (q)}
+        <button class="chip" class:on={prefs.quality === q} aria-pressed={prefs.quality === q} onclick={() => (prefs.quality = q)}>{qualityLabel(q)}</button>
+      {/each}
+    </div>
+  </div>
+</div>
+
+<div class="sgroup">
   <h3>{t('Sound')}</h3>
   <div class="soundbox">
     <p class="muted small">{t('Off by default. Processing starts with the next thing you play, and only in browsers that allow it for that source.')}</p>
@@ -153,6 +166,10 @@
 <button class="btn ghost" onclick={resetPrefs}><Icon name="arrow-counter-clockwise" />{t('Reset appearance')}</button>
 
 <style>
+  .chips {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
   .soundbox {
     max-width: 480px;
     padding: 0 var(--sp-4, 16px) var(--sp-4, 16px);

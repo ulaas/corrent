@@ -244,3 +244,25 @@ the page's query string). Differences: the desktop also has Shuffle (the web's p
 page a random order), and the web names the last sort "Last played". Marking a show or season
 played now shows at once on both (the web used to flip back: a container has no `played` of its
 own, so both go by `unplayed == 0`).
+
+## Quality (2026-11-19)
+
+Both players have a Quality row of toggle buttons in their settings (Original, 4K, 1080p, 720p,
+480p; the presets of `QUALITIES` in `corrent-proto`, sent as `max_height` and `max_bitrate` of
+`POST playback/{item}`): choosing one plays on from the same place, a file within the limits as it
+is, a larger one converted by the server. Music is never asked for with limits. Both also have the
+server's Transcoding settings (`GET/PUT /transcode/config`: largest converted picture, highest
+bitrate, encoding effort, conversions at once, the encoder in use) and "Quality of converted
+streams" in the casting settings, all as toggle buttons. Desktop: `src/app/media/player.rs`,
+`transcode_settings.rs`; web: `lib/quality.ts`, `pages/Player.svelte`,
+`pages/settings/Transcoding.svelte` and `Casting.svelte`. Differences:
+
+- The default. Desktop: "Video quality from other servers" applies only to videos from a server
+  the app is connected to; what the computer hosts itself always plays as it is. Web: "Video
+  quality" under Settings → Appearance → Playback, kept per device (`prefs.quality`, not synced
+  with the account, like the volume). On both, the player's buttons change only that player.
+- Tracks. While a converted quality plays, the desktop replaces its tracks panel by a hint (a
+  conversion carries the sound track and subtitle chosen before). The web keeps its audio and
+  subtitle menus: a choice restarts the conversion with the same quality.
+- The web hides the Quality row while casting (the device's quality is the casting setting), and
+  its Transcoding page saves with the usual "unsaved changes" bar instead of a Save button.
