@@ -486,6 +486,13 @@ export interface Page<T> {
 
 export type SortBy = 'title' | 'added' | 'year' | 'played' | 'index';
 
+/** `GET /facets`: what a list can be filtered by. */
+export interface Facets {
+  genres: string[];
+  /** First years of decades, newest first. */
+  decades: number[];
+}
+
 export interface HomeRow {
   id: string;
   title: string;

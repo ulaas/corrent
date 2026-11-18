@@ -11,7 +11,7 @@
   import { back, go, link, route, setQuery } from '../lib/router.svelte';
   import { BACKDROP_SIZES, backdrop, image, isPlayable, KIND_LABEL, playHref, shapeFor, watched } from '../lib/media';
   import { bytes, clock, runtime } from '../lib/format';
-  import { toggleFavorite, togglePlayed } from '../lib/itemstate';
+  import { isPlayed, toggleFavorite, togglePlayed } from '../lib/itemstate';
   import { music, toEntry, tracksOf } from '../lib/player.svelte';
   import { library } from '../lib/libraries.svelte';
   import { toast } from '../lib/toast.svelte';
@@ -322,11 +322,11 @@
               onclick={() => toggleFavorite(item!)}><Icon name={item.state.favorite ? 'heart-fill' : 'heart'} size={20} /></button>
             <button
               class="btn icon lg round"
-              class:done={item.state.played}
-              aria-pressed={item.state.played}
-              aria-label={item.state.played ? t('Mark as unplayed') : t('Mark as played')}
-              title={item.state.played ? t('Mark as unplayed') : t('Mark as played')}
-              onclick={() => togglePlayed(item!)}><Icon name={item.state.played ? 'check-circle-fill' : 'check-circle'} size={20} /></button>
+              class:done={isPlayed(item)}
+              aria-pressed={isPlayed(item)}
+              aria-label={isPlayed(item) ? t('Mark as unplayed') : t('Mark as played')}
+              title={isPlayed(item) ? t('Mark as unplayed') : t('Mark as played')}
+              onclick={() => togglePlayed(item!)}><Icon name={isPlayed(item) ? 'check-circle-fill' : 'check-circle'} size={20} /></button>
             {#if (item.kind === 'movie' || item.kind === 'episode' || item.kind === 'video') && can(Perm.LIBRARY_MANAGE)}
               <button class="btn lg" onclick={() => findSubs(item!.id)}><Icon name="closed-captioning" />{t('Find subtitles')}</button>
             {/if}

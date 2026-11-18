@@ -5,7 +5,7 @@ import { identify } from './identify.svelte';
 import { go } from './router.svelte';
 import { isPlayable, itemHref, playHref } from './media';
 import { outcomeText } from './metadata';
-import { toggleFavorite, togglePlayed } from './itemstate';
+import { isPlayed, toggleFavorite, togglePlayed } from './itemstate';
 import { toast } from './toast.svelte';
 import { t } from './i18n.svelte';
 import type { MenuItem } from './contextmenu.svelte';
@@ -74,8 +74,8 @@ export function itemMenu(item: Item, o: ItemMenuOptions): MenuItem[] {
   }
   rows.push({ kind: 'sep' });
   rows.push({
-    label: item.state.played ? t('Mark as unplayed') : t('Mark as played'),
-    icon: item.state.played ? 'circle' : 'check-circle',
+    label: isPlayed(item) ? t('Mark as unplayed') : t('Mark as played'),
+    icon: isPlayed(item) ? 'circle' : 'check-circle',
     onselect: () => void togglePlayed(item),
   });
   rows.push({

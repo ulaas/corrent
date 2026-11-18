@@ -1,11 +1,13 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
   import VirtualGrid from '../components/VirtualGrid.svelte';
+  import FilterBar from '../components/FilterBar.svelte';
   import Progress from '../components/Progress.svelte';
   import { api, errorText } from '../lib/api';
   import { libs, library, loadLibraries } from '../lib/libraries.svelte';
   import { LIBRARY_ICON, libraryShape, topKind, LIBRARY_KIND_LABEL } from '../lib/media';
   import { route, setQuery } from '../lib/router.svelte';
+  import { filterParams, isFiltered, readFilter } from '../lib/filters';
   import { music, toEntry, tracksOf } from '../lib/player.svelte';
   import { can } from '../lib/session.svelte';
   import { toast } from '../lib/toast.svelte';
@@ -25,16 +27,11 @@
     { id: 'year', label: tk('Year') },
     { id: 'played', label: tk('Last played') },
   ];
-  const FILTERS = [
-    { id: '', label: tk('All') },
-    { id: 'unplayed', label: tk('Unplayed') },
-    { id: 'played', label: tk('Played') },
-    { id: 'favorites', label: tk('Favorites') },
-  ];
 
   const sort = $derived((route.query.get('sort') as SortBy) || 'title');
   const desc = $derived(route.query.get('desc') === '1');
-  const filter = $derived(route.query.get('filter') ?? '');
+  const filter = $derived(readFilter(route.query));
+  const filtered = $derived(isFiltered(filter));
   const view = $derived(route.query.get('view') ?? '');
   let total = $state(-1);
   let gridError = $state('');
@@ -52,8 +49,7 @@
     kind,
     sort,
     desc: desc || undefined,
-    played: filter === 'played' ? true : filter === 'unplayed' ? false : undefined,
-    favorite: filter === 'favorites' ? true : undefined,
+    ...filterParams(filter),
     r: refresh || undefined,
   });
 
@@ -123,29 +119,14 @@
           <button role="tab" aria-selected={view === 'artists'} class:on={view === 'artists'} onclick={() => setQuery({ view: 'artists' })}>{t('Artists')}</button>
         </div>
       {/if}
-      <div class="chips" role="group" aria-label={t('Filter')}>
-        {#each FILTERS as f (f.id)}
-          <button class="chip" class:on={filter === f.id} aria-pressed={filter === f.id} onclick={() => setQuery({ filter: f.id || null })}>{t(f.label)}</button>
-        {/each}
-      </div>
-      <span class="spacer"></span>
-      <label class="sort">
-        <span class="sr-only">{t('Sort by')}</span>
-        <Icon name="sort-ascending" size={16} />
-        <select class="select" value={sort} onchange={(e) => setQuery({ sort: e.currentTarget.value === 'title' ? null : e.currentTarget.value })}>
-          {#each SORTS as s (s.id)}<option value={s.id}>{t(s.label)}</option>{/each}
-        </select>
-      </label>
-      <button class="btn icon" aria-label={desc ? t('Descending') : t('Ascending')} title={desc ? t('Descending') : t('Ascending')} onclick={() => setQuery({ desc: desc ? null : '1' })}>
-        <Icon name={desc ? 'sort-descending' : 'sort-ascending'} />
-      </button>
+      <FilterBar library={id} {kind} sorts={SORTS} />
     </div>
 
     {#if total === 0}
       <div class="empty">
         <div class="empty-icon"><Icon name={LIBRARY_ICON[lib.kind]} size={32} /></div>
-        <h3>{filter ? t('Nothing matches this filter.') : t('This library is empty.')}</h3>
-        {#if !filter}<p>{t('Files added to its folders appear here after a scan.')}</p>{/if}
+        <h3>{filtered ? t('Nothing matches these filters') : t('This library is empty.')}</h3>
+        <p>{filtered ? t('Turn a filter off to see more.') : t('Files added to its folders appear here after a scan.')}</p>
       </div>
     {/if}
     <VirtualGrid {query} shape={kind === 'artist' ? 'square' : libraryShape(lib.kind)} bind:total bind:error={gridError} {onplay} />
@@ -186,11 +167,6 @@
     padding: 10px 0;
     background: linear-gradient(var(--bg0) 70%, transparent);
   }
-  .chips {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
   .seg {
     display: inline-flex;
     padding: 3px;
@@ -209,14 +185,5 @@
     background: var(--bg3);
     color: var(--text);
     box-shadow: var(--shadow-1);
-  }
-  .sort {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-dim);
-  }
-  .sort .select {
-    width: auto;
   }
 </style>

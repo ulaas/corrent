@@ -4,7 +4,7 @@
   import { link, go } from '../lib/router.svelte';
   import { cardImage, initials, isPlayable, itemHref, playHref, subtitle, watched, type Shape, LIBRARY_ICON } from '../lib/media';
   import { cardWidth } from '../lib/cards.svelte';
-  import { toggleFavorite } from '../lib/itemstate';
+  import { isPlayed, toggleFavorite } from '../lib/itemstate';
   import { contextMenu } from '../lib/contextmenu.svelte';
   import { itemMenu } from '../lib/itemmenu';
   import { can } from '../lib/session.svelte';
@@ -48,7 +48,7 @@
       <div class="ph">{#if ini}<span class="ini">{ini}</span><Icon name={fallbackIcon} size={18} />{:else}<Icon name={fallbackIcon} size={36} />{/if}</div>
     {/if}
     <div class="shade"></div>
-    {#if item.state.played}
+    {#if isPlayed(item)}
       <span class="badge-corner done" title={t('Played')}><Icon name="check" size={14} /></span>
     {:else if unplayed > 0 && (item.kind === 'show' || item.kind === 'season')}
       <span class="badge-corner count num" title={t('{n} unplayed', { n: unplayed })}>{unplayed}</span>

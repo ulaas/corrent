@@ -2,10 +2,12 @@
   import { everyVisible } from '../lib/visibility.svelte';
   import { fade } from 'svelte/transition';
   import Shelf from '../components/Shelf.svelte';
+  import FilterBar from '../components/FilterBar.svelte';
   import Icon from '../components/Icon.svelte';
   import Img from '../components/Img.svelte';
   import { api } from '../lib/api';
-  import { link, go } from '../lib/router.svelte';
+  import { link, go, route } from '../lib/router.svelte';
+  import { filterParams, isFiltered, readFilter } from '../lib/filters';
   import { libs, library } from '../lib/libraries.svelte';
   import { onRelink } from '../lib/events.svelte';
   import { BACKDROP_SIZES, backdrop, homeRowTitle, image, isPlayable, itemHref, playHref, subtitle } from '../lib/media';
@@ -20,16 +22,30 @@
   let heroIndex = $state(0);
   let heroDetail = $state<Record<number, ItemDetail>>({});
 
+  // The filter buttons: every row keeps only what matches (the server fills the rows).
+  const filter = $derived(readFilter(route.query));
+  const filtered = $derived(isFiltered(filter));
+  let asked = 0;
+
   async function load() {
+    const n = ++asked;
     try {
-      rows = await api.get<HomeRow[]>('/home');
+      const got = await api.get<HomeRow[]>('/home', filterParams(filter));
+      // A slower answer to an earlier filter doesn't replace this one.
+      if (n !== asked) return;
+      rows = got;
       failed = false;
     } catch {
+      if (n !== asked) return;
       failed = true;
       rows ??= [];
     }
   }
-  void load();
+  // Now, and whenever a filter changes; the rows shown stay until the new ones arrive.
+  $effect(() => {
+    void filter;
+    void load();
+  });
   onRelink(load);
 
   // Refresh when a library changes (new items) — at most every few seconds.
@@ -150,6 +166,9 @@
     {#if !hero}
       <div class="page-head"><h1>{t('Home')}</h1></div>
     {/if}
+    {#if ordered.length || filtered}
+      <div class="filters"><FilterBar /></div>
+    {/if}
     {#each ordered as r (r.id)}
       {@const lib = r.id.startsWith('recent:') ? library(+r.id.slice(7)) : undefined}
       <Shelf title={homeRowTitle(r.id, r.title, lib?.name)} items={r.items} href={rowHref(r.id)} />
@@ -158,7 +177,10 @@
     {#if !ordered.length}
       <div class="empty">
         <div class="empty-icon"><Icon name="books" size={32} /></div>
-        {#if failed}
+        {#if filtered && !failed}
+          <h3>{t('Nothing matches these filters')}</h3>
+          <p>{t('Turn a filter off to see more.')}</p>
+        {:else if failed}
           <h3>{t("Couldn't load your home page.")}</h3>
           <button class="btn" onclick={load}><Icon name="arrow-clockwise" />{t('Try again')}</button>
         {:else if !libs.list.length}
@@ -281,6 +303,9 @@
   }
   .rows {
     position: relative;
+  }
+  .filters {
+    margin-bottom: var(--sp-6);
   }
   .no-hero {
     padding-top: var(--sp-6);

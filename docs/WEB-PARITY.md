@@ -232,3 +232,15 @@ What differs where both have it:
 
 Unaffected on both: screenshots and thumbnails. The desktop takes them from the original picture;
 the web's "Use this frame as the thumbnail" is made on the server from the file.
+
+## Filters and sort buttons (2026-11-19)
+
+Library pages and Home have the same row of toggle buttons on both clients (no drop-downs):
+All / Unplayed / In progress / Played, Favorites, "Genre and year" (rows of genre and decade
+buttons from `GET /facets`), Clear filters, and on library pages the sort buttons (the active one
+shows its direction and turns around when pressed again). Desktop: `src/app/media/filters.rs`
+(kept per page for the session); web: `components/FilterBar.svelte` + `lib/filters.ts` (kept in
+the page's query string). Differences: the desktop also has Shuffle (the web's paged grid can't
+page a random order), and the web names the last sort "Last played". Marking a show or season
+played now shows at once on both (the web used to flip back: a container has no `played` of its
+own, so both go by `unplayed == 0`).
