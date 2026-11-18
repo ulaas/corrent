@@ -25,6 +25,7 @@ mod refresh;
 pub mod sound;
 pub mod subtitles;
 pub mod syncplay;
+pub mod transcode_settings;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -117,6 +118,7 @@ pub struct MediaState {
     /// Settings → Metadata.
     pub providers: providers::ProvidersUi,
     pub cast_settings: cast_settings::CastSettingsUi,
+    pub transcode_settings: transcode_settings::TranscodeSettingsUi,
     /// Media → AI agent.
     pub agent: agent::AgentUi,
     remove_library: Option<(i64, String)>,
@@ -736,7 +738,12 @@ impl CorrentApp {
             self.media.gl.as_ref(),
             queue,
             audio_only,
-            &self.settings.playback,
+            // The default quality is for another server's videos: what this computer hosts
+            // plays as it is.
+            &corrent_core::config::Playback {
+                quality: if self.server.is_some() { self.settings.playback.quality.clone() } else { String::new() },
+                ..self.settings.playback.clone()
+            },
             &picture::dir(&self.paths.data_dir),
         ) {
             Ok(mut p) => {

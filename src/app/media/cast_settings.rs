@@ -10,7 +10,7 @@ use super::client::{Slot, fetch, ready, take_ready};
 use crate::app::CorrentApp;
 use crate::app::settings_window::{heading, row, toggle};
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{card, primary_button};
+use crate::ui::widgets::{card, primary_button, toggle_chip};
 
 #[derive(Default)]
 pub struct CastSettingsUi {
@@ -126,13 +126,23 @@ impl CorrentApp {
                 &mut d.enabled,
             );
             row(ui, p, t!("Largest picture sent as it is"), t!("Taller videos are converted first. Older Chromecasts stop at 1080p."), |ui| {
-                let list = heights();
-                let shown = list.iter().find(|(h, _)| *h == d.max_height).map(|(_, l)| *l).unwrap_or("");
-                egui::ComboBox::from_id_salt("cast-height").selected_text(shown).show_ui(ui, |ui| {
-                    for (h, l) in list {
-                        ui.selectable_value(&mut d.max_height, h, l);
+                for (h, l) in heights() {
+                    if toggle_chip(ui, p, l, d.max_height == h).clicked() {
+                        d.max_height = h;
                     }
-                });
+                }
+            });
+            row(ui, p, t!("Quality of converted streams"), t!("What a video is converted to when the device can’t play it as it is. Automatic keeps the file’s size."), |ui| {
+                let on = |d: &CastConfig, h: u32| d.transcode_height == h;
+                if toggle_chip(ui, p, t!("Automatic"), on(d, 0)).clicked() {
+                    (d.transcode_height, d.transcode_bitrate_kbps) = (0, 0);
+                }
+                for (id, h, bits) in corrent_proto::library::QUALITIES {
+                    let label = if *id == "2160" { "4K".to_string() } else { format!("{id}p") };
+                    if toggle_chip(ui, p, &label, on(d, *h as u32)).clicked() {
+                        (d.transcode_height, d.transcode_bitrate_kbps) = (*h as u32, (*bits / 1000) as u32);
+                    }
+                }
             });
             row(ui, p, t!("Highest bitrate sent as it is"), t!("In Mbit/s; for a slow Wi-Fi. 0 means no limit."), |ui| {
                 let mut mbit = d.max_bitrate_kbps / 1000;

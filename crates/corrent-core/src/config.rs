@@ -149,6 +149,10 @@ pub struct Playback {
     pub replaygain: String,
     /// No gap between album tracks.
     pub gapless: bool,
+    /// The quality videos from another server start in: "" (original), "2160", "1080", "720"
+    /// or "480" (`corrent_proto::library::QUALITIES`). The player's Quality buttons change it
+    /// for what is playing.
+    pub quality: String,
     /// The player's volume (mpv's 0–130) and mute, as they were last.
     pub volume: f32,
     pub muted: bool,
@@ -177,6 +181,7 @@ impl Default for Playback {
             equalizer: EqPreset::Flat,
             replaygain: "album".into(),
             gapless: true,
+            quality: String::new(),
             volume: 100.0,
             muted: false,
             fx: crate::audio_fx::AudioFx::default(),

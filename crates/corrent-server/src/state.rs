@@ -46,6 +46,8 @@ pub struct AppState {
     pub hls: Arc<corrent_transcode::hls::HlsManager>,
     /// The working H.264 encoder (None until detected, or when there is none).
     pub hls_encoder: Mutex<Option<String>>,
+    /// The search for a working encoder at startup is over (`hls_encoder` says what it found).
+    pub hls_probed: std::sync::atomic::AtomicBool,
     /// Matroska files indexed for direct stream (copying into HLS/fMP4).
     pub remux: corrent_transcode::remux::Cache,
     /// Files whose trickplay is being made, and the one-at-a-time slot.

@@ -144,6 +144,7 @@ the client asks for it. Media files, HLS and remux segments and torrent streams 
 | GET | `/api/v1/home` |
 | GET | `/api/v1/facets` |
 | GET PUT | `/api/v1/transcode/config` |
+| POST | `/api/v1/playback/sessions/{id}/keep` |
 | GET | `/api/v1/library/search` |
 | GET PUT | `/api/v1/users/{id}/libraries` |
 

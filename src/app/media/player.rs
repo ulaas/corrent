@@ -456,6 +456,12 @@ pub struct Player {
     pub fullscreen: bool,
     client: MediaClient,
     rt: tokio::runtime::Handle,
+    /// The quality videos are asked for in ("": as they are), see the settings panel.
+    quality: String,
+    /// The server's conversion this player is fed from, if any: kept alive while paused, and
+    /// stopped when the player moves on.
+    session: Arc<Mutex<Option<String>>>,
+    session_kept: Instant,
     last_report: Instant,
     controls_until: Instant,
     stop_events: Arc<AtomicBool>,
@@ -646,6 +652,10 @@ impl Player {
         let audio = &{
             let mut hooked = audio.clone();
             super::picture::dev_hook(&mut hooked);
+            // CORRENT_DEV_QUALITY=<id>: start in that quality ("720"), also from this computer's server.
+            if let Ok(q) = std::env::var("CORRENT_DEV_QUALITY") {
+                hooked.quality = q;
+            }
             hooked
         };
         let header = client.auth_header();
@@ -969,6 +979,9 @@ impl Player {
             fullscreen: false,
             client,
             rt,
+            quality: audio.quality.clone(),
+            session: Arc::default(),
+            session_kept: Instant::now(),
             last_report: Instant::now(),
             controls_until: Instant::now() + Duration::from_secs(3),
             stop_events: stop,
@@ -1025,8 +1038,62 @@ impl Player {
         self.queue.get(self.index)
     }
 
+    /// What the server is asked for `e`: the file as it is, or (videos, with a quality chosen)
+    /// within that quality's limits — then with the remembered audio track, and the remembered
+    /// subtitle in the picture, since a conversion carries one sound track and no subtitles.
+    fn playback_body(&self, e: &QueueEntry) -> serde_json::Value {
+        let mut body = serde_json::Map::new();
+        body.insert("profile".into(), "native".into());
+        if let Some((height, bitrate)) =
+            corrent_proto::library::quality_limits(&self.quality).filter(|_| !self.audio_only)
+        {
+            body.insert("max_height".into(), height.into());
+            body.insert("max_bitrate".into(), bitrate.into());
+            if let Some(a) = e.audio_track {
+                body.insert("audio_track".into(), a.into());
+            }
+            // Subtitle files (1000 and up) come along as files when they are text.
+            if let Some(sub) = e.subtitle_track.filter(|i| (1..1000).contains(i)) {
+                body.insert("burn_subtitle".into(), sub.into());
+            }
+        }
+        body.into()
+    }
+
+    /// The server's conversion for this player is over: it stops encoding now, not when it
+    /// notices nobody is fetching.
+    fn end_session(&self) {
+        if let Some(id) = crate::util::lock(&self.session).take() {
+            let client = self.client.clone();
+            self.rt.spawn(async move {
+                let _: Result<serde_json::Value, String> = client
+                    .send(reqwest::Method::DELETE, &format!("/api/v1/playback/sessions/{id}"), &serde_json::Value::Null)
+                    .await;
+            });
+        }
+    }
+
+    /// Is the picture converted by the server (a quality below the file's)?
+    pub fn converted(&self) -> bool {
+        crate::util::lock(&self.session).is_some()
+    }
+
+    /// Plays on in another quality, from where it is.
+    pub fn set_quality(&mut self, id: &str) {
+        if self.quality == id {
+            return;
+        }
+        self.quality = id.to_string();
+        let pos = crate::util::with_lock(&self.status, |s| s.pos);
+        if let Some(e) = self.queue.get_mut(self.index) {
+            e.resume_ms = (pos * 1000.0) as i64;
+        }
+        self.load_current();
+    }
+
     fn load_current(&mut self) {
         let Some(e) = self.current().cloned() else { return };
+        self.end_session();
         if self.casting.is_none() {
             self.cast.find_active(&self.ctx);
         }
@@ -1093,19 +1160,35 @@ impl Player {
         self.sheets.clear();
         let generation = self.playlist_generation.clone();
         let at = generation.load(Ordering::Relaxed);
+        let body = self.playback_body(&e);
+        let session = self.session.clone();
         self.rt.spawn(async move {
-            let info: Result<corrent_proto::library::PlaybackInfo, String> = client
-                .send(
-                    reqwest::Method::POST,
-                    &format!("/api/v1/playback/{}", e.item_id),
-                    &serde_json::json!({ "profile": "native" }),
-                )
-                .await;
+            let info: Result<corrent_proto::library::PlaybackInfo, String> =
+                client.send(reqwest::Method::POST, &format!("/api/v1/playback/{}", e.item_id), &body).await;
             match info {
                 Ok(info) => {
+                    // Another entry was asked for meanwhile: this conversion isn't wanted.
+                    if generation.load(Ordering::Relaxed) != at {
+                        if let Some(id) = &info.session_id {
+                            let _: Result<serde_json::Value, String> = client
+                                .send(
+                                    reqwest::Method::DELETE,
+                                    &format!("/api/v1/playback/sessions/{id}"),
+                                    &serde_json::Value::Null,
+                                )
+                                .await;
+                        }
+                        return;
+                    }
+                    *crate::util::lock(&session) = info.session_id.clone();
                     {
                         let mut s = crate::util::lock(&status);
                         s.segments = info.segments.clone();
+                        // A conversion has one sound track and no subtitles of its own: the
+                        // file's track numbers mean nothing in it.
+                        if info.session_id.is_some() {
+                            s.want = None;
+                        }
                     }
                     if let Some(tp) = info.trickplay.clone() {
                         let (client, trick) = (client.clone(), trick.clone());
@@ -1549,6 +1632,18 @@ impl Player {
 
     /// Per-frame housekeeping: progress reports and advancing the queue at the end.
     pub fn tick(&mut self) {
+        // A paused player fetches nothing: the server would take its conversion for abandoned.
+        if self.session_kept.elapsed() > Duration::from_secs(30) {
+            self.session_kept = Instant::now();
+            if let Some(id) = crate::util::lock(&self.session).clone() {
+                let client = self.client.clone();
+                self.rt.spawn(async move {
+                    let path = format!("/api/v1/playback/sessions/{id}/keep");
+                    let _: Result<serde_json::Value, String> =
+                        client.send(reqwest::Method::POST, &path, &serde_json::Value::Null).await;
+                });
+            }
+        }
         self.save_volume(false);
         self.save_fx(false);
         self.sync_fx();
@@ -2546,6 +2641,29 @@ impl Player {
                 _ => {}
             }
         }
+        // Quality: for what the server plays (not a file on this computer, not a bare stream).
+        if !self.audio_only && self.current().is_some_and(|e| e.local.is_none() && e.stream.is_none()) {
+            glass::separator(ui, tone);
+            glass::section(ui, tone, t!("Quality"));
+            ui.add_space(2.0);
+            let ids: Vec<&str> =
+                std::iter::once("").chain(corrent_proto::library::QUALITIES.iter().map(|q| q.0)).collect();
+            let items: Vec<(String, bool)> = ids
+                .iter()
+                .map(|id| {
+                    let label = match *id {
+                        "" => t!("Original").to_string(),
+                        "2160" => "4K".to_string(),
+                        id => format!("{id}p"),
+                    };
+                    (label, self.quality == *id)
+                })
+                .collect();
+            if let Some(id) = glass::chips(ui, tone, &items).and_then(|i| ids.get(i).copied()) {
+                self.set_quality(id);
+            }
+            ui.add_space(2.0);
+        }
         glass::separator(ui, tone);
         glass::section(ui, tone, t!("Picture"));
         ui.add_space(2.0);
@@ -2586,6 +2704,19 @@ impl Player {
         let tracks = crate::util::with_lock(&self.status, |s| s.tracks.clone());
         let mut pick = false;
         let mut chosen = None;
+        // A converted picture carries one sound track and no subtitles: the file's are chosen
+        // in the original quality (and then kept by the conversion).
+        if self.converted() {
+            glass::section(ui, tone, t!("Audio and subtitles"));
+            ui.add(egui::Label::new(
+                egui::RichText::new(t!(
+                    "This quality is converted by the server with the audio track and subtitles chosen before. To choose others, switch Quality to Original in the settings, pick them, and switch back."
+                ))
+                .size(12.0)
+                .color(tone.dim),
+            ).wrap());
+            return false;
+        }
         for (kind, label, prop) in [("audio", t!("Audio"), "aid"), ("sub", t!("Subtitles"), "sid")] {
             glass::section(ui, tone, label);
             if kind == "sub"
@@ -3102,6 +3233,7 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
+        self.end_session();
         self.report(true);
         self.save_volume(true);
         self.save_fx(true);

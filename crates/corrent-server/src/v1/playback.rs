@@ -28,6 +28,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/playback/{item}", post(start))
         .route("/playback/sessions", get(sessions))
         .route("/playback/sessions/{id}", delete(stop))
+        .route("/playback/sessions/{id}/keep", post(keep))
         .route("/transcode/config", get(get_transcode).put(put_transcode))
         .route("/hls/{id}/index.m3u8", get(playlist))
         .route("/hls/{id}/{segment}", get(segment))
@@ -147,6 +148,14 @@ async fn start(
 ) -> ApiResult<PlaybackInfo> {
     let how = How { remux_ok: true, ..Default::default() };
     Ok(Json(prepare(&st, &auth, item, body.map(|b| b.0).unwrap_or_default(), how).await?))
+}
+
+/// `POST /playback/sessions/{id}/keep`: a player that holds a conversion without fetching from
+/// it (paused) says it is still there; sessions nobody touches for 90 s are stopped.
+async fn keep(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<String>) -> ApiResult<serde_json::Value> {
+    owns(&st, &auth, &id)?;
+    st.hls.keep_alive(&id);
+    Ok(Json(serde_json::json!({})))
 }
 
 /// `GET /transcode/config`: how the server converts, and the encoder it found.
@@ -321,6 +330,13 @@ pub(crate) async fn prepare(
             let bitrate = [target_bitrate, set(cap.max_bitrate_kbps).map(|k| k * 1000)].into_iter().flatten().min();
             let source_height = facts.video.as_ref().and_then(|v| v.height);
             let video = video.map(|v| limit_video(v, source_height, height, bitrate));
+            // Asked for in the server's first moments: the search for an encoder is about done.
+            for _ in 0..40 {
+                if st.hls_probed.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
             if video.is_some() && st.hls_encoder.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
                 return Err(err(
                     ErrorCode::EngineUnavailable,

@@ -152,6 +152,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
             ..Default::default()
         }),
         hls_encoder: Default::default(),
+        hls_probed: Default::default(),
         remux: Default::default(),
         trickplay_busy: Default::default(),
         trickplay_slot: Default::default(),
@@ -185,6 +186,7 @@ pub async fn build_state(p: ServerParts) -> anyhow::Result<Arc<AppState>> {
             st2.hls.set_encoder(e);
         }
         *st2.hls_encoder.lock().unwrap_or_else(|e| e.into_inner()) = found;
+        st2.hls_probed.store(true, std::sync::atomic::Ordering::Relaxed);
     });
     v1::library::refresh_roots(&state).await;
     integrate::ensure_category_folders(&state).await;

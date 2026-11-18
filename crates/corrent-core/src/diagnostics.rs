@@ -134,6 +134,7 @@ pub const SETTINGS_FIELDS: &[(&str, Rule)] = {
         ("playback.channels", Keep),
         ("playback.exclusive", Keep),
         ("playback.gapless", Keep),
+        ("playback.quality", Keep),
         // stream C
         ("playback.active_profile", Drop),
         ("playback.fx.preset", Drop), // may be the name of a user preset

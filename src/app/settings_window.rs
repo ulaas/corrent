@@ -151,7 +151,7 @@ impl Page {
                 )
             }
             Page::Playback => t!(
-                "audio sound output device speakers headphones exclusive bit-perfect channels surround stereo 5.1 7.1 passthrough receiver hdmi spdif dolby dts normalize loudness equalizer bass treble replaygain gapless cast casting chromecast google tv"
+                "audio sound output device speakers headphones exclusive bit-perfect channels surround stereo 5.1 7.1 passthrough receiver hdmi spdif dolby dts normalize loudness equalizer bass treble replaygain gapless cast casting chromecast google tv quality bitrate resolution 4k 1080p 720p 480p transcode transcoding convert encoder"
             ),
             Page::Advanced => t!("log level refresh interval checking concurrent data folder reset defaults"),
         }
@@ -1713,6 +1713,25 @@ impl CorrentApp {
                         });
                     });
                     toggle(ui, p, t!("Gapless albums"), t!("No pause between tracks of an album."), &mut pb.gapless);
+                    row(
+                        ui,
+                        p,
+                        t!("Video quality from other servers"),
+                        t!("What videos start in when this app plays from a server it is connected to; the player’s settings change it for what is playing. Smaller videos play as they are, larger ones are converted by the server. What this computer hosts always plays as it is."),
+                        |ui| {
+                            let all = std::iter::once("").chain(corrent_proto::library::QUALITIES.iter().map(|q| q.0));
+                            for id in all {
+                                let label = match id {
+                                    "" => t!("Original").to_string(),
+                                    "2160" => "4K".to_string(),
+                                    id => format!("{id}p"),
+                                };
+                                if crate::ui::widgets::toggle_chip(ui, p, &label, pb.quality == id).clicked() {
+                                    pb.quality = id.to_string();
+                                }
+                            }
+                        },
+                    );
                 });
                 // mpv itself (the sound devices above come from it): which one, or how to get it.
                 let missing = matches!(&devices, Some(Err(e)) if e.starts_with("libmpv is not available"));
@@ -1751,6 +1770,7 @@ impl CorrentApp {
                     self.open_get_mpv(false);
                 }
                 self.cast_settings(ui, p);
+                self.transcode_settings(ui, p);
             }
             Page::Advanced => {
                 card(p).show(ui, |ui| {
