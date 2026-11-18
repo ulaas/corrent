@@ -71,8 +71,9 @@ Run from a terminal so logs are visible (`CORRENT_LOG=debug corrent --portable`)
 
 ## Smart TVs (needs a real TV; any platform)
 
-Playing to DLNA renderers has only run against a renderer made for the tests. On a real Samsung
-(Tizen), LG or Sony TV on the same network, with the TV on:
+Playing to DLNA renderers and AirPlay receivers was checked on one Samsung TV (see Results). On
+a real Samsung (Tizen), LG or Sony TV on the same network, with the TV on (steps 1–4 over DLNA,
+then the same over AirPlay after pairing in Settings → Casting):
 
 1. The player's cast list shows the TV by its name (if not: add its description address under
    Settings → Playback → Casting → devices, `http://<tv>:9197/dmr` on Samsung).
@@ -91,4 +92,5 @@ Note the TV's model and what failed (the log has the renderer's error codes at i
 
 | Date | Platform / distro / desktop | Tester | Result | Notes |
 |---|---|---|---|---|
+| 2026-11-19 | Samsung QE85Q70B (2022, Tizen) from Linux | Claude, with the owner at the TV | Partial | Smart TVs steps 1–2 over DLNA (found, plays an MP4, position and volume follow) after two fixes the TV needed (`SOAPACTION` in capitals, a connection per command). AirPlay: paired with the PIN; MP4 and HLS play; pause, resume, seek, start position, end of item; a refused file is converted. Not run: DLNA seek and conversions (step 3), the firewall case (step 4), long playback, subtitles on either path. |
 | 2026-11-15 | macOS 27.2, Apple silicon | Claude (packaging review) | Partial | Only start-up and quit (step 1, 10) from the dmg's `Corrent.app --portable` opened with `open`: window up, no Terminal window, bundled libmpv loaded from `Contents/Frameworks`, Cmd-Q-style quit leaves no crash marker. The rest of the checklist not run. |

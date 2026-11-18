@@ -312,6 +312,7 @@ Stop.
 | `hevc` | `false` | The devices play H.265, so such files needn't be transcoded. |
 | `copy_streams` | `true` | Streams the device plays, in a container it doesn't (MKV), are copied into HLS/fMP4 rather than transcoded. A device that fetches them and fails gets a transcode. |
 | `dlna` | `true` | Also offer DLNA renderers: smart TVs (Samsung, LG, Sony), receivers, Kodi. |
+| `airplay` | `true` | Also offer AirPlay receivers (each is paired once with its PIN). |
 | `transcode_height` | `0` | The picture height a transcode for a device is made at (never above `max_height`). 0: the file's. |
 | `transcode_bitrate_kbps` | `0` | The video bitrate of such a transcode. 0: by the picture's size (8 Mbit/s at 1080p, 4 at 720p, 2 at 480p). |
 | `port` | `0` | The port devices fetch from. 0: `dlna_port`, or any free port if that's taken. A running DLNA listener is used instead of this. |
@@ -347,8 +348,37 @@ volume and mute work as for a Chromecast.
   addresses are opened, and a description may only name control addresses on the device itself.
 - A TV may ask on its screen whether to allow the server the first time.
 
-Not tested on real TVs yet (only against a renderer made for the tests): see
-`docs/PLATFORM-TESTING.md`.
+Tested on a Samsung QE85Q70B (2022, Tizen): a file plays, the position and the TV's volume
+follow, commands work. Two things that TV needs, and others likely do: the SOAP header spelled
+exactly `SOAPACTION` (it answers "Invalid Args" to any other case, so commands are written by
+hand rather than through an HTTP library), and a new connection for every command.
+
+### AirPlay receivers
+
+The list also offers AirPlay receivers that take video by link: Apple TVs and TVs with AirPlay
+built in (`"kind": "airplay"`; `airplay = false` under `[cast]` turns the search off). AirPlay is
+Apple's protocol; this sender is an independent implementation, not affiliated with Apple, written
+from what open-source senders document (`docs/spikes/airplay-protocol.md`).
+
+- **Pairing, once per device.** A receiver is listed with `needs_pairing` until it is paired:
+  `POST /cast/{device}/pair` makes it show a PIN, `POST /cast/{device}/pair/finish {"pin": …}`
+  completes HomeKit pair-setup, `DELETE /cast/{device}/pair` forgets it (Settings → Casting in both
+  clients; administrators only). The keys are kept in `airplay-pairings.json` in the profile
+  (readable by the server's account only, never in a support bundle). The TV lists the server
+  under its AirPlay settings as a paired device.
+- **Playing.** Every session verifies the pairing and talks inside the encrypted channel; the item
+  goes onto the receiver's play queue. Files it plays (MP4/MOV with H.264 or H.265 and AAC, AC-3 or
+  E-AC-3) are fetched as they are; MKV with such streams is copied into HLS; everything else, and
+  any chosen subtitle (burned in), is an HLS conversion. A file the receiver fetches and then
+  refuses (an MP4 with its index at the end, for one) is converted automatically.
+- Play, pause, seek, the position, the end of the item and resuming where it was left work. The
+  volume is the TV's own (not set from here).
+- Receivers protected by a password aren't offered. Older AirPlay 1 receivers (no HomeKit pairing)
+  aren't either.
+
+Tested on the same Samsung TV: pairing with its PIN, MP4 and HLS, pause, resume, seek, start
+position, end of item, and the automatic conversion of a file it refused. Apple TVs and other
+brands are untested.
 
 ## Jellyfin apps
 

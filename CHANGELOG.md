@@ -5,6 +5,26 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+### Added
+
+- **Casting to smart TVs.** DLNA renderers (Samsung, LG and Sony TVs, receivers, Kodi) and AirPlay
+  receivers (Apple TVs, TVs with AirPlay built in; paired once with the PIN the TV shows) are in
+  the cast list next to Chromecasts. What a TV can't play as it is, and any chosen subtitle, is
+  converted. Tested on one Samsung TV.
+- **Quality.** Quality buttons in both players (Original, 4K, 1080p, 720p, 480p), a default
+  quality, Transcoding settings on the server (a ceiling for conversions, encoding effort,
+  conversions at once) and the quality casting converts to.
+- **Streaming performance.** What the server is converting and casting, how fast against real
+  time, how far ahead of each player, the bandwidth and the computer's load: a window in the
+  desktop app, Settings → Streaming performance on the web, and a line in the player's stats.
+- **Filters.** Home and library pages have filter buttons (unplayed, in progress, played,
+  favorites, genre, decade); sorting is buttons too.
+
+### Fixed
+
+- Marking an item played or a favorite shows at once (it used to appear only after the next
+  refresh, half a minute later), also for whole shows and seasons on the web.
+
 ## [0.6.1] — 2026-11-16
 
 Corrent for the Mac.

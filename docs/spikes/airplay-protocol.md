@@ -11,6 +11,32 @@ Sources that could not be fetched: `emanuelecozzi.net/docs/airplay2` (TLS certif
 `openairplay.github.io/airplay-spec` was read for cross-checks only; its `post_pair_setup`, `post_pair_verify`
 and `post_command` pages are empty stubs.
 
+## What a Samsung TV did (QE85Q70B, 2022 Tizen, AirPlay 377.40.00; 2026-11-19)
+
+Tried with the code in `crates/corrent-server/src/cast/airplay/`. Everything below this section is
+the research it was written from.
+
+- PIN pair-setup (Method 0, `X-Apple-HKP: 3`, Name TLV sent, A as 384 bytes) and pair-verify work
+  as sections 2 and 4 say. The identifier the TV gives in M6 is not its mDNS `deviceid`.
+- Inside the channel `GET /info` answers 200, `/playback-info` and `/server-info` 404.
+- Section 6.1 (SETUP, event channel, feedback, RECORD) and the #2941 variant of 6B work: commands
+  as `POST /command RTSP/1.0` with `X-Apple-StreamID`; `channelID` with either the mDNS id or the
+  pairing identifier.
+- An MP4 with `moov` at the end: fetched (`bytes=0-`, agent `samsung-agent/1.1`), then
+  `{type: error, error: {code: -12927}}` and `itemRemoved`. A faststart MP4 and HLS (MPEG-TS
+  segments, fetched with agent `AirPlay/2.0 … MFi_AirPlay_Device`) play. Plain-HTTP LAN links are fine.
+- `Start-Position` as a CMTime (value in ms, timescale 1000) works for HLS (it starts at the
+  segment before).
+- State arrives as `playbackState` events (`loading`, `playing` with position/duration/rate,
+  `paused`, `stopped` with `reason: ended`) and notifications (`itemPlayedToEnd`, `timeJumped`,
+  `loadedTimeRangesChanged`, `playbackLikelyToKeepUp`, `currentItemChanged`). A `playbackInfo`
+  request is answered on the event channel with `info.position`/`duration` as CMTimes,
+  `playbackState`, `readyToPlay`, `rate`.
+- **Seek** (in no source): `{type: "seek", item: {uuid: <the queued item's>}, time: <CMTime>}`.
+  `seekToTime`, `setProperty currentTime/position`, and `seek` without the item are answered 200
+  and do nothing.
+- Closing the control connection ends playback.
+
 ## 0. The main finding for a Samsung TV (read this first)
 
 The target announces features `0x038bcf46007f8ad0` = bits

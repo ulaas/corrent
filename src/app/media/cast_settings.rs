@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use corrent_proto::library::{CastCommand, CastConfig, CastStatus};
+use corrent_proto::library::{CastCommand, CastConfig, CastDevice, CastStatus};
 use egui::{RichText, Ui};
 
 use super::client::{Slot, fetch, ready, take_ready};
@@ -24,6 +24,13 @@ pub struct CastSettingsUi {
     message: Option<(bool, String)>,
     active: Option<Slot<Vec<CastStatus>>>,
     active_at: Option<Instant>,
+    /// The devices on the network (for the AirPlay ones: paired or not).
+    found: Option<Slot<Vec<CastDevice>>>,
+    /// A pairing under way: the device (id, name) shows its PIN, typed here.
+    pairing: Option<(String, String, String)>,
+    /// Pair, finish or forget on its way: what to say when it worked.
+    pair_step: Option<(Slot<serde_json::Value>, Option<String>)>,
+    pair_error: Option<String>,
 }
 
 /// The resolutions offered: lines, and how they're called.
@@ -128,6 +135,13 @@ impl CorrentApp {
             toggle(
                 ui,
                 p,
+                t!("Also find AirPlay devices"),
+                t!("Apple TVs and TVs with AirPlay built in (Samsung, LG, Sony). Each is paired once with a PIN it shows on its screen. Converted streams and files they play as they are both work; subtitles go into the picture."),
+                &mut d.airplay,
+            );
+            toggle(
+                ui,
+                p,
                 t!("Also find smart TVs and other DLNA players"),
                 t!("Samsung, LG and Sony TVs, receivers, Kodi. They play most files as they are; what they can’t play is converted, with the subtitles in the picture. The picture size and H.265 settings below are for Chromecasts."),
                 &mut d.dlna,
@@ -184,6 +198,11 @@ impl CorrentApp {
                 save = true;
             }
         });
+        // AirPlay devices are paired once each, here.
+        if st.saved.as_ref().is_some_and(|c| c.enabled && c.airplay) {
+            self.airplay_devices(ui, p, &client);
+        }
+        let st = &mut self.media.cast_settings;
         if save && let Some(d) = st.draft.clone() {
             st.message = None;
             let c = client.clone();
@@ -200,6 +219,138 @@ impl CorrentApp {
                 }
             });
             st.active_at = None;
+        }
+    }
+}
+
+impl CorrentApp {
+    /// The AirPlay receivers on the network, each with Pair… (it shows a PIN) or Forget.
+    fn airplay_devices(&mut self, ui: &mut Ui, p: &Palette, client: &super::client::MediaClient) {
+        let st = &mut self.media.cast_settings;
+        let ask = |refresh: bool| {
+            let c = client.clone();
+            fetch(&self.rt, &self.ctx, async move {
+                c.get_reason(if refresh { "/api/v1/cast/devices?refresh=true" } else { "/api/v1/cast/devices" }).await
+            })
+        };
+        if st.found.is_none() {
+            st.found = Some(ask(false));
+        }
+        // A step that came back: say so, and look at the devices again.
+        if let Some((slot, done)) = &st.pair_step
+            && let Some(r) = take_ready(slot)
+        {
+            let done = done.clone();
+            st.pair_step = None;
+            match r {
+                Ok(_) => {
+                    st.pair_error = None;
+                    if let Some(text) = done {
+                        st.pairing = None;
+                        self.toasts.push(crate::engine::ToastKind::Success, text);
+                        st.found = Some(ask(false));
+                    }
+                }
+                // The attempt is over with its error: Pair… starts another.
+                Err(e) => {
+                    st.pairing = None;
+                    st.pair_error = Some(super::cast::reason_text(&e));
+                }
+            }
+        }
+        let list = st.found.as_ref().and_then(ready);
+        let busy = st.pair_step.is_some();
+        // (path, method, body, what to say when done)
+        let mut send: Option<(String, reqwest::Method, serde_json::Value, Option<String>)> = None;
+        let mut again = false;
+        ui.add_space(12.0);
+        card(p).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            heading(ui, p, t!("AirPlay devices"));
+            if let Some(e) = &st.pair_error {
+                ui.label(RichText::new(e).color(p.error));
+            }
+            match &list {
+                None => {
+                    ui.spinner();
+                }
+                Some(Err(e)) => {
+                    ui.label(RichText::new(super::cast::reason_text(e)).color(p.error));
+                }
+                Some(Ok(all)) => {
+                    let receivers: Vec<&CastDevice> = all.iter().filter(|d| d.kind == "airplay").collect();
+                    if receivers.is_empty() {
+                        ui.label(
+                            RichText::new(t!("No AirPlay devices found on the server’s network.")).color(p.text_dim),
+                        );
+                    }
+                    for d in receivers {
+                        let name =
+                            if d.model.is_empty() { d.name.clone() } else { format!("{}  ·  {}", d.name, d.model) };
+                        let pairing_this = st.pairing.as_ref().is_some_and(|(id, ..)| *id == d.id);
+                        let hint = if pairing_this {
+                            t!("Enter the PIN shown on the TV.")
+                        } else if d.needs_pairing {
+                            t!("not paired")
+                        } else {
+                            t!("Paired")
+                        };
+                        row(ui, p, &name, hint, |ui| {
+                            ui.add_enabled_ui(!busy, |ui| {
+                                if let Some((id, _, pin)) = st.pairing.as_mut().filter(|(id, ..)| *id == d.id) {
+                                    if ui.button(t!("Cancel")).clicked() {
+                                        again = true;
+                                    }
+                                    let typed = !pin.trim().is_empty();
+                                    if ui.add_enabled(typed, egui::Button::new(t!("Pair"))).clicked() {
+                                        send = Some((
+                                            format!("/api/v1/cast/{id}/pair/finish"),
+                                            reqwest::Method::POST,
+                                            serde_json::json!({ "pin": pin.trim() }),
+                                            Some(t!("Paired with {name}.", name = d.name)),
+                                        ));
+                                    }
+                                    ui.add(
+                                        egui::TextEdit::singleline(pin)
+                                            .desired_width(80.0)
+                                            .char_limit(8)
+                                            .hint_text("0000"),
+                                    );
+                                } else if d.needs_pairing {
+                                    if ui.button(t!("Pair…")).clicked() {
+                                        st.pairing = Some((d.id.clone(), d.name.clone(), String::new()));
+                                        send = Some((
+                                            format!("/api/v1/cast/{}/pair", d.id),
+                                            reqwest::Method::POST,
+                                            serde_json::Value::Null,
+                                            None,
+                                        ));
+                                    }
+                                } else if ui.button(t!("Forget")).clicked() {
+                                    send = Some((
+                                        format!("/api/v1/cast/{}/pair", d.id),
+                                        reqwest::Method::DELETE,
+                                        serde_json::Value::Null,
+                                        Some(t!("Forgot the pairing with {name}.", name = d.name)),
+                                    ));
+                                }
+                            });
+                        });
+                    }
+                }
+            }
+            if ui.button(t!("Search again")).clicked() {
+                st.found = Some(ask(true));
+            }
+        });
+        if again {
+            st.pairing = None;
+        }
+        if let Some((path, method, body, done)) = send {
+            st.pair_error = None;
+            let c = client.clone();
+            let slot = fetch(&self.rt, &self.ctx, async move { c.send_reason(method, &path, &body).await });
+            st.pair_step = Some((slot, done));
         }
     }
 }

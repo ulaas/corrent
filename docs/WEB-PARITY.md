@@ -284,3 +284,11 @@ Starting / Waiting for the player), plus what is casting. Desktop: the ⋮ menu 
 palette → Streaming performance (`src/app/media/performance.rs`), and the server's line in the
 player's own stats; web: Settings → Streaming performance (`pages/settings/Sessions.svelte`,
 `lib/streamhealth.ts`). Files that play as they are aren't listed on either.
+
+## AirPlay receivers (2026-11-19)
+
+Both clients list AirPlay receivers in the cast list (labelled "AirPlay", and "not paired" until
+they are) and pair them in the Casting settings: Pair… makes the TV show a PIN, which is typed
+there; Forget removes the pairing. Both have the toggle "Also find AirPlay devices". Playing on an
+unpaired device says where to pair it. The cast list also says "DLNA" for a TV reached that way,
+since a TV with both is listed twice.
