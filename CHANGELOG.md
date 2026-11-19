@@ -10,6 +10,11 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 - The filter and sort buttons of Home and the library pages are remembered between launches, in
   the desktop app and in the web client (per library; the web client per browser).
 
+### Fixed
+
+- Windows: the window no longer flashes its background colour over its content (or a playing
+  video) when it loses or gets the focus.
+
 ## [0.6.3] — 2026-11-19
 
 Casting to smart TVs over DLNA and AirPlay, and removing media from a library. (0.6.2 was tagged

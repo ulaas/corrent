@@ -115,6 +115,70 @@ pub fn background(window: &impl raw_window_handle::HasWindowHandle, color: egui:
 #[cfg(not(windows))]
 pub fn background<W>(_window: &W, _color: egui::Color32) {}
 
+/// Whether an erase request should paint the background: only when the window's size changed
+/// since the last request. Windows also asks when the window is activated or deactivated (the
+/// frame changes colour), and painting then covered the whole picture until the next frame.
+#[cfg(any(windows, test))]
+fn erase_paints(last: &std::sync::atomic::AtomicU64, width: i32, height: i32) -> bool {
+    let size = (u64::from(width.cast_unsigned()) << 32) | u64::from(height.cast_unsigned());
+    last.swap(size, std::sync::atomic::Ordering::Relaxed) != size
+}
+
+/// Keeps the class's background brush (see `background`) to what it is for: the main window
+/// answers erase requests that come without a resize itself, without painting.
+#[cfg(windows)]
+pub fn keep_picture(cc: &eframe::CreationContext<'_>) {
+    use std::sync::atomic::AtomicU64;
+
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    type Hwnd = *mut core::ffi::c_void;
+    type SubclassProc = unsafe extern "system" fn(Hwnd, u32, usize, isize, usize, usize) -> isize;
+
+    #[repr(C)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+    #[link(name = "comctl32")]
+    unsafe extern "system" {
+        fn SetWindowSubclass(hwnd: Hwnd, proc: SubclassProc, id: usize, data: usize) -> i32;
+        fn DefSubclassProc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize;
+    }
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetClientRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
+    }
+    const WM_ERASEBKGND: u32 = 0x0014;
+    /// Not the id of `integration::end_session`'s subclass.
+    const SUBCLASS_ID: usize = 2;
+    static LAST_SIZE: AtomicU64 = AtomicU64::new(u64::MAX);
+
+    unsafe extern "system" fn proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize, _: usize, _: usize) -> isize {
+        if msg == WM_ERASEBKGND {
+            let mut rect = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+            // SAFETY: our own window, and a rectangle that outlives the call.
+            let known = unsafe { GetClientRect(hwnd, &mut rect) } != 0;
+            let paints = !known || erase_paints(&LAST_SIZE, rect.right - rect.left, rect.bottom - rect.top);
+            if !paints {
+                // "Erased": nothing more is asked for, and the picture stays.
+                return 1;
+            }
+        }
+        // SAFETY: forwarding the message we were given to the next procedure in the chain.
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    let Ok(handle) = cc.window_handle() else { return };
+    let RawWindowHandle::Win32(win) = handle.as_raw() else { return };
+    // SAFETY: a valid HWND created on this (the UI) thread; `proc` lives for the whole process.
+    unsafe { SetWindowSubclass(win.hwnd.get() as Hwnd, proc, SUBCLASS_ID, 0) };
+}
+
+#[cfg(not(windows))]
+pub fn keep_picture(_cc: &eframe::CreationContext<'_>) {}
+
 /// Mica spike (roadmap B5b, debug builds only, `CORRENT_DEV_MICA=1`): ask DWM for the Mica
 /// backdrop and extend it into the client area. Needs a transparent window and clear color.
 #[cfg(all(windows, debug_assertions))]
@@ -160,4 +224,22 @@ pub fn mica(cc: &eframe::CreationContext<'_>) -> bool {
 #[cfg(not(windows))]
 pub fn round_corners(_cc: &eframe::CreationContext<'_>) -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU64;
+
+    use super::erase_paints;
+
+    #[test]
+    fn only_a_resize_paints_the_background() {
+        let last = AtomicU64::new(u64::MAX);
+        assert!(erase_paints(&last, 1280, 800), "the first request: nothing is drawn yet");
+        assert!(!erase_paints(&last, 1280, 800), "the window lost the focus: the picture stays");
+        assert!(erase_paints(&last, 1300, 800), "wider");
+        assert!(erase_paints(&last, 1300, 820), "taller");
+        assert!(!erase_paints(&last, 1300, 820));
+        assert!(erase_paints(&last, 800, 1300), "the sides swapped");
+    }
 }

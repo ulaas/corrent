@@ -546,6 +546,7 @@ impl CorrentApp {
     /// Save and stop when the OS ends the session (see `integration::end_session`).
     fn with_end_session(self, cc: &eframe::CreationContext<'_>) -> Self {
         crate::integration::end_session::track(&self.engine, &self.paths);
+        win_chrome::keep_picture(cc);
         #[cfg(windows)]
         crate::integration::end_session::install(cc);
         #[cfg(not(windows))]
