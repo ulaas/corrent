@@ -43,7 +43,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       # The server's build script builds the web client (crates/corrent-server/build.rs).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -75,7 +75,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.96
       - uses: Swatinem/rust-cache@v2
       # The server's build script builds the web client (crates/corrent-server/build.rs).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -97,7 +97,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The server's build script builds the web client (crates/corrent-server/build.rs).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -113,7 +113,7 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
