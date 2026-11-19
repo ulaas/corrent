@@ -41,8 +41,8 @@ impl CorrentApp {
     }
 
     pub(super) fn removal_window(&mut self, ctx: &egui::Context, p: &Palette) {
-        let Some(mut f) = self.media.removal.take() else { return };
         let Some(client) = self.media.client.clone() else { return };
+        let Some(mut f) = self.media.removal.take() else { return };
         if f.plan.is_none() {
             let (c, path) = (client.clone(), format!("/api/v1/items/{}/removal", f.item));
             f.plan = Some(fetch(&self.rt, ctx, async move { c.get_reason(&path).await }));
@@ -170,12 +170,13 @@ impl CorrentApp {
                 {
                     go = Some(false);
                 }
-                if secondary_button(ui, t!("Cancel")).clicked() {
+                // Not while it runs: what it did (and what it couldn't delete) must be shown.
+                if ui.add_enabled_ui(!busy, |ui| secondary_button(ui, t!("Cancel"))).inner.clicked() {
                     close = true;
                 }
             });
         });
-        if close || (r.should_close() && !busy) {
+        if !busy && (close || r.should_close()) {
             return;
         }
         if let Some(delete) = go {
@@ -191,8 +192,8 @@ impl CorrentApp {
     }
 
     pub(super) fn ignored_window(&mut self, ctx: &egui::Context, p: &Palette) {
-        let Some(mut f) = self.media.ignored.take() else { return };
         let Some(client) = self.media.client.clone() else { return };
+        let Some(mut f) = self.media.ignored.take() else { return };
         if let Some(r) = f.restoring.as_ref().and_then(ready) {
             f.restoring = None;
             f.list = None;

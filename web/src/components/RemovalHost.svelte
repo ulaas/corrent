@@ -36,10 +36,12 @@
   }
 
   async function remove(deleteFiles: boolean) {
-    if (!req) return;
+    // The request this was started for: `req` may be another one when the answer comes.
+    const mine = req;
+    if (!mine) return;
     busy = true;
     try {
-      const r = await api.del<Removed>(`/items/${req.id}`, { query: { delete_files: String(deleteFiles) } });
+      const r = await api.del<Removed>(`/items/${mine.id}`, { query: { delete_files: String(deleteFiles) } });
       const failed = r.failed ?? [];
       if (failed.length) {
         toast(
@@ -51,9 +53,8 @@
       } else {
         toast(deleteFiles ? t('Removed, and its files deleted.') : t('Removed from the library. Its files stay.'), 'success');
       }
-      const done = req.done;
-      removing.current = null;
-      if (!failed.length) done?.();
+      if (removing.current === mine) removing.current = null;
+      if (!failed.length) mine.done?.();
     } catch (err) {
       toast(errorText(err), 'error');
     } finally {

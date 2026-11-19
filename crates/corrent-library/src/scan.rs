@@ -77,7 +77,7 @@ fn walk(root: &Path, kind: LibraryKind) -> std::io::Result<Vec<Found>> {
     Ok(out)
 }
 
-fn wanted(p: &Path, kind: LibraryKind) -> bool {
+pub(crate) fn wanted(p: &Path, kind: LibraryKind) -> bool {
     let k = parse::file_kind(p);
     match kind {
         LibraryKind::Movies | LibraryKind::Shows | LibraryKind::Videos => k == FileKind::Video,
@@ -1220,6 +1220,18 @@ async fn apply_batch(
             let mut touched = std::collections::BTreeSet::new();
             let mut out = Vec::with_capacity(batch.len());
             for a in &batch {
+                // Removed from the library, its file kept, while this scan was reading it.
+                let ignored: bool = t
+                    .query_row(
+                        "SELECT 1 FROM ignored_files WHERE library_id = ?1 AND path = ?2",
+                        params![library_id, a.path.display().to_string()],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some();
+                if ignored {
+                    continue;
+                }
                 t.execute_batch("SAVEPOINT scan_file")?;
                 match apply(t, library_id, a) {
                     Ok(items) => {

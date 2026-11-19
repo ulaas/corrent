@@ -347,13 +347,18 @@ async fn edit(
 /// What removing an item is about: its files, and the torrents they still belong to.
 async fn removal_plan(st: &AppState, user: i64, id: i64) -> Result<RemovalPlan, ApiErr> {
     let mut plan = st.library.removal_plan(user, id).await.map_err(lib_err)?;
+    // Windows names files without regard to case, and a library folder and a torrent's save
+    // folder are both typed by people.
+    let folded = |p: &std::path::Path| {
+        let s = p.to_string_lossy();
+        PathBuf::from(if cfg!(windows) { s.to_lowercase().replace('/', "\\") } else { s.into_owned() })
+    };
+    let media: Vec<PathBuf> =
+        plan.files.iter().filter(|f| f.media).map(|f| folded(std::path::Path::new(&f.path))).collect();
     let snap = st.engine.snapshot();
     for t in &snap.torrents {
-        let held = plan.files.iter().any(|f| {
-            let p = std::path::Path::new(&f.path);
-            f.media && (p == t.content_path || p.starts_with(&t.content_path))
-        });
-        if held {
+        let content = folded(&t.content_path);
+        if media.iter().any(|p| *p == content || p.starts_with(&content)) {
             plan.torrents.push(t.name.clone());
         }
     }
@@ -396,11 +401,26 @@ async fn remove_item(
     let r = st.library.remove_item(user, id, q.delete_files).await.map_err(lib_err);
     let what = if q.delete_files { "item_delete" } else { "item_remove" };
     st.identity.audit(Some(auth.name()), &ip.0.to_string(), what, &format!("{id} {}", plan.title), r.is_ok(), "").await;
-    Ok(Json(r?))
+    let (removed, files) = r?;
+    // Seek-bar thumbnails are kept by file id, and a later file may get the same id.
+    for file in files {
+        let _ = tokio::fs::remove_dir_all(super::playback::trickplay_dir(&st, file)).await;
+    }
+    Ok(Json(removed))
+}
+
+/// The ignore list is a manager's, and only of a library they may see.
+async fn manages_library(st: &AppState, auth: &Auth, id: i64) -> Result<(), ApiErr> {
+    auth.require(Perms::LIBRARY_MANAGE)?;
+    if !st.library.library_visible(auth.0.user.id, id).await.map_err(lib_err)? {
+        return Err(err(ErrorCode::NotFound, "no such library"));
+    }
+    st.library.get(id).await.map_err(lib_err)?;
+    Ok(())
 }
 
 async fn ignored(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<i64>) -> ApiResult<Vec<IgnoredFile>> {
-    auth.require(Perms::LIBRARY_MANAGE)?;
+    manages_library(&st, &auth, id).await?;
     Ok(Json(st.library.ignored_files(id).await.map_err(lib_err)?))
 }
 
@@ -408,11 +428,16 @@ async fn ignored(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<i64
 async fn restore_ignored(
     State(st): State<Arc<AppState>>,
     auth: Auth,
+    ip: ClientIp,
     Path(id): Path<i64>,
     Json(r): Json<RestoreIgnored>,
 ) -> ApiResult<serde_json::Value> {
-    auth.require(Perms::LIBRARY_MANAGE)?;
-    let restored = st.library.restore_ignored(id, r.paths).await.map_err(lib_err)?;
+    manages_library(&st, &auth, id).await?;
+    let restored = st.library.restore_ignored(id, r.paths).await.map_err(lib_err);
+    st.identity
+        .audit(Some(auth.name()), &ip.0.to_string(), "library_restore_ignored", &id.to_string(), restored.is_ok(), "")
+        .await;
+    let restored = restored?;
     if restored > 0 {
         st.library.start_scan(id);
     }

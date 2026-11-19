@@ -478,6 +478,48 @@ async fn media_is_removed_from_a_library_with_or_without_its_files() {
     h.stop().await;
 }
 
+/// An episode removed from a followed show isn't looked for again, and a library's ignore list
+/// isn't for someone who can't see the library.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_removed_episode_of_a_followed_show_is_not_wanted_again() {
+    let h = harness("removal-follow", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let lib = empty_library(&h, &admin, "Shows", "shows").await;
+    let show = seed_item(&h, lib, "show", None, None, "Theme Show", None).await;
+    let season = seed_item(&h, lib, "season", Some(show), Some(2), "Season 2", None).await;
+    let file = |n: i64| Some(h.dir.join("lib-Shows").join(format!("Theme Show - S02E0{n}.mkv")).display().to_string());
+    let e5 = seed_item(&h, lib, "episode", Some(season), Some(5), "Five", file(5)).await;
+    let e6 = seed_item(&h, lib, "episode", Some(season), Some(6), "Six", file(6)).await;
+    h.st.identity
+        .db()
+        .write(move |t| {
+            t.execute(
+                "INSERT INTO monitored_shows(item_id, from_season, added_by, created_at) VALUES (?1, 1, 'admin', 1)",
+                [show],
+            )
+        })
+        .await
+        .unwrap();
+    let (s, v, _) = send(app, Method::DELETE, &format!("/api/v1/items/{e5}"), &admin, json!({})).await;
+    assert_eq!((s, v["files"].as_i64()), (StatusCode::OK, Some(1)), "{v}");
+    assert!(h.st.library.episode_wanted("theme show", 2, 5).await.unwrap(), "the monitor takes it for dealt with");
+    assert!(!h.st.library.episode_wanted("Theme Show", 2, 6).await.unwrap());
+    // The other episode, its season and the show are still there.
+    for id in [e6, season, show] {
+        assert_eq!(get(app, &format!("/api/v1/items/{id}"), &admin).await.0, StatusCode::OK);
+    }
+    // The whole show removed: it is no longer followed, and nothing is noted for its episodes.
+    let (s, v, _) = send(app, Method::DELETE, &format!("/api/v1/items/{show}"), &admin, json!({})).await;
+    assert_eq!((s, v["files"].as_i64()), (StatusCode::OK, Some(1)), "{v}");
+    assert!(!h.st.library.episode_wanted("Theme Show", 2, 6).await.unwrap());
+    let (_, v, _) = get(app, &format!("/api/v1/libraries/{lib}/ignored"), &admin).await;
+    assert_eq!(v.as_array().map(Vec::len), Some(2), "{v}");
+    // No such library: not an empty list.
+    assert_eq!(get(app, "/api/v1/libraries/999/ignored", &admin).await.0, StatusCode::NOT_FOUND);
+    h.stop().await;
+}
+
 /// The scan reads a video's folder once; subtitles put there later are found when it is played.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn subtitle_files_put_next_to_a_video_are_offered_when_it_plays() {

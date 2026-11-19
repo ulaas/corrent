@@ -85,7 +85,7 @@ fn hls_err(e: HlsError) -> ApiErr {
 }
 
 /// `<data>/trickplay/<file id>/`
-fn trickplay_dir(st: &AppState, file_id: i64) -> PathBuf {
+pub(crate) fn trickplay_dir(st: &AppState, file_id: i64) -> PathBuf {
     st.paths.data_dir.join("trickplay").join(file_id.to_string())
 }
 
