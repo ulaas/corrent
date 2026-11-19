@@ -5,6 +5,10 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-11-19
+
+Casting to smart TVs over DLNA and AirPlay.
+
 ### Added
 
 - **Casting to smart TVs.** DLNA renderers (Samsung, LG and Sony TVs, receivers, Kodi) and AirPlay
