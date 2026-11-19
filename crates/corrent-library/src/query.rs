@@ -324,7 +324,7 @@ fn items_by_sql(
     attach_images(c, raws)
 }
 
-fn visible(c: &Connection, user: i64, item: i64) -> rusqlite::Result<bool> {
+pub(crate) fn visible(c: &Connection, user: i64, item: i64) -> rusqlite::Result<bool> {
     let lib: Option<i64> =
         c.query_row("SELECT library_id FROM items WHERE id = ?1", [item], |r| r.get(0)).optional()?;
     Ok(match (lib, allowed(c, user)?) {

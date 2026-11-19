@@ -14,6 +14,7 @@ pub mod organize;
 pub mod parse;
 pub mod probe;
 pub mod query;
+pub mod remove;
 pub mod scan;
 pub mod tags;
 pub mod wanted;

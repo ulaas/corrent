@@ -1213,3 +1213,63 @@ pub struct Collection {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageRef>,
 }
+
+/// `GET /api/v1/items/{id}/removal`: what removing an item (with everything inside it) is about.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RemovalPlan {
+    pub item_id: i64,
+    pub library_id: i64,
+    pub title: String,
+    /// The media files, and what lies next to them under their names (subtitles, .nfo, pictures):
+    /// what "delete the files" deletes.
+    pub files: Vec<RemovalFile>,
+    /// All of `files`, in bytes.
+    pub size: u64,
+    /// Torrents in the list that these files belong to. While there are any, the files can't be
+    /// deleted here (remove the torrent with its data instead); taking the item out of the
+    /// library always works.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub torrents: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RemovalFile {
+    pub path: String,
+    pub size: u64,
+    /// A media file of the library (the others are the files that go with it).
+    pub media: bool,
+}
+
+/// The answer to `DELETE /api/v1/items/{id}`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Removed {
+    /// Media files taken out of the library.
+    pub files: usize,
+    /// Files deleted from the disk (`delete_files`).
+    pub deleted: usize,
+    /// Files that couldn't be deleted, with the reason. Their items stay in the library.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<RemovalFailure>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RemovalFailure {
+    pub path: String,
+    pub error: String,
+}
+
+/// A file a library leaves out although it is in one of its folders
+/// (`GET /api/v1/libraries/{id}/ignored`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct IgnoredFile {
+    pub path: String,
+    /// What its item was called when it was removed.
+    pub title: String,
+    pub added_at: i64,
+}
+
+/// `POST /api/v1/libraries/{id}/ignored/restore`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestoreIgnored {
+    pub paths: Vec<String>,
+}

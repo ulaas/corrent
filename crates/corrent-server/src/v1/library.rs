@@ -14,8 +14,9 @@ use corrent_library::LibError;
 use corrent_proto::ErrorCode;
 use corrent_proto::auth::Perms;
 use corrent_proto::library::{
-    Facets, HomeRow, Item, ItemDetail, ItemFilter, ItemKind, ItemQuery, Library, LibraryUpdate, NewLibrary, Page,
-    ScanStatus, SearchResults, SortBy, StateUpdate, UserState, Watch,
+    Facets, HomeRow, IgnoredFile, Item, ItemDetail, ItemFilter, ItemKind, ItemQuery, Library, LibraryUpdate,
+    NewLibrary, Page, RemovalPlan, Removed, RestoreIgnored, ScanStatus, SearchResults, SortBy, StateUpdate, UserState,
+    Watch,
 };
 use serde::Deserialize;
 use tower::ServiceExt;
@@ -29,7 +30,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/libraries/{id}", get(one).patch(update).delete(remove))
         .route("/libraries/{id}/scan", get(scan_status).post(scan).delete(cancel_scan))
         .route("/items", get(items))
-        .route("/items/{id}", get(item).patch(edit))
+        .route("/items/{id}", get(item).patch(edit).delete(remove_item))
+        .route("/items/{id}/removal", get(removal))
+        .route("/libraries/{id}/ignored", get(ignored))
+        .route("/libraries/{id}/ignored/restore", post(restore_ignored))
         .route("/items/{id}/state", put(set_state))
         .route("/items/{id}/file", get(item_file))
         .route("/items/{id}/thumbnail", post(thumbnail_from_frame))
@@ -338,6 +342,81 @@ async fn edit(
     st.library.edit_item(id, e.title, e.overview, e.year, e.locked_fields).await.map_err(lib_err)?;
     crate::metadata::write_nfo(&st, id).await;
     Ok(Json(serde_json::json!({})))
+}
+
+/// What removing an item is about: its files, and the torrents they still belong to.
+async fn removal_plan(st: &AppState, user: i64, id: i64) -> Result<RemovalPlan, ApiErr> {
+    let mut plan = st.library.removal_plan(user, id).await.map_err(lib_err)?;
+    let snap = st.engine.snapshot();
+    for t in &snap.torrents {
+        let held = plan.files.iter().any(|f| {
+            let p = std::path::Path::new(&f.path);
+            f.media && (p == t.content_path || p.starts_with(&t.content_path))
+        });
+        if held {
+            plan.torrents.push(t.name.clone());
+        }
+    }
+    Ok(plan)
+}
+
+async fn removal(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<i64>) -> ApiResult<RemovalPlan> {
+    auth.require(Perms::LIBRARY_MANAGE)?;
+    Ok(Json(removal_plan(&st, auth.0.user.id, id).await?))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RemoveQuery {
+    /// Delete the files from the disk; without it they stay and the library ignores them.
+    delete_files: bool,
+}
+
+/// Takes an item, with everything inside it, out of its library.
+async fn remove_item(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    ip: ClientIp,
+    Path(id): Path<i64>,
+    Query(q): Query<RemoveQuery>,
+) -> ApiResult<Removed> {
+    auth.require(Perms::LIBRARY_MANAGE)?;
+    let user = auth.0.user.id;
+    let plan = removal_plan(&st, user, id).await?;
+    // A torrent would go on seeding files that are gone (and fail): its own removal deletes them.
+    if q.delete_files && !plan.torrents.is_empty() {
+        return Err(err(
+            ErrorCode::Conflict,
+            format!(
+                "the files belong to a torrent in the list ({}): remove the torrent with its data",
+                plan.torrents.join(", ")
+            ),
+        ));
+    }
+    let r = st.library.remove_item(user, id, q.delete_files).await.map_err(lib_err);
+    let what = if q.delete_files { "item_delete" } else { "item_remove" };
+    st.identity.audit(Some(auth.name()), &ip.0.to_string(), what, &format!("{id} {}", plan.title), r.is_ok(), "").await;
+    Ok(Json(r?))
+}
+
+async fn ignored(State(st): State<Arc<AppState>>, auth: Auth, Path(id): Path<i64>) -> ApiResult<Vec<IgnoredFile>> {
+    auth.require(Perms::LIBRARY_MANAGE)?;
+    Ok(Json(st.library.ignored_files(id).await.map_err(lib_err)?))
+}
+
+/// Takes files off a library's ignore list and scans it, so that they come back.
+async fn restore_ignored(
+    State(st): State<Arc<AppState>>,
+    auth: Auth,
+    Path(id): Path<i64>,
+    Json(r): Json<RestoreIgnored>,
+) -> ApiResult<serde_json::Value> {
+    auth.require(Perms::LIBRARY_MANAGE)?;
+    let restored = st.library.restore_ignored(id, r.paths).await.map_err(lib_err)?;
+    if restored > 0 {
+        st.library.start_scan(id);
+    }
+    Ok(Json(serde_json::json!({ "restored": restored })))
 }
 
 async fn set_state(

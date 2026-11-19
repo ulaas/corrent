@@ -28,6 +28,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("placed_index", include_str!("../migrations/0014_placed_index.sql")),
     ("track_choice", include_str!("../migrations/0015_track_choice.sql")),
     ("child_indexes", include_str!("../migrations/0016_child_indexes.sql")),
+    ("ignored_files", include_str!("../migrations/0017_ignored_files.sql")),
 ];
 
 pub fn schema_version() -> u32 {

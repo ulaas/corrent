@@ -1172,7 +1172,7 @@ pub(crate) fn refresh_fts(t: &Transaction, items: &[i64]) -> rusqlite::Result<()
 }
 
 /// Deletes items that no longer have files, and containers left empty.
-fn prune(t: &Transaction, library_id: i64) -> rusqlite::Result<usize> {
+pub(crate) fn prune(t: &Transaction, library_id: i64) -> rusqlite::Result<usize> {
     let mut removed = t.execute(
         "DELETE FROM items WHERE library_id = ?1 AND kind IN ('movie','episode','track','book','video','photo') \
          AND NOT EXISTS (SELECT 1 FROM item_files f WHERE f.item_id = items.id)",
@@ -1274,6 +1274,13 @@ pub(crate) async fn scan(lib: &Library, library_id: i64, cancel: &AtomicBool) ->
     })
     .await
     .map_err(|e| LibError::Db(e.to_string()))?;
+    // Media removed from the library with its files kept isn't found again.
+    let ignored = lib.ignored_paths(library_id).await?;
+    let found: Vec<Found> = if ignored.is_empty() {
+        found
+    } else {
+        found.into_iter().filter(|f| !ignored.contains(&f.path.display().to_string())).collect()
+    };
 
     // 2. What the database knows.
     let known: HashMap<String, Known> = lib

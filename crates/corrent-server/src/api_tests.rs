@@ -362,6 +362,122 @@ async fn items_whose_file_is_gone_are_flagged() {
     h.stop().await;
 }
 
+/// An item is taken out of its library with its files kept (and ignored by later scans, until
+/// restored) or deleted, together with what lies next to them under their names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn media_is_removed_from_a_library_with_or_without_its_files() {
+    let h = harness("removal", ServerConfig { tls: false, ..Default::default() }).await;
+    let app = &h.app;
+    let admin = admin_token(app).await;
+    let root = h.dir.join("films");
+    let (a, b) = (root.join("Alpha (2001)"), root.join("Beta (2002)"));
+    for (dir, name) in [(&a, "Alpha (2001)"), (&b, "Beta (2002)")] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(format!("{name}.mkv")), b"not really a video").unwrap();
+        std::fs::write(dir.join(format!("{name}.en.srt")), "1\n00:00:01,000 --> 00:00:02,000\nHi\n").unwrap();
+    }
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        "/api/v1/libraries",
+        &admin,
+        json!({ "name": "Films", "kind": "movies", "folders": [root], "settings": { "watch": false } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let lib = v["id"].as_i64().unwrap();
+    // The titles in the library once no scan runs.
+    let titles = || async {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let (_, v, _) = get(app, &format!("/api/v1/items?library_id={lib}"), &admin).await;
+            let mut found: Vec<(String, i64)> = v["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|i| (i["title"].as_str().unwrap_or_default().to_string(), i["id"].as_i64().unwrap()))
+                .collect();
+            found.sort();
+            if !h.st.library.scan_active(lib) && v["total"].as_i64() == Some(found.len() as i64) {
+                return found;
+            }
+            assert!(std::time::Instant::now() < deadline, "the scan never ended: {v}");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    };
+    let scan = || async {
+        let (s, v, _) = send(app, Method::POST, &format!("/api/v1/libraries/{lib}/scan"), &admin, json!({})).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let all = loop {
+        let t = titles().await;
+        if t.len() == 2 {
+            break t;
+        }
+        assert!(std::time::Instant::now() < deadline, "both films were found: {t:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert_eq!(all.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["Alpha", "Beta"]);
+    let alpha = all[0].1;
+
+    // What it is about: the video and the subtitle named after it.
+    let (s, plan, _) = get(app, &format!("/api/v1/items/{alpha}/removal"), &admin).await;
+    assert_eq!(s, StatusCode::OK, "{plan}");
+    let files: Vec<(bool, bool)> = plan["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["media"] == true, f["path"].as_str().unwrap().ends_with(".srt")))
+        .collect();
+    assert_eq!(files, [(true, false), (false, true)], "{plan}");
+
+    // Kept: gone from the library, still on the disk, and not found again by a scan.
+    let (s, v, _) = send(app, Method::DELETE, &format!("/api/v1/items/{alpha}"), &admin, json!({})).await;
+    assert_eq!((s, v["files"].as_i64(), v["deleted"].as_i64()), (StatusCode::OK, Some(1), Some(0)), "{v}");
+    assert!(a.join("Alpha (2001).mkv").exists() && a.join("Alpha (2001).en.srt").exists());
+    scan().await;
+    assert_eq!(titles().await.len(), 1);
+    let (_, v, _) = get(app, &format!("/api/v1/libraries/{lib}/ignored"), &admin).await;
+    let ignored: Vec<&str> = v.as_array().unwrap().iter().map(|i| i["path"].as_str().unwrap()).collect();
+    assert_eq!(ignored, [a.join("Alpha (2001).mkv").display().to_string()], "{v}");
+    assert_eq!(v[0]["title"], "Alpha");
+
+    // Restored: the scan that follows finds it again.
+    let (s, v, _) = send(
+        app,
+        Method::POST,
+        &format!("/api/v1/libraries/{lib}/ignored/restore"),
+        &admin,
+        json!({ "paths": ignored }),
+    )
+    .await;
+    assert_eq!((s, v["restored"].as_i64()), (StatusCode::OK, Some(1)), "{v}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let all = loop {
+        let t = titles().await;
+        if t.len() == 2 {
+            break t;
+        }
+        assert!(std::time::Instant::now() < deadline, "the restored film came back: {t:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+
+    // Deleted: the files and their emptied folder are gone, the other film isn't touched.
+    let alpha = all[0].1;
+    let (s, v, _) =
+        send(app, Method::DELETE, &format!("/api/v1/items/{alpha}?delete_files=true"), &admin, json!({})).await;
+    assert_eq!((s, v["files"].as_i64(), v["deleted"].as_i64()), (StatusCode::OK, Some(1), Some(2)), "{v}");
+    assert!(!a.exists() && b.join("Beta (2002).mkv").exists() && b.join("Beta (2002).en.srt").exists());
+    scan().await;
+    let left = titles().await;
+    assert_eq!(left.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["Beta"]);
+    let (s, _, _) = get(app, &format!("/api/v1/items/{alpha}"), &admin).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    h.stop().await;
+}
+
 /// The scan reads a video's folder once; subtitles put there later are found when it is played.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn subtitle_files_put_next_to_a_video_are_offered_when_it_plays() {
