@@ -23,6 +23,7 @@ pub mod player;
 pub mod profiles;
 pub mod providers;
 mod refresh;
+mod removal;
 pub mod sound;
 pub mod subtitles;
 pub mod syncplay;
@@ -112,6 +113,8 @@ pub struct MediaState {
     pub library_form: Option<libraries::LibraryForm>,
     sub_finder: Option<subtitles::SubFinder>,
     identify: Option<identify::Identify>,
+    removal: Option<removal::Removal>,
+    ignored: Option<removal::Ignored>,
     /// The item a card's menu asked for (its IMDb/TMDB ids).
     menu_detail: Option<(i64, Slot<ItemDetail>)>,
     /// Metadata refreshes (an item's, libraries').
@@ -404,6 +407,16 @@ impl CorrentApp {
             if let Some(id) = std::env::var("CORRENT_DEV_ITEM").ok().and_then(|v| v.parse().ok()) {
                 self.main_view = super::feeds::MainView::Media;
                 self.open(Page::Item(id));
+                // CORRENT_DEV_REMOVE=1: the item's "Remove from library" dialog.
+                if std::env::var_os("CORRENT_DEV_REMOVE").is_some() {
+                    self.open_removal(id, "");
+                }
+            }
+            // CORRENT_DEV_IGNORED=<library id>: that library's ignored files.
+            if let Some(id) = std::env::var("CORRENT_DEV_IGNORED").ok().and_then(|v| v.parse().ok()) {
+                self.main_view = super::feeds::MainView::Media;
+                self.open(Page::Libraries);
+                self.open_ignored(id, "");
             }
             // A pairing link: fill in the Connect dialog (CORRENT_DEV_CONNECT) or pair right away
             // (CORRENT_DEV_PAIR).
@@ -853,6 +866,8 @@ impl CorrentApp {
         self.profiles_window(&ctx, p);
         self.subtitle_finder_window(&ctx, p);
         self.identify_window(&ctx, p);
+        self.removal_window(&ctx, p);
+        self.ignored_window(&ctx, p);
         self.refresh_tick(&client);
         self.state_tick(&client);
         egui::ScrollArea::vertical().id_salt(("media", format!("{page:?}"))).auto_shrink([false, false]).show(
@@ -1786,6 +1801,14 @@ impl CorrentApp {
             self.download_button(ui, client, &it, siblings);
             if it.kind.playable() || matches!(it.kind, ItemKind::Season | ItemKind::Album) {
                 self.add_to_playlist_button(ui, client, it.id);
+            }
+            if it.kind != ItemKind::Folder
+                && ui
+                    .button(format!("{}  {}", icons::TRASH, t!("Remove from library…")))
+                    .on_hover_text(t!("Take this out of the library, keeping or deleting its files"))
+                    .clicked()
+            {
+                self.open_removal(it.id, &it.title);
             }
         });
         ui.add_space(12.0);

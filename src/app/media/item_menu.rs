@@ -30,6 +30,7 @@ enum Act {
     CopyLink,
     Move(i64, usize, usize),
     Remove(i64, usize),
+    RemoveFromLibrary,
 }
 
 impl CorrentApp {
@@ -185,6 +186,13 @@ impl CorrentApp {
                     ui.close();
                 }
             }
+            if k != ItemKind::Folder {
+                ui.separator();
+                if ui.button(format!("{}  {}", icons::TRASH, t!("Remove from library…"))).clicked() {
+                    act = Some(Act::RemoveFromLibrary);
+                    ui.close();
+                }
+            }
         });
         let Some(act) = act else { return };
         match act {
@@ -215,6 +223,7 @@ impl CorrentApp {
                 },
             ),
             Act::Favorite(on) => self.set_state(client, item.id, serde_json::json!({ "favorite": on })),
+            Act::RemoveFromLibrary => self.open_removal(item.id, &item.title),
             Act::Subtitles => self.open_subtitle_finder(item.id),
             Act::Identify => self.open_identify(item.id, &item.title, item.year),
             Act::Refresh(mode) => self.refresh_item(client, item.id, mode),

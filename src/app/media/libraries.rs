@@ -98,6 +98,13 @@ impl CorrentApp {
                             if ui.button(format!("{}  {}", icons::TRASH, t!("Remove"))).clicked() {
                                 remove = Some((l.id, l.name.clone()));
                             }
+                            if ui
+                                .button(format!("{}  {}", icons::EYE_SLASH, t!("Ignored files")))
+                                .on_hover_text(t!("Media removed from this library with its files kept"))
+                                .clicked()
+                            {
+                                self.open_ignored(l.id, &l.name);
+                            }
                             if let Some(mode) = super::refresh::refresh_menu(ui) {
                                 self.refresh_library(client, l.id, mode);
                             }
