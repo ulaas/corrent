@@ -27,6 +27,13 @@ the research it was written from.
   segments, fetched with agent `AirPlay/2.0 … MFi_AirPlay_Device`) play. Plain-HTTP LAN links are fine.
 - `Start-Position` as a CMTime (value in ms, timescale 1000) works for HLS (it starts at the
   segment before).
+- **A segment whose timestamps begin before its place in the playlist is never played**: the TV
+  fetches it again every half second (after a seek, it and the next one in turn) and stays on
+  `loading`, with no error. A conversion restarted at segment n began a frame early (picture at
+  n·4 − 0.02 s), one from the start 0.1 s late, so only casts from the beginning played: a resumed
+  movie or any seek hung (an 8.5 GB HEVC/DTS movie, 2026-11-19). Every run now starts one second
+  after its segment's time (`TS_LEAD` in `corrent-transcode/src/hls.rs`); start at 10 min, seeks to
+  50 min, 1 min and 0 then play.
 - State arrives as `playbackState` events (`loading`, `playing` with position/duration/rate,
   `paused`, `stopped` with `reason: ended`) and notifications (`itemPlayedToEnd`, `timeJumped`,
   `loadedTimeRangesChanged`, `playbackLikelyToKeepUp`, `currentItemChanged`). A `playbackInfo`

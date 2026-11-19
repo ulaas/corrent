@@ -22,6 +22,9 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ### Fixed
 
+- **AirPlay: resuming and seeking.** A converted video cast to a TV over AirPlay only played from
+  its very beginning: started where it was left off, or after a seek, the TV stayed on its loading
+  screen. The log now also says why a cast ended.
 - **Subtitle files next to a video.** A subtitle put beside a video after the library was scanned
   (`Movie.srt`, `Movie.tr.srt`) is now found when the video is played and listed with the other
   tracks, without being switched on. MicroDVD `.sub` files are listed too. In the desktop player

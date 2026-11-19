@@ -470,6 +470,7 @@ pub(super) async fn session(
                 }
             } => {
                 let Some(m) = current.as_ref() else { continue };
+                tracing::debug!("cast to {}: the device says {e:?}", r.name);
                 match e {
                     Some(Event::State { name, position, duration, reason, .. }) => {
                         if let Some(p) = position {

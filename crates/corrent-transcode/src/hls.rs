@@ -636,6 +636,13 @@ async fn stop_session(s: Arc<Session>) {
     let _ = tokio::fs::remove_dir_all(&s.dir).await;
 }
 
+/// Every run's timestamps begin this long after its first segment's place in the playlist. A run
+/// from the start gets such a lead by itself (the muxer moves the first frames' negative decode
+/// times up to zero), a run restarted at a later segment didn't: its picture began a frame
+/// before the segment's time, and a Samsung TV over AirPlay then fetches that segment again and
+/// again without playing it. One second is more than any encoder's frame reordering.
+const TS_LEAD: u64 = 1;
+
 /// mpv options for encoding from segment `start`.
 pub fn job_options(cfg: &HlsConfig, spec: &SessionSpec, dir: &Path, start: u64) -> Vec<(String, String)> {
     let seg = cfg.segment_secs as u64;
@@ -648,7 +655,7 @@ pub fn job_options(cfg: &HlsConfig, spec: &SessionSpec, dir: &Path, start: u64) 
             "ofopts".into(),
             format!(
                 "hls_time={seg},hls_list_size=0,start_number={start},output_ts_offset={},hls_segment_filename=%{}%{seg_pattern}",
-                start * seg,
+                start * seg + TS_LEAD,
                 seg_pattern.len()
             ),
         ),

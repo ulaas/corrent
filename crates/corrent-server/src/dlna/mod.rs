@@ -265,7 +265,25 @@ fn router(d: Arc<Dlna>) -> Router {
                     hits.fetch_add(1, Ordering::Relaxed);
                     *last_hit.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
                 }
-                async move { if ok { next.run(req).await } else { StatusCode::FORBIDDEN.into_response() } }
+                // For the log: what was asked for, without the signature in its path.
+                let what = tracing::enabled!(tracing::Level::DEBUG).then(|| {
+                    let mut parts = req.uri().path().trim_start_matches("/dlna/").split('/');
+                    let kind = parts.next().unwrap_or_default().to_string();
+                    let name =
+                        parts.next_back().filter(|_| matches!(kind.as_str(), "hls" | "remux")).unwrap_or_default();
+                    let range = req.headers().get(header::RANGE).and_then(|v| v.to_str().ok()).unwrap_or_default();
+                    format!("{} {kind} {name} {range}", req.method())
+                });
+                async move {
+                    if !ok {
+                        return StatusCode::FORBIDDEN.into_response();
+                    }
+                    let res = next.run(req).await;
+                    if let Some(what) = what {
+                        tracing::debug!("{} asked: {what} -> {}", peer.ip(), res.status());
+                    }
+                    res
+                }
             },
         ))
         .with_state(d)

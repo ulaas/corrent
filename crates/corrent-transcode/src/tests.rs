@@ -113,8 +113,11 @@ async fn hls_session_serves_and_seeks() {
     let t1 = std::time::Instant::now();
     let s6 = m.segment(&id, 6).await.unwrap();
     eprintln!("segment 6 after {:?}", t1.elapsed());
+    // Not before its place in the playlist (24 s): a TV over AirPlay never plays such a segment.
     let st = start_time(&s6);
-    assert!((23.0..25.5).contains(&st), "segment 6 starts near 24 s, got {st}");
+    assert!((24.0..25.5).contains(&st), "segment 6 starts at 24 s or just after, got {st}");
+    let st = start_time(&s0);
+    assert!((0.0..1.5).contains(&st), "segment 0 starts just after 0 s, got {st}");
     assert!(m.segment(&id, 99).await.is_err());
     assert_eq!(m.sessions().len(), 1);
     m.stop(&id).await;
