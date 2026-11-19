@@ -441,7 +441,8 @@ async fn media_is_removed_from_a_library_with_or_without_its_files() {
     assert_eq!(titles().await.len(), 1);
     let (_, v, _) = get(app, &format!("/api/v1/libraries/{lib}/ignored"), &admin).await;
     let ignored: Vec<&str> = v.as_array().unwrap().iter().map(|i| i["path"].as_str().unwrap()).collect();
-    assert_eq!(ignored, [a.join("Alpha (2001).mkv").display().to_string()], "{v}");
+    // (The server names the folder in its canonical spelling, which a temporary folder's often isn't.)
+    assert!(ignored.len() == 1 && std::path::Path::new(ignored[0]).ends_with("Alpha (2001)/Alpha (2001).mkv"), "{v}");
     assert_eq!(v[0]["title"], "Alpha");
 
     // Restored: the scan that follows finds it again.

@@ -18,6 +18,10 @@ ignore = [
     # stores plain bytes, whose Drop cannot panic. The fix (0.5.2) is semver-incompatible and must
     # come from upstream; revisit on every librqbit upgrade.
     { id = "RUSTSEC-2026-0293", reason = "not reachable: ring buffer holds u8 (non-panicking Drop)" },
+    # chrono was declared unmaintained on 2026-11-18 (no vulnerability, no fixed version). It
+    # stays in the tree through feed-rs, librqbit-dht and wmi whatever we do; our own uses
+    # (dates in the UI, the schedule, feeds) move to another crate when those have moved.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained notice, no vulnerability; also a dependency of feed-rs, librqbit-dht and wmi" },
 ]
 
 [licenses]

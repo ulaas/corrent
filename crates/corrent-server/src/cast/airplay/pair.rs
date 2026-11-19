@@ -355,7 +355,7 @@ pub(crate) mod tests {
                     .concat();
                     UnparsedPublicKey::new(&ED25519, &their_key).verify(&signed, &inner[&tlv8::SIGNATURE]).unwrap();
                     assert!(inner.contains_key(&0x11), "the sender names itself");
-                    *paired.lock().unwrap() = Some((id, their_key));
+                    *paired.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, their_key));
                     let salt = derive("Pair-Setup-Accessory-Sign-Salt", "Pair-Setup-Accessory-Sign-Info", k)?;
                     let sig = me.sign(&[salt.as_slice(), &my_id, me.public_key().as_ref()].concat());
                     let mine = tlv8::encode(&[
@@ -392,7 +392,7 @@ pub(crate) mod tests {
                 ("/pair-verify", 3) => {
                     let (public, theirs, shared, key) = verifying.take().unwrap();
                     let inner = tlv8::decode(&open(&key, b"PV-Msg03", &items[&tlv8::ENCRYPTED_DATA])?).unwrap();
-                    let known = paired.lock().unwrap().clone();
+                    let known = paired.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     let ok = known.is_some_and(|(id, their_key)| {
                         inner[&tlv8::IDENTIFIER] == id
                             && UnparsedPublicKey::new(&ED25519, &their_key)
