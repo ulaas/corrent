@@ -39,7 +39,7 @@ jobs:
       TAG: ${{ github.event.release.tag_name || inputs.tag || github.event.workflow_run.head_branch }}
     steps:
       # Templates come from the default branch, so older releases get the current templates too.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
 
