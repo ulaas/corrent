@@ -5,6 +5,11 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-11-19
+
+Casting to smart TVs over DLNA and AirPlay, and removing media from a library. (0.6.2 was tagged
+but never published: its checks failed.)
+
 ### Added
 
 - **Removing media from a library.** "Remove from library…" in an item's menu and on its page
@@ -13,12 +18,6 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
   shows the list and restores from it. Deleted are the media files and what lies next to them
   under their names (subtitles, .nfo, pictures), and folders this empties. Files that still belong
   to a torrent in the list can't be deleted here: remove the torrent with its data.
-
-## [0.6.2] — 2026-11-19
-
-Casting to smart TVs over DLNA and AirPlay.
-
-### Added
 
 - **Casting to smart TVs.** DLNA renderers (Samsung, LG and Sony TVs, receivers, Kodi) and AirPlay
   receivers (Apple TVs, TVs with AirPlay built in; paired once with the PIN the TV shows) are in
