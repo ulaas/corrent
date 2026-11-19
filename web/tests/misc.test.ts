@@ -3,7 +3,7 @@ import { deflateSync } from 'node:zlib';
 import { interpolate } from '../src/lib/interpolate';
 import { cueAt, parseTrickplay } from '../src/lib/trickplay';
 import { inflate } from '../src/lib/events.svelte';
-import { bytes, clock, duration } from '../src/lib/format';
+import { bytes, clock, duration, fileName } from '../src/lib/format';
 import { keysIn, placeholders } from '../scripts/i18n-keys.mjs';
 import { onColor } from '../src/lib/color';
 import { imageSrcset } from '../src/lib/api';
@@ -30,6 +30,11 @@ describe('i18n', () => {
 });
 
 describe('formatting', () => {
+  it('takes the file name out of a path from any system', () => {
+    expect(fileName('C:\\Films\\Movie (2001)\\Movie.mkv')).toBe('Movie.mkv');
+    expect(fileName('/srv/films/Movie (2001)/Movie.en.srt')).toBe('Movie.en.srt');
+    expect(fileName('Movie.mkv')).toBe('Movie.mkv');
+  });
   it('formats sizes, clocks and durations', () => {
     expect(bytes(0)).toBe('0 B');
     expect(bytes(1536)).toBe('1.50 KiB');

@@ -134,8 +134,11 @@ the client asks for it. Media files, HLS and remux segments and torrent streams 
 | GET POST | `/api/v1/libraries` |
 | GET PATCH DELETE | `/api/v1/libraries/{id}` |
 | GET POST DELETE | `/api/v1/libraries/{id}/scan` |
+| GET | `/api/v1/libraries/{id}/ignored` |
+| POST | `/api/v1/libraries/{id}/ignored/restore` |
 | GET | `/api/v1/items` |
-| GET PATCH | `/api/v1/items/{id}` |
+| GET PATCH DELETE | `/api/v1/items/{id}` |
+| GET | `/api/v1/items/{id}/removal` |
 | PUT | `/api/v1/items/{id}/state` |
 | GET | `/api/v1/items/{id}/file` |
 | GET | `/api/v1/items/{id}/lyrics` |
@@ -165,6 +168,16 @@ same), `genre=<name>`, `favorite=true`, `decade=2010` (2010–2019) or `year_fro
 lists what there is to filter by: `{ "genres": [...], "decades": [2020, 2010, ...] }`. Marking a
 container played with `PUT /items/{id}/state` answers with `played` and `unplayed` as its items
 now are.
+
+Removing (`library.manage`): `DELETE /items/{id}` takes an item, with everything inside it, out of
+its library. Its files stay and go on the library's ignore list, which scans skip
+(`GET /libraries/{id}/ignored`; `POST /libraries/{id}/ignored/restore` with `{ "paths": [...] }`
+takes them off it and scans). With `?delete_files=true` they are deleted instead: the media files,
+what lies next to each under its name (subtitles, .nfo, pictures) and the folders this empties,
+only inside the library's folders; `409` while a torrent in the list holds them. The answer is
+`{ "files", "deleted", "failed": [{ "path", "error" }] }`; a file that couldn't be deleted stays
+in the library. `GET /items/{id}/removal` lists what a removal is about (`files` with `path`,
+`size`, `media`; `size`; `torrents`).
 
 ### Playlists and collections
 

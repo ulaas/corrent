@@ -2,6 +2,7 @@
 // (src/app/media/mod.rs), reachable from grids and lists.
 import { api, errorText } from './api';
 import { identify } from './identify.svelte';
+import { removeFromLibrary } from './removal.svelte';
 import { go } from './router.svelte';
 import { isPlayable, itemHref, playHref } from './media';
 import { outcomeText } from './metadata';
@@ -12,7 +13,7 @@ import type { MenuItem } from './contextmenu.svelte';
 import type { Item, ItemDetail, Playlist, RefreshMode, RefreshOutcome } from './types';
 
 export interface ItemMenuOptions {
-  /** May manage the library (Identify…, Refresh metadata, Find subtitles). */
+  /** May manage the library (Identify…, Refresh metadata, Find subtitles, Remove from library…). */
   manage: boolean;
   /** Plays it in place (albums, shows, tracks in a list) instead of opening the player. */
   onplay?: (item: Item) => void;
@@ -113,5 +114,9 @@ export function itemMenu(item: Item, o: ItemMenuOptions): MenuItem[] {
     onselect: () => void navigator.clipboard?.writeText(location.origin + itemHref(item)).then(() => toast(t('Copied'), 'success')),
   });
   if (o.extra?.length) rows.push({ kind: 'sep' }, ...o.extra);
+  if (o.manage && k !== 'folder') {
+    rows.push({ kind: 'sep' });
+    rows.push({ label: t('Remove from library…'), icon: 'trash', onselect: () => removeFromLibrary({ id: item.id, title: item.title }) });
+  }
   return rows;
 }

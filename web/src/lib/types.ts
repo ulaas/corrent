@@ -903,3 +903,28 @@ export interface Collection {
   count: number;
   images?: ImageRef[];
 }
+
+/** `GET /items/{id}/removal`: what removing an item is about. */
+export interface RemovalPlan {
+  item_id: number;
+  library_id: number;
+  title: string;
+  files: { path: string; size: number; media: boolean }[];
+  size: number;
+  /** Torrents in the list that hold these files: they can't be deleted here while there are any. */
+  torrents?: string[];
+}
+
+/** The answer to `DELETE /items/{id}`. */
+export interface Removed {
+  files: number;
+  deleted: number;
+  failed?: { path: string; error: string }[];
+}
+
+/** A file a library leaves out (`GET /libraries/{id}/ignored`). */
+export interface IgnoredFile {
+  path: string;
+  title: string;
+  added_at: number;
+}

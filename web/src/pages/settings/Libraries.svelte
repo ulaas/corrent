@@ -12,11 +12,11 @@
   import { live, useTorrents } from '../../lib/torrents.svelte';
   import { confirm } from '../../lib/confirm.svelte';
   import { toast } from '../../lib/toast.svelte';
-  import { ago, num } from '../../lib/format';
+  import { ago, fileName, num } from '../../lib/format';
   import { t } from '../../lib/i18n.svelte';
   import RefreshMenu from '../../components/RefreshMenu.svelte';
   import { runLines } from '../../lib/metadata';
-  import type { Library, LibraryKind, LibrarySettings, MetadataRun, RefreshMode } from '../../lib/types';
+  import type { IgnoredFile, Library, LibraryKind, LibrarySettings, MetadataRun, RefreshMode } from '../../lib/types';
 
   // Each library's last metadata refresh (then kept up to date by `metadata_status` events).
   const asked = new Set<number>();
@@ -116,6 +116,34 @@
       toast(errorText(e), 'error');
     }
   }
+  // Media removed from a library with its files kept: scans skip them until they are restored.
+  let ignoredOf = $state<Library | null>(null);
+  let ignored = $state<IgnoredFile[] | null>(null);
+  let restoring = $state(false);
+  async function showIgnored(l: Library) {
+    ignoredOf = l;
+    ignored = null;
+    try {
+      ignored = await api.get<IgnoredFile[]>(`/libraries/${l.id}/ignored`);
+    } catch (e) {
+      toast(errorText(e), 'error');
+      ignoredOf = null;
+    }
+  }
+  async function restore(paths: string[]) {
+    const l = ignoredOf;
+    if (!l) return;
+    restoring = true;
+    try {
+      await api.post(`/libraries/${l.id}/ignored/restore`, { paths });
+      toast(t('Restored. The library is being scanned.'), 'success');
+      ignored = await api.get<IgnoredFile[]>(`/libraries/${l.id}/ignored`);
+    } catch (e) {
+      toast(errorText(e), 'error');
+    } finally {
+      restoring = false;
+    }
+  }
   async function remove(l: Library) {
     const r = await confirm({ title: t('Delete “{name}”?', { name: l.name }), text: t('The library and its watch history are removed. Your files are not touched.'), ok: t('Delete'), danger: true });
     if (!r.ok) return;
@@ -152,6 +180,7 @@
             <button class="btn sm" onclick={() => scan(l)}><Icon name="arrows-clockwise" size={14} />{t('Scan now')}</button>
           {/if}
           <RefreshMenu busy={!!libs.metadata[l.id]?.running} onpick={(mode) => refreshMetadata(l, mode)} />
+          <button class="btn sm" title={t('Media removed from this library with its files kept')} onclick={() => showIgnored(l)}><Icon name="eye-slash" size={14} />{t('Ignored files')}</button>
           <button class="btn sm icon" aria-label={t('Edit')} title={t('Edit')} onclick={() => open(l)}><Icon name="pencil-simple" size={16} /></button>
           <button class="btn sm icon danger" aria-label={t('Delete')} title={t('Delete')} onclick={() => remove(l)}><Icon name="trash" size={16} /></button>
         </div>
@@ -246,7 +275,65 @@
   </Modal>
 {/if}
 
+{#if ignoredOf}
+  <Modal title={t('Ignored files of “{name}”', { name: ignoredOf.name })} size="md" onclose={() => (ignoredOf = null)}>
+    <p class="caption muted">{t('Media removed from this library with its files kept. Scans skip these files until they are restored.')}</p>
+    {#if !ignored}
+      <div class="ignored-wait"><Spinner /></div>
+    {:else if !ignored.length}
+      <p class="muted ignored-none">{t('Nothing is ignored.')}</p>
+    {:else}
+      <ul class="ignored">
+        {#each ignored as f (f.path)}
+          <li>
+            <div class="what"><span>{f.title}</span><span class="mono caption muted file" title={f.path}>{fileName(f.path)}</span></div>
+            <button class="btn sm" disabled={restoring} onclick={() => restore([f.path])}>{t('Restore')}</button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    {#snippet footer()}
+      {#if ignored && ignored.length > 1}
+        <button class="btn" disabled={restoring} onclick={() => restore(ignored!.map((f) => f.path))}>{t('Restore all')}</button>
+      {/if}
+      <button class="btn primary" onclick={() => (ignoredOf = null)}>{t('Close')}</button>
+    {/snippet}
+  </Modal>
+{/if}
+
 <style>
+  .ignored-wait {
+    display: grid;
+    place-items: center;
+    padding: 24px 0;
+  }
+  .ignored-none {
+    margin-top: 12px;
+  }
+  .ignored {
+    list-style: none;
+    margin: 10px 0 0;
+    padding: 0;
+    max-height: 360px;
+    overflow-y: auto;
+    display: grid;
+    gap: 6px;
+  }
+  .ignored li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .ignored .what {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+  }
+  .ignored .file {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .head {
     display: flex;
     align-items: center;

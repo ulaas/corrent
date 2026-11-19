@@ -5,6 +5,15 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+### Added
+
+- **Removing media from a library.** "Remove from library…" in an item's menu and on its page
+  (desktop and web) lists the files it is about and asks whether they stay or are deleted. Kept
+  files go on the library's ignore list, which scans skip; "Ignored files" in the library settings
+  shows the list and restores from it. Deleted are the media files and what lies next to them
+  under their names (subtitles, .nfo, pictures), and folders this empties. Files that still belong
+  to a torrent in the list can't be deleted here: remove the torrent with its data.
+
 ## [0.6.2] — 2026-11-19
 
 Casting to smart TVs over DLNA and AirPlay.

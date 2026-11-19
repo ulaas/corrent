@@ -96,3 +96,8 @@ export function ago(unixSecs: number | null | undefined): string {
   }
   return rtf.format(Math.round(diff / div), unit);
 }
+
+/** The last part of a path, whichever way its slashes go (the server may run on Windows). */
+export function fileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}

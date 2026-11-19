@@ -24,6 +24,7 @@
   import RefreshMenu from '../components/RefreshMenu.svelte';
   import { outcomeText } from '../lib/metadata';
   import { identify } from '../lib/identify.svelte';
+  import { removeFromLibrary } from '../lib/removal.svelte';
   import { contextMenu } from '../lib/contextmenu.svelte';
   import { itemMenu } from '../lib/itemmenu';
   import type { RefreshMode, RefreshOutcome } from '../lib/types';
@@ -343,6 +344,11 @@
             {/each}
             {#if ['movie', 'show', 'video', 'album', 'artist'].includes(item.kind) && can(Perm.LIBRARY_MANAGE)}
               <RefreshMenu big busy={refreshing} onpick={(mode) => refresh(item!.id, mode)} />
+            {/if}
+            {#if item.kind !== 'folder' && can(Perm.LIBRARY_MANAGE)}
+              <button class="btn lg" title={t('Take this out of the library, keeping or deleting its files')} onclick={() => removeFromLibrary({ id: item!.id, title: item!.title, done: () => back('/') })}>
+                <Icon name="trash" />{t('Remove from library…')}
+              </button>
             {/if}
             {#each extensions.itemActions as x (x.id)}
               <button class="btn lg" onclick={() => Promise.resolve(x.run($state.snapshot(item!) as ItemDetail)).catch((e) => toast(errorText(e), 'error'))}><Icon name="puzzle-piece" />{x.label}</button>
