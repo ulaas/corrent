@@ -241,8 +241,10 @@ Library pages and Home have the same row of toggle buttons on both clients (no d
 All / Unplayed / In progress / Played, Favorites, "Genre and year" (rows of genre and decade
 buttons from `GET /facets`), Clear filters, and on library pages the sort buttons (the active one
 shows its direction and turns around when pressed again). Desktop: `src/app/media/filters.rs`
-(kept per page for the session); web: `components/FilterBar.svelte` + `lib/filters.ts` (kept in
-the page's query string). Differences: the desktop also has Shuffle (the web's paged grid can't
+(kept per server and page in the saved preferences, `UiPrefs::media_views`); web:
+`components/FilterBar.svelte` + `lib/filters.ts` (kept in the page's query string, and per page in
+this browser by `lib/views.ts`: a page opened without a choice in its address shows the one it had
+last). Both remember them between launches, each on its own device; the sort is per library. Differences: the desktop also has Shuffle (the web's paged grid can't
 page a random order), and the web names the last sort "Last played". Marking a show or season
 played now shows at once on both (the web used to flip back: a container has no `played` of its
 own, so both go by `unplayed == 0`).

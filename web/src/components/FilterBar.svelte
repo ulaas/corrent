@@ -1,12 +1,13 @@
 <script lang="ts">
   // Filter (and, with `sorts`, sort) toggle buttons for a list; the choice is kept in the page's
-  // query string (lib/filters.ts). Genres and decades come from GET /facets and take rows of
+  // query string (lib/filters.ts) and, for the next visit, in this browser (lib/views.ts). Genres and decades come from GET /facets and take rows of
   // their own, shown on demand.
   import Icon from './Icon.svelte';
   import { api } from '../lib/api';
   import { route, setQuery } from '../lib/router.svelte';
   import { isFiltered, nextSort, readFilter, writeFilter, type ItemFilter, type Watch } from '../lib/filters';
   import { t, tk } from '../lib/i18n.svelte';
+  import { rememberView } from '../lib/views';
   import type { Facets, ItemKind, SortBy } from '../lib/types';
 
   let {
@@ -45,6 +46,7 @@
 
   function set(patch: Partial<ItemFilter>) {
     setQuery(writeFilter({ ...filter, ...patch }));
+    rememberView();
   }
   function toggleMore() {
     if (more || narrowed) {
@@ -55,10 +57,12 @@
   function clear() {
     more = false;
     setQuery(writeFilter({}));
+    rememberView();
   }
   function pickSort(id: SortBy) {
     const next = nextSort({ sort, desc }, id);
     setQuery({ sort: next.sort === 'title' ? null : next.sort, desc: next.desc ? '1' : null });
+    rememberView();
   }
 </script>
 

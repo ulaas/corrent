@@ -8,6 +8,7 @@
   import { LIBRARY_ICON, libraryShape, topKind, LIBRARY_KIND_LABEL } from '../lib/media';
   import { route, setQuery } from '../lib/router.svelte';
   import { filterParams, isFiltered, readFilter } from '../lib/filters';
+  import { rememberView } from '../lib/views';
   import { music, toEntry, tracksOf } from '../lib/player.svelte';
   import { can } from '../lib/session.svelte';
   import { toast } from '../lib/toast.svelte';
@@ -79,6 +80,10 @@
       toast(errorText(e), 'error');
     }
   }
+  function setView(view: string | null) {
+    setQuery({ view });
+    rememberView();
+  }
   const onplay = $derived(lib && (lib.kind === 'music' || lib.kind === 'audiobooks') ? playContainer : undefined);
 </script>
 
@@ -115,8 +120,8 @@
     <div class="toolbar">
       {#if lib.kind === 'music'}
         <div class="seg" role="tablist" aria-label={t('View')}>
-          <button role="tab" aria-selected={view === ''} class:on={view === ''} onclick={() => setQuery({ view: null })}>{t('Albums')}</button>
-          <button role="tab" aria-selected={view === 'artists'} class:on={view === 'artists'} onclick={() => setQuery({ view: 'artists' })}>{t('Artists')}</button>
+          <button role="tab" aria-selected={view === ''} class:on={view === ''} onclick={() => setView(null)}>{t('Albums')}</button>
+          <button role="tab" aria-selected={view === 'artists'} class:on={view === 'artists'} onclick={() => setView('artists')}>{t('Artists')}</button>
         </div>
       {/if}
       <FilterBar library={id} {kind} sorts={SORTS} />

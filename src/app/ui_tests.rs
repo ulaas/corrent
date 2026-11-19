@@ -1589,7 +1589,7 @@ fn a_library_page_has_filter_and_sort_buttons() {
     app.media.client = Some(super::media::client::MediaClient::new("http://127.0.0.1:9", "t", None).unwrap());
     app.media.fill_grid(1, Vec::new());
     app.media.page = Some(super::media::Page::Library(1));
-    app.media.set_filter(Some(1), ItemFilter { watch: Some(Watch::Played), ..Default::default() });
+    app.set_media_filter(Some(1), ItemFilter { watch: Some(Watch::Played), ..Default::default() });
     let mut h = harness(app);
     h.run_steps(3);
     // Buttons, not a drop-down: every choice is on the page.

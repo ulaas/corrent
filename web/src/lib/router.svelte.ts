@@ -57,8 +57,23 @@ export function scrollOf(key: number): number {
 }
 let seq = Date.now();
 
+let arrive: ((u: URL) => void) | undefined;
+
+/** `f` may complete the address of every page that is opened (lib/views.ts adds a page's saved
+ *  filters), starting with the one open now. Back and Forward return to addresses as they were. */
+export function onArrive(f: (u: URL) => void) {
+  arrive = f;
+  const u = new URL(location.href);
+  f(u);
+  if (u.search !== location.search) {
+    history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+    Object.assign(route, read());
+  }
+}
+
 export function go(to: string, opts: { replace?: boolean } = {}) {
   const u = new URL(to, location.origin);
+  arrive?.(u);
   if (u.pathname + u.search === location.pathname + location.search && !opts.replace) return;
   const key = ++seq;
   if (opts.replace) history.replaceState({ key }, '', u.pathname + u.search + u.hash);

@@ -141,9 +141,7 @@ pub struct MediaState {
     route: String,
     /// A focused card outside the view: the page scrolls to it.
     focus_rect: Option<Rect>,
-    /// How library pages are sorted (and reversed).
-    sort: (corrent_proto::library::SortBy, bool),
-    /// The filter buttons of Home and the library pages.
+    /// What the filter buttons of Home and the library pages offer.
     filters: filters::Filters,
     /// Played/favorite changes on their way to the server; the pages load again when they land.
     state_sent: Vec<Slot<UserState>>,
@@ -218,12 +216,6 @@ impl MediaState {
     #[cfg(test)]
     pub(crate) fn grid_item(&self, library: i64, index: i64) -> Option<&Item> {
         self.grids.get(&library)?.items.get(&index)
-    }
-
-    /// Tests: a page's filter as if chosen with its buttons.
-    #[cfg(test)]
-    pub(crate) fn set_filter(&mut self, scope: Option<i64>, f: corrent_proto::library::ItemFilter) {
-        self.filters.set(scope, f);
     }
 
     /// Load everything again (after a change); what is on screen stays until the new data is
@@ -1250,7 +1242,7 @@ impl CorrentApp {
     fn home_rows(&mut self, client: &MediaClient) -> Option<Arc<Vec<HomeRow>>> {
         if self.media.home.is_none() {
             let c = client.clone();
-            let path = format!("/api/v1/home?{}", filters::query(&self.media.filters.of(None)));
+            let path = format!("/api/v1/home?{}", filters::query(&self.media_filter(None)));
             self.media.home = Some(fetch(&self.rt, &self.ctx, async move { c.get(&path).await }));
         }
         self.media.home_now()
@@ -1393,11 +1385,11 @@ impl CorrentApp {
     fn home_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient) {
         if self.media.home.is_none() {
             let c = client.clone();
-            let path = format!("/api/v1/home?{}", filters::query(&self.media.filters.of(None)));
+            let path = format!("/api/v1/home?{}", filters::query(&self.media_filter(None)));
             self.media.home = Some(fetch(&self.rt, &self.ctx, async move { c.get(&path).await }));
         }
         let rows = self.media.home.as_ref().and_then(ready_arc).or_else(|| self.media.home_shown.clone().map(Ok));
-        let filtering = !self.media.filters.of(None).is_empty();
+        let filtering = !self.media_filter(None).is_empty();
         match rows {
             None => {
                 ui.add_space(40.0);
@@ -1557,8 +1549,8 @@ impl CorrentApp {
             self.media.grids.remove(&id);
         }
         ui.add_space(8.0);
-        let (sort, desc) = self.media.sort;
-        let filter = self.media.filters.of(Some(id));
+        let (sort, desc) = self.media_sort(id);
+        let filter = self.media_filter(Some(id));
         let narrowed = filters::query(&filter);
         // Load pages as they come into view.
         let g = self.media.grids.entry(id).or_default();

@@ -5,6 +5,11 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+### Changed
+
+- The filter and sort buttons of Home and the library pages are remembered between launches, in
+  the desktop app and in the web client (per library; the web client per browser).
+
 ## [0.6.3] — 2026-11-19
 
 Casting to smart TVs over DLNA and AirPlay, and removing media from a library. (0.6.2 was tagged

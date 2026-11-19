@@ -1,5 +1,7 @@
 //! The filter and sort buttons above a library page and Home: toggles, never drop-downs — every
 //! choice is on the page and one click away (the web client's Library page has the same row).
+//! What is chosen is part of the saved preferences (`UiPrefs::media_views`): it is there again at
+//! the next launch.
 
 use std::collections::HashMap;
 
@@ -8,32 +10,35 @@ use egui::{RichText, Ui};
 use egui_phosphor::regular as icons;
 
 use super::client::{MediaClient, Slot, fetch, ready_arc};
-use crate::app::CorrentApp;
+use crate::app::{CorrentApp, MediaView};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::toggle_chip;
 
-/// The filters chosen per page (`None`: Home, else a library) and what each can be filtered by.
+/// What each page (`None`: Home, else a library) can be filtered by.
 #[derive(Default)]
 pub(super) struct Filters {
-    chosen: HashMap<Option<i64>, ItemFilter>,
     facets: HashMap<Option<i64>, Slot<Facets>>,
     /// The genre and year rows are shown.
     more: bool,
 }
 
 impl Filters {
-    pub(super) fn of(&self, scope: Option<i64>) -> ItemFilter {
-        self.chosen.get(&scope).cloned().unwrap_or_default()
-    }
-
     /// Genres and decades are asked for again (after a scan or a metadata refresh).
     pub(super) fn forget_facets(&mut self) {
         self.facets.clear();
     }
+}
 
-    #[cfg(test)]
-    pub(crate) fn set(&mut self, scope: Option<i64>, f: ItemFilter) {
-        self.chosen.insert(scope, f);
+/// The view of page `scope` on `server` among the saved ones (the default one isn't kept).
+fn view_of(views: &[MediaView], server: &str, scope: Option<i64>) -> MediaView {
+    views.iter().find(|v| v.server == server && v.library == scope).cloned().unwrap_or_default()
+}
+
+fn set_view(views: &mut Vec<MediaView>, view: MediaView) {
+    views.retain(|v| !(v.server == view.server && v.library == view.library));
+    let unchanged = MediaView { server: view.server.clone(), library: view.library, ..Default::default() };
+    if view != unchanged {
+        views.push(view);
     }
 }
 
@@ -79,6 +84,30 @@ fn sort_name(s: SortBy) -> &'static str {
 }
 
 impl CorrentApp {
+    /// Library ids are a server's own: the views are kept per server ("" is this computer).
+    fn view_server(&self) -> String {
+        self.server.as_ref().map(|s| s.entry.id.clone()).unwrap_or_default()
+    }
+
+    /// What page `scope` is filtered by.
+    pub(crate) fn media_filter(&self, scope: Option<i64>) -> ItemFilter {
+        view_of(&self.prefs.media_views, &self.view_server(), scope).filter
+    }
+
+    /// How library `id` is sorted (and reversed).
+    pub(super) fn media_sort(&self, id: i64) -> (SortBy, bool) {
+        let v = view_of(&self.prefs.media_views, &self.view_server(), Some(id));
+        (v.sort, v.desc)
+    }
+
+    /// Tests: a page's filter as if chosen with its buttons.
+    #[cfg(test)]
+    pub(crate) fn set_media_filter(&mut self, scope: Option<i64>, filter: ItemFilter) {
+        let server = self.view_server();
+        let view = MediaView { filter, ..view_of(&self.prefs.media_views, &server, scope) };
+        set_view(&mut self.prefs.media_views, MediaView { server, library: scope, ..view });
+    }
+
     /// The buttons of page `scope` (`None`: Home; a library's also sort, by `kind` items).
     /// Returns true when a filter or the order changed: the page's list must be fetched again.
     pub(super) fn filter_bar(
@@ -90,9 +119,11 @@ impl CorrentApp {
         kind: Option<ItemKind>,
         count: Option<i64>,
     ) -> bool {
-        let before = self.media.filters.of(scope);
+        let server = self.view_server();
+        let view = view_of(&self.prefs.media_views, &server, scope);
+        let before = view.filter;
         let mut f = before.clone();
-        let sort_before = self.media.sort;
+        let sort_before = (view.sort, view.desc);
         let mut sort = sort_before;
         let mut more = self.media.filters.more;
         let facets = {
@@ -198,10 +229,10 @@ impl CorrentApp {
         });
         self.media.filters.more = more;
         let changed = f != before || sort != sort_before;
-        if f != before {
-            self.media.filters.chosen.insert(scope, f);
+        if changed {
+            let view = MediaView { server, library: scope, filter: f, sort: sort.0, desc: sort.1 };
+            set_view(&mut self.prefs.media_views, view);
         }
-        self.media.sort = sort;
         changed
     }
 }
@@ -221,6 +252,31 @@ mod tests {
             year_to: None,
         };
         assert_eq!(query(&f), "&watch=in_progress&genre=Sci-Fi+%26+Fantasy&favorite=true&decade=1990");
+    }
+
+    #[test]
+    fn views_are_kept_per_server_and_page_and_survive_saving() {
+        let mut views = Vec::new();
+        let played = ItemFilter { watch: Some(Watch::Played), ..Default::default() };
+        set_view(&mut views, MediaView { library: Some(2), filter: played.clone(), ..Default::default() });
+        let nas =
+            MediaView { server: "nas".into(), library: Some(2), sort: SortBy::Added, desc: true, ..Default::default() };
+        set_view(&mut views, nas);
+        let favorites = ItemFilter { favorite: Some(true), ..Default::default() };
+        set_view(&mut views, MediaView { filter: favorites, ..Default::default() });
+        // As eframe stores the preferences.
+        let prefs = crate::app::UiPrefs { media_views: views, ..Default::default() };
+        let back: crate::app::UiPrefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        let mut views = back.media_views;
+        assert_eq!(view_of(&views, "", Some(2)).filter, played);
+        assert_eq!(view_of(&views, "", Some(2)).sort, SortBy::Title);
+        let nas = view_of(&views, "nas", Some(2));
+        assert_eq!((nas.sort, nas.desc, nas.filter.is_empty()), (SortBy::Added, true, true));
+        assert_eq!(view_of(&views, "", None).filter.favorite, Some(true));
+        assert!(view_of(&views, "", Some(3)).filter.is_empty());
+        // Back to the defaults: nothing is kept for the page.
+        set_view(&mut views, MediaView { library: Some(2), ..Default::default() });
+        assert_eq!(views.len(), 2);
     }
 
     #[test]

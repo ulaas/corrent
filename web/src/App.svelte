@@ -16,7 +16,7 @@
   import Auth from './pages/Auth.svelte';
   import Home from './pages/Home.svelte';
   import { boot, session } from './lib/session.svelte';
-  import { define, match, rememberScroll, route, scrollOf } from './lib/router.svelte';
+  import { define, match, onArrive, rememberScroll, route, scrollOf } from './lib/router.svelte';
   import { ms, prefs } from './lib/prefs.svelte';
   import { music } from './lib/player.svelte';
   import { startLibraries } from './lib/libraries.svelte';
@@ -25,7 +25,9 @@
   import { link } from './lib/events.svelte';
   import { t } from './lib/i18n.svelte';
   import { lazy, lazyFailed, type Loader } from './lib/lazy.svelte';
+  import { recallView } from './lib/views';
 
+  onArrive(recallView);
   define('home', '/');
   define('library', '/library/:id');
   define('item', '/item/:id');

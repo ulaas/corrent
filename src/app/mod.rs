@@ -278,6 +278,20 @@ pub struct UiPrefs {
     pub column_widths: Vec<(Col, f32)>,
     /// Counts "Fit columns": a new table state, so the widths above apply.
     pub columns_fitted: u32,
+    /// The filter and sort buttons of the media pages, where they aren't the defaults.
+    pub media_views: Vec<MediaView>,
+}
+
+/// What Home (`library: None`) or a library page of a server (`""`: this computer) is filtered
+/// and sorted by.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaView {
+    pub server: String,
+    pub library: Option<i64>,
+    pub filter: corrent_proto::library::ItemFilter,
+    pub sort: corrent_proto::library::SortBy,
+    pub desc: bool,
 }
 
 /// A saved view: what the list is filtered and sorted by.
@@ -326,6 +340,7 @@ impl Default for UiPrefs {
             views: Vec::new(),
             column_widths: Vec::new(),
             columns_fitted: 0,
+            media_views: Vec::new(),
         }
     }
 }
