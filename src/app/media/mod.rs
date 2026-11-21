@@ -111,6 +111,8 @@ pub struct MediaState {
     person: Option<(i64, Slot<ItemPage<Item>>)>,
     pub profiles: profiles::Profiles,
     pub library_form: Option<libraries::LibraryForm>,
+    /// A library's Edit dialog.
+    library_edit: Option<libraries::LibraryEdit>,
     sub_finder: Option<subtitles::SubFinder>,
     identify: Option<identify::Identify>,
     removal: Option<removal::Removal>,
@@ -860,6 +862,7 @@ impl CorrentApp {
         self.identify_window(&ctx, p);
         self.removal_window(&ctx, p);
         self.ignored_window(&ctx, p);
+        self.library_edit_window(&ctx, p, &client);
         self.refresh_tick(&client);
         self.state_tick(&client);
         egui::ScrollArea::vertical().id_salt(("media", format!("{page:?}"))).auto_shrink([false, false]).show(

@@ -35,6 +35,8 @@ pub enum PickTarget {
     ThemeExport,
     ImportFolder,
     LibraryFolder,
+    /// Folder `n` in a library's Edit dialog.
+    LibraryEditFolder(usize),
     /// A subtitle file for the playing video.
     SubtitleFile,
 }
@@ -87,6 +89,7 @@ impl CorrentApp {
                 | PickTarget::MoveFolder
                 | PickTarget::CategoryFolder
                 | PickTarget::LibraryFolder
+                | PickTarget::LibraryEditFolder(_)
         );
         if self.server.is_some() && server_path && matches!(kind, PickKind::Folder) {
             self.open_server_fs(seq, target, start);
@@ -236,6 +239,7 @@ impl CorrentApp {
                 PickTarget::BackupImport => self.import_backup(first),
                 PickTarget::ImportFolder => self.import_folder_picked(first),
                 PickTarget::LibraryFolder => self.library_folder_picked(first),
+                PickTarget::LibraryEditFolder(i) => self.library_edit_folder_picked(i, first),
                 PickTarget::ThemeImport => {
                     let result = std::fs::read_to_string(&first)
                         .map_err(|e| e.to_string())

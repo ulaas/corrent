@@ -1,15 +1,16 @@
-//! Managing libraries from the desktop app: list, add (name, kind, folders), scan, remove.
+//! Managing libraries from the desktop app: list, add (name, kind, folders), edit (name, folders,
+//! settings), scan, remove.
 //! Folders are paths on the computer the server runs on (picked here in local mode, typed for
 //! a remote server).
 
-use corrent_proto::library::{Library, LibraryKind};
+use corrent_proto::library::{ImportMode, Library, LibraryKind, LibrarySettings};
 use egui::{RichText, Ui};
 use egui_phosphor::regular as icons;
 
 use super::client::{MediaClient, Slot, fetch, ready};
 use crate::app::CorrentApp;
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{primary_button, secondary_button};
+use crate::ui::widgets::{self, primary_button, secondary_button, toggle_chip};
 
 pub struct LibraryForm {
     pub name: String,
@@ -22,6 +23,62 @@ pub struct LibraryForm {
 impl Default for LibraryForm {
     fn default() -> Self {
         LibraryForm { name: String::new(), kind: LibraryKind::Movies, folder: String::new(), saving: None, error: None }
+    }
+}
+
+/// The Edit dialog of a library. Its kind can't change: the items were placed by it.
+pub struct LibraryEdit {
+    id: i64,
+    kind: LibraryKind,
+    name: String,
+    folders: Vec<String>,
+    settings: LibrarySettings,
+    saving: Option<Slot<Library>>,
+    error: Option<String>,
+}
+
+impl LibraryEdit {
+    pub fn new(l: &Library) -> LibraryEdit {
+        let folders = if l.folders.is_empty() { vec![String::new()] } else { l.folders.clone() };
+        LibraryEdit {
+            id: l.id,
+            kind: l.kind,
+            name: l.name.clone(),
+            folders,
+            settings: l.settings.clone(),
+            saving: None,
+            error: None,
+        }
+    }
+
+    /// The `PATCH` body, or what is missing. Settings the dialog doesn't show (seeding goals,
+    /// quality profile) go back as they came.
+    fn body(&self) -> Result<serde_json::Value, &'static str> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err(t!("Give the library a name."));
+        }
+        let mut folders: Vec<&str> = Vec::new();
+        for f in self.folders.iter().map(|f| f.trim()).filter(|f| !f.is_empty()) {
+            if !folders.contains(&f) {
+                folders.push(f);
+            }
+        }
+        if folders.is_empty() {
+            return Err(t!("Add at least one folder."));
+        }
+        let mut settings = self.settings.clone();
+        settings.played_threshold = settings.played_threshold.clamp(50, 100);
+        settings.language = settings.language.trim().to_string();
+        Ok(serde_json::json!({ "name": name, "folders": folders, "settings": settings }))
+    }
+}
+
+fn import_mode_label(m: ImportMode) -> &'static str {
+    match m {
+        ImportMode::InPlace => t!("Leave the files where they are"),
+        ImportMode::Hardlink => t!("Hard-link into the library"),
+        ImportMode::Copy => t!("Copy into the library"),
     }
 }
 
@@ -45,6 +102,19 @@ impl CorrentApp {
         if form.name.trim().is_empty() {
             form.name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         }
+    }
+
+    /// The picker chose folder `index` of the library being edited.
+    pub fn library_edit_folder_picked(&mut self, index: usize, path: std::path::PathBuf) {
+        if let Some(e) = &mut self.media.library_edit
+            && let Some(f) = e.folders.get_mut(index)
+        {
+            *f = path.display().to_string();
+        }
+    }
+
+    pub(super) fn open_library_edit(&mut self, l: &Library) {
+        self.media.library_edit = Some(LibraryEdit::new(l));
     }
 
     fn library_action(&mut self, client: &MediaClient, method: reqwest::Method, path: String) {
@@ -71,6 +141,7 @@ impl CorrentApp {
         });
         ui.add_space(10.0);
         let mut remove = None;
+        let mut edit = None;
         for l in libs.iter() {
             egui::Frame::new()
                 .fill(p.bg2)
@@ -99,6 +170,13 @@ impl CorrentApp {
                                 remove = Some((l.id, l.name.clone()));
                             }
                             if ui
+                                .button(format!("{}  {}", icons::PENCIL_SIMPLE, t!("Edit")))
+                                .on_hover_text(t!("Name, folders and settings of this library"))
+                                .clicked()
+                            {
+                                edit = Some(l.clone());
+                            }
+                            if ui
                                 .button(format!("{}  {}", icons::EYE_SLASH, t!("Ignored files")))
                                 .on_hover_text(t!("Media removed from this library with its files kept"))
                                 .clicked()
@@ -123,6 +201,20 @@ impl CorrentApp {
         }
         if let Some((id, name)) = remove {
             self.media.remove_library = Some((id, name));
+        }
+        // CORRENT_DEV_EDIT_LIBRARY=<id> (debug builds): that library's Edit dialog, once.
+        #[cfg(debug_assertions)]
+        if edit.is_none()
+            && let Some(id) = std::env::var("CORRENT_DEV_EDIT_LIBRARY").ok().and_then(|v| v.parse::<i64>().ok())
+            && let Some(l) = libs.iter().find(|l| l.id == id)
+        {
+            static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                edit = Some(l.clone());
+            }
+        }
+        if let Some(l) = edit {
+            self.open_library_edit(&l);
         }
         self.remove_library_confirm(ui.ctx(), p, client);
 
@@ -212,6 +304,182 @@ impl CorrentApp {
         }
     }
 
+    pub(super) fn library_edit_window(&mut self, ctx: &egui::Context, p: &Palette, client: &MediaClient) {
+        let Some(mut e) = self.media.library_edit.take() else { return };
+        if let Some(r) = e.saving.as_ref().and_then(ready) {
+            e.saving = None;
+            match r {
+                Ok(_) => {
+                    self.toasts.push(crate::engine::ToastKind::Success, t!("Saved").to_string());
+                    self.media.invalidate();
+                    return;
+                }
+                Err(err) => e.error = Some(err),
+            }
+        }
+        let local = self.server.is_none();
+        let busy = self.picker_busy();
+        let mut categories: Vec<String> = self.snap.categories.keys().cloned().collect();
+        // Categories that are gone stay chosen until taken off.
+        for c in &e.settings.import_categories {
+            if !categories.contains(c) {
+                categories.push(c.clone());
+            }
+        }
+        let mut close = false;
+        let mut save = false;
+        let mut pick: Option<usize> = None;
+        let r = egui::Modal::new(egui::Id::new("edit_library")).show(ctx, |ui| {
+            widgets::modal_body(ui, |ui| {
+                let w = widgets::modal_width(ui.ctx(), 600.0);
+                ui.set_width(w);
+                ui.label(
+                    RichText::new(format!("{}  {}", icons::PENCIL_SIMPLE, t!("Edit library"))).strong().size(16.0),
+                );
+                ui.label(RichText::new(kind_label(e.kind)).small().color(p.text_dim));
+                ui.add_space(8.0);
+                let field = (w - 160.0).max(180.0);
+                egui::Grid::new("edit_library_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    ui.label(t!("Name"));
+                    ui.add(egui::TextEdit::singleline(&mut e.name).desired_width(field));
+                    ui.end_row();
+                    ui.label(t!("Folders"));
+                    ui.vertical(|ui| {
+                        let mut drop = None;
+                        let many = e.folders.len() > 1;
+                        egui::ScrollArea::vertical()
+                            .id_salt("edit_library_folders")
+                            .max_height(180.0)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                for (i, f) in e.folders.iter_mut().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            egui::TextEdit::singleline(f)
+                                                .hint_text(if local { "" } else { t!("A folder on the server") })
+                                                .desired_width((field - 120.0).max(120.0)),
+                                        );
+                                        if ui.add_enabled(!busy, egui::Button::new(t!("Choose…"))).clicked() {
+                                            pick = Some(i);
+                                        }
+                                        // (Not while a picker is open: it fills a row by index.)
+                                        if many
+                                            && ui
+                                                .add_enabled(!busy, egui::Button::new(icons::X))
+                                                .on_hover_text(t!("Remove folder"))
+                                                .clicked()
+                                        {
+                                            drop = Some(i);
+                                        }
+                                    });
+                                }
+                            });
+                        if let Some(i) = drop {
+                            e.folders.remove(i);
+                        }
+                        if ui.button(format!("{}  {}", icons::PLUS, t!("Add folder"))).clicked() {
+                            e.folders.push(String::new());
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(t!("Counts as played after"));
+                    ui.add(egui::DragValue::new(&mut e.settings.played_threshold).range(50..=100).suffix(" %"));
+                    ui.end_row();
+                    ui.label(t!("Metadata language"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut e.settings.language).hint_text(t!("en, tr…")).desired_width(120.0),
+                    );
+                    ui.end_row();
+                });
+                ui.add_space(8.0);
+                ui.checkbox(&mut e.settings.watch, t!("Watch the folders for changes"));
+                ui.checkbox(&mut e.settings.fetch_metadata, t!("Fetch metadata and artwork online"))
+                    .on_hover_text(t!("Uses metadata plugins when they are installed."));
+                if matches!(e.kind, LibraryKind::Movies | LibraryKind::Shows) {
+                    ui.checkbox(&mut e.settings.write_nfo, t!("Write .nfo files")).on_hover_text(t!(
+                        "Saves titles, plots and ids next to the files for Kodi and other players. Existing .nfo files that Corrent didn’t write are left alone."
+                    ));
+                }
+                if !categories.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(t!("Import finished downloads of these categories"));
+                    ui.horizontal_wrapped(|ui| {
+                        for c in &categories {
+                            let on = e.settings.import_categories.contains(c);
+                            if toggle_chip(ui, p, c, on).clicked() {
+                                if on {
+                                    e.settings.import_categories.retain(|x| x != c);
+                                } else {
+                                    e.settings.import_categories.push(c.clone());
+                                }
+                            }
+                        }
+                    });
+                    if !e.settings.import_categories.is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.label(t!("How"));
+                            egui::ComboBox::from_id_salt("edit_library_import")
+                                .selected_text(import_mode_label(e.settings.import_mode))
+                                .show_ui(ui, |ui| {
+                                    for m in [ImportMode::InPlace, ImportMode::Hardlink, ImportMode::Copy] {
+                                        ui.selectable_value(&mut e.settings.import_mode, m, import_mode_label(m));
+                                    }
+                                });
+                        });
+                        ui.checkbox(&mut e.settings.stop_seeding_when_watched, t!("Stop seeding once everyone has watched"))
+                            .on_hover_text(t!(
+                                "Pauses a finished torrent of these categories when every account that sees this library has played what it brought."
+                            ));
+                    }
+                }
+                if let Some(err) = &e.error {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(err).color(p.error));
+                }
+                ui.add_space(10.0);
+                widgets::dialog_footer(ui, |ui| {
+                    let saving = e.saving.is_some();
+                    if ui.add_enabled_ui(!saving, |ui| primary_button(ui, p, t!("Save"))).inner.clicked() {
+                        save = true;
+                    }
+                    if secondary_button(ui, t!("Cancel")).clicked() {
+                        close = true;
+                    }
+                    if saving {
+                        ui.spinner();
+                    }
+                });
+            });
+        });
+        if close || (r.should_close() && e.saving.is_none()) {
+            return;
+        }
+        if save {
+            match e.body() {
+                Ok(body) => {
+                    e.error = None;
+                    let (c, path) = (client.clone(), format!("/api/v1/libraries/{}", e.id));
+                    e.saving =
+                        Some(fetch(
+                            &self.rt,
+                            ctx,
+                            async move { c.send_reason(reqwest::Method::PATCH, &path, &body).await },
+                        ));
+                }
+                Err(msg) => e.error = Some(msg.to_string()),
+            }
+        }
+        let start = pick.and_then(|i| e.folders.get(i)).map(std::path::PathBuf::from);
+        self.media.library_edit = Some(e);
+        if let Some(i) = pick {
+            self.pick(
+                crate::app::pickers::PickTarget::LibraryEditFolder(i),
+                crate::app::pickers::PickKind::Folder,
+                start,
+            );
+        }
+    }
+
     fn remove_library_confirm(&mut self, ctx: &egui::Context, p: &Palette, client: &MediaClient) {
         let Some((id, name)) = self.media.remove_library.clone() else { return };
         let mut close = false;
@@ -241,5 +509,51 @@ impl CorrentApp {
         if close || r.should_close() {
             self.media.remove_library = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn library() -> Library {
+        Library {
+            id: 7,
+            name: "Movies".into(),
+            kind: LibraryKind::Movies,
+            folders: vec!["D:/Movies".into()],
+            settings: LibrarySettings { seed_ratio: Some(2.0), profile_id: Some(3), ..LibrarySettings::defaults() },
+            item_count: 0,
+            scanned_at: None,
+            scanning: None,
+        }
+    }
+
+    #[test]
+    fn body_trims_dedupes_and_keeps_hidden_settings() {
+        let mut e = LibraryEdit::new(&library());
+        e.name = "  Films ".into();
+        e.folders = vec![" D:/Movies ".into(), String::new(), "D:/Movies".into(), "E:/More".into()];
+        e.settings.played_threshold = 20;
+        e.settings.language = " tr ".into();
+        let b = e.body().unwrap();
+        assert_eq!(b["name"], "Films");
+        assert_eq!(b["folders"], serde_json::json!(["D:/Movies", "E:/More"]));
+        let s: LibrarySettings = serde_json::from_value(b["settings"].clone()).unwrap();
+        assert_eq!(s.played_threshold, 50);
+        assert_eq!(s.language, "tr");
+        // Not in the dialog, sent back unchanged.
+        assert_eq!(s.seed_ratio, Some(2.0));
+        assert_eq!(s.profile_id, Some(3));
+    }
+
+    #[test]
+    fn body_needs_a_name_and_a_folder() {
+        let mut e = LibraryEdit::new(&library());
+        e.name = "  ".into();
+        assert!(e.body().is_err());
+        e.name = "Films".into();
+        e.folders = vec![" ".into()];
+        assert!(e.body().is_err());
     }
 }

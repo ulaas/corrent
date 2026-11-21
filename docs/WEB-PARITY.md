@@ -86,6 +86,9 @@ such as `"Rename…  (F2)"`) (the web catalog falls back to
   links and the ratings line on the item page.
 - [x] **Remove from library…** (done 2026-11-19) (`removal.rs` / `RemovalHost.svelte`): the item menu and page;
   files kept and ignored, or deleted; "Ignored files" with Restore in the library settings.
+- [x] **Edit library** (done 2026-11-21) (`libraries.rs` / `settings/Libraries.svelte`): name, folders, watch,
+  online metadata, .nfo files, played threshold, metadata language, import categories and mode, stop seeding
+  when watched; the kind stays (`PATCH /libraries/{id}`, which rescans when the folders change).
 - [x] **S7 Person page and "See all" rows** (done 2026-10-30) (`/items?person_id=`, home row pages).
 - [x] **S8 Profiles** (done 2026-10-30; from the account menu, as on the desktop): "Who's watching?" after sign-in when there are several, PIN, Switch
   profile.
