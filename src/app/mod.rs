@@ -1511,6 +1511,9 @@ impl CorrentApp {
 
         // TV mode: the media pages fill the window.
         if self.tv.on {
+            if let Some(pl) = &mut self.media.player {
+                pl.end_float();
+            }
             egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg0)).show(ui, |ui| self.tv_view(ui, &p));
             self.dialogs(&ctx, &p);
             self.update_window(&ctx, &p);
@@ -1519,9 +1522,10 @@ impl CorrentApp {
             self.run_toast_actions(&ctx, actions);
             return;
         }
-        // A playing video takes the whole window (Esc or the close button returns).
-        let immersive =
-            self.main_view == feeds::MainView::Media && self.media.player.as_ref().is_some_and(|pl| !pl.audio_only);
+        // A playing video takes the whole window (Esc or the close button returns), unless it
+        // floats over the pages.
+        let immersive = self.main_view == feeds::MainView::Media
+            && self.media.player.as_ref().is_some_and(|pl| !pl.audio_only && !pl.floating());
         if immersive {
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(egui::Color32::BLACK))
@@ -1611,6 +1615,7 @@ impl CorrentApp {
         self.dialogs(&ctx, &p);
         self.settings_window(&ctx, &p);
         self.palette_window(&ctx, &p);
+        self.media_floating_player(&ctx, &p);
         self.had_focus = ctx.memory(|m| m.focused().is_some());
         let actions = self.toasts.show(&ctx, &p);
         self.run_toast_actions(&ctx, actions);

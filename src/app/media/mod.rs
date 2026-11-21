@@ -797,41 +797,9 @@ impl CorrentApp {
     /// The media view (central panel).
     pub fn media_view(&mut self, ui: &mut Ui, p: &Palette) {
         self.ensure_media_server();
-        if self.media.player.as_ref().is_some_and(|pl| !pl.audio_only) {
+        if self.media.player.as_ref().is_some_and(|pl| !pl.audio_only && !pl.floating()) {
             let action = self.media.player.as_mut().map(|pl| pl.show(ui, p)).unwrap_or(PlayerAction::None);
-            if let Some((kind, text)) = self.media.player.as_mut().and_then(|pl| pl.notice.take()) {
-                let ok = kind == crate::engine::ToastKind::Success;
-                self.toasts.push(kind, text);
-                if ok {
-                    // The new picture on the cards.
-                    self.media.invalidate();
-                }
-            }
-            match action {
-                PlayerAction::Close => {
-                    self.media.player = None;
-                    if self.ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
-                        self.ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                    }
-                    self.media.invalidate();
-                }
-                PlayerAction::ToggleFullscreen => {
-                    let fs = !self.ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fs));
-                    if let Some(pl) = &mut self.media.player {
-                        pl.fullscreen = fs;
-                    }
-                }
-                PlayerAction::PickSubtitle => {
-                    let start = self.media.player.as_ref().and_then(|pl| pl.local_folder());
-                    self.pick(
-                        crate::app::pickers::PickTarget::SubtitleFile,
-                        crate::app::pickers::PickKind::Subtitle,
-                        start,
-                    );
-                }
-                PlayerAction::None => {}
-            }
+            self.player_action(action);
             return;
         }
         let Some(client) = self.media.client.clone() else {
@@ -2263,6 +2231,71 @@ impl CorrentApp {
             self.open(Page::Agent);
         }
         ui.add_space(10.0);
+    }
+
+    /// What the video player asked for this frame, and its notices for the toasts.
+    fn player_action(&mut self, action: PlayerAction) {
+        if let Some((kind, text)) = self.media.player.as_mut().and_then(|pl| pl.notice.take()) {
+            let ok = kind == crate::engine::ToastKind::Success;
+            self.toasts.push(kind, text);
+            if ok {
+                // The new picture on the cards.
+                self.media.invalidate();
+            }
+        }
+        match action {
+            PlayerAction::Close => {
+                self.media.player = None;
+                if self.ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                }
+                self.media.invalidate();
+            }
+            PlayerAction::ToggleFullscreen => {
+                let fs = !self.ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                self.ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fs));
+                if let Some(pl) = &mut self.media.player {
+                    pl.fullscreen = fs;
+                }
+            }
+            PlayerAction::PickSubtitle => {
+                let start = self.media.player.as_ref().and_then(|pl| pl.local_folder());
+                self.pick(
+                    crate::app::pickers::PickTarget::SubtitleFile,
+                    crate::app::pickers::PickKind::Subtitle,
+                    start,
+                );
+            }
+            // The pages come back around the floating picture, and go again when it's full size.
+            PlayerAction::Float => {}
+            PlayerAction::Expand => self.main_view = crate::app::feeds::MainView::Media,
+            PlayerAction::None => {}
+        }
+    }
+
+    /// The video floating over the app's pages: moved by dragging, resized by its corners.
+    pub fn media_floating_player(&mut self, ctx: &egui::Context, p: &Palette) {
+        let Some(rect) = self.media.player.as_mut().filter(|pl| !pl.audio_only).and_then(|pl| pl.float_place(ctx))
+        else {
+            return;
+        };
+        let Some(pl) = self.media.player.as_mut() else { return };
+        let action = egui::Area::new(egui::Id::new("floating-player"))
+            .order(egui::Order::Middle)
+            .fixed_pos(rect.min)
+            .show(ctx, |ui| {
+                let shadow =
+                    egui::epaint::Shadow { offset: [0, 6], blur: 24, spread: 0, color: Color32::from_black_alpha(110) };
+                ui.painter().add(shadow.as_shape(rect, 6));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    ui.set_clip_rect(rect);
+                    ui.expand_to_include_rect(rect);
+                    pl.show(ui, p)
+                })
+                .inner
+            })
+            .inner;
+        self.player_action(action);
     }
 
     /// The music mini player (bottom of the window) while audio plays.

@@ -491,11 +491,13 @@ pub struct Player {
     panel: Option<Panel>,
     /// The Picture row's choice: an index into `PICTURES`.
     picture: usize,
-    /// CORRENT_DEV_WINDOW=<w>x<h> or `pip`: the layout to check, once.
+    /// CORRENT_DEV_WINDOW=<w>x<h>, `pip` or `float`: the layout to check, once.
     #[cfg(debug_assertions)]
     dev_window: Option<String>,
     /// Picture in picture: the window small and on top (the size to go back to).
     pip: Option<egui::Vec2>,
+    /// Floating over the app (its place and size): the app's pages stay usable around it.
+    float: Option<Rect>,
     /// The end-of-episode countdown was dismissed for this item.
     no_countdown: Option<i64>,
     cast: super::cast::CastCtl,
@@ -635,6 +637,12 @@ const NARROW: f32 = 760.0;
 const TINY: f32 = 560.0;
 /// Below this width the picture-in-picture button goes too.
 const PIP_BUTTON_MIN: f32 = 440.0;
+/// The floating picture: its narrowest, its first width, and where its place is remembered.
+const FLOAT_MIN_WIDTH: f32 = 240.0;
+const FLOAT_WIDTH: f32 = 420.0;
+const FLOAT_KEY: &str = "player-float";
+/// The corners that resize the floating picture.
+const FLOAT_GRIP: f32 = 14.0;
 /// The Picture row: `video-aspect-override` and `panscan` for each choice.
 const PICTURES: [(&str, &str); 5] = [("-1", "0"), ("16:9", "0"), ("4:3", "0"), ("2.35:1", "0"), ("-1", "1")];
 
@@ -1016,6 +1024,7 @@ impl Player {
             #[cfg(debug_assertions)]
             dev_window: std::env::var("CORRENT_DEV_WINDOW").ok(),
             pip: None,
+            float: None,
             no_countdown: None,
             cast,
             casting: None,
@@ -1943,14 +1952,22 @@ impl Player {
         if let Some(w) = self.dev_window.take() {
             match w.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))) {
                 Some((a, b)) => ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(a, b))),
+                None if w == "float" => action = self.start_float(&ctx),
                 None => self.toggle_pip(&ctx),
             }
         }
         // Drawing a popup closes it on Escape, so this has to be asked before the controls are drawn.
         let popup_open = egui::Popup::is_any_open(&ctx);
+        // Floating over the app, the keys are the player's only while the pointer is over it: the
+        // rest of the time they belong to the pages around it.
+        let floating = self.float.is_some();
+        let keys_ok = !floating || ui.ui_contains_pointer();
         // Space plays and pauses. Taken before the controls are drawn: a focused button would
         // also take it as a click (and undo the toggle). Not while typing (the room code).
-        if !ctx.text_edit_focused() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space)) {
+        if keys_ok
+            && !ctx.text_edit_focused()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space))
+        {
             self.toggle_pause();
             self.controls_until = Instant::now() + Duration::from_secs(3);
         }
@@ -1969,7 +1986,7 @@ impl Player {
         let ppp = ctx.pixels_per_point();
         let px = [(vr.width() * ppp).round().max(1.0) as i32, (vr.height() * ppp).round().max(1.0) as i32];
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-        if self.pip.is_some() {
+        if self.compact() {
             self.panel = None;
         }
         let wants_backdrop = self.wants_backdrop();
@@ -2033,8 +2050,18 @@ impl Player {
         // Controls appear on mouse movement and hide after 3 s of stillness (not while paused).
         // The window has no title bar while a video plays: dragging the picture moves it, as in
         // mpv's own window (the edges resize it, see `window_frame`).
+        // Floating over the app, dragging moves the picture instead.
         let resp = ui.interact(rect, ui.id().with("player-area"), Sense::click_and_drag());
-        if resp.drag_started_by(egui::PointerButton::Primary) && !self.fullscreen {
+        if floating {
+            if resp.dragged_by(egui::PointerButton::Primary)
+                && let Some(f) = self.float
+            {
+                self.float = Some(clamp_float(f.translate(resp.drag_delta()), ctx.content_rect()));
+            }
+            if resp.drag_stopped() {
+                self.remember_float(&ctx);
+            }
+        } else if resp.drag_started_by(egui::PointerButton::Primary) && !self.fullscreen {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
         if ctx.input(|i| i.pointer.delta() != egui::Vec2::ZERO)
@@ -2045,7 +2072,7 @@ impl Player {
         // A click alone does nothing: it may be the start of a resize at the window's edge, or
         // just bring the window to the front. Space plays and pauses.
         if resp.double_clicked() {
-            action = PlayerAction::ToggleFullscreen;
+            action = if floating { self.expand(&ctx) } else { PlayerAction::ToggleFullscreen };
         }
         self.sync_room(&ctx);
         self.cast_tick(&ctx);
@@ -2082,16 +2109,115 @@ impl Player {
         action = self.skip_button(ui, p, rect, pos, dur, k).or(action);
         self.countdown(ui, p, rect, pos, dur);
         action = self.panels(ui, p, rect, pos, paused).or(action);
-        let mut below = rect.top() + if self.pip.is_some() { 40.0 } else { 90.0 };
+        let mut below = rect.top() + if self.compact() { 40.0 } else { 90.0 };
         if self.stats {
             below = self.stats_overlay(ui, rect, below) + 8.0;
         }
         if self.meter_page {
             self.meters_overlay(ui, rect, below);
         }
-        self.keys(&ctx, &mut action, popup_open);
-        self.extra_keys(&ctx);
+        if floating {
+            self.float_grips(ui, rect, aspect);
+        }
+        if keys_ok {
+            self.keys(&ctx, &mut action, popup_open);
+            self.extra_keys(&ctx);
+        }
         action
+    }
+
+    /// Floating over the app: where the picture goes (kept inside the window).
+    pub fn float_place(&mut self, ctx: &egui::Context) -> Option<Rect> {
+        let r = clamp_float(self.float?, ctx.content_rect());
+        self.float = Some(r);
+        Some(r)
+    }
+
+    pub fn floating(&self) -> bool {
+        self.float.is_some()
+    }
+
+    /// Picture in picture or floating over the app: a small picture, so the small controls.
+    fn compact(&self) -> bool {
+        self.pip.is_some() || self.float.is_some()
+    }
+
+    /// The picture floats over the app (where it was last time, or bottom right) and the app's
+    /// pages come back around it.
+    fn start_float(&mut self, ctx: &egui::Context) -> PlayerAction {
+        let screen = ctx.content_rect();
+        let aspect = crate::util::with_lock(&self.status, |s| s.aspect);
+        let aspect = if aspect > 0.0 { aspect as f32 } else { 16.0 / 9.0 };
+        let saved: Option<Rect> = ctx.data_mut(|d| d.get_persisted(egui::Id::new(FLOAT_KEY)));
+        let r = saved.filter(|r| r.width() >= FLOAT_MIN_WIDTH).unwrap_or_else(|| {
+            let w = FLOAT_WIDTH.min(screen.width() * 0.5).max(FLOAT_MIN_WIDTH);
+            let size = vec2(w, w / aspect);
+            Rect::from_min_size(screen.right_bottom() - size - vec2(24.0, 48.0), size)
+        });
+        // The remembered width with this video's shape.
+        let r = Rect::from_min_size(r.min, vec2(r.width(), r.width() / aspect));
+        self.float = Some(clamp_float(r, screen));
+        self.panel = None;
+        if self.fullscreen {
+            self.fullscreen = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
+        PlayerAction::Float
+    }
+
+    /// From floating back to the whole window.
+    fn expand(&mut self, ctx: &egui::Context) -> PlayerAction {
+        self.remember_float(ctx);
+        self.float = None;
+        PlayerAction::Expand
+    }
+
+    /// Back to the whole window without asking the app to show it (TV mode has no floating picture).
+    pub fn end_float(&mut self) {
+        if self.float.is_some() {
+            let ctx = self.ctx.clone();
+            self.remember_float(&ctx);
+            self.float = None;
+        }
+    }
+
+    fn remember_float(&self, ctx: &egui::Context) {
+        if let Some(r) = self.float {
+            ctx.data_mut(|d| d.insert_persisted(egui::Id::new(FLOAT_KEY), r));
+        }
+    }
+
+    /// The corners of the floating picture resize it, keeping the video's shape (the opposite
+    /// corner stays put).
+    fn float_grips(&mut self, ui: &mut Ui, rect: Rect, aspect: f32) {
+        let screen = ui.ctx().content_rect();
+        let corners = [
+            (rect.left_top(), rect.right_bottom(), egui::CursorIcon::ResizeNwSe),
+            (rect.right_top(), rect.left_bottom(), egui::CursorIcon::ResizeNeSw),
+            (rect.left_bottom(), rect.right_top(), egui::CursorIcon::ResizeNeSw),
+            (rect.right_bottom(), rect.left_top(), egui::CursorIcon::ResizeNwSe),
+        ];
+        for (i, (corner, anchor, cursor)) in corners.into_iter().enumerate() {
+            let inward = vec2((anchor.x - corner.x).signum(), (anchor.y - corner.y).signum()) * FLOAT_GRIP;
+            let grip = Rect::from_two_pos(corner, corner + inward);
+            let r = ui.interact(grip, ui.id().with(("float-grip", i)), Sense::drag());
+            if r.hovered() || r.dragged() {
+                ui.ctx().set_cursor_icon(cursor);
+            }
+            if r.dragged()
+                && let Some(pt) = r.interact_pointer_pos()
+            {
+                let max_w = screen.width().min(screen.height() * aspect);
+                let w = (pt.x - anchor.x).abs().max((pt.y - anchor.y).abs() * aspect).clamp(FLOAT_MIN_WIDTH, max_w);
+                let dir = vec2((corner.x - anchor.x).signum(), (corner.y - anchor.y).signum());
+                let r = Rect::from_two_pos(anchor, anchor + dir * vec2(w, w / aspect));
+                self.float = Some(clamp_float(r, screen));
+            }
+            if r.drag_stopped() {
+                let ctx = ui.ctx().clone();
+                self.remember_float(&ctx);
+            }
+        }
     }
 
     /// mpv's keys for the less common things: `[` `]` speed (Backspace resets), `z`/`x`
@@ -2231,12 +2357,13 @@ impl Player {
             self.toggle_mute();
         }
         if f {
-            *action = PlayerAction::ToggleFullscreen;
+            *action = if self.float.is_some() { self.expand(ctx) } else { PlayerAction::ToggleFullscreen };
         }
-        // Escape closes what is on top: a popup, a panel, then fullscreen, then the player.
+        // Escape closes what is on top: a popup, a panel, then fullscreen, then the player. Not
+        // the floating picture: it is there to be left alone.
         if esc && self.panel.is_some() && !popup_open {
             self.panel = None;
-        } else if esc && !popup_open {
+        } else if esc && !popup_open && self.float.is_none() {
             *action = if self.fullscreen { PlayerAction::ToggleFullscreen } else { PlayerAction::Close };
         }
         if left || right || up || down || m {
@@ -2255,7 +2382,7 @@ impl Player {
         dur: f64,
         paused: bool,
     ) -> PlayerAction {
-        if self.pip.is_some() {
+        if self.compact() {
             return self.pip_controls(ui, p, rect, k, pos, dur, paused);
         }
         let mut action = PlayerAction::None;
@@ -2496,12 +2623,31 @@ impl Player {
         }
         // Below this the left side needs the room.
         if rect.width() >= PIP_BUTTON_MIN {
+            // Floating over the app (its pages stay usable), and a small window on top of the
+            // other apps.
+            let float = Rect::from_center_size(slot(), vec2(30.0, 30.0));
+            let float_r = ui
+                .interact(float, ui.id().with("float"), Sense::click())
+                .on_hover_text(t!("Picture in picture: keep watching while you use Corrent"));
+            ui.painter().text(
+                float.center(),
+                egui::Align2::CENTER_CENTER,
+                pr::PICTURE_IN_PICTURE,
+                egui::FontId::proportional(22.0),
+                white,
+            );
+            if float_r.clicked() {
+                let ctx = ui.ctx().clone();
+                action = self.start_float(&ctx);
+            }
             let pip = Rect::from_center_size(slot(), vec2(30.0, 30.0));
-            let pip_r = ui.interact(pip, ui.id().with("pip"), Sense::click()).on_hover_text(t!("Picture in picture"));
+            let pip_r = ui
+                .interact(pip, ui.id().with("pip"), Sense::click())
+                .on_hover_text(t!("Small window on top of other apps"));
             ui.painter().text(
                 pip.center(),
                 egui::Align2::CENTER_CENTER,
-                pr::PICTURE_IN_PICTURE,
+                pr::APP_WINDOW,
                 egui::FontId::proportional(22.0),
                 white,
             );
@@ -2569,17 +2715,22 @@ impl Player {
             ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(size), c);
             resp.clicked()
         };
+        let floating = self.float.is_some();
         let back = icon_button(
             ui,
             rect.left_top() + vec2(24.0, 24.0),
             pr::ARROWS_OUT_SIMPLE,
             18.0,
             "pip-back",
-            t!("Back to the window"),
+            if floating { t!("Back to full size") } else { t!("Back to the window") },
         );
         if back {
             let ctx = ui.ctx().clone();
-            self.toggle_pip(&ctx);
+            if floating {
+                action = self.expand(&ctx);
+            } else {
+                self.toggle_pip(&ctx);
+            }
         }
         if icon_button(ui, rect.right_top() + vec2(-24.0, 24.0), pr::X, 18.0, "pip-close", t!("Close")) {
             // `Drop` puts the window back.
@@ -2799,7 +2950,7 @@ impl Player {
             };
             stats_lines(&s, &render)
         };
-        let lines = if self.pip.is_some() { lines.get(..3).unwrap_or(&lines) } else { &lines[..] };
+        let lines = if self.compact() { lines.get(..3).unwrap_or(&lines) } else { &lines[..] };
         let pos = pos2(rect.left() + 20.0, top);
         let galley = ui.painter().layout_no_wrap(lines.join("\n"), egui::FontId::monospace(12.0), Color32::WHITE);
         let bg = Rect::from_min_size(pos - vec2(8.0, 6.0), galley.size() + vec2(16.0, 12.0));
@@ -2817,7 +2968,7 @@ impl Player {
         let top = if self.stats && rect.width() < 900.0 {
             below
         } else {
-            rect.top() + if self.pip.is_some() { 40.0 } else { 90.0 }
+            rect.top() + if self.compact() { 40.0 } else { 90.0 }
         };
         let left = if self.stats && rect.width() < 900.0 { rect.left() + 12.0 } else { rect.right() - width - 12.0 };
         // Next to an open panel when there is room: the point is to watch them while changing things.
@@ -3416,6 +3567,17 @@ pub enum PlayerAction {
     ToggleFullscreen,
     /// "Load from file…": the app opens a picker and hands the file to `add_subtitle`.
     PickSubtitle,
+    /// The picture now floats over the app: the app's pages come back around it.
+    Float,
+    /// Floating no more: the app shows the player in the whole window again.
+    Expand,
+}
+
+/// The floating picture inside `screen` (and no bigger).
+fn clamp_float(r: Rect, screen: Rect) -> Rect {
+    let size = r.size().min(screen.size()).max(vec2(1.0, 1.0));
+    let max = (screen.max - size).max(screen.min);
+    Rect::from_min_size(r.min.clamp(screen.min, max), size)
 }
 
 impl PlayerAction {

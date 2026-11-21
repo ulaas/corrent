@@ -152,6 +152,11 @@ No file-system actions (Open, Open folder), no offline downloads, no TV
 mode, no mpv-only player features; long-press sheets on phones; Play ▸ for torrents streams from
 the server rather than an external player.
 
+Picture in picture: the desktop player has two — the picture floating over the app's own pages
+(moved by dragging, resized by its corners; `Player::start_float`) and a small window on top of other
+apps. The web player uses the browser's picture in picture, which already floats over the page and
+other windows, so it needs neither.
+
 No update check and no "Update and restart" (desktop: Settings › Behavior › Updates,
 `src/app/update_ui.rs`). The web client is served by the server it talks to, so it is always that
 server's version. `correntd` itself neither checks for releases nor updates itself: whatever
