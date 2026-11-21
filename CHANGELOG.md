@@ -5,6 +5,21 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+## [0.6.4] — 2026-11-22
+
+Picture in picture inside the app, editing a library on the desktop, and a security update.
+
+### Added
+
+- **Picture in picture over the app.** A new button in the player makes the video float over the
+  app, so the sidebar, torrents and media pages stay usable while it plays. Drag it to move it,
+  drag its corners to resize it; its place and size are remembered. It has small controls
+  (play/pause, seek, back to full size, close). The earlier mode — the whole window small and on
+  top of other apps — stays, with its own button.
+- **Editing a library on the desktop.** Manage libraries has Edit next to Remove: name, folders,
+  watching, online metadata, .nfo files, the played threshold, metadata language, import
+  categories and stop seeding once watched. Changing the folders rescans the library.
+
 ### Changed
 
 - The filter and sort buttons of Home and the library pages are remembered between launches, in
@@ -14,6 +29,10 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 - Windows: the window no longer flashes its background colour over its content (or a playing
   video) when it loses or gets the focus.
+
+### Security
+
+- wasmtime 49.0.7 (plugins) for RUSTSEC-2026-0566 to -0573 and -0587.
 
 ## [0.6.3] — 2026-11-19
 
