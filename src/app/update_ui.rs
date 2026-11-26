@@ -432,7 +432,12 @@ impl CorrentApp {
                     if let Some(command) = command {
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(command).monospace().color(p.accent));
+                            // Whole, on as many lines as it needs, with Copy still beside it.
+                            let room = (ui.available_width() - 70.0).max(120.0);
+                            ui.scope(|ui| {
+                                ui.set_max_width(room);
+                                ui.add(egui::Label::new(RichText::new(command).monospace().color(p.accent)).wrap());
+                            });
                             if ui.small_button(t!("Copy")).clicked() {
                                 copy = Some(command.to_string());
                             }

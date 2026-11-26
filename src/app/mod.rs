@@ -871,7 +871,8 @@ impl CorrentApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(egui_phosphor::regular::WARNING_OCTAGON).size(20.0).color(p.error));
-                    ui.vertical(|ui| {
+                    let row = crate::ui::widgets::ActionRow::new(ui, "engine");
+                    row.text(ui, |ui| {
                         ui.label(
                             egui::RichText::new(t!("The torrent engine stopped unexpectedly")).strong().color(p.text),
                         );
@@ -884,7 +885,7 @@ impl CorrentApp {
                             .color(p.text_dim),
                         );
                     });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    row.actions(ui, |ui| {
                         if crate::ui::widgets::primary_button(ui, p, t!("Restart engine")).clicked() {
                             self.engine.restart(self.settings.clone());
                             crate::crash::dismiss(&self.paths.log_dir());

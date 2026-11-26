@@ -289,7 +289,8 @@ impl CorrentApp {
             let (mut switch, mut keep) = (false, false);
             frame(ui, p, |ui| {
                 ui.label(RichText::new(icons::PLUGS_CONNECTED).size(20.0).color(p.accent));
-                ui.vertical(|ui| {
+                let row = crate::ui::widgets::ActionRow::new(ui, "reachable");
+                row.text(ui, |ui| {
                     ui.label(RichText::new(t!("“{name}” is reachable again", name = e.name)).strong().color(p.text));
                     ui.label(
                         RichText::new(t!("You switched to this computer's engine while it couldn't be reached."))
@@ -297,7 +298,7 @@ impl CorrentApp {
                             .color(p.text_dim),
                     );
                 });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                row.actions(ui, |ui| {
                     keep = secondary_button(ui, t!("Keep this computer's engine")).clicked();
                     switch = primary_button(ui, p, t!("Switch to it")).clicked();
                 });
@@ -319,7 +320,8 @@ impl CorrentApp {
         let (mut connect, mut later, mut never) = (false, false, false);
         frame(ui, p, |ui| {
             ui.label(RichText::new(icons::HARD_DRIVES).size(20.0).color(p.accent));
-            ui.vertical(|ui| {
+            let row = crate::ui::widgets::ActionRow::new(ui, "found");
+            row.text(ui, |ui| {
                 let title = match names.as_slice() {
                     [one] => t!("“{name}” is on this network", name = one),
                     more => t!("{n} Corrent servers are on this network", n = more.len()),
@@ -333,7 +335,7 @@ impl CorrentApp {
                     .color(p.text_dim),
                 );
             });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            row.actions(ui, |ui| {
                 never = secondary_button(ui, t!("Don't ask again")).clicked();
                 later = secondary_button(ui, t!("Not now")).clicked();
                 let label = if names.len() == 1 { t!("Connect…") } else { t!("Choose…") };

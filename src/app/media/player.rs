@@ -2095,13 +2095,18 @@ impl Player {
             );
         }
         if let Some(err) = crate::util::with_lock(&self.status, |s| s.error.clone()) {
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                err,
+            // Wrapped inside the picture, however small it is (picture in picture).
+            let text = crate::ui::widgets::fitted(
+                ui.painter(),
+                &err,
                 egui::FontId::proportional(18.0),
                 Color32::WHITE,
+                rect.width() - 48.0,
+                5,
+                egui::Align::Center,
             );
+            let at = pos2(rect.center().x, rect.center().y - text.size().y / 2.0);
+            ui.painter().galley(at, text, Color32::WHITE);
         }
         if k > 0.0 {
             action = self.controls(ui, p, rect, k, pos, dur, paused).or(action);
@@ -2407,21 +2412,23 @@ impl Player {
         painter.add(fade(bottom, false));
         let white = Color32::from_white_alpha(alpha);
         if let Some(e) = self.current() {
-            painter.text(
-                top.left_top() + vec2(28.0, 22.0),
-                egui::Align2::LEFT_TOP,
-                &e.title,
-                egui::FontId::proportional(22.0),
-                white,
-            );
+            // One line each, ending in "…" before the close button.
+            let room = rect.width() - 28.0 - 72.0;
+            let line = |text: &str, size: f32, color: Color32| {
+                crate::ui::widgets::fitted(
+                    painter,
+                    text,
+                    egui::FontId::proportional(size),
+                    color,
+                    room,
+                    1,
+                    egui::Align::LEFT,
+                )
+            };
+            painter.galley(top.left_top() + vec2(28.0, 22.0), line(&e.title, 22.0, white), white);
             if !e.subtitle.is_empty() {
-                painter.text(
-                    top.left_top() + vec2(28.0, 52.0),
-                    egui::Align2::LEFT_TOP,
-                    &e.subtitle,
-                    egui::FontId::proportional(14.0),
-                    Color32::from_white_alpha((k * 180.0) as u8),
-                );
+                let dim = Color32::from_white_alpha((k * 180.0) as u8);
+                painter.galley(top.left_top() + vec2(28.0, 52.0), line(&e.subtitle, 14.0, dim), dim);
             }
         }
         // Close (top right).
@@ -2666,25 +2673,30 @@ impl Player {
                 _ => String::new(),
             };
             let center = rect.center();
-            ui.painter().text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                if failed {
-                    t!("Couldn’t play on {name}", name = c.device.name)
-                } else {
-                    t!("Playing on {name}", name = c.device.name)
-                },
-                egui::FontId::proportional(22.0),
-                Color32::WHITE,
-            );
+            let title = if failed {
+                t!("Couldn’t play on {name}", name = c.device.name)
+            } else {
+                t!("Playing on {name}", name = c.device.name)
+            };
+            // Both wrap inside the picture; the reason starts below however many rows the
+            // title took.
+            let fit = |text: &str, size: f32, color: Color32, rows: usize| {
+                crate::ui::widgets::fitted(
+                    ui.painter(),
+                    text,
+                    egui::FontId::proportional(size),
+                    color,
+                    rect.width() - 48.0,
+                    rows,
+                    egui::Align::Center,
+                )
+            };
+            let title = fit(&title, 22.0, Color32::WHITE, 2);
+            let below = center.y - 14.0 + title.size().y + 6.0;
+            ui.painter().galley(pos2(center.x, center.y - 14.0), title, Color32::WHITE);
             if !line.is_empty() {
-                ui.painter().text(
-                    center + vec2(0.0, 28.0),
-                    egui::Align2::CENTER_CENTER,
-                    line,
-                    egui::FontId::proportional(14.0),
-                    Color32::from_white_alpha(200),
-                );
+                let dim = Color32::from_white_alpha(200);
+                ui.painter().galley(pos2(center.x, below), fit(&line, 14.0, dim, 4), dim);
             }
         }
         action
@@ -3233,9 +3245,12 @@ impl Player {
             }
             ui.add_space(8.0);
             if let Some(e) = self.current() {
+                // A long title ends in "…": the seek bar and the buttons after it keep their room.
+                let room = (ui.available_width() - 280.0).clamp(80.0, 320.0);
                 ui.vertical(|ui| {
-                    ui.label(egui::RichText::new(&e.title).strong().color(p.text));
-                    ui.label(egui::RichText::new(&e.subtitle).small().color(p.text_dim));
+                    ui.set_max_width(room);
+                    ui.add(egui::Label::new(egui::RichText::new(&e.title).strong().color(p.text)).truncate());
+                    ui.add(egui::Label::new(egui::RichText::new(&e.subtitle).small().color(p.text_dim)).truncate());
                 });
             }
             ui.add_space(12.0);

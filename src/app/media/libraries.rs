@@ -130,8 +130,7 @@ impl CorrentApp {
 
     pub(super) fn libraries_page(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient) {
         let libs = self.media.libraries();
-        ui.horizontal(|ui| {
-            ui.add_space(24.0);
+        crate::ui::widgets::inset(ui, 24.0, |ui| {
             ui.label(
                 RichText::new(t!(
                     "Libraries are folders the server scans for movies, shows, music and photos. New files appear on their own."
@@ -150,7 +149,8 @@ impl CorrentApp {
                 .outer_margin(egui::Margin { left: 24, right: 24, top: 0, bottom: 8 })
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
+                        let row = crate::ui::widgets::ActionRow::new(ui, l.id);
+                        row.text(ui, |ui| {
                             ui.label(RichText::new(&l.name).strong().color(p.text));
                             let count = if l.item_count == 1 {
                                 t!("1 item").to_string()
@@ -165,7 +165,7 @@ impl CorrentApp {
                             }
                             self.library_refresh_status(ui, p, client, l.id);
                         });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        row.actions(ui, |ui| {
                             if ui.button(format!("{}  {}", icons::TRASH, t!("Remove"))).clicked() {
                                 remove = Some((l.id, l.name.clone()));
                             }

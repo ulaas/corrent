@@ -103,7 +103,12 @@ impl CorrentApp {
                             ui.set_width(ui.available_width());
                             ui.horizontal(|ui| {
                                 let year = c.year.map(|y| format!(" ({y})")).unwrap_or_default();
-                                ui.label(RichText::new(format!("{}{year}", c.title)).strong().color(p.text));
+                                // The provider and "This one" stay in sight after a long title.
+                                crate::ui::widgets::truncated(
+                                    ui,
+                                    RichText::new(format!("{}{year}", c.title)).strong().color(p.text),
+                                    190.0,
+                                );
                                 ui.label(RichText::new(&c.provider).small().color(p.text_mute));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if f.applying.is_some() {
@@ -114,11 +119,16 @@ impl CorrentApp {
                                 });
                             });
                             if let Some(o) = c.overview.as_deref().filter(|o| !o.trim().is_empty()) {
-                                let mut short: String = o.chars().take(220).collect();
-                                if short.len() < o.len() {
-                                    short.push('…');
-                                }
-                                ui.label(RichText::new(short).small().color(p.text_dim));
+                                // Three lines of it, whatever the width and the language.
+                                let mut job = egui::text::LayoutJob::simple(
+                                    o.trim().to_owned(),
+                                    egui::TextStyle::Small.resolve(ui.style()),
+                                    p.text_dim,
+                                    ui.available_width(),
+                                );
+                                job.wrap.max_rows = 3;
+                                job.wrap.overflow_character = Some('…');
+                                ui.label(job);
                             }
                         });
                         ui.add_space(4.0);

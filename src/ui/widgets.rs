@@ -341,6 +341,125 @@ pub fn card(p: &Palette) -> egui::Frame {
         .inner_margin(egui::Margin::same(14))
 }
 
+/// The widest a block of running text gets: about 80 characters a line, past which the eye
+/// loses the next line's start.
+pub const PROSE_MEASURE: f32 = 640.0;
+
+/// Running text (a synopsis, a description): a little larger than the body, with open line
+/// spacing, wrapping at the width there is up to [`PROSE_MEASURE`]. Never one clipped line,
+/// whatever layout it is put in.
+pub fn prose(ui: &mut Ui, p: &Palette, text: &str) -> Response {
+    const SIZE: f32 = 15.0;
+    let format = egui::TextFormat {
+        font_id: FontId::proportional(SIZE),
+        color: p.text.lerp_to_gamma(p.text_dim, 0.3),
+        line_height: Some((SIZE * 1.6).round()),
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(text.trim(), 0.0, format);
+    job.wrap.max_width = ui.available_width().clamp(120.0, PROSE_MEASURE);
+    // Laid out here: a label would widen the job to its layout's width (or not wrap at all).
+    let galley = ui.painter().layout_job(job);
+    ui.label(galley)
+}
+
+/// A name, a path or a message in a row with more after it: it ends in "…" (the whole text on
+/// hover) where the row would run out, keeping `reserve` points for what follows, instead of
+/// pushing that out of sight. It takes only the width its text needs.
+pub fn truncated(ui: &mut Ui, text: impl Into<egui::WidgetText>, reserve: f32) -> Response {
+    truncated_label(ui, text, reserve, true)
+}
+
+/// [`truncated`] without the hover of its own, for a row that says more on hover itself.
+pub fn truncated_plain(ui: &mut Ui, text: impl Into<egui::WidgetText>, reserve: f32) -> Response {
+    truncated_label(ui, text, reserve, false)
+}
+
+fn truncated_label(ui: &mut Ui, text: impl Into<egui::WidgetText>, reserve: f32, hover: bool) -> Response {
+    let width = (ui.available_width() - reserve).max(40.0);
+    ui.scope(|ui| {
+        ui.set_max_width(width);
+        ui.add(egui::Label::new(text).truncate().show_tooltip_when_elided(hover))
+    })
+    .inner
+}
+
+/// The whole text on hover for a button whose text didn't fit (`Button::truncate` has none).
+pub fn hover_if_clipped(resp: Response, full: &str) -> Response {
+    if resp.intrinsic_size().is_some_and(|s| s.x > resp.rect.width() + 0.5) { resp.on_hover_text(full) } else { resp }
+}
+
+/// A row that ends at the right edge: `tail` (buttons, sizes; added right to left) is laid out
+/// first and `lead` gets the width that is left, so its text can truncate or wrap there.
+pub fn lead_and_tail<R>(ui: &mut Ui, tail: impl FnOnce(&mut Ui), lead: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        tail(ui);
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), lead).inner
+    })
+    .inner
+}
+
+/// A row of text with buttons (or a badge) at its right end, where the text must not take the
+/// buttons' room. [`ActionRow::text`] is laid out top-down in the row's width less what
+/// [`ActionRow::actions`] took last frame, so its labels wrap (or `.truncate()`) there; the
+/// actions then go to the right edge, added right to left. Measured, not guessed: translations
+/// make the buttons any width. `id_salt` tells the rows of one list (or the banners of one
+/// panel) apart: sibling rows share their parent's id, and the measurement is kept under it.
+pub struct ActionRow {
+    id: Id,
+    known: Option<f32>,
+}
+
+impl ActionRow {
+    pub fn new(ui: &Ui, id_salt: impl std::hash::Hash + std::fmt::Debug) -> Self {
+        let id = ui.id().with(("action_row", id_salt));
+        Self { id, known: ui.data(|d| d.get_temp(id)) }
+    }
+
+    pub fn text<R>(&self, ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+        let avail = ui.available_size_before_wrap();
+        let room = (avail.x - self.known.unwrap_or(avail.x * 0.5) - ui.spacing().item_spacing.x).max(80.0);
+        ui.allocate_ui_with_layout(vec2(room, avail.y), egui::Layout::top_down(egui::Align::Min), add).inner
+    }
+
+    pub fn actions<R>(self, ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+        let r = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add);
+        let used = r.response.rect.width();
+        if self.known.is_none_or(|k| (k - used).abs() > 0.5) {
+            ui.data_mut(|d| d.insert_temp(self.id, used));
+            // Laid out again with the right width before anyone sees this frame.
+            ui.ctx().request_discard("an action row measured its actions");
+        }
+        r.inner
+    }
+}
+
+/// Text to paint straight onto a picture (no layout around it to wrap in): laid out within
+/// `max_width` on at most `max_rows` rows, the last ending in "…". With `Align::Center` the rows
+/// are centered on the x it is painted at.
+pub fn fitted(
+    painter: &egui::Painter,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+    max_rows: usize,
+    halign: egui::Align,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, color, max_width.max(40.0));
+    job.wrap.max_rows = max_rows;
+    job.wrap.overflow_character = Some('…');
+    job.halign = halign;
+    painter.layout_job(job)
+}
+
+/// A page's content between side margins: labels in it wrap, and wrapping rows
+/// (`horizontal_wrapped`) keep the margin on every row, which a leading space doesn't.
+pub fn inset<R>(ui: &mut Ui, side: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(side as i8, 0)).show(ui, add).inner
+}
+
 /// Draw a dashed rounded rectangle (drag & drop overlay).
 pub fn dashed_rect(painter: &egui::Painter, rect: Rect, color: Color32, width: f32) {
     let pts = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()];

@@ -108,12 +108,11 @@ impl CorrentApp {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(icons::PLAY_CIRCLE).color(p.accent));
                         let name = s.file_name.rsplit(['/', '\\']).next().unwrap_or(&s.file_name);
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(t!("“{name}” to {player}", name = name, player = player(s)))
-                                    .color(p.text),
-                            )
-                            .truncate(),
+                        // The state, the percentage and Details stay in sight after a long name.
+                        crate::ui::widgets::truncated(
+                            ui,
+                            RichText::new(t!("“{name}” to {player}", name = name, player = player(s))).color(p.text),
+                            230.0,
                         );
                         state_badge(ui, p, s.state);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -202,14 +201,15 @@ impl CorrentApp {
             let name = s.file_name.rsplit(['/', '\\']).next().unwrap_or(&s.file_name).to_string();
             ui.horizontal(|ui| {
                 ui.label(RichText::new(crate::ui::file_tree::file_icon(&name)).size(18.0).color(p.accent));
-                ui.vertical(|ui| {
+                let row = crate::ui::widgets::ActionRow::new(ui, s.id);
+                row.text(ui, |ui| {
                     ui.add(egui::Label::new(RichText::new(&name).strong().color(p.text)).truncate())
                         .on_hover_text(&s.file_name);
                     if !s.torrent_name.is_empty() {
                         ui.add(egui::Label::new(RichText::new(&s.torrent_name).small().color(p.text_dim)).truncate());
                     }
                 });
-                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                row.actions(ui, |ui| {
                     state_badge(ui, p, s.state);
                 });
             });

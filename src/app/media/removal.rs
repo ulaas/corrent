@@ -128,8 +128,12 @@ impl CorrentApp {
                         for file in &plan.files {
                             ui.horizontal(|ui| {
                                 let color = if file.media { p.text } else { p.text_dim };
-                                ui.label(RichText::new(file_name(&file.path)).small().color(color))
-                                    .on_hover_text(&file.path);
+                                crate::ui::widgets::truncated_plain(
+                                    ui,
+                                    RichText::new(file_name(&file.path)).small().color(color),
+                                    80.0,
+                                )
+                                .on_hover_text(&file.path);
                                 ui.label(
                                     RichText::new(corrent_core::util::fmt_bytes(file.size)).small().color(p.text_mute),
                                 );

@@ -1,6 +1,6 @@
 //! Single-instance forwarding, window focus and "default app" registration UI.
 
-use egui::{Align, Context, Layout, RichText, Ui};
+use egui::{Context, RichText, Ui};
 use egui_phosphor::regular as icons;
 
 use super::CorrentApp;
@@ -112,7 +112,8 @@ impl CorrentApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(icons::MAGNET).size(20.0).color(p.accent));
-                    ui.vertical(|ui| {
+                    let row = crate::ui::widgets::ActionRow::new(ui, "handler");
+                    row.text(ui, |ui| {
                         ui.label(
                             RichText::new(t!("Open magnet links and .torrent files with Corrent?"))
                                 .strong()
@@ -124,7 +125,7 @@ impl CorrentApp {
                         };
                         ui.label(RichText::new(detail).small().color(p.text_dim));
                     });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    row.actions(ui, |ui| {
                         if secondary_button(ui, t!("Not now")).clicked() {
                             self.settings.behavior.handler_prompt_dismissed = true;
                             self.save_settings();

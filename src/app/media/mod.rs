@@ -331,6 +331,18 @@ impl Children {
     }
 }
 
+/// A media page's side margin: what its text and rows keep clear on both sides (where the
+/// hero's title starts).
+fn page_pad(ui: &Ui) -> f32 {
+    if ui.available_width() < grid::NARROW { 20.0 } else { 36.0 }
+}
+
+/// In a wrapping row: a button or chip that doesn't fit moves to the next row whole, instead of
+/// breaking its own text.
+fn whole_widgets(ui: &mut Ui) {
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+}
+
 fn kind_aspect(k: ItemKind) -> f32 {
     match k {
         ItemKind::Album | ItemKind::Artist | ItemKind::Track => 1.0,
@@ -924,7 +936,8 @@ impl CorrentApp {
                     .and_then(|rows| rows.iter().find(|r| r.id == *id).map(|r| r.title.clone()))
                     .unwrap_or_default(),
             };
-            ui.label(RichText::new(title).size(20.0).strong().color(p.text));
+            // The search box and the profile keep their room: a long name ends in "…".
+            crate::ui::widgets::truncated(ui, RichText::new(title).size(20.0).strong().color(p.text), 440.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(16.0);
                 if let Some(name) = self.profile_name()
@@ -1323,13 +1336,16 @@ impl CorrentApp {
             );
             y -= 18.0;
         }
-        painter.text(
-            pos2(left, y),
-            egui::Align2::LEFT_BOTTOM,
-            subtitle_of(item),
+        let subtitle = crate::ui::widgets::fitted(
+            &painter,
+            &subtitle_of(item),
             egui::FontId::proportional(15.0),
             p.text_dim,
+            (rect.right() - left - 20.0).max(120.0),
+            1,
+            egui::Align::LEFT,
         );
+        painter.galley(pos2(left, y - subtitle.size().y), subtitle, p.text_dim);
         y -= 24.0;
         painter.galley(pos2(left, y - title.size().y), title, p.text);
         let mut play = false;
@@ -1656,8 +1672,10 @@ impl CorrentApp {
         let it = d.item.clone();
         self.hero(ui, p, client, &it, None);
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.add_space(32.0);
+        let pad = page_pad(ui);
+        // Between the page's margins everything wraps: the facts, the buttons a row at a time,
+        // the synopsis as running text.
+        crate::ui::widgets::inset(ui, pad, |ui| {
             // Facts line.
             let mut facts: Vec<String> = Vec::new();
             if let Some(y) = it.year {
@@ -1687,8 +1705,9 @@ impl CorrentApp {
             ui.label(RichText::new(facts.join("  ·  ")).color(p.text_dim));
         });
         ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            ui.add_space(32.0);
+        let buttons = |ui: &mut Ui| {
+            whole_widgets(ui);
+            ui.spacing_mut().item_spacing.y = 8.0;
             let children = self.children(client, it.id);
             let siblings: &[Item] = match it.kind {
                 ItemKind::Season | ItemKind::Album => children.items(),
@@ -1773,25 +1792,25 @@ impl CorrentApp {
             {
                 self.open_removal(it.id, &it.title);
             }
+        };
+        crate::ui::widgets::inset(ui, pad, |ui| ui.horizontal_wrapped(buttons));
+        ui.add_space(14.0);
+        crate::ui::widgets::inset(ui, pad, |ui| {
+            if !d.genres.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    whole_widgets(ui);
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    for g in &d.genres {
+                        crate::ui::widgets::chip(ui, p, icons::TAG, g);
+                    }
+                });
+                ui.add_space(10.0);
+            }
+            if let Some(o) = d.overview.as_deref().filter(|o| !o.trim().is_empty()) {
+                crate::ui::widgets::prose(ui, p, o);
+                ui.add_space(16.0);
+            }
         });
-        ui.add_space(12.0);
-        if !d.genres.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(32.0);
-                for g in &d.genres {
-                    crate::ui::widgets::chip(ui, p, icons::TAG, g);
-                }
-            });
-            ui.add_space(8.0);
-        }
-        if let Some(o) = &d.overview {
-            ui.horizontal(|ui| {
-                ui.add_space(32.0);
-                ui.set_max_width(820.0);
-                ui.label(RichText::new(o).size(14.5).color(p.text));
-            });
-            ui.add_space(14.0);
-        }
         match it.kind {
             ItemKind::Show => {
                 let seasons = self.children(client, it.id);
@@ -1805,13 +1824,15 @@ impl CorrentApp {
                             .map(|s| s.id)
                             .unwrap_or(0)
                     });
-                    ui.horizontal(|ui| {
-                        ui.add_space(32.0);
-                        for s in seasons {
-                            if ui.selectable_label(s.id == sel, &s.title).clicked() {
-                                self.media.selected_season.insert(it.id, s.id);
+                    crate::ui::widgets::inset(ui, pad, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            whole_widgets(ui);
+                            for s in seasons {
+                                if ui.selectable_label(s.id == sel, &s.title).clicked() {
+                                    self.media.selected_season.insert(it.id, s.id);
+                                }
                             }
-                        }
+                        });
                     });
                     ui.add_space(10.0);
                     let eps = self.children(client, sel);
@@ -1833,55 +1854,46 @@ impl CorrentApp {
             _ => {}
         }
         let cast: Vec<_> = d.credits.iter().filter(|c| c.role == "actor").take(20).collect();
-        if !cast.is_empty() {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.add_space(32.0);
+        let crew: Vec<_> = d.credits.iter().filter(|c| c.role != "actor").collect();
+        let mut open_person = None;
+        crate::ui::widgets::inset(ui, pad, |ui| {
+            if !cast.is_empty() {
+                ui.add_space(6.0);
                 ui.label(RichText::new(t!("Cast")).size(17.0).strong().color(p.text));
-            });
-            let mut open_person = None;
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(32.0);
-                for c in cast {
-                    ui.vertical(|ui| {
-                        ui.set_width(150.0);
-                        let name = egui::Button::new(RichText::new(&c.name).strong().color(p.text)).frame(false);
-                        if ui.add(name).clicked() {
+                ui.add_space(2.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    for c in cast {
+                        // A name or a character longer than the column wraps inside it.
+                        // (Allocated as a widget: only that starts a new row in a wrapping layout.)
+                        let column = egui::Layout::top_down(egui::Align::Min);
+                        ui.allocate_ui_with_layout(vec2(150.0, 0.0), column, |ui| {
+                            ui.set_width(150.0);
+                            let name = egui::Button::new(RichText::new(&c.name).strong().color(p.text)).frame(false);
+                            if ui.add(name).clicked() {
+                                open_person = Some((c.person_id, c.name.clone()));
+                            }
+                            if let Some(ch) = &c.character {
+                                ui.label(RichText::new(ch).small().color(p.text_dim));
+                            }
+                        });
+                    }
+                });
+            }
+            if !crew.is_empty() {
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    whole_widgets(ui);
+                    for c in crew {
+                        let text = RichText::new(format!("{} ({})", c.name, c.role)).color(p.text_dim);
+                        if ui.add(egui::Button::new(text).frame(false)).clicked() {
                             open_person = Some((c.person_id, c.name.clone()));
                         }
-                        if let Some(ch) = &c.character {
-                            ui.label(RichText::new(ch).small().color(p.text_dim));
-                        }
-                    });
-                }
-            });
-            if let Some((id, name)) = open_person {
-                self.open(Page::Person(id, name));
-                return;
-            }
-        }
-        let crew: Vec<_> = d.credits.iter().filter(|c| c.role != "actor").collect();
-        if !crew.is_empty() {
-            ui.add_space(10.0);
-            let mut open_person = None;
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(32.0);
-                for c in crew {
-                    let text = RichText::new(format!("{} ({})", c.name, c.role)).color(p.text_dim);
-                    if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                        open_person = Some((c.person_id, c.name.clone()));
                     }
-                }
-            });
-            if let Some((id, name)) = open_person {
-                self.open(Page::Person(id, name));
-                return;
+                });
             }
-        }
-        if let Some(f) = d.files.first() {
-            ui.add_space(14.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(32.0);
+            if let Some(f) = d.files.first() {
+                ui.add_space(14.0);
                 let mut facts = vec![
                     f.path.rsplit(['/', '\\']).next().unwrap_or("").to_string(),
                     crate::util::fmt_bytes(f.size as u64),
@@ -1903,15 +1915,19 @@ impl CorrentApp {
                     ));
                 }
                 ui.label(RichText::new(facts.join("  ·  ")).small().color(p.text_mute));
-            });
+            }
+        });
+        if let Some((id, name)) = open_person {
+            self.open(Page::Person(id, name));
         }
     }
 
     fn episode_list(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, eps: &[Item]) {
         let mut play: Option<Item> = None;
+        let pad = page_pad(ui);
         for e in eps {
             ui.horizontal(|ui| {
-                ui.add_space(32.0);
+                ui.add_space(pad);
                 let r = self.card(ui, p, client, e, 220.0);
                 if r.clicked() {
                     play = Some(e.clone());
@@ -1938,16 +1954,28 @@ impl CorrentApp {
 
     fn track_list(&mut self, ui: &mut Ui, p: &Palette, client: &MediaClient, tracks: &[Item]) {
         let mut play: Option<Item> = None;
+        let pad = page_pad(ui);
         for t in tracks {
             ui.horizontal(|ui| {
-                ui.add_space(32.0);
-                let resp = ui.add(
-                    egui::Button::new(
-                        RichText::new(format!("{:>2}   {}", t.index.unwrap_or(0), t.title)).size(14.5).color(p.text),
-                    )
-                    .frame(false)
-                    .min_size(vec2(520.0, 28.0)),
-                );
+                ui.add_space(pad);
+                // The title's column leaves room for the length; a longer title ends in "…".
+                let w = (ui.available_width() - pad - 72.0).clamp(140.0, 520.0);
+                let resp = ui
+                    .scope(|ui| {
+                        ui.set_max_width(w);
+                        ui.add(
+                            egui::Button::new(
+                                RichText::new(format!("{:>2}   {}", t.index.unwrap_or(0), t.title))
+                                    .size(14.5)
+                                    .color(p.text),
+                            )
+                            .frame(false)
+                            .truncate()
+                            .min_size(vec2(w, 28.0)),
+                        )
+                    })
+                    .inner;
+                let resp = crate::ui::widgets::hover_if_clipped(resp, &t.title);
                 if resp.clicked() {
                     play = Some(t.clone());
                 }

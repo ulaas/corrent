@@ -166,7 +166,7 @@ impl CorrentApp {
                     ui.label(t!("Save .torrent as"));
                     ui.horizontal(|ui| {
                         let label = c.output.as_ref().map(|s| s.display().to_string()).unwrap_or_default();
-                        ui.add(egui::Label::new(RichText::new(label).color(p.text_dim)).truncate());
+                        crate::ui::widgets::truncated(ui, RichText::new(label).color(p.text_dim), 44.0);
                         if ui
                             .add_enabled(!busy_picker && c.source.is_some(), egui::Button::new(icons::FOLDER_OPEN))
                             .labeled(t!("Choose where to save the .torrent file"))

@@ -204,6 +204,21 @@ fn row(ui: &mut Ui, tone: &Tone) -> (Rect, Response) {
     (rect, resp)
 }
 
+/// A row's label, on one line: a longer one (a translation) ends in "…" before the control
+/// beside it instead of running under it.
+fn label_text(ui: &Ui, left_center: egui::Pos2, text: &str, size: f32, color: Color32, max_width: f32) {
+    let galley = crate::ui::widgets::fitted(
+        ui.painter(),
+        text,
+        FontId::proportional(size),
+        color,
+        max_width,
+        1,
+        egui::Align::LEFT,
+    );
+    ui.painter().galley(pos2(left_center.x, left_center.y - galley.size().y / 2.0), galley, color);
+}
+
 /// A label with a switch on the right; the whole row flips it.
 pub fn switch(ui: &mut Ui, tone: &Tone, on: &mut bool, label: &str) -> Response {
     let enabled = ui.is_enabled();
@@ -214,7 +229,7 @@ pub fn switch(ui: &mut Ui, tone: &Tone, on: &mut bool, label: &str) -> Response 
     }
     let value = *on;
     resp.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, enabled, value, label));
-    ui.painter().text(rect.left_center(), egui::Align2::LEFT_CENTER, label, FontId::proportional(TEXT), tone.text);
+    label_text(ui, rect.left_center(), label, TEXT, tone.text, rect.width() - 40.0);
     let k = crate::ui::motion::toggle(ui.ctx(), resp.id, value, crate::ui::motion::MICRO);
     let track = Rect::from_min_size(pos2(rect.right() - 30.0, rect.center().y - 8.0), vec2(30.0, 16.0));
     ui.painter().rect_filled(track, CornerRadius::same(8), if value { tone.accent } else { tone.rail });
@@ -225,7 +240,7 @@ pub fn switch(ui: &mut Ui, tone: &Tone, on: &mut bool, label: &str) -> Response 
 /// A label with `−  value  +`. Gives -1 or +1 for a click on either.
 pub fn stepper(ui: &mut Ui, tone: &Tone, label: &str, value: &str) -> i8 {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
-    ui.painter().text(rect.left_center(), egui::Align2::LEFT_CENTER, label, FontId::proportional(TEXT), tone.text);
+    label_text(ui, rect.left_center(), label, TEXT, tone.text, rect.width() - 116.0);
     let plus = Rect::from_center_size(pos2(rect.right() - 12.0, rect.center().y), vec2(24.0, 24.0));
     let minus = Rect::from_center_size(pos2(rect.right() - 92.0, rect.center().y), vec2(24.0, 24.0));
     ui.painter().text(
@@ -392,7 +407,7 @@ pub fn slider(
     *value = next;
     let enabled = ui.is_enabled();
     resp.widget_info(|| WidgetInfo::slider(enabled, f64::from(next), label));
-    ui.painter().text(rect.left_center(), egui::Align2::LEFT_CENTER, label, FontId::proportional(12.0), tone.dim);
+    label_text(ui, rect.left_center(), label, 12.0, tone.dim, track.left() - rect.left() - 6.0);
     ui.painter().rect_filled(track, CornerRadius::same(2), tone.rail);
     let x = track.left() + track.width() * ((next - lo) / (hi - lo)).clamp(0.0, 1.0);
     ui.painter().rect_filled(

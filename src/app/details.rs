@@ -220,7 +220,7 @@ impl CorrentApp {
                 egui::Grid::new("general_paths").num_columns(2).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
                     ui.label(RichText::new(t!("Save path")).small().color(p.text_dim));
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(t.save_path.display().to_string()).color(p.text));
+                        widgets::truncated(ui, RichText::new(t.save_path.display().to_string()).color(p.text), 40.0);
                         if self.server.is_none()
                             && ui.small_button(icons::FOLDER_OPEN).labeled(t!("Open folder")).clicked()
                         {
@@ -559,8 +559,13 @@ impl CorrentApp {
                             ui.allocate_ui_with_layout(vec2(56.0, 20.0), Layout::left_to_right(Align::Center), |ui| {
                                 widgets::badge(ui, &scheme, color);
                             });
-                            ui.label(RichText::new(&host).strong().color(p.text));
-                            ui.label(RichText::new(format!("{port}{path}")).monospace().small().color(p.text_dim));
+                            // The copy button keeps its place: a long host or path ends in "…".
+                            widgets::truncated_plain(ui, RichText::new(&host).strong().color(p.text), 120.0);
+                            widgets::truncated_plain(
+                                ui,
+                                RichText::new(format!("{port}{path}")).monospace().small().color(p.text_dim),
+                                40.0,
+                            );
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if ui.small_button(icons::COPY).labeled(t!("Copy URL")).clicked() {
                                     self.copy(url.clone());

@@ -782,7 +782,11 @@ impl CorrentApp {
                                 ui.horizontal(|ui| {
                                     toggle_switch(ui, p, &mut w.enabled);
                                     ui.label(RichText::new(icons::FOLDER_SIMPLE).color(p.warn));
-                                    ui.label(RichText::new(w.path.display().to_string()).strong().color(p.text));
+                                    crate::ui::widgets::truncated(
+                                        ui,
+                                        RichText::new(w.path.display().to_string()).strong().color(p.text),
+                                        44.0,
+                                    );
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if ui.button(icons::TRASH).labeled(t!("Remove")).clicked() {
                                             remove = Some(i);
@@ -1506,7 +1510,8 @@ impl CorrentApp {
                     };
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(icon).color(color));
-                        ui.label(RichText::new(text).color(color));
+                        // Why it failed can be a sentence: it wraps in the width left.
+                        ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
                     });
                     if let super::remote::RemoteStatus::Running(a) = status {
                         ui.add_space(4.0);

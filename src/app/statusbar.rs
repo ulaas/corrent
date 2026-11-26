@@ -52,7 +52,15 @@ impl CorrentApp {
                     egui::Sense::hover()
                 })
             };
-            let r = ui.add(chip(RichText::new(text)));
+            // An engine error or a long server name ends in "…" (whole on hover) and leaves the
+            // rest of the bar, with the speeds at its end, where it is.
+            let room = (ui.available_width() - 560.0).max(140.0);
+            let r = ui
+                .scope(|ui| {
+                    ui.set_max_width(room);
+                    ui.add(chip(RichText::new(text)).truncate())
+                })
+                .inner;
             let r = if local && matches!(self.snap.engine_state, EngineState::Running) {
                 r.on_hover_text(t!("Click for BitTorrent settings"))
             } else {

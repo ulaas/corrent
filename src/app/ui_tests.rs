@@ -1785,6 +1785,67 @@ fn identify_dialog_searches_and_explains_missing_keys() {
     });
 }
 
+/// An item's page wraps: a long synopsis is running text over several lines, at most a comfortable
+/// measure wide, and neither it nor the last button leaves the window, wide or narrow.
+#[test]
+fn item_page_wraps_a_long_synopsis_and_its_buttons() {
+    let sentence = "A lonely girl nurses a wounded young dragon back to health and sets out to find it again. ";
+    for (name, width) in [("item-wrap-wide", 1280.0), ("item-wrap-narrow", 760.0)] {
+        let (f, mut app) = app(name, vec![]);
+        let movies = f.dir.join("Movies/Sintel (2010)");
+        std::fs::create_dir_all(&movies).unwrap();
+        std::fs::write(movies.join("movie.mkv"), b"not really a movie").unwrap();
+        std::fs::write(
+            movies.join("movie.nfo"),
+            format!(
+                "<movie><title>Sintel</title><year>2010</year><plot>{}</plot><genre>Fantasy</genre>{}</movie>",
+                sentence.repeat(8),
+                (1..=12)
+                    .map(|n| format!("<actor><name>Actor {n}</name><role>Role {n}</role></actor>"))
+                    .collect::<String>()
+            ),
+        )
+        .unwrap();
+        app.main_view = super::feeds::MainView::Media;
+        let mut h = harness_sized(app, egui::vec2(width, 800.0));
+        step_until(&mut h, "the in-process server", |h| h.state().media.client.is_some());
+        let client = h.state().media.client.clone().unwrap();
+        let rt = f.rt.as_ref().unwrap();
+        let lib: corrent_proto::library::Library = rt
+            .block_on(client.send(
+                reqwest::Method::POST,
+                "/api/v1/libraries",
+                &serde_json::json!({ "name": "Films", "kind": "movies", "folders": [f.dir.join("Movies")] }),
+            ))
+            .unwrap();
+        // Listed with its synopsis: the .nfo is read after the item appears.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let id = loop {
+            let page: serde_json::Value =
+                rt.block_on(client.get(&format!("/api/v1/items?library_id={}", lib.id))).unwrap();
+            if let Some(id) = page["items"][0]["id"].as_i64() {
+                let d: serde_json::Value = rt.block_on(client.get(&format!("/api/v1/items/{id}"))).unwrap();
+                if d["overview"].as_str().is_some_and(|o| o.contains("dragon")) {
+                    break id;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "scan: {page}");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        h.state_mut().media.dev_open_item(id);
+        step_until(&mut h, "the synopsis", |h| h.query_by_label_contains("wounded young dragon").is_some());
+        h.run_steps(3);
+        let text = h.get_by_label_contains("wounded young dragon").rect();
+        assert!(text.height() > 60.0, "{name}: several lines, not one: {text:?}");
+        assert!(text.width() <= crate::ui::widgets::PROSE_MEASURE + 1.0, "{name}: a readable measure: {text:?}");
+        assert!(text.right() <= width, "{name}: inside the window: {text:?}");
+        let last = h.get_by_label_contains("Remove from library…").rect();
+        assert!(last.right() <= width, "{name}: the last button is on a row that fits: {last:?}");
+        let cast = h.get_by_label("Actor 12").rect();
+        assert!(cast.right() <= width, "{name}: the cast wraps onto rows that fit: {cast:?}");
+    }
+}
+
 /// Media → AI agent: how to connect, and a proposal an agent made, approved from the page.
 #[test]
 fn agent_page_shows_a_proposal_and_approves_it() {

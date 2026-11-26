@@ -130,7 +130,8 @@ impl CorrentApp {
                 .outer_margin(egui::Margin { left: 24, right: 24, top: 0, bottom: 8 })
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
+                        let row = crate::ui::widgets::ActionRow::new(ui, d.key);
+                        row.text(ui, |ui| {
                             ui.label(RichText::new(&d.item.title).strong().color(p.text));
                             let what = match d.quality {
                                 Quality::Original => t!("Original file"),
@@ -172,7 +173,7 @@ impl CorrentApp {
                                 );
                             }
                         });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        row.actions(ui, |ui| {
                             if ui.button(icons::TRASH).on_hover_text(t!("Remove")).clicked() {
                                 store.remove(d.key);
                             }
@@ -237,7 +238,7 @@ impl CorrentApp {
                 if crate::ui::widgets::primary_button(ui, p, icons::PLAY).on_hover_text(t!("Play")).clicked() {
                     play = Some(s.clone());
                 }
-                ui.label(RichText::new(&s.name).size(16.0).color(p.text));
+                crate::ui::widgets::truncated(ui, RichText::new(&s.name).size(16.0).color(p.text), 24.0);
             });
             ui.add_space(6.0);
         }

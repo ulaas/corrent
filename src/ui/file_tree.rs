@@ -367,8 +367,9 @@ fn dir_row<'a>(
         }
     }
     ui.label(RichText::new(icons::FOLDER).color(p.warn));
-    ui.label(RichText::new(&dir.name).color(p.text));
-    row_tail(ui, p, dir.size, show_done.then_some(done), None);
+    row_tail(ui, p, dir.size, show_done.then_some(done), None, |ui| {
+        ui.add(egui::Label::new(RichText::new(&dir.name).color(p.text)).truncate());
+    });
     arrow.clicked()
 }
 
@@ -395,13 +396,16 @@ fn file_row<'a>(
         let own = e.components.last().map(String::as_str).unwrap_or(&name);
         ui.label(RichText::new(file_icon(own)).color(p.text_dim));
     }
-    ui.add(egui::Label::new(RichText::new(&name).color(if on { p.text } else { p.text_mute })).truncate());
-    row_tail(ui, p, e.len, e.done, e.priority);
+    row_tail(ui, p, e.len, e.done, e.priority, |ui| {
+        ui.add(egui::Label::new(RichText::new(&name).color(if on { p.text } else { p.text_mute })).truncate());
+    });
 }
 
-fn row_tail(ui: &mut Ui, p: &Palette, len: u64, done: Option<u64>, priority: Option<i8>) {
+/// The end of a row (size, progress, priority) at the right edge, then `name` in the width that
+/// is left: a long name ends in "…" instead of pushing the cells out of sight.
+fn row_tail(ui: &mut Ui, p: &Palette, len: u64, done: Option<u64>, priority: Option<i8>, name: impl FnOnce(&mut Ui)) {
     // Fixed-width cells so sizes, percentages and bars line up across rows.
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    let cells = |ui: &mut Ui| {
         let cell = |ui: &mut Ui, w: f32, text: RichText| {
             ui.allocate_ui_with_layout(egui::vec2(w, 18.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(text);
@@ -433,7 +437,8 @@ fn row_tail(ui: &mut Ui, p: &Palette, len: u64, done: Option<u64>, priority: Opt
             ui.label(RichText::new(format!("{icon} {}", priority_label(pr))).small().color(color))
                 .on_hover_text(t!("Download priority (right-click to change)"));
         }
-    });
+    };
+    super::widgets::lead_and_tail(ui, cells, name);
 }
 
 #[cfg(test)]

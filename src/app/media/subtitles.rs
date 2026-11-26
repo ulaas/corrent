@@ -90,6 +90,9 @@ impl CorrentApp {
                 Some(Ok(list)) => {
                     for s in list {
                         ui.horizontal(|ui| {
+                            let row = crate::ui::widgets::ActionRow::new(ui, &s.id);
+                            row.text(ui, |ui| {
+                                ui.horizontal(|ui| {
                             ui.label(RichText::new(&s.language).monospace().color(p.accent));
                             if s.exact {
                                 ui.label(RichText::new(t!("Exact match")).small().color(p.success));
@@ -97,8 +100,16 @@ impl CorrentApp {
                             if s.hearing_impaired {
                                 ui.label(RichText::new(t!("SDH")).small().color(p.text_dim));
                             }
-                            ui.label(RichText::new(&s.name).color(p.text)).on_hover_text(&s.provider);
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // A release name is long: it ends in "…" before Save.
+                            ui.add(
+                                        egui::Label::new(RichText::new(&s.name).color(p.text))
+                                            .truncate()
+                                            .show_tooltip_when_elided(false),
+                                    )
+                                .on_hover_text(format!("{}\n{}", s.name, s.provider));
+                                });
+                            });
+                            row.actions(ui, |ui| {
                                 let busy = f.saving.as_ref().is_some_and(|(id, _)| *id == s.id);
                                 if busy {
                                     ui.spinner();

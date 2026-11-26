@@ -452,7 +452,8 @@ impl CorrentApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(icons::PLUGS).size(20.0).color(p.warn));
-                    ui.vertical(|ui| {
+                    let row = crate::ui::widgets::ActionRow::new(ui, "unreachable");
+                    row.text(ui, |ui| {
                         ui.label(
                             RichText::new(t!("Can't reach the server “{name}”", name = name)).strong().color(p.text),
                         );
@@ -460,7 +461,7 @@ impl CorrentApp {
                             RichText::new(t!("{why} Trying again…", why = problem.as_str())).small().color(p.text_dim),
                         );
                     });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    row.actions(ui, |ui| {
                         if secondary_button(ui, t!("Use this computer's engine")).clicked() {
                             local = true;
                         }

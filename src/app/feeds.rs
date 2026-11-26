@@ -248,7 +248,12 @@ impl CorrentApp {
         let shown: Vec<&FeedView> = feeds.iter().filter(|f| selected.as_ref().is_none_or(|s| s == &f.url)).collect();
         ui.horizontal(|ui| {
             if let [one] = shown.as_slice() {
-                ui.label(RichText::new(&one.title).font(theme::heading()).color(p.text));
+                // The filter box (and the status) keep their room: a long title ends in "…".
+                crate::ui::widgets::truncated(
+                    ui,
+                    RichText::new(&one.title).font(theme::heading()).color(p.text),
+                    380.0,
+                );
                 let status = match (&one.error, one.last_ok) {
                     (Some(e), _) => RichText::new(format!("{}  {e}", icons::WARNING)).small().color(p.error),
                     (None, Some(t)) => {
@@ -257,7 +262,7 @@ impl CorrentApp {
                     (None, None) if one.loading => RichText::new(t!("Loading…")).small().color(p.text_dim),
                     (None, None) => RichText::new(t!("Not loaded yet")).small().color(p.text_dim),
                 };
-                ui.label(status);
+                crate::ui::widgets::truncated(ui, status, 220.0);
             } else {
                 ui.label(RichText::new(t!("All feeds")).font(theme::heading()).color(p.text));
             }
@@ -588,7 +593,7 @@ fn rule_form(ui: &mut Ui, p: &Palette, r: &mut RssRule, feeds: &[FeedView], cate
                 .as_ref()
                 .map(|s| s.display().to_string())
                 .unwrap_or_else(|| t!("Category or default folder").into());
-            ui.add(egui::Label::new(RichText::new(label).color(p.text_dim)).truncate());
+            crate::ui::widgets::truncated(ui, RichText::new(label).color(p.text_dim), 84.0);
             if ui.button(icons::FOLDER_OPEN).labeled(t!("Choose folder")).clicked() {
                 *pick = true;
             }

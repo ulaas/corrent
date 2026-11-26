@@ -229,11 +229,16 @@ impl CorrentApp {
                             ui.set_width(ui.available_width());
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(icons::SCREENCAST).color(p.accent));
-                                ui.label(RichText::new(&c.device.name).strong().color(p.text));
+                                let half = ui.available_width() / 2.0;
+                                crate::ui::widgets::truncated(
+                                    ui,
+                                    RichText::new(&c.device.name).strong().color(p.text),
+                                    half,
+                                );
                                 if c.device.kind == "dlna" {
                                     badge(ui, t!("TV"), p.text_dim);
                                 }
-                                ui.label(RichText::new(&c.title).color(p.text_dim));
+                                crate::ui::widgets::truncated(ui, RichText::new(&c.title).color(p.text_dim), 0.0);
                             });
                             let length = c.duration_ms.map(|d| format!(" / {}", clock(d as f64 / 1000.0)));
                             ui.label(
@@ -335,7 +340,8 @@ fn conversion_card(ui: &mut Ui, p: &Palette, s: &PlaybackSession, rate: f32) -> 
         ui.set_width(ui.available_width());
         let h = health(s);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&s.title).strong().color(p.text));
+            // The verdict and Stop stay in sight after a long title.
+            crate::ui::widgets::truncated(ui, RichText::new(&s.title).strong().color(p.text), 200.0);
             let color = match h {
                 Health::Smooth => p.success,
                 Health::Barely => p.warn,

@@ -51,12 +51,7 @@ impl CorrentApp {
             ui.horizontal(|ui| {
                 ui.add_space(24.0);
                 let n = if l.count == 1 { t!("1 item").to_string() } else { t!("{n} items", n = l.count) };
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new(format!("{}  {}", icons::PLAYLIST, l.name)).size(15.0))
-                            .frame(false),
-                    )
-                    .clicked()
+                if name_button(ui, RichText::new(format!("{}  {}", icons::PLAYLIST, l.name)).size(15.0), 0.7).clicked()
                 {
                     open = Some(Page::Playlist(l.id, false));
                 }
@@ -69,12 +64,7 @@ impl CorrentApp {
             for c in &cols {
                 ui.horizontal(|ui| {
                     ui.add_space(24.0);
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(format!("{}  {}", icons::STACK, c.name)).size(15.0))
-                                .frame(false),
-                        )
-                        .clicked()
+                    if name_button(ui, RichText::new(format!("{}  {}", icons::STACK, c.name)).size(15.0), 0.7).clicked()
                     {
                         open = Some(Page::Playlist(c.id, true));
                     }
@@ -126,7 +116,7 @@ impl CorrentApp {
             ui.horizontal(|ui| {
                 ui.add_space(24.0);
                 ui.label(RichText::new(format!("{:>3}", i + 1)).monospace().color(p.text_mute));
-                let resp = ui.add(egui::Button::new(RichText::new(&it.title).color(p.text)).frame(false));
+                let resp = name_button(ui, RichText::new(&it.title).color(p.text), 0.6);
                 if resp.clicked() {
                     play = Some((i, false));
                 }
@@ -135,7 +125,11 @@ impl CorrentApp {
                     (!collection).then_some(super::item_menu::PlaylistRow { list: id, index: i, len: items.len() });
                 self.item_menu(&resp, client, it, &items, row);
                 if !it.context.is_empty() {
-                    ui.label(RichText::new(it.context.join(" · ")).small().color(p.text_dim));
+                    crate::ui::widgets::truncated(
+                        ui,
+                        RichText::new(it.context.join(" · ")).small().color(p.text_dim),
+                        24.0,
+                    );
                 }
             });
         }
@@ -226,4 +220,18 @@ impl CorrentApp {
             let _ = tx.send(crate::engine::EngineEvent::Toast(msg.0, msg.1));
         });
     }
+}
+
+/// A name to click in a row with more after it: at most `share` of the row's width, ending in
+/// "…" beyond that, so what follows it stays in sight.
+fn name_button(ui: &mut Ui, text: RichText, share: f32) -> egui::Response {
+    let width = (ui.available_width() * share).max(80.0);
+    let full = text.text().to_owned();
+    let resp = ui
+        .scope(|ui| {
+            ui.set_max_width(width);
+            ui.add(egui::Button::new(text).frame(false).truncate())
+        })
+        .inner;
+    crate::ui::widgets::hover_if_clipped(resp, &full)
 }
