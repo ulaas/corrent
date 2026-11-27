@@ -5,6 +5,39 @@ and versions follow [Semantic Versioning](https://semver.org/) (pre-1.0: minor v
 
 ## [Unreleased]
 
+## [0.6.5] — 2026-11-27
+
+Long text wraps or ends in "…" instead of being cut off or pushing buttons out of sight.
+
+### Changed
+
+- **A movie's or show's synopsis reads as text.** It was one line cut off at the window's edge;
+  it is now wrapped running text, a little larger with open line spacing, in a column of a
+  comfortable width with its paragraphs kept. The buttons, genres, seasons, cast and crew of that
+  page wrap onto rows too, so nothing is lost in a narrow window.
+- Identify shows three lines of each result's synopsis, whatever the width and the language.
+
+### Fixed
+
+- Long text no longer pushes the buttons at the end of its row out of sight: the banners (engine
+  stopped, server unreachable, server found, magnet links), and the rows of Manage libraries,
+  Downloads, streams and Find subtitles. The text wraps or ends in "…" in the room the buttons
+  leave, in every language.
+- Files tab and the add dialog: a long folder or file name ends in "…" before its size, progress
+  and priority instead of covering them.
+- Status bar: an engine error or a long server name no longer squeezes out the speeds.
+- Player: its error, title and casting messages stay inside the picture, also in picture in
+  picture; a long title in the mini player leaves the seek bar and buttons in place; a long label
+  in the sound and picture panels no longer runs under its control.
+- Paths and names followed by a button (a torrent's save folder and trackers, watch folders, feed
+  titles and errors, playlists, conversions, radio stations and more) end in "…" with the whole
+  text on hover.
+
+### Security
+
+- `url` 2.5.9 for RUSTSEC-2026-0592: a web address made of thousands of nested `blob:` prefixes
+  could overflow the stack when its origin was read.
+
 ## [0.6.4] — 2026-11-22
 
 Picture in picture inside the app, editing a library on the desktop, and a security update.
